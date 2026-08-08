@@ -164,6 +164,7 @@ pub async fn spawn_rendezvous(
         subset_size: 5,
         ttl_secs: 900,
         rate_limiter: std::sync::Mutex::new(rendezvous::RateLimiter::new(1000.0, 1000.0)),
+        revocation_list_bytes: None,
     });
     let app = rendezvous::build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

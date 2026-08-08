@@ -44,6 +44,82 @@ is absent — see the test module's `require_root!()` guard. Run with:
 sudo -E cargo test -p tests --test hostile_network -- --ignored
 ```
 
+## Production key management (ADR-0008)
+
+`apps/keytool` (`vpn-keytool`) is the offline signing-ceremony CLI. It
+never opens a socket — every subcommand only reads/writes local files —
+and is meant to run once per key tier on progressively less-trusted
+machines:
+
+```bash
+# 1. On the most isolated machine you have (ideally air-gapped), once.
+#    root.key never leaves this machine again.
+vpn-keytool root-init --out-dir /secure/root
+
+# 2. Also on that machine (release-issue needs the root key). Copy only
+#    release.key + release.cert.json off to the release/build host.
+vpn-keytool release-issue --root-key /secure/root/root.key \
+  --out-dir /secure/release
+
+# 3. On the release/build host — never needs the offline root. Copy only
+#    bundle.key + bundle.cert.json + release.cert.json to the always-online
+#    rendezvous host.
+vpn-keytool bundle-issue --release-key /secure/release/release.key \
+  --release-cert /secure/release/release.cert.json \
+  --out-dir /secure/bundle
+
+# 4. Point rendezvous at the persisted hierarchy instead of generating an
+#    ephemeral one every boot:
+cargo run -p rendezvous -- \
+  --key-dir /secure/bundle \
+  --release-cert-file /secure/release/release.cert.json \
+  --pool-file deploy/local/relay-pool.json
+```
+
+`root.pub` (from step 1) is the value that gets pinned into client builds
+out of band (baked into `client.toml` / the CLI trust-root argument at
+build/packaging time) — it is the only thing a client needs to verify the
+entire chain, and it is never read by any network-connected process.
+
+Key files (`root.key`, `release.key`, `bundle.key`) are written
+hex-encoded with mode 0600 and `KeyPair::load_from_file` refuses to load
+one whose permissions have been loosened. Certificate files
+(`*.cert.json`) are public data (a signature over a public key) and are
+safe to copy anywhere.
+
+**Rotation**: re-run `bundle-issue` against the same `release.key` to mint
+a new bundle key (rendezvous's `--key-dir` then points at the new
+directory); if the old key must be actively distrusted (not just retired),
+issue a revocation list naming its public key:
+
+```bash
+vpn-keytool revoke-issue --release-key /secure/release/release.key \
+  --release-cert /secure/release/release.cert.json \
+  --revoke <old-bundle-public-key-hex> \
+  --out /secure/revocation.json
+```
+
+Rotating the *release* key follows the same pattern one tier up, using
+`root.key`; rotating the root key itself means re-pinning `root.pub` into
+every client build (an intentionally expensive, rare operation).
+
+Point rendezvous at a revocation list with `--revocation-list-file`; it
+serves the signed bytes verbatim at `GET /v1/revocation-list` (no
+release/root key needed on the rendezvous host to serve it — clients
+verify the signature themselves via
+`config::revocation::SignedRevocationList::verify`).
+
+`services/relay-agent --identity-dir <dir>` persists the relay's TLS/QUIC
+identity (`relay.cert.der` + `relay.key.der`, the latter mode 0600) across
+restarts so the `cert_sha256_hex` pin already handed out in signed relay
+bundles doesn't go stale on every reboot. Without `--identity-dir` a fresh
+identity is generated every boot (fine for local dev only).
+
+The full chain — real persisted hierarchy sign, fresh-client verify,
+rotate, and confirm the rotated-out key's old signatures are rejected — is
+exercised end to end in `apps/keytool/tests/ceremony.rs` against the real
+`vpn-keytool` binary and real files on disk (not mocked).
+
 ## Explicitly out of scope for this deployment doc
 
 Public production deployment (real domains, real TLS certs from a public
