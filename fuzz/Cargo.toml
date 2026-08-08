@@ -1,0 +1,39 @@
+[package]
+name = "fuzz-targets"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# This crate is intentionally NOT a member of the root workspace (cargo-fuzz's
+# own convention): libfuzzer-sys requires nightly + ASan instrumentation
+# that the normal `cargo build --workspace` toolchain in this session does
+# not have. Run with `cargo +nightly fuzz run <target>` after
+# `cargo install cargo-fuzz` — not exercised in this session (documented
+# gap in docs/TEST_STRATEGY.md). The equivalent properties ARE exercised
+# today via proptest-based "never panics on arbitrary bytes" tests in
+# `crates/common/src/framing.rs` and `crates/config/src/lib.rs`, which run
+# under plain `cargo test` with no extra tooling.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+common = { path = "../crates/common" }
+config = { path = "../crates/config" }
+serde_json = "1"
+
+[[bin]]
+name = "framing_header"
+path = "fuzz_targets/framing_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_bundle"
+path = "fuzz_targets/config_bundle.rs"
+test = false
+doc = false
+bench = false

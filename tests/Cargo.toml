@@ -1,0 +1,30 @@
+[package]
+name = "tests"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = "1"
+common = { path = "../crates/common" }
+config = { path = "../crates/config" }
+crypto = { path = "../crates/crypto" }
+transport-api = { path = "../crates/transport-api" }
+transport-native = { path = "../crates/transport-native" }
+policy = { path = "../crates/policy" }
+rendezvous-client = { path = "../crates/rendezvous-client" }
+rendezvous = { path = "../services/rendezvous" }
+relay-agent = { path = "../services/relay-agent" }
+client-daemon = { path = "../apps/client-daemon" }
+test-service = { path = "../services/test-service" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rand.workspace = true
+axum = "0.7"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Dev-only generated artifacts from deploy/local/run-dev-slice.sh — the
+# relay identity/keys are regenerated fresh each run (see docs/DEPLOYMENT.md),
+# so committing their output would be stale and misleading, not a trust root.
+deploy/local/relay-pool.json.root_pub
+/tmp-*
