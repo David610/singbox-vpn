@@ -31,7 +31,16 @@ Implemented in `crates/crypto::hierarchy` and exercised by
   point of frequent rotation for the online-exposed key.
 
 ## Consequences
-Key rotation procedure and revocation-list format now have a documented,
-testable shape (`crates/config::revocation`) even though the actual
-offline-signing operational tooling (an air-gapped signing ceremony
-script) is out of scope for this session — noted as deployment follow-up.
+Key rotation procedure and revocation-list format have a documented,
+testable shape (`crates/config::revocation`), and the offline-signing
+operational tooling now exists as `apps/keytool` (`vpn-keytool`): a
+network-free CLI for `root-init` / `release-issue` / `bundle-issue` /
+`revoke-issue` / `verify-chain`, with real key files persisted at mode
+0600 (`crypto::KeyPair::save_to_file` / `load_from_file`) instead of an
+ephemeral hierarchy generated on every `rendezvous`/`relay-agent` boot.
+`rendezvous --key-dir` and `relay-agent --identity-dir` load persisted
+material; the fallback ephemeral-generation path is kept only for local
+dev convenience and now logs a `warn`, not an `info`. See
+`docs/DEPLOYMENT.md` §"Production key management" for the ceremony
+runbook and `apps/keytool/tests/ceremony.rs` for the end-to-end
+sign/verify/rotate/revoke test against real files.

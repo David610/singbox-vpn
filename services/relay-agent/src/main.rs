@@ -26,6 +26,13 @@ struct Args {
     next_hop_cert_sha256: Option<String>,
     #[arg(long, default_value = "relay")]
     identity_name: String,
+    /// Directory holding (or to create) `relay.cert.der` / `relay.key.der`
+    /// so the relay's TLS/QUIC identity — and therefore the
+    /// `cert_sha256_hex` pin already handed out in signed relay bundles —
+    /// survives a restart. Without this, a fresh identity is generated
+    /// every boot and every previously-issued bundle's pin goes stale.
+    #[arg(long)]
+    identity_dir: Option<String>,
 }
 
 #[tokio::main]
@@ -33,11 +40,27 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_ansi(false).init();
     let args = Args::parse();
 
-    let identity = RelayIdentity::generate(&args.identity_name);
-    tracing::info!(
-        cert_sha256 = %hex::encode(identity.cert_sha256),
-        "relay-agent: generated ephemeral relay identity (see docs/DEPLOYMENT.md)"
-    );
+    let identity = match &args.identity_dir {
+        Some(dir) => {
+            let identity =
+                RelayIdentity::load_or_generate(std::path::Path::new(dir), &args.identity_name)?;
+            tracing::info!(
+                cert_sha256 = %hex::encode(identity.cert_sha256),
+                identity_dir = %dir,
+                "relay-agent: loaded persisted relay identity"
+            );
+            identity
+        }
+        None => {
+            let identity = RelayIdentity::generate(&args.identity_name);
+            tracing::warn!(
+                cert_sha256 = %hex::encode(identity.cert_sha256),
+                "relay-agent: generated ephemeral relay identity (no --identity-dir given — \
+                 this pin will change on every restart; see docs/DEPLOYMENT.md)"
+            );
+            identity
+        }
+    };
 
     let role = match args.role {
         RoleArg::Combined => Role::Combined,

@@ -26,6 +26,68 @@ impl RelayIdentity {
             cert_sha256,
         }
     }
+
+    /// Persist to `dir` as `relay.cert.der` (public) and `relay.key.der`
+    /// (PKCS8, mode 0600). Restarting the relay against the same
+    /// directory then keeps the same certificate — and therefore the same
+    /// `cert_sha256_hex` pin already handed out in signed relay bundles —
+    /// instead of invalidating every bundle issued before the restart.
+    #[cfg(unix)]
+    pub fn save_to_dir(&self, dir: &std::path::Path) -> io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join("relay.cert.der"), self.cert_der.as_ref())?;
+        let mut key_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(dir.join("relay.key.der"))?;
+        key_file.write_all(self.key_der.secret_der())?;
+        Ok(())
+    }
+
+    /// Load a previously-persisted identity, if `dir` contains one.
+    /// Returns `Ok(None)` (not an error) when the directory has no
+    /// identity yet, so callers can fall back to `generate` + `save_to_dir`
+    /// on first boot.
+    #[cfg(unix)]
+    pub fn load_from_dir(dir: &std::path::Path) -> io::Result<Option<Self>> {
+        use std::os::unix::fs::PermissionsExt;
+        let cert_path = dir.join("relay.cert.der");
+        let key_path = dir.join("relay.key.der");
+        if !cert_path.exists() || !key_path.exists() {
+            return Ok(None);
+        }
+        let mode = std::fs::metadata(&key_path)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            return Err(io::Error::other(format!(
+                "{key_path:?} has mode {mode:o}, expected 0600 or stricter"
+            )));
+        }
+        let cert_bytes = std::fs::read(&cert_path)?;
+        let key_bytes = std::fs::read(&key_path)?;
+        let cert_der = CertificateDer::from(cert_bytes);
+        let cert_sha256 = crate::cert::sha256_of_cert(cert_der.as_ref());
+        let key_der = PrivateKeyDer::Pkcs8(key_bytes.into());
+        Ok(Some(Self {
+            cert_der,
+            key_der,
+            cert_sha256,
+        }))
+    }
+
+    /// Load a persisted identity from `dir` if present, otherwise
+    /// generate a fresh one and persist it for next time.
+    #[cfg(unix)]
+    pub fn load_or_generate(dir: &std::path::Path, subject_alt_name: &str) -> io::Result<Self> {
+        if let Some(identity) = Self::load_from_dir(dir)? {
+            return Ok(identity);
+        }
+        let identity = Self::generate(subject_alt_name);
+        identity.save_to_dir(dir)?;
+        Ok(identity)
+    }
 }
 
 pub fn tls_server_config(identity: &RelayIdentity) -> Arc<rustls::ServerConfig> {

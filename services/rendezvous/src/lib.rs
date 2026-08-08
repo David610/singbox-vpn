@@ -48,6 +48,10 @@ pub struct AppState {
     pub subset_size: usize,
     pub ttl_secs: u64,
     pub rate_limiter: Mutex<RateLimiter>,
+    /// Raw bytes of a `config::revocation::SignedRevocationList`, served
+    /// verbatim so clients can verify it themselves — rendezvous does not
+    /// need to (and should not have to) hold the release key to serve this.
+    pub revocation_list_bytes: Option<Vec<u8>>,
 }
 
 /// Simple per-source-IP token bucket. Adequate for the local dev slice —
@@ -135,9 +139,22 @@ async fn health() -> &'static str {
     "ok"
 }
 
+async fn get_revocation_list(State(state): State<std::sync::Arc<AppState>>) -> impl IntoResponse {
+    match &state.revocation_list_bytes {
+        Some(bytes) => (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            bytes.clone(),
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "no revocation list configured").into_response(),
+    }
+}
+
 pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/relay-bundle", get(get_relay_bundle))
+        .route("/v1/revocation-list", get(get_revocation_list))
         .route("/healthz", get(health))
         .with_state(state)
 }
@@ -183,8 +200,60 @@ mod tests {
             subset_size,
             ttl_secs: 900,
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+            revocation_list_bytes: None,
         });
         (state, root_pub)
+    }
+
+    #[tokio::test]
+    async fn revocation_list_endpoint_404s_when_unconfigured() {
+        let (state, _root_pub) = make_state(1, 1);
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/revocation-list")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn revocation_list_endpoint_serves_configured_bytes() {
+        let (state, root_pub) = make_state(1, 1);
+        let revoked_key = crypto::KeyPair::generate().public_key();
+        let release = crypto::KeyPair::generate(); // not the real release key; signature isn't checked here
+        let release_cert = KeyCertificate::issue(&release, release.public_key(), 1);
+        let list = config::revocation::SignedRevocationList::issue(
+            &release,
+            release_cert,
+            vec![revoked_key],
+            1,
+        );
+        let bytes = serde_json::to_vec(&list).unwrap();
+        let mut state = std::sync::Arc::try_unwrap(state).unwrap_or_else(|_| unreachable!());
+        state.revocation_list_bytes = Some(bytes.clone());
+        let state = std::sync::Arc::new(state);
+        let _ = root_pub;
+
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/revocation-list")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.to_vec(), bytes);
     }
 
     #[tokio::test]
