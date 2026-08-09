@@ -31,7 +31,13 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 ReadOnlyPaths=/etc/vpn/compat
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is required: sing-box opens a netlink socket to subscribe
+# to route/interface change notifications (its network monitor, used
+# for outbound-interface auto-detection) even without TUN configured.
+# Without it here, the kernel rejects that socket() call with EAFNOSUPPORT
+# ("address family not supported by protocol") and sing-box.service
+# fails to start at all — caught on a real AlmaLinux install.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=true
 LockPersonality=true
 
