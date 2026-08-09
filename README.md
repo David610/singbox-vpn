@@ -154,3 +154,11 @@ failure-classification state machine — not a production-ready public
 deployment. See `TASKS.md` for exactly what's real vs. deferred, and the
 final engineering report in the session that produced this repository for
 an honest gaps/next-steps list.
+
+For the Hiddify-compatible server stack specifically (`install.sh` /
+`deploy/almalinux/*`), see `docs/FINAL_PRODUCTION_AUDIT.md` for a detailed,
+code-verified list of what was found and fixed, and
+`docs/PRODUCTION_ACCEPTANCE_REPORT.md` for the current pass/fail summary,
+what has and has not been verified on a real VPS/real client device, and
+an honest answer to whether it can be called production-ready today
+(currently: no — see that document for exactly why).

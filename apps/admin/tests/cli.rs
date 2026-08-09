@@ -34,11 +34,123 @@ listen_port = 9100
     cfg_path
 }
 
+fn write_deployment_toml_with_singbox(dir: &Path, singbox_binary: &Path) -> std::path::PathBuf {
+    let cfg_path = dir.join("deployment.toml");
+    let state_dir = dir.join("state");
+    let toml = format!(
+        r#"
+public_host = "vpn.example.com"
+subscription_host = "sub.example.com"
+state_dir = "{state}"
+singbox_binary = "{singbox}"
+
+[reality]
+listen_port = 443
+handshake_server = "www.microsoft.com"
+
+[hysteria2]
+listen_port = 443
+
+[subscription]
+listen_port = 9100
+"#,
+        state = state_dir.display(),
+        singbox = singbox_binary.display(),
+    );
+    std::fs::write(&cfg_path, toml).unwrap();
+    cfg_path
+}
+
+/// A fake `sing-box` binary supporting just enough subcommands to drive
+/// the REALITY rotation flow: `generate reality-keypair` (returns a
+/// fresh random-looking keypair each call, so rotation is observable),
+/// `check -c <path>` (exit 0 unless `fail_check` is set), and `version`.
+#[cfg(unix)]
+fn fake_singbox(dir: &Path, fail_check: bool) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-sing-box.sh");
+    let check_exit = if fail_check { 1 } else { 0 };
+    let script = format!(
+        r#"#!/usr/bin/env bash
+case "$1" in
+  generate)
+    n=$(date +%s%N)
+    echo "PrivateKey: priv-$n-$$"
+    echo "PublicKey: pub-$n-$$"
+    exit 0
+    ;;
+  check)
+    if [ {check_exit} -ne 0 ]; then
+      echo "fake sing-box: candidate config rejected" >&2
+    fi
+    exit {check_exit}
+    ;;
+  version)
+    echo "sing-box test-fake 1.0.0"
+    exit 0
+    ;;
+esac
+exit 1
+"#
+    );
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
 fn admin(dir: &Path, cfg_path: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vpn-admin").unwrap();
     cmd.arg("--config").arg(cfg_path);
     cmd.current_dir(dir);
     cmd
+}
+
+/// docs/FINAL_PRODUCTION_AUDIT.md P0-4: two concurrent `vpn-admin user
+/// create` invocations against the same state dir must both succeed and
+/// both end up persisted — the state lock (apps/admin/src/lock.rs) must
+/// serialize their load-mutate-persist sequences rather than letting the
+/// second writer's `users.json` overwrite the first writer's user out of
+/// existence. Uses a dedicated `VPN1_LOCK_PATH` so this test never
+/// contends with other tests or a real host's `/run/lock/vpn1.lock`.
+#[test]
+fn concurrent_user_creates_do_not_lose_an_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let lock_path = dir.path().join("vpn1-test.lock");
+
+    let spawn_create = |name: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_vpn-admin"))
+            .arg("--config")
+            .arg(&cfg_path)
+            .args(["user", "create", "--name", name])
+            .env("VPN1_LOCK_PATH", &lock_path)
+            .current_dir(dir.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+
+    let mut child_a = spawn_create("alice");
+    let mut child_b = spawn_create("bob");
+    let status_a = child_a.wait().unwrap();
+    let status_b = child_b.wait().unwrap();
+    assert!(status_a.success(), "first concurrent create must succeed");
+    assert!(status_b.success(), "second concurrent create must succeed");
+
+    let list = admin(dir.path(), &cfg_path)
+        .args(["user", "list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(list.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("alice"),
+        "alice must be present, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("bob"),
+        "bob must be present (must not have been lost to a racing write), got:\n{stdout}"
+    );
 }
 
 #[test]
@@ -115,6 +227,92 @@ fn full_user_lifecycle() {
         .args(["user", "remove", &user_id])
         .assert()
         .failure();
+}
+
+/// docs/FINAL_PRODUCTION_AUDIT.md P0-5: `vpn-admin init --rotate` must
+/// actually replace the REALITY public key on disk (proving the
+/// coordinated rotate path ran, not the old bare-overwrite code), and
+/// must succeed end-to-end (config re-render + validate against the
+/// real, if fake, sing-box binary).
+#[test]
+fn reality_rotate_replaces_public_key_and_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    let pub_key_path = dir.path().join("state/reality/public.key");
+    let before = std::fs::read_to_string(&pub_key_path).unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .args(["init", "--rotate"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("REALITY key rotated"));
+
+    let after = std::fs::read_to_string(&pub_key_path).unwrap();
+    assert_ne!(before, after, "public key must change after rotation");
+    // no leftover rotate-bak/rotate-tmp files after a successful rotation
+    let leftover: Vec<_> = std::fs::read_dir(dir.path().join("state/reality"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.contains("rotate-bak") || n.contains("rotate-tmp")
+        })
+        .collect();
+    assert!(
+        leftover.is_empty(),
+        "leftover rotation temp files: {leftover:?}"
+    );
+}
+
+/// docs/FINAL_PRODUCTION_AUDIT.md P0-5: if the candidate config fails
+/// `sing-box check`, rotation must fail LOUDLY and leave the previous
+/// REALITY key material completely unchanged — never half-rotated.
+#[test]
+fn reality_rotate_rolls_back_key_material_on_validation_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let good_singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &good_singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+
+    let pub_key_path = dir.path().join("state/reality/public.key");
+    let priv_key_path = dir.path().join("state/reality/private.key");
+    let sid_path = dir.path().join("state/reality/short_id.txt");
+    let pub_before = std::fs::read_to_string(&pub_key_path).unwrap();
+    let priv_before = std::fs::read_to_string(&priv_key_path).unwrap();
+    let sid_before = std::fs::read_to_string(&sid_path).unwrap();
+
+    // Swap in a sing-box binary that fails `check`, so the candidate
+    // config produced by this rotate attempt is rejected.
+    // `fake_singbox` always writes to the same fixed filename within
+    // `dir`, so this in-place-overwrites the exact path
+    // deployment.toml's singbox_binary already points at.
+    let failing_singbox = fake_singbox(dir.path(), true);
+    assert_eq!(failing_singbox, good_singbox);
+
+    admin(dir.path(), &cfg_path)
+        .args(["init", "--rotate"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("rotation FAILED"));
+
+    assert_eq!(
+        pub_before,
+        std::fs::read_to_string(&pub_key_path).unwrap(),
+        "public key must be unchanged after a failed rotation"
+    );
+    assert_eq!(
+        priv_before,
+        std::fs::read_to_string(&priv_key_path).unwrap(),
+        "private key must be unchanged after a failed rotation"
+    );
+    assert_eq!(
+        sid_before,
+        std::fs::read_to_string(&sid_path).unwrap(),
+        "short_id must be unchanged after a failed rotation"
+    );
 }
 
 #[test]

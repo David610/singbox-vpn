@@ -10,6 +10,7 @@
 pub mod credentials;
 pub mod deployment;
 pub mod model;
+pub mod ownership;
 pub mod render;
 pub mod secret;
 pub mod server;

@@ -152,10 +152,16 @@ else
 fi
 
 section "subscription reverse proxy"
-if curl -fsS -o /dev/null "https://127.0.0.1:8443/healthz" -k --resolve "localhost:8443:127.0.0.1" 2>/dev/null; then
-  pass "subscription reachable over HTTPS (8443)"
+# Real hostname, real trust-chain validation — no `-k` (spec:
+# docs/FINAL_PRODUCTION_AUDIT.md P0-13, `curl -k` is not proof production
+# TLS works, it's proof TLS verification was turned off).
+DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
+SUBSCRIPTION_HOST=""
+[ -f "$DEPLOYMENT_TOML" ] && SUBSCRIPTION_HOST="$(grep -E '^subscription_host' "$DEPLOYMENT_TOML" | sed -E 's/^subscription_host *= *"([^"]*)".*/\1/')"
+if [ -n "$SUBSCRIPTION_HOST" ] && curl -fsS -o /dev/null --resolve "${SUBSCRIPTION_HOST}:8443:127.0.0.1" "https://${SUBSCRIPTION_HOST}:8443/healthz" 2>/dev/null; then
+  pass "subscription reachable+trusted over HTTPS (8443, hostname=$SUBSCRIPTION_HOST)"
 else
-  fail "subscription reachable over HTTPS (8443)" "(nginx vhost may not be configured yet — see install.sh output)"
+  fail "subscription reachable+trusted over HTTPS (8443)" "(nginx vhost may not be configured yet, or subscription_host unreadable from $DEPLOYMENT_TOML — see install.sh output)"
 fi
 
 section "health endpoint"

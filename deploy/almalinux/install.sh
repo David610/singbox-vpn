@@ -27,10 +27,31 @@ STATE_DIR="/etc/vpn/compat"
 DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
 BIN_DIR="/usr/local/bin"
 SINGBOX_VERSION="1.13.14"
+# Pinned expected SHA256 for the exact release assets fetched by
+# install_singbox() below, for the architectures vpn1 supports. sing-box
+# does not publish a detached checksums.txt for every release (confirmed:
+# v1.13.14 has none) — these values were computed by hand from the real
+# asset bytes downloaded directly from the URLs below, and are the
+# trusted-comparison target when upstream doesn't provide its own
+# checksums file (docs/FINAL_PRODUCTION_AUDIT.md P0-8). Bumping
+# SINGBOX_VERSION MUST update these in the same commit, or install_singbox
+# will correctly refuse to proceed rather than silently skip verification.
+SINGBOX_SHA256_AMD64="f48703461a15476951ac4967cdad339d986f4b8096b4eb3ff0829a500502d697"
+SINGBOX_SHA256_ARM64="4742df6a4314e8ecc41736849fca6d73b8f9e91b6e8b06ee794ff17ba180579e"
 SINGBOX_BIN="$BIN_DIR/sing-box"
 NGINX_CONF="/etc/nginx/conf.d/vpn-subscription.conf"
 VPN1_VERSION="${VPN1_VERSION:-}"
 VPN1_RELEASE_REPO="${VPN1_RELEASE_REPO:-David610/vpn1}"
+
+# Independent component status, set ONLY at the point each component
+# actually confirms success (docs/FINAL_PRODUCTION_AUDIT.md P0-14) — never
+# inferred from an unrelated variable. print_status() reads only these.
+VLESS_REALITY_OK=0
+HYSTERIA2_OK=0
+SUBSCRIPTION_BACKEND_OK=0
+SUBSCRIPTION_HTTPS_OK=0
+NGINX_OK=0
+FIREWALL_OK=0
 
 log() { echo "[install] $*"; }
 warn() { echo "[install] WARNING: $*" >&2; }
@@ -90,9 +111,25 @@ persist_source_tree() {
   REPO_ROOT="$PERSIST_DIR"
 }
 
+acquire_installer_lock() {
+  # Mutual exclusion against a concurrent install.sh/update.sh run
+  # (docs/FINAL_PRODUCTION_AUDIT.md P0-4: "two concurrent administrators
+  # must not lose each other's changes"). Deliberately a SEPARATE lock
+  # file from vpn-admin's own /run/lock/vpn1.lock (apps/admin/src/
+  # lock.rs) — this script shells out to `vpn-admin` multiple times
+  # below, and each of those calls acquires that lock itself for its own
+  # duration; holding the same lock around this whole script would
+  # deadlock the instant it did so.
+  mkdir -p /run/lock
+  exec 200>/run/lock/vpn1-installer.lock
+  flock -x 200
+  log "acquired installer lock (/run/lock/vpn1-installer.lock) — no other install.sh/update.sh can run concurrently."
+}
+
 preflight_stage() {
   stage 1 "preflight"
   preflight_require_root
+  acquire_installer_lock
   detect_os || die "unsupported operating system."
   log "detected OS: $OS_PRETTY_NAME (family=$OS_FAMILY, support=$OS_SUPPORT)"
   [ "$OS_SUPPORT" = "tested" ] || warn "this OS/version combination is not in the tested support matrix; continuing, but this is not a guarantee it works."
@@ -196,6 +233,8 @@ resolve_host_config() {
     AUTO_TLS_DOMAIN=1
   fi
   SUBSCRIPTION_HOST="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
+  preflight_validate_hostname "$PUBLIC_HOST" "PUBLIC_HOST" || die "invalid PUBLIC_HOST — refusing to interpolate it into deployment.toml/nginx config."
+  preflight_validate_hostname "$SUBSCRIPTION_HOST" "SUBSCRIPTION_HOST" || die "invalid SUBSCRIPTION_HOST — refusing to interpolate it into deployment.toml/nginx config."
   export PUBLIC_HOST SUBSCRIPTION_HOST AUTO_TLS_DOMAIN
 }
 
@@ -231,9 +270,18 @@ fetch_release_binaries() {
     die "release asset $asset was found but SHA256SUMS was not — refusing to install a binary with no integrity verification."
   fi
   tar -xzf "$tmp/$asset" -C "$tmp"
-  install -m 0755 "$tmp/vpn-admin" "$BIN_DIR/vpn-admin"
-  install -m 0755 "$tmp/vpn-admin" "$BIN_DIR/vpn"
-  install -m 0755 "$tmp/subscription" "$BIN_DIR/vpn-subscription-svc"
+  # release.yml packages binaries inside a top-level "vpn1-<target>/"
+  # directory (the conventional tarball layout — avoids extracting loose
+  # files into a shared tmp dir). Keep this extraction path and the
+  # workflow's packaging step in lockstep: see the "release archive
+  # contract" smoke test in .github/workflows/release.yml, which extracts
+  # a real built archive with this exact same relative path and fails CI
+  # if they ever diverge again (docs/FINAL_PRODUCTION_AUDIT.md P0-6).
+  local extracted="$tmp/vpn1-${target}"
+  [ -d "$extracted" ] || die "release asset $asset did not contain the expected vpn1-${target}/ directory — archive layout does not match what install.sh expects. This is a packaging bug, not a transient failure; see docs/FINAL_PRODUCTION_AUDIT.md P0-6."
+  install -m 0755 "$extracted/vpn-admin" "$BIN_DIR/vpn-admin"
+  install -m 0755 "$extracted/vpn-admin" "$BIN_DIR/vpn"
+  install -m 0755 "$extracted/subscription" "$BIN_DIR/vpn-subscription-svc"
   rm -rf "$tmp"
   log "installed prebuilt vpn1 $version binaries ($target) — no Rust compiler needed."
   return 0
@@ -277,17 +325,28 @@ install_singbox() {
   log "downloading pinned sing-box ${SINGBOX_VERSION} (${ARCH}) from official release assets..."
   curl -fsSL -o "$tmpdir/$tarball" "$url" || die "download failed: $url"
 
-  # Verify against upstream-published checksums when available. sing-box
-  # does not currently publish a detached checksums.txt on every release;
-  # if one is not published for this version, we hash-log the artifact
-  # instead of silently skipping verification, per spec §10 ("verify
-  # downloaded artifact integrity when upstream publishes checksums").
+  # Verify integrity before extracting/installing ANYTHING. Preferred:
+  # upstream's own published checksums.txt when it exists for this
+  # release. Fallback: a pinned expected digest for this exact
+  # version+arch, hand-verified against the real upstream asset bytes
+  # (see SINGBOX_SHA256_* above). If neither is available, abort —
+  # printing a self-computed hash and calling that "verification" is not
+  # verification (docs/FINAL_PRODUCTION_AUDIT.md P0-8); never silently
+  # downgrade to an unverified install.
   local sums_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box_${SINGBOX_VERSION}_checksums.txt"
+  local actual_sha256 expected_sha256=""
   if curl -fsSL -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
-    ( cd "$tmpdir" && sha256sum --ignore-missing -c checksums.txt ) || die "checksum verification failed for $tarball"
+    ( cd "$tmpdir" && sha256sum --ignore-missing -c checksums.txt ) || die "checksum verification failed for $tarball (upstream checksums.txt) — refusing to install."
     log "checksum verified against upstream checksums.txt."
   else
-    log "no upstream checksums.txt found for this release; recording sha256 for audit: $(sha256sum "$tmpdir/$tarball" | awk '{print $1}')"
+    case "$ARCH" in
+      amd64) expected_sha256="$SINGBOX_SHA256_AMD64" ;;
+      arm64) expected_sha256="$SINGBOX_SHA256_ARM64" ;;
+    esac
+    [ -n "$expected_sha256" ] || die "no upstream checksums.txt and no pinned expected SHA256 for sing-box ${SINGBOX_VERSION}/${ARCH} — refusing to install an unverified binary. Update SINGBOX_SHA256_* in this script if you intentionally changed SINGBOX_VERSION."
+    actual_sha256="$(sha256sum "$tmpdir/$tarball" | awk '{print $1}')"
+    [ "$actual_sha256" = "$expected_sha256" ] || die "checksum verification failed for $tarball: expected $expected_sha256, got $actual_sha256 — refusing to install a binary that does not match the pinned digest."
+    log "checksum verified against pinned expected SHA256 (no upstream checksums.txt published for this release)."
   fi
 
   tar -xzf "$tmpdir/$tarball" -C "$tmpdir"
@@ -317,6 +376,16 @@ singbox_install_stage() {
 create_service_users() {
   id vpn-subscription >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin vpn-subscription
   id sing-box >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin sing-box
+  # Shared traversal-only group: neither service's *files* become
+  # readable by the other (that's still controlled by per-file group
+  # ownership below), but both services' primary groups need to walk
+  # through $STATE_DIR and $STATE_DIR/reality, which are shared by files
+  # belonging to both services. Without this, sing-box (Group=sing-box)
+  # cannot even stat() its way down to sing-box/config.json through a
+  # vpn-subscription-owned parent, and vice versa for reality/public.key.
+  getent group vpn-compat >/dev/null 2>&1 || groupadd --system vpn-compat
+  usermod -aG vpn-compat sing-box
+  usermod -aG vpn-compat vpn-subscription
 }
 
 users_groups_stage() {
@@ -327,27 +396,35 @@ users_groups_stage() {
 # ---------------------------------------------------------------------
 # [7] directories
 # ---------------------------------------------------------------------
-# Ownership matrix (docs/PRODUCTION_HARDENING_PLAN.md #1): every
-# directory/file is owned by the group that ACTUALLY needs to read it at
-# runtime, not by convention. `sing-box` (User=sing-box) must read the
-# REALITY private key and the Hysteria2 TLS cert/key directly — it is
-# never added to `vpn-subscription`'s group, and vice versa.
+# Ownership matrix (docs/PRODUCTION_HARDENING_PLAN.md #1, revised —
+# docs/FINAL_PRODUCTION_AUDIT.md P0-1): every FILE is owned by the group
+# that actually needs to read its contents; every DIRECTORY that is a
+# shared parent for files belonging to more than one service is owned by
+# the shared `vpn-compat` traversal group instead, with the setgid bit so
+# atomic replacements (rename()) of files inside always inherit the
+# right group even though a rename() itself never changes ownership
+# (crates/compat-config/src/store.rs and server.rs additionally fchown
+# each written file explicitly — belt and suspenders, since setgid only
+# affects *newly created* files, not renamed-in ones).
+#
+#   $STATE_DIR            root:vpn-compat 02750  (both services traverse)
+#   reality/               root:vpn-compat 02750  (both services traverse)
+#     private.key          root:sing-box    0640  (sing-box only)
+#     public.key           root:vpn-subscription 0640
+#     short_id.txt          root:vpn-subscription 0640
+#   hysteria/               root:sing-box   02750  (sing-box only)
+#   users/                  root:vpn-subscription 02750  (vpn-subscription only)
+#   sing-box/               root:sing-box   02750  (sing-box only)
 create_directories() {
   install -d -m 0755 /etc/vpn
-  install -d -m 0750 -o root -g vpn-subscription "$STATE_DIR"
-  # reality/: private.key is sing-box's secret (root:sing-box 0640);
-  # public.key + short_id.txt are vpn-subscription's read-only inputs
-  # (root:vpn-subscription 0640). The directory itself must be
-  # traversable by both groups.
-  install -d -m 0750 -o root -g sing-box "$STATE_DIR/reality"
-  chmod g+rx "$STATE_DIR/reality" # traversal for the vpn-subscription-owned files inside too
-  # hysteria/: cert+key are read exclusively by sing-box.
-  install -d -m 0750 -o root -g sing-box "$STATE_DIR/hysteria"
+  install -d -m 02750 -o root -g vpn-compat "$STATE_DIR"
+  install -d -m 02750 -o root -g vpn-compat "$STATE_DIR/reality"
+  install -d -m 02750 -o root -g sing-box "$STATE_DIR/hysteria"
   # vpn-subscription reads users.json (to verify tokens) but never
   # writes it — only vpn-admin (run as root) does. Group-readable, not
   # group-writable.
-  install -d -m 0750 -o root -g vpn-subscription "$STATE_DIR/users"
-  install -d -m 0755 -o sing-box -g sing-box "$STATE_DIR/sing-box"
+  install -d -m 02750 -o root -g vpn-subscription "$STATE_DIR/users"
+  install -d -m 02750 -o sing-box -g sing-box "$STATE_DIR/sing-box"
 }
 
 directories_stage() {
@@ -367,17 +444,63 @@ directories_stage() {
 # fails (egress blocked, port 80 unavailable, etc.) we stop with the
 # exact manual recovery commands rather than silently degrading to a
 # cert that client apps will reject.
+# Temporarily allow inbound TCP/80 for certbot's HTTP-01 challenge, and
+# remove EXACTLY that rule again afterwards — never touching any
+# pre-existing firewall rule vpn1 did not add itself
+# (docs/FINAL_PRODUCTION_AUDIT.md P0-9). firewalld/ufw are already
+# enabled by packages_stage (stage 2) with distro-default deny rules by
+# the time this runs, and vpn1's own permanent rules (443/tcp+udp/8443,
+# never 80) aren't added until firewall_stage (stage 12) — so without
+# this, certbot's challenge has no way to receive inbound traffic.
+firewall_open_port_80_temp() {
+  case "$FIREWALL_BACKEND" in
+    firewalld)
+      command -v firewall-cmd >/dev/null 2>&1 || return 1
+      systemctl is-active --quiet firewalld 2>/dev/null || return 1
+      firewall-cmd --add-port=80/tcp >/dev/null 2>&1 # runtime-only, not --permanent: gone on next reload/reboot even if cleanup below is skipped
+      ;;
+    ufw)
+      command -v ufw >/dev/null 2>&1 || return 1
+      ufw allow 80/tcp >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+firewall_close_port_80_temp() {
+  case "$FIREWALL_BACKEND" in
+    firewalld)
+      command -v firewall-cmd >/dev/null 2>&1 || return 0
+      firewall-cmd --remove-port=80/tcp >/dev/null 2>&1 || true
+      ;;
+    ufw)
+      command -v ufw >/dev/null 2>&1 || return 0
+      ufw delete allow 80/tcp >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
 attempt_automatic_certbot() {
-  local host="$1"
+  local host="$1" opened_port_80=0
   command -v certbot >/dev/null 2>&1 || { warn "certbot not installed; cannot auto-provision a certificate for $host."; return 1; }
   if ! preflight_check_port_free tcp 80 >/dev/null 2>&1; then
     warn "port 80/tcp is occupied; certbot's standalone HTTP-01 challenge cannot run automatically for $host."
     return 1
   fi
+  if firewall_open_port_80_temp; then
+    opened_port_80=1
+    log "temporarily allowed inbound TCP/80 for the ACME HTTP-01 challenge."
+  fi
   log "requesting a Let's Encrypt certificate for $host via certbot (HTTP-01, standalone)..."
   systemctl stop nginx 2>/dev/null || true
-  if certbot certonly --standalone -d "$host" --non-interactive --agree-tos \
-      -m "admin@$host" --no-eff-email >/dev/null 2>&1; then
+  local rc=0
+  certbot certonly --standalone -d "$host" --non-interactive --agree-tos \
+      -m "admin@$host" --no-eff-email >/dev/null 2>&1 || rc=$?
+  if [ "$opened_port_80" -eq 1 ]; then
+    firewall_close_port_80_temp
+    log "removed the temporary TCP/80 rule vpn1 added for the ACME challenge."
+  fi
+  if [ "$rc" -eq 0 ]; then
     log "certificate issued for $host."
     return 0
   fi
@@ -402,7 +525,7 @@ require_hysteria_tls() {
   local key="$STATE_DIR/hysteria/key.pem"
   if [ ! -s "$cert" ] || [ ! -s "$key" ]; then
     if ensure_tls_material "$PUBLIC_HOST"; then
-      install -d -m 0750 -o root -g sing-box "$STATE_DIR/hysteria"
+      install -d -m 02750 -o root -g sing-box "$STATE_DIR/hysteria"
       install -m 0640 -o root -g sing-box \
         "/etc/letsencrypt/live/$PUBLIC_HOST/fullchain.pem" "$cert"
       install -m 0640 -o root -g sing-box \
@@ -423,7 +546,7 @@ Provision a certificate for ${PUBLIC_HOST:-<PUBLIC_HOST>} first, e.g. with certb
 
 Then copy/link the issued files into place:
 
-  install -d -m 0750 -o root -g sing-box $STATE_DIR/hysteria
+  install -d -m 02750 -o root -g sing-box $STATE_DIR/hysteria
   install -m 0640 -o root -g sing-box \\
     /etc/letsencrypt/live/${PUBLIC_HOST:-<PUBLIC_HOST>}/fullchain.pem $cert
   install -m 0640 -o root -g sing-box \\
@@ -474,11 +597,41 @@ create_hysteria_masquerade_placeholder() {
   fi
 }
 
+
+# Installs the deploy hook that keeps $STATE_DIR/hysteria/{cert,key}.pem
+# in sync across renewals (docs/FINAL_PRODUCTION_AUDIT.md P0-11), and
+# makes sure certbot's own renewal timer is actually enabled — a
+# certificate that renews correctly but whose timer never runs is just a
+# slower version of the same "silently dies at ~90 days" bug.
+install_certbot_renewal_hook() {
+  command -v certbot >/dev/null 2>&1 || return 0
+  install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
+  install -m 0755 "$REPO_ROOT/deploy/almalinux/certbot-deploy-hook.sh" \
+    /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh
+  log "installed certbot renewal deploy hook: /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh"
+  if systemctl list-unit-files certbot-renew.timer >/dev/null 2>&1; then
+    if systemctl enable --now certbot-renew.timer >/dev/null 2>&1; then
+      log "certbot-renew.timer enabled."
+    else
+      warn "could not enable certbot-renew.timer — certificates will not auto-renew; investigate with 'systemctl status certbot-renew.timer'."
+    fi
+  elif systemctl list-unit-files snap.certbot.renew.timer >/dev/null 2>&1; then
+    if systemctl enable --now snap.certbot.renew.timer >/dev/null 2>&1; then
+      log "snap.certbot.renew.timer enabled."
+    else
+      warn "could not enable snap.certbot.renew.timer."
+    fi
+  else
+    warn "no certbot renewal timer unit found (certbot-renew.timer / snap.certbot.renew.timer) — certificates may not auto-renew. Verify with 'certbot renew --dry-run' and set up a cron/systemd timer manually if needed."
+  fi
+}
+
 certificates_stage() {
   stage 8 "certificates"
   create_hysteria_masquerade_placeholder
   require_hysteria_tls
   require_subscription_tls
+  install_certbot_renewal_hook
   if command -v nginx >/dev/null 2>&1; then systemctl start nginx >/dev/null 2>&1 || true; fi
 }
 
@@ -493,6 +646,7 @@ render_deployment_toml() {
   : "${PUBLIC_HOST:?Set PUBLIC_HOST=vpn.example.com before running install.sh}"
   : "${SUBSCRIPTION_HOST:="$PUBLIC_HOST"}"
   : "${REALITY_HANDSHAKE_SERVER:="www.microsoft.com"}"
+  preflight_validate_hostname "$REALITY_HANDSHAKE_SERVER" "REALITY_HANDSHAKE_SERVER" || die "invalid REALITY_HANDSHAKE_SERVER."
   sed -e "s/{{PUBLIC_HOST}}/$PUBLIC_HOST/" \
       -e "s/{{SUBSCRIPTION_HOST}}/$SUBSCRIPTION_HOST/" \
       -e "s/{{REALITY_HANDSHAKE_SERVER}}/$REALITY_HANDSHAKE_SERVER/" \
@@ -534,7 +688,7 @@ render_server_config() {
   # service with no valid config.
   "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
   chown -R root:sing-box "$STATE_DIR/sing-box"
-  chmod 0750 "$STATE_DIR/sing-box"
+  chmod 02750 "$STATE_DIR/sing-box"
 }
 
 server_config_stage() {
@@ -558,6 +712,9 @@ configure_nginx() {
   rm -f "$NGINX_CONF.tmp"
   nginx -t || die "nginx config validation failed (nginx -t) — not reloading nginx with a broken config."
   systemctl enable --now nginx >/dev/null 2>&1 || systemctl reload nginx
+  systemctl is-active --quiet nginx || die "nginx is not active after configuring the subscription vhost."
+  NGINX_OK=1
+  SUBSCRIPTION_HTTPS_OK=1
   log "nginx vhost installed and validated: $NGINX_CONF"
 }
 
@@ -580,6 +737,7 @@ configure_firewall() {
 firewall_stage() {
   stage 12 "firewall"
   configure_firewall
+  FIREWALL_OK=1
 }
 
 # ---------------------------------------------------------------------
@@ -644,10 +802,45 @@ enable_and_start_services() {
   systemctl enable --now vpn-subscription.service
 }
 
+# Each protocol's status is confirmed independently by actually observing
+# its own listener/socket — never inferred from the other protocol or
+# from an unrelated stage's variable (docs/FINAL_PRODUCTION_AUDIT.md
+# P0-14: sharing one sing-box process does not guarantee both inbounds
+# bound successfully, e.g. one address family failing while the other
+# succeeds).
+confirm_data_plane_listening() {
+  systemctl is-active --quiet sing-box || die "sing-box is not active after start — cannot verify data plane."
+  local tries=0
+  while [ "$tries" -lt 10 ]; do
+    if command -v ss >/dev/null 2>&1; then
+      ss -tln 2>/dev/null | grep -q ':443 ' && VLESS_REALITY_OK=1
+      ss -uln 2>/dev/null | grep -q ':443 ' && HYSTERIA2_OK=1
+    fi
+    [ "$VLESS_REALITY_OK" -eq 1 ] && [ "$HYSTERIA2_OK" -eq 1 ] && break
+    tries=$((tries + 1))
+    sleep 0.5
+  done
+  [ "$VLESS_REALITY_OK" -eq 1 ] || die "VLESS+REALITY is not listening on 443/tcp after start — sing-box.service is active but the inbound never bound. Check: journalctl -u sing-box --no-pager -n 100"
+  [ "$HYSTERIA2_OK" -eq 1 ] || die "Hysteria2 is not listening on 443/udp after start — sing-box.service is active but the inbound never bound. Check: journalctl -u sing-box --no-pager -n 100"
+}
+
+confirm_subscription_backend() {
+  systemctl is-active --quiet vpn-subscription || die "vpn-subscription is not active after start."
+  local tries=0
+  while [ "$tries" -lt 10 ]; do
+    curl -fsS -o /dev/null http://127.0.0.1:9100/healthz 2>/dev/null && { SUBSCRIPTION_BACKEND_OK=1; break; }
+    tries=$((tries + 1))
+    sleep 0.5
+  done
+  [ "$SUBSCRIPTION_BACKEND_OK" -eq 1 ] || die "subscription backend did not answer /healthz after start. Check: journalctl -u vpn-subscription --no-pager -n 100"
+}
+
 start_stage() {
   stage 15 "validation + start"
   validate_before_start
   enable_and_start_services
+  confirm_data_plane_listening
+  confirm_subscription_backend
   install -m 0755 "$REPO_ROOT/deploy/almalinux/health-check.sh" "$BIN_DIR/vpn-health-check"
 }
 
@@ -656,7 +849,17 @@ start_stage() {
 # ---------------------------------------------------------------------
 DEFAULT_USER_NAME="default"
 SUBSCRIPTION_URL=""
+FIRST_USER_QR_OUTPUT=""
 
+# The Rust admin CLI has its own terminal QR renderer (the `qrcode` crate
+# — apps/admin/src/main.rs `print_qr`), so the one-command install path
+# never needs to depend on a distro `qrencode` package being installed
+# (docs/FINAL_PRODUCTION_AUDIT.md P0-15). Call `user create --qr` in its
+# normal (non-JSON) human-output mode once — it already prints exactly
+# the URL + QR + Hiddify onboarding steps a first-time user needs — and
+# capture that whole block for print_status to show, instead of a second
+# `--json` call (which would either skip the QR or, via `user qr`, mint
+# and invalidate a second token for no reason).
 ensure_first_user() {
   local existing
   existing="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user list 2>/dev/null | tail -n +2 | grep -c . || true)"
@@ -666,9 +869,10 @@ ensure_first_user() {
   fi
   log "creating initial VPN user '$DEFAULT_USER_NAME'..."
   local out
-  out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --json 2>/dev/null)" \
-    || { warn "failed to auto-create the default user; run 'vpn user create --name default' manually."; return; }
-  SUBSCRIPTION_URL="$(echo "$out" | grep -o '"subscription_url":"[^"]*"' | sed -E 's/.*:"([^"]*)"/\1/')"
+  out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --qr 2>/dev/null)" \
+    || { warn "failed to auto-create the default user; run 'vpn user create --name default --qr' manually."; return; }
+  FIRST_USER_QR_OUTPUT="$out"
+  SUBSCRIPTION_URL="$(echo "$out" | sed -n '/^Subscription:$/{n;p;}')"
 }
 
 acceptance_stage() {
@@ -683,10 +887,47 @@ acceptance_stage() {
 # ---------------------------------------------------------------------
 # [17] summary
 # ---------------------------------------------------------------------
+# Source of truth for update/uninstall/reinstall-detection to key off
+# (docs/FINAL_PRODUCTION_AUDIT.md P1 "install-state manifest") — never
+# raw secrets, only metadata about what this install IS and what it
+# owns. Best-effort `sing-box version` line included for support/debug
+# purposes only.
+write_install_state_manifest() {
+  local manifest_dir="/var/lib/vpn1" manifest="/var/lib/vpn1/install-state.json"
+  install -d -m 0755 "$manifest_dir"
+  local singbox_version
+  singbox_version="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
+  local vpn1_version="${VPN1_VERSION:-main}"
+  cat > "$manifest.tmp" <<EOF
+{
+  "vpn1_version": "$vpn1_version",
+  "vpn1_repo": "$VPN1_RELEASE_REPO",
+  "sing_box_version": "$singbox_version",
+  "installed_at_unix": $(date +%s),
+  "public_host": "$PUBLIC_HOST",
+  "subscription_host": "${SUBSCRIPTION_HOST:-$PUBLIC_HOST}",
+  "firewall_backend": "$FIREWALL_BACKEND",
+  "os_family": "$OS_FAMILY",
+  "repo_root": "$REPO_ROOT"
+}
+EOF
+  chmod 0644 "$manifest.tmp"
+  mv -f "$manifest.tmp" "$manifest"
+  log "wrote install-state manifest: $manifest"
+}
+
 print_status() {
   stage 17 "summary"
-  local tls_status
-  tls_status="$([ "${SUBSCRIPTION_TLS_READY:-0}" -eq 1 ] && echo "configured" || echo "NOT configured")"
+  write_install_state_manifest
+  # Never print a success banner claiming a component works when it
+  # wasn't actually confirmed (docs/FINAL_PRODUCTION_AUDIT.md P0-14) —
+  # these are the same booleans set at each stage's real confirmation
+  # point above, re-checked here instead of trusting `set -e` alone to
+  # have caught every path.
+  [ "$VLESS_REALITY_OK" -eq 1 ] || die "internal: reached summary with VLESS+REALITY not confirmed — this should be unreachable (start_stage should have aborted first)."
+  [ "$HYSTERIA2_OK" -eq 1 ] || die "internal: reached summary with Hysteria2 not confirmed — this should be unreachable (start_stage should have aborted first)."
+  [ "$SUBSCRIPTION_BACKEND_OK" -eq 1 ] || die "internal: reached summary with subscription backend not confirmed — this should be unreachable (start_stage should have aborted first)."
+
   cat <<BANNER
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -695,23 +936,23 @@ print_status() {
 Server
   Address: ${PUBLIC_HOST}
   Status:  running
-Protocols
-  VLESS + REALITY     ✓
-  Hysteria2           $([ "${SUBSCRIPTION_TLS_READY:-0}" -eq 1 ] && echo "✓" || echo "cert not ready — see above")
+Components (each independently confirmed, not inferred)
+  VLESS + REALITY (443/tcp)     $([ "$VLESS_REALITY_OK" -eq 1 ] && echo "✓ listening" || echo "✗")
+  Hysteria2 (443/udp)           $([ "$HYSTERIA2_OK" -eq 1 ] && echo "✓ listening" || echo "✗")
+  Subscription backend          $([ "$SUBSCRIPTION_BACKEND_OK" -eq 1 ] && echo "✓ healthy" || echo "✗")
+  Subscription HTTPS (nginx)    $([ "$NGINX_OK" -eq 1 ] && [ "$SUBSCRIPTION_HTTPS_OK" -eq 1 ] && echo "✓ configured" || echo "not configured — see stage 8/11 output above")
+  Firewall                      $([ "$FIREWALL_OK" -eq 1 ] && echo "✓ configured" || echo "✗")
 User
   ${DEFAULT_USER_NAME}
 BANNER
-  if [ -n "$SUBSCRIPTION_URL" ]; then
+  if [ -n "$FIRST_USER_QR_OUTPUT" ]; then
+    echo "$FIRST_USER_QR_OUTPUT"
+  elif [ -n "$SUBSCRIPTION_URL" ]; then
     echo "Subscription URL"
     echo "  $SUBSCRIPTION_URL"
-    if command -v qrencode >/dev/null 2>&1; then
-      echo
-      echo "Scan this with Hiddify:"
-      qrencode -t ANSIUTF8 "$SUBSCRIPTION_URL" 2>/dev/null || true
-    fi
   else
     echo "Subscription URL"
-    echo "  (not created automatically — run: vpn user create --name default)"
+    echo "  (not created automatically — run: vpn user create --name default --qr)"
   fi
   cat <<BANNER
 
@@ -729,8 +970,6 @@ Management
   vpn user remove USER
   $REPO_ROOT/deploy/almalinux/update.sh
   $REPO_ROOT/deploy/almalinux/uninstall.sh
-
-Subscription HTTPS (nginx): $tls_status
 
 Documentation:
   https://github.com/$VPN1_RELEASE_REPO

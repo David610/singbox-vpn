@@ -196,6 +196,10 @@ pub fn apply_config_atomically(
         set_file_mode_0640(&backup_path)?;
     }
 
+    // rename() never changes ownership — without this, every regenerated
+    // config.json silently turns back into root:root and breaks
+    // sing-box's read access (docs/FINAL_PRODUCTION_AUDIT.md P0-2).
+    crate::ownership::preserve_ownership_before_rename(&tmp_path, target_path)?;
     std::fs::rename(&tmp_path, target_path).map_err(|e| CompatError::Io(e.to_string()))?;
     fsync_parent_dir(target_path);
     Ok(())
@@ -428,6 +432,23 @@ mod tests {
             0o640,
             "config.json.bak must also be 0640"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repeated_applies_preserve_group_ownership_across_mutations() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.json");
+        apply_config_atomically(&json!({"n": 0}), &target, |_p| Ok(())).unwrap();
+        let original_gid = std::fs::metadata(&target).unwrap().gid();
+
+        for i in 1..6 {
+            apply_config_atomically(&json!({"n": i}), &target, |_p| Ok(())).unwrap();
+            let meta = std::fs::metadata(&target).unwrap();
+            assert_eq!(meta.gid(), original_gid, "gid drifted on mutation {i}");
+            assert_eq!(meta.permissions().mode() & 0o777, 0o640);
+        }
     }
 
     #[test]

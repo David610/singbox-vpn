@@ -25,6 +25,7 @@ set -Eeuo pipefail
 VPN1_REPO="${VPN1_REPO:-David610/vpn1}"
 VPN1_VERSION="${VPN1_VERSION:-}"
 VPN1_REF="${VPN1_REF:-main}"
+VPN1_CHANNEL="${VPN1_CHANNEL:-stable}"
 
 log() { echo "[bootstrap] $*" >&2; }
 warn() { echo "[bootstrap] WARNING: $*" >&2; }
@@ -58,7 +59,13 @@ Options:
   --repo owner/repo                   install from a fork
   --ref branch-name                   source branch when no tag/version is given (default: main)
 
-Environment overrides: VPN1_VERSION, VPN1_REPO, VPN1_REF, PUBLIC_HOST, SUBSCRIPTION_HOST
+By default this installer resolves the latest STABLE tagged release and
+installs source + binaries from that exact tag together (never a mix of
+main-branch source with a different release's binaries). Set
+VPN1_CHANNEL=dev to explicitly track '--ref' (default: main) instead —
+intended for development/testing only, not production VPS installs.
+
+Environment overrides: VPN1_VERSION, VPN1_REPO, VPN1_REF, VPN1_CHANNEL, PUBLIC_HOST, SUBSCRIPTION_HOST
 USAGE
       exit 0 ;;
     *)
@@ -123,6 +130,40 @@ download_source() {
   echo "$extracted"
 }
 
+# ---------------------------------------------------------------------
+# resolve a SINGLE version up front so source and binaries never mix
+# (docs/FINAL_PRODUCTION_AUDIT.md P0-7): a normal install must correspond
+# to exactly one immutable, self-consistent version — never
+# main-branch source/templates paired with a different release's
+# binaries. VPN1_CHANNEL=dev is the explicit, documented developer
+# opt-out for tracking main directly (still self-consistent: both source
+# and binaries come from main in that mode, since
+# deploy/almalinux/install.sh falls back to building from source when it
+# can't find a release matching VPN1_VERSION).
+# ---------------------------------------------------------------------
+resolve_version() {
+  if [ -n "$VPN1_VERSION" ]; then
+    log "using pinned version $VPN1_VERSION (explicitly requested)"
+    return
+  fi
+  if [ "$VPN1_CHANNEL" = "dev" ]; then
+    log "VPN1_CHANNEL=dev — tracking '$VPN1_REF' directly (source and binaries both built from the same ref; no release-version guarantee)."
+    return
+  fi
+  log "resolving latest stable release tag for $VPN1_REPO..."
+  local latest_tag
+  latest_tag="$(curl -fsSL --retry 3 --retry-delay 2 \
+      "https://api.github.com/repos/$VPN1_REPO/releases/latest" 2>/dev/null \
+      | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name" *: *"([^"]*)".*/\1/')"
+  if [ -n "$latest_tag" ]; then
+    VPN1_VERSION="$latest_tag"
+    log "resolved stable release: $VPN1_VERSION — source and binaries will both come from this exact tag."
+  else
+    warn "no tagged release found for $VPN1_REPO yet — falling back to '$VPN1_REF' (dev channel behavior). Once a release is tagged, plain 'curl | sudo bash' will automatically start using it; pass VPN1_CHANNEL=dev explicitly to silence this warning and always track main."
+  fi
+}
+
+resolve_version
 SRC_DIR="$(download_source)"
 [ -x "$SRC_DIR/deploy/almalinux/install.sh" ] || die "downloaded source is missing deploy/almalinux/install.sh — cannot continue."
 

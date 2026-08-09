@@ -93,6 +93,68 @@ preflight_check_port_free() {
   return 0
 }
 
+# Detect the port sshd actually listens on, so the firewall scripts can
+# guarantee the operator's real SSH session before enabling a
+# default-deny firewall (docs/FINAL_PRODUCTION_AUDIT.md P0-10). Does NOT
+# assume 22 — checks, in order: sshd's own effective config (`sshd -T`),
+# static sshd_config `Port` directives, then a live listener owned by
+# sshd. Falls back to 22 with a loud warning only if every detection
+# method is inconclusive (e.g. sshd not installed as a systemd unit
+# named `sshd`/`ssh`).
+preflight_detect_ssh_port() {
+  local port=""
+  if command -v sshd >/dev/null 2>&1; then
+    port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
+  fi
+  if [ -z "$port" ] && [ -f /etc/ssh/sshd_config ]; then
+    port="$(awk 'tolower($1)=="port"{print $2; exit}' /etc/ssh/sshd_config 2>/dev/null)"
+  fi
+  if [ -z "$port" ] && command -v ss >/dev/null 2>&1; then
+    port="$(ss -H -lntp 2>/dev/null | grep -E 'sshd|"ssh"' | head -n1 | sed -E 's/.*:([0-9]+)[[:space:]].*/\1/')"
+  fi
+  if [ -z "$port" ]; then
+    echo "22"
+    return 1
+  fi
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    echo "22"
+    return 1
+  fi
+  echo "$port"
+  return 0
+}
+
+# Validate a value before it is ever interpolated into a TOML file,
+# nginx config, or shell command (docs/FINAL_PRODUCTION_AUDIT.md P1
+# "validate all operator input"). Deliberately conservative: a real
+# hostname/IP never contains whitespace, quotes, shell metacharacters, or
+# newlines, so anything containing them is rejected outright rather than
+# guessed at.
+preflight_validate_hostname() {
+  local value="$1" label="${2:-hostname}"
+  [ -n "$value" ] || { echo "$label must not be empty" >&2; return 1; }
+  case "$value" in
+    *[\ \'\"\`\$\\\;\&\|\<\>\(\)\{\}$'\n']*)
+      echo "$label '$value' contains characters that are never valid in a hostname/IP — refusing to use it." >&2
+      return 1
+      ;;
+  esac
+  if ! [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,62})?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62})?)*$ ]]; then
+    echo "$label '$value' is not a syntactically valid hostname/IP — refusing to use it." >&2
+    return 1
+  fi
+  return 0
+}
+
+preflight_validate_port() {
+  local value="$1" label="${2:-port}"
+  if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
+    echo "$label '$value' is not a valid TCP/UDP port (1-65535) — refusing to use it." >&2
+    return 1
+  fi
+  return 0
+}
+
 preflight_detect_public_ip() {
   local ip=""
   for url in "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com"; do

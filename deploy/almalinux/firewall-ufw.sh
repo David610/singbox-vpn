@@ -11,8 +11,22 @@ set -euo pipefail
 
 command -v ufw >/dev/null 2>&1 || { echo "ufw not installed" >&2; exit 1; }
 
-# Never let this script be the reason SSH access is lost.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+log() { echo "[firewall] $*"; }
+warn() { echo "[firewall] WARNING: $*" >&2; }
+die() { echo "[firewall] ERROR: $*" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/preflight.sh"
+
+# Never let this script be the reason SSH access is lost. Don't assume
+# port 22 (docs/FINAL_PRODUCTION_AUDIT.md P0-10): `ufw allow OpenSSH`
+# only covers the well-known port 22.
+SSH_PORT="$(preflight_detect_ssh_port)" || warn "could not positively detect the real SSH port; falling back to 22. If sshd listens on a different port, this firewall change may lock you out — verify before disconnecting."
+log "detected SSH port: $SSH_PORT"
 ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null
+if [ "$SSH_PORT" != "22" ]; then
+  ufw allow "${SSH_PORT}/tcp" >/dev/null
+fi
 ufw allow 443/tcp >/dev/null
 ufw allow 443/udp >/dev/null
 ufw allow 8443/tcp >/dev/null

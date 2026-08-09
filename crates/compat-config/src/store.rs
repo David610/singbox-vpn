@@ -40,6 +40,10 @@ pub fn save_users_atomic(path: &Path, users: &[CompatUser]) -> Result<(), Compat
     let json = serde_json::to_vec_pretty(users).map_err(|e| CompatError::Parse(e.to_string()))?;
     let tmp_path = tmp_sibling_path(path);
     write_file_mode_0640(&tmp_path, &json)?;
+    // rename() never changes ownership — without this, every save after
+    // install silently turns `users.json` back into root:root and breaks
+    // vpn-subscription's read access (docs/FINAL_PRODUCTION_AUDIT.md P0-2).
+    crate::ownership::preserve_ownership_before_rename(&tmp_path, path)?;
     std::fs::rename(&tmp_path, path).map_err(|e| CompatError::Io(e.to_string()))?;
     Ok(())
 }
@@ -134,6 +138,30 @@ mod tests {
         save_users_atomic(&path, &[sample_user("u1")]).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repeated_saves_preserve_group_ownership_across_mutations() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        save_users_atomic(&path, &[sample_user("u1")]).unwrap();
+        let original_gid = std::fs::metadata(&path).unwrap().gid();
+
+        for i in 0..5 {
+            let users = vec![sample_user(&format!("u{i}"))];
+            save_users_atomic(&path, &users).unwrap();
+            let meta = std::fs::metadata(&path).unwrap();
+            assert_eq!(meta.gid(), original_gid, "gid drifted on mutation {i}");
+            assert_eq!(meta.permissions().mode() & 0o777, 0o640);
+        }
+        let leftover: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftover.is_empty());
     }
 
     #[test]

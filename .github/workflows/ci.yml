@@ -56,6 +56,39 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo doc --workspace --no-deps
 
+  shell:
+    # Shell-script hygiene gate (docs/FINAL_PRODUCTION_AUDIT.md P2): every
+    # shipped shell script must at minimum parse, and shellcheck-clean at
+    # the severity level we can realistically keep clean. Blocking — no
+    # `|| true`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n (syntax check every shipped script)
+        run: |
+          set -euo pipefail
+          for f in install.sh deploy/almalinux/*.sh deploy/lib/*.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+      - name: shellcheck
+        run: |
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y shellcheck >/dev/null
+          shellcheck -S warning install.sh deploy/lib/*.sh deploy/almalinux/*.sh
+
+  secret-logging-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash deploy/lib/check-no-secret-logging.sh
+
+  license-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: test -s LICENSE
+
   singbox-validate:
     # Real-binary validation (docs/PRODUCTION_HARDENING_PLAN.md #11):
     # downloads the exact pinned sing-box release (never `latest`),
@@ -68,6 +101,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SINGBOX_VERSION: "1.13.14"
+      # Kept in lockstep with deploy/almalinux/install.sh's
+      # SINGBOX_SHA256_AMD64 — same reasoning: this is the checked-in
+      # trusted digest used when upstream doesn't publish its own
+      # checksums.txt for this release (docs/FINAL_PRODUCTION_AUDIT.md P0-8).
+      SINGBOX_SHA256_AMD64: "f48703461a15476951ac4967cdad339d986f4b8096b4eb3ff0829a500502d697"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -83,8 +121,12 @@ jobs:
           if curl -fsSL -o checksums.txt "$sums_url"; then
             sha256sum --ignore-missing -c checksums.txt
           else
-            echo "no upstream checksums.txt published for this release; recording sha256 for audit:"
-            sha256sum "$tarball"
+            actual="$(sha256sum "$tarball" | awk '{print $1}')"
+            if [ "$actual" != "$SINGBOX_SHA256_AMD64" ]; then
+              echo "::error::sing-box checksum mismatch: expected $SINGBOX_SHA256_AMD64, got $actual"
+              exit 1
+            fi
+            echo "verified against pinned expected SHA256 (no upstream checksums.txt for this release)."
           fi
           tar -xzf "$tarball"
           install -m 0755 "sing-box-${SINGBOX_VERSION}-linux-amd64/sing-box" /usr/local/bin/sing-box

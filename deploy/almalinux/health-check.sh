@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 # `vpn-health-check` — spec §42 smoke test. Never prints secrets. Exits
 # non-zero if any required component fails.
+#
+# Three explicitly separate categories (docs/FINAL_PRODUCTION_AUDIT.md
+# P0-13) — a passing "local health" section does NOT prove "external
+# reachability", and neither proves a real client can actually complete a
+# VLESS/Hysteria2 handshake:
+#   - local health:    services active, config valid, key/cert present
+#   - TLS validity:    the subscription HTTPS endpoint is checked with a
+#                       REAL hostname and REAL trust-chain validation, not
+#                       `curl -k` against a bare IP (which proves nothing
+#                       about what an actual client would accept)
+#   - external/protocol: explicitly NOT attempted by this script — see the
+#                       final section.
 set -uo pipefail
 
 STATE_DIR="/etc/vpn/compat"
+DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
 FAIL=0
 
 check() {
@@ -16,6 +29,7 @@ check() {
   fi
 }
 
+echo "== local health =="
 check "sing-box service" systemctl is-active --quiet sing-box
 check "subscription service" systemctl is-active --quiet vpn-subscription
 check "sing-box binary" test -x /usr/local/bin/sing-box
@@ -41,11 +55,48 @@ check "Hysteria TLS cert present" test -s "$STATE_DIR/hysteria/cert.pem"
 if [ -s "$STATE_DIR/hysteria/cert.pem" ]; then
   check "Hysteria TLS cert not expired" openssl x509 -in "$STATE_DIR/hysteria/cert.pem" -noout -checkend 0
 fi
+
+echo
+echo "== TLS validity (real hostname, real trust chain — no -k) =="
+SUBSCRIPTION_HOST=""
+if [ -f "$DEPLOYMENT_TOML" ]; then
+  SUBSCRIPTION_HOST="$(grep -E '^subscription_host' "$DEPLOYMENT_TOML" | sed -E 's/^subscription_host *= *"([^"]*)".*/\1/')"
+fi
 if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
-  check "nginx subscription vhost reachable (8443)" \
-    curl -fsSk -o /dev/null "https://127.0.0.1:8443/healthz"
+  if [ -z "$SUBSCRIPTION_HOST" ]; then
+    printf "%-24s FAIL %s\n" "nginx subscription vhost" "(could not read subscription_host from $DEPLOYMENT_TOML)"
+    FAIL=1
+  else
+    # --resolve pins the hostname to the loopback socket WITHOUT
+    # disabling verification: the cert's CN/SAN and trust chain are
+    # still checked exactly as a real client resolving that hostname
+    # over the internet would check them. This is what actually
+    # exercises whether a client's TLS stack would accept the
+    # certificate — `curl -k` never did.
+    check "nginx subscription vhost reachable+trusted (8443, hostname=$SUBSCRIPTION_HOST)" \
+      curl -fsS --resolve "${SUBSCRIPTION_HOST}:8443:127.0.0.1" -o /dev/null \
+        "https://${SUBSCRIPTION_HOST}:8443/healthz"
+    if [ -f "/etc/letsencrypt/live/$SUBSCRIPTION_HOST/fullchain.pem" ]; then
+      check "subscription TLS cert not expiring within 14 days" \
+        openssl x509 -in "/etc/letsencrypt/live/$SUBSCRIPTION_HOST/fullchain.pem" -noout -checkend $((14 * 86400))
+    fi
+  fi
 else
   echo "nginx subscription vhost         NOT CONFIGURED (run install.sh again once a subscription TLS cert is present)"
 fi
+
+echo
+echo "== external reachability / real protocol test (NOT performed here) =="
+echo "  Everything above runs from localhost against localhost sockets."
+echo "  It proves the services are up and that TLS is configured"
+echo "  correctly for the hostname this host thinks it has — it does NOT"
+echo "  prove this VPS is reachable from the public internet (that"
+echo "  depends on upstream routing/provider firewall/NAT, none of which"
+echo "  this script can see from inside the host), and it does NOT prove"
+echo "  a real VLESS+REALITY or Hysteria2 client can complete a full"
+echo "  handshake end-to-end. See deploy/almalinux/acceptance-test.sh"
+echo "  for the listener/access-matrix checks, and"
+echo "  docs/DEVICE_ACCEPTANCE_TESTS.md for what real-client verification"
+echo "  requires and whether it has actually been performed."
 
 exit $FAIL
