@@ -234,3 +234,48 @@ implemented-vs-verified.
       this sandbox but **not executed against a real AlmaLinux 9 host,
       VPS, or Android/Hiddify client** — see
       `docs/PRODUCTION_HARDENING_PLAN.md` status markers.
+
+## Phase 16 — End-user UX completion pass
+
+See `docs/IMPLEMENTATION_AUDIT.md` for the full audit this phase was
+scoped from (what already existed vs. what was genuinely missing).
+
+- [x] `vpn-admin user create --qr` / `rotate-token --qr` / `user qr
+      NAME`: terminal QR code of the subscription URL. PNG file output
+      not implemented (kept the dependency footprint to the `qrcode`
+      crate's unicode renderer only — see audit doc for the tradeoff).
+- [x] `vpn-admin user create --json`: machine-readable
+      `{id,name,enabled,subscription_url}`, no server secrets.
+- [x] `vpn-admin version`: own version + configured sing-box binary's
+      reported version.
+- [x] `vpn-admin status`: service active/inactive, active/disabled user
+      counts, config presence, Hysteria2 cert expiry — no secrets.
+- [x] `vpn-admin doctor`: numbered `[OK]`/`[WARN]`/`[FAIL]` diagnostic
+      checks (sing-box binary + `sing-box check`, REALITY/Hysteria2
+      material present and not world-readable, user store parses,
+      certificate expiry, systemd unit state, firewalld state); exits
+      non-zero on any `[FAIL]`; a check needing an unavailable tool is
+      `[WARN]`, never a faked pass.
+- [x] `vpn-admin backup` / `restore`: tar of users store + deployment
+      config + REALITY key material + Hysteria2 TLS material, written
+      mode 0600; restore validates the users file parses and the
+      REALITY private key is present *before* touching live state, then
+      applies through the same validate→apply→reload→rollback path as
+      every other mutating command.
+- [x] Second `[[bin]]` target `vpn` (same `main.rs`/clap parser as
+      `vpn-admin`) — ergonomic end-user command name, `vpn-admin` keeps
+      working unchanged.
+- [x] `docs/clients/`: `HIDDIFY_IOS.md`, `HIDDIFY_MAGICOS.md`,
+      `HIDDIFY_LINUX.md`, `V2RAYNG_ANDROID.md`, `README.md` index
+      (existing `docs/HIDDIFY_ANDROID.md` left in place, cross-linked).
+- [x] `docs/DEVICE_ACCEPTANCE_TESTS.md`: explicit platform × protocol
+      matrix, all cells "not yet tested" (honest — no real device/VPS in
+      this sandbox), plus the exact commands to run the test for real.
+- [x] New CLI integration tests: `version`, `status`, `doctor` (failure
+      case), `user create --json`, `user create --qr`, `user qr`,
+      `backup`/`restore` round-trip.
+- [~] None of the new `doctor`/`status` checks that depend on
+      `openssl`/`firewall-cmd`/`systemctl` being real were exercised
+      against a live system in this sandbox — they degrade to `[WARN]`
+      here (verified by test — see `doctor_reports_missing_singbox_binary_as_failure`)
+      and need a real AlmaLinux host to exercise the `[OK]` paths.
