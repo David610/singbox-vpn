@@ -818,7 +818,7 @@ server_config_stage() {
 # ---------------------------------------------------------------------
 configure_nginx() {
   if [ "${SUBSCRIPTION_TLS_READY:-0}" -ne 1 ]; then
-    log "skipping nginx vhost: subscription TLS certificate not yet present (see stage 8 output)."
+    log "skipping nginx vhost: subscription TLS certificate not yet present (see stage 9 output)."
     return
   fi
   local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
@@ -830,7 +830,18 @@ configure_nginx() {
   install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"
   rm -f "$NGINX_CONF.tmp"
   nginx -t || die "nginx config validation failed (nginx -t) — not reloading nginx with a broken config."
-  systemctl enable --now nginx >/dev/null 2>&1 || systemctl reload nginx
+  # `systemctl enable --now` is a no-op on an already-active nginx — it
+  # does NOT reload newly-written config into the running process. On a
+  # repair/upgrade run nginx is very likely already active (e.g. started
+  # earlier in this same run for the certbot dance), so relying on
+  # `enable --now` alone silently leaves the OLD vhost config (old
+  # SUBSCRIPTION_PORT, old hostname, etc.) live while the new file just
+  # sits on disk unused — caught on a real AlmaLinux install where a
+  # SUBSCRIPTION_PORT change never actually took effect. Always
+  # explicitly reload-or-restart after enabling, regardless of prior
+  # state.
+  systemctl enable nginx >/dev/null 2>&1
+  systemctl reload-or-restart nginx
   systemctl is-active --quiet nginx || die "nginx is not active after configuring the subscription vhost."
   NGINX_OK=1
   SUBSCRIPTION_HTTPS_OK=1
