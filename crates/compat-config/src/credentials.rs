@@ -26,6 +26,16 @@ pub fn generate_uuid_v4() -> String {
     )
 }
 
+/// A compatibility-user id: `user_<uuidv4>` — 128 bits of CSPRNG entropy,
+/// not the 32-bit `generate_short_id` (which is reserved for the REALITY
+/// short_id and must not be reused as a general-purpose identifier).
+/// Callers should still run `is_duplicate_user_id` before insert as
+/// defense in depth even though a collision at 128 bits is not
+/// realistically reachable.
+pub fn generate_user_id() -> String {
+    format!("user_{}", generate_uuid_v4())
+}
+
 /// A Hysteria2 user password: 24 random bytes, hex-encoded (192 bits).
 pub fn generate_hysteria2_password() -> String {
     let mut bytes = [0u8; 24];
@@ -89,6 +99,23 @@ mod tests {
             vec![8, 4, 4, 4, 12]
         );
         assert_eq!(&parts[2][0..1], "4"); // version nibble
+    }
+
+    #[test]
+    fn user_id_has_expected_shape_and_128_bits_of_entropy_source() {
+        let id = generate_user_id();
+        assert!(id.starts_with("user_"));
+        let uuid_part = id.strip_prefix("user_").unwrap();
+        assert_eq!(uuid_part.len(), 36);
+    }
+
+    #[test]
+    fn user_ids_do_not_collide_across_ten_thousand_generations() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..10_000 {
+            let id = generate_user_id();
+            assert!(seen.insert(id), "user id collision within 10k generations");
+        }
     }
 
     #[test]

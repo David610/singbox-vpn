@@ -1,0 +1,210 @@
+//! Safe apply of sing-box config changes: the piece that was completely
+//! missing before this hardening pass. Rewriting `config.json` alone
+//! does nothing to a process that already has its config loaded in
+//! memory — `vpn-admin user disable USER` must actually cause the
+//! *running* sing-box to reject that user's credentials, not just leave
+//! a correct file on disk. See docs/PRODUCTION_HARDENING_PLAN.md #4/#7.
+//!
+//! `reload-or-restart` (not bare `reload`) is used deliberately: it
+//! degrades safely to a full restart if the running sing-box doesn't
+//! support in-place reload for a given change, at the cost of a short
+//! connection drop that's acceptable for a single-VPS deployment —
+//! correctness over a marginally smoother reload.
+
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::Duration;
+
+pub struct CompatibilityServiceManager {
+    systemctl_binary: PathBuf,
+    service_name: String,
+    /// How long to wait after reload-or-restart before checking
+    /// `is-active`, to let systemd/sing-box settle. Kept short — this is
+    /// a CLI tool, not a long-running health monitor.
+    settle: Duration,
+}
+
+impl Default for CompatibilityServiceManager {
+    fn default() -> Self {
+        Self::new("sing-box")
+    }
+}
+
+impl CompatibilityServiceManager {
+    pub fn new(service_name: impl Into<String>) -> Self {
+        Self {
+            systemctl_binary: PathBuf::from("systemctl"),
+            service_name: service_name.into(),
+            settle: Duration::from_millis(300),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_systemctl_binary(mut self, path: PathBuf) -> Self {
+        self.systemctl_binary = path;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_settle(mut self, d: Duration) -> Self {
+        self.settle = d;
+        self
+    }
+
+    /// True if a usable `systemctl` is on PATH — false in local dev /
+    /// unit-test environments, where reload is skipped with a warning
+    /// rather than treated as a hard failure. Retries once on a spawn
+    /// failure (`Command::output()` erroring, not the process itself
+    /// failing) before concluding "unavailable" — a transient fork/exec
+    /// failure under host load must not be mistaken for "not installed"
+    /// and silently skip a reload that should have happened.
+    pub fn is_available(&self) -> bool {
+        for attempt in 0..2 {
+            match Command::new(&self.systemctl_binary)
+                .arg("--version")
+                .output()
+            {
+                Ok(o) => return o.status.success(),
+                Err(_) if attempt == 0 => std::thread::sleep(Duration::from_millis(50)),
+                Err(_) => return false,
+            }
+        }
+        false
+    }
+
+    /// True if the unit is actually installed (`systemctl` itself can be
+    /// present — e.g. a GitHub Actions VM — without the `sing-box.service`
+    /// unit ever having been installed by `install.sh`). Reload is
+    /// skipped, not attempted-and-failed, when the unit isn't installed:
+    /// this is what lets `vpn-admin render-config`/`user create` work in
+    /// CI and local dev without a real systemd deployment.
+    pub fn is_unit_installed(&self) -> bool {
+        let unit = format!("{}.service", self.service_name);
+        Command::new(&self.systemctl_binary)
+            .args(["show", "-p", "LoadState", "--value", &unit])
+            .output()
+            .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "loaded")
+            .unwrap_or(false)
+    }
+
+    fn reload_or_restart(&self) -> Result<(), String> {
+        let output = Command::new(&self.systemctl_binary)
+            .args(["reload-or-restart", &self.service_name])
+            .output()
+            .map_err(|e| format!("failed to invoke systemctl: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "systemctl reload-or-restart {} failed: {}",
+                self.service_name,
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        Command::new(&self.systemctl_binary)
+            .args(["is-active", "--quiet", &self.service_name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Reload/restart the service, then verify it actually came back up
+    /// healthy. Returns Err (without panicking or leaving the caller
+    /// guessing) if either step fails — the caller is responsible for
+    /// restoring the previous config and retrying on failure (see
+    /// `apps/admin/src/main.rs::regenerate_singbox_config`).
+    pub fn reload_and_verify(&self) -> Result<(), String> {
+        self.reload_or_restart()?;
+        std::thread::sleep(self.settle);
+        if !self.is_active() {
+            return Err(format!("{} is not active after reload", self.service_name));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Writes a fake `systemctl` shell script to a temp dir that logs
+    /// its invocation and exits with the given status, so reload/verify
+    /// behavior can be tested without a real systemd host.
+    fn fake_systemctl(dir: &std::path::Path, is_active_exit: i32, reload_exit: i32) -> PathBuf {
+        let path = dir.join("systemctl");
+        let script = format!(
+            r#"#!/usr/bin/env bash
+case "$1" in
+  --version) exit 0 ;;
+  reload-or-restart) exit {reload_exit} ;;
+  is-active) exit {is_active_exit} ;;
+  show) echo "loaded"; exit 0 ;;
+esac
+exit 1
+"#
+        );
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(script.as_bytes()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn reload_and_verify_succeeds_when_service_comes_up_healthy() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = fake_systemctl(dir.path(), 0, 0);
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(systemctl)
+            .with_settle(Duration::from_millis(1));
+        assert!(mgr.is_available());
+        assert!(mgr.reload_and_verify().is_ok());
+    }
+
+    #[test]
+    fn reload_and_verify_fails_when_reload_command_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = fake_systemctl(dir.path(), 0, 1);
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(systemctl)
+            .with_settle(Duration::from_millis(1));
+        assert!(mgr.reload_and_verify().is_err());
+    }
+
+    #[test]
+    fn reload_and_verify_fails_when_service_not_active_after_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = fake_systemctl(dir.path(), 3, 0);
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(systemctl)
+            .with_settle(Duration::from_millis(1));
+        let err = mgr.reload_and_verify().unwrap_err();
+        assert!(err.contains("not active"));
+    }
+
+    #[test]
+    fn is_available_is_false_for_nonexistent_binary() {
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(PathBuf::from("/nonexistent/systemctl"));
+        assert!(!mgr.is_available());
+    }
+
+    #[test]
+    fn is_unit_installed_true_when_systemctl_reports_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = fake_systemctl(dir.path(), 0, 0);
+        let mgr = CompatibilityServiceManager::new("sing-box").with_systemctl_binary(systemctl);
+        assert!(mgr.is_unit_installed());
+    }
+
+    #[test]
+    fn is_unit_installed_false_when_systemctl_binary_missing() {
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(PathBuf::from("/nonexistent/systemctl"));
+        assert!(!mgr.is_unit_installed());
+    }
+}

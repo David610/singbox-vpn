@@ -6,6 +6,8 @@
 //! at `create` or `rotate-token` time, because only its hash is persisted
 //! (spec §26).
 
+mod service;
+
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use common::UnixSeconds;
@@ -13,10 +15,11 @@ use compat_config::deployment::DeploymentConfig;
 use compat_config::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
 use compat_config::secret::SecretString;
 use compat_config::server::{
-    apply_config_atomically, render_singbox_server_config, CompatibilityBackend, ServerPorts,
-    SingBoxBackend,
+    apply_config_atomically, config_backup_path, render_singbox_server_config,
+    CompatibilityBackend, ServerPorts, SingBoxBackend,
 };
 use compat_config::{credentials, store};
+use service::CompatibilityServiceManager;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -68,6 +71,23 @@ enum UserCommands {
     RotateToken {
         user_id: String,
     },
+    /// Rotate only the VLESS UUID. Applies + reloads sing-box so the
+    /// previous UUID stops working immediately.
+    RotateVless {
+        user_id: String,
+    },
+    /// Rotate only the Hysteria2 password. Applies + reloads sing-box so
+    /// the previous password stops working immediately.
+    RotateHysteria {
+        user_id: String,
+    },
+    /// Rotate both the VLESS UUID and Hysteria2 password. Does not touch
+    /// REALITY server keys or the subscription token — use `init
+    /// --rotate` / `rotate-token` for those separately, since they have
+    /// different blast radii.
+    RotateCredentials {
+        user_id: String,
+    },
     Remove {
         user_id: String,
     },
@@ -100,6 +120,15 @@ fn main() -> Result<()> {
         }
         Commands::User(UserCommands::RotateToken { user_id }) => {
             cmd_user_rotate_token(&cfg, &user_id)
+        }
+        Commands::User(UserCommands::RotateVless { user_id }) => {
+            cmd_user_rotate_vless(&cfg, &user_id)
+        }
+        Commands::User(UserCommands::RotateHysteria { user_id }) => {
+            cmd_user_rotate_hysteria(&cfg, &user_id)
+        }
+        Commands::User(UserCommands::RotateCredentials { user_id }) => {
+            cmd_user_rotate_credentials(&cfg, &user_id)
         }
         Commands::User(UserCommands::Remove { user_id }) => cmd_user_remove(&cfg, &user_id),
         Commands::User(UserCommands::Subscription { user_id }) => {
@@ -210,6 +239,7 @@ fn load_reality_params(cfg: &DeploymentConfig) -> Result<RealityServerParams> {
 }
 
 fn load_hysteria_params(cfg: &DeploymentConfig) -> Hysteria2ServerParams {
+    let masquerade_dir = cfg.hysteria_dir().join("masquerade");
     Hysteria2ServerParams {
         tls_cert_path: cfg
             .hysteria_dir()
@@ -222,14 +252,29 @@ fn load_hysteria_params(cfg: &DeploymentConfig) -> Hysteria2ServerParams {
             .to_string_lossy()
             .into_owned(),
         obfs_password: None,
+        // Only advertise masquerade if the directory actually exists —
+        // installer creates it with a placeholder file; local dev/test
+        // setups that skip that step get no masquerade rather than a
+        // sing-box config referencing a missing path.
+        masquerade_dir_path: masquerade_dir
+            .exists()
+            .then(|| masquerade_dir.to_string_lossy().into_owned()),
     }
 }
 
 /// Render + validate + atomically apply the sing-box config from the
-/// current user store. Never overwrites a known-working config with an
-/// invalid one (spec §16). If `sing-box` isn't installed on this
-/// machine (e.g. local development), this prints a warning instead of
-/// failing the whole command — user-store mutations still succeed.
+/// current user store, then reload the running service and verify it
+/// came back up healthy. Never overwrites a known-working config with an
+/// invalid one (spec §16), and never claims a user mutation (create/
+/// disable/enable/remove/rotate) succeeded while the running server
+/// still has the old credentials loaded — see
+/// docs/PRODUCTION_HARDENING_PLAN.md #4/#7.
+///
+/// If `sing-box` isn't installed on this machine (e.g. local
+/// development), or `systemctl` isn't available (non-systemd
+/// environment, e.g. this function's own tests), this prints a warning
+/// instead of failing — user-store mutations still succeed, but the
+/// caller is told explicitly that nothing was reloaded.
 fn regenerate_singbox_config(cfg: &DeploymentConfig) -> Result<()> {
     let users = store::load_users(&cfg.users_file())?;
     let reality = match load_reality_params(cfg) {
@@ -261,6 +306,45 @@ fn regenerate_singbox_config(cfg: &DeploymentConfig) -> Result<()> {
     apply_config_atomically(&doc, &target, |p| backend.validate(p))
         .context("applying sing-box config")?;
     println!("sing-box config updated at {target:?} (validated by `sing-box check`).");
+
+    let mgr = CompatibilityServiceManager::default();
+    if !mgr.is_available() {
+        println!(
+            "warning: systemctl not available; config written but sing-box was NOT reloaded. \
+             On a real deployment this means the change has not taken effect yet — run \
+             `systemctl reload-or-restart sing-box` manually."
+        );
+        return Ok(());
+    }
+    if !mgr.is_unit_installed() {
+        println!(
+            "warning: sing-box.service is not installed on this host (expected in CI/local \
+             dev); config written but not reloaded. On a real deployment this means the \
+             change has not taken effect yet — run `deploy/almalinux/install.sh` (or \
+             `systemctl reload-or-restart sing-box` if the unit already exists) manually."
+        );
+        return Ok(());
+    }
+
+    if let Err(reload_err) = mgr.reload_and_verify() {
+        let backup = config_backup_path(&target);
+        let restored = backup.exists() && std::fs::copy(&backup, &target).is_ok();
+        let recovery_reload_ok = restored && mgr.reload_and_verify().is_ok();
+        bail!(
+            "sing-box reload failed after applying the new config ({reload_err}). \
+             The requested change did NOT take effect on the running server. \
+             {}",
+            if recovery_reload_ok {
+                "Previous working config was restored and the service was reloaded back to it \
+                 successfully — the server is running the PREVIOUS configuration now."
+            } else {
+                "Attempted to restore the previous config but that ALSO failed to reload — \
+                 the service may be in a broken state. Manual intervention required: check \
+                 `systemctl status sing-box` and `journalctl -u sing-box`."
+            }
+        );
+    }
+    println!("sing-box reloaded and verified active.");
     Ok(())
 }
 
@@ -270,7 +354,13 @@ fn cmd_render_config(cfg: &DeploymentConfig) -> Result<()> {
 
 fn cmd_user_create(cfg: &DeploymentConfig, name: &str, expires_at: Option<i64>) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
-    let id = format!("user_{}", credentials::generate_short_id());
+    // 128-bit CSPRNG id (spec: do not reuse the 32-bit REALITY short_id
+    // generator as a user id). Collision detection is defense in depth
+    // on top of 128 bits of entropy, not a load-bearing check.
+    let mut id = credentials::generate_user_id();
+    while users.iter().any(|u| u.id == id) {
+        id = credentials::generate_user_id();
+    }
     let token = credentials::generate_subscription_token();
     let user = CompatUser {
         id: id.clone(),
@@ -343,6 +433,42 @@ fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Common rotate-and-apply flow: mutate the user in-place via `mutate`,
+/// save, render+validate+apply+reload (with rollback on failure — see
+/// `regenerate_singbox_config`), and only then report success.
+fn rotate_and_apply(
+    cfg: &DeploymentConfig,
+    id: &str,
+    what: &str,
+    mutate: impl FnOnce(&mut CompatUser),
+) -> Result<()> {
+    let mut users = store::load_users(&cfg.users_file())?;
+    mutate(find_user_mut(&mut users, id)?);
+    store::save_users_atomic(&cfg.users_file(), &users)?;
+    regenerate_singbox_config(cfg)?;
+    println!("{id}: {what} rotated and applied to the running server.");
+    Ok(())
+}
+
+fn cmd_user_rotate_vless(cfg: &DeploymentConfig, id: &str) -> Result<()> {
+    rotate_and_apply(cfg, id, "VLESS UUID", |u| {
+        u.vless_uuid = credentials::generate_uuid_v4();
+    })
+}
+
+fn cmd_user_rotate_hysteria(cfg: &DeploymentConfig, id: &str) -> Result<()> {
+    rotate_and_apply(cfg, id, "Hysteria2 password", |u| {
+        u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
+    })
+}
+
+fn cmd_user_rotate_credentials(cfg: &DeploymentConfig, id: &str) -> Result<()> {
+    rotate_and_apply(cfg, id, "VLESS UUID + Hysteria2 password", |u| {
+        u.vless_uuid = credentials::generate_uuid_v4();
+        u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
+    })
+}
+
 fn cmd_user_remove(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     let before = users.len();
@@ -362,12 +488,23 @@ fn cmd_user_subscription(cfg: &DeploymentConfig, id: &str) -> Result<()> {
         .iter()
         .find(|u| u.id == id)
         .ok_or_else(|| anyhow::anyhow!("no such user: {id}"))?;
-    println!("id: {}", user.id);
-    println!("name: {}", user.name);
-    println!("enabled: {}", user.enabled);
+    println!("User ID:  {}", user.id);
+    println!("Name:     {}", user.name);
+    println!("Enabled:  {}", user.enabled);
     println!(
-        "The subscription URL itself is not stored (only a hash of its token, spec §26) \
-         and cannot be re-printed. Use `vpn-admin user rotate-token {id}` to mint a new one."
+        "Expiry:   {}",
+        user.expires_at
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "never".to_string())
     );
+    println!(
+        "Public subscription host: {}:{}",
+        cfg.subscription_host, cfg.subscription.public_port
+    );
+    println!();
+    println!("Subscription token cannot be recovered.");
+    println!("Run:");
+    println!("  vpn-admin user rotate-token {id}");
+    println!("to create a new URL.");
     Ok(())
 }

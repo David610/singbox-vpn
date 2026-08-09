@@ -180,9 +180,57 @@ See `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` for the full plan.
       device, no public VPS/DNS/TLS cert available in this session);
       documented as the required manual acceptance test in
       `docs/CLIENT_COMPATIBILITY.md`, not claimed as done.
-- [!] Hysteria2 `masquerade` config — not set (flagged in
-      COMPATIBILITY_SECURITY_REVIEW.md as a near-term follow-up)
 - [!] Network-level failure-independence test for this transport pair
       (UDP-blocked / TCP-reset scenarios) — not executed, same
       `iproute2`/root-network-namespace limitation as the native
-      stack's `tests/hostile_network/` (see Phase 11 above)
+      stack's `tests/hostile_network/` (see Phase 11 above);
+      `deploy/almalinux/acceptance-test.sh` documents the exact
+      commands for a privileged runner without executing them.
+
+## Phase 15 — Production hardening pass
+
+See `docs/PRODUCTION_HARDENING_PLAN.md` for the full issue-by-issue
+writeup (root cause, impact, fix, test) and the final engineering
+report delivered at the end of that session for exactly what's
+implemented-vs-verified.
+
+- [x] Filesystem ownership fixed so `sing-box` can actually read the
+      REALITY private key and Hysteria2 TLS cert/key it needs to start
+      (previously group-owned `vpn-subscription`/`root`, never
+      `sing-box`)
+- [x] `config.json` (contains REALITY private key, VLESS UUIDs,
+      Hysteria2 passwords in cleartext) now always written 0640
+      root:sing-box, including its `.bak` copy; `update.sh` rollback no
+      longer hardcodes 0644
+- [x] `apply_config_atomically` now `fsync`s the written file and the
+      parent directory after rename
+- [x] User mutations (`create`/`disable`/`enable`/`remove`/`rotate-*`)
+      now reload sing-box and verify it's active, restoring the
+      previous config and reporting failure if reload/health fails —
+      previously they only rewrote `config.json` with no reload at all
+- [x] New `vpn-admin user rotate-vless`/`rotate-hysteria`/
+      `rotate-credentials` commands
+- [x] User IDs now 128-bit UUIDv4-based (`user_<uuid>`), not the
+      previous 32-bit REALITY-short-id-generator reuse
+- [x] Hysteria2 `masquerade` (type `file`) configured
+- [x] `install.sh` restructured into 15 explicit numbered stages;
+      `render-config || true` removed (a failed render now aborts
+      install); Hysteria2 TLS cert/key required before services start
+      (fails with exact setup commands, no ACME auto-provisioning per
+      task constraint); nginx reverse proxy + subscription rate
+      limiting + no-cache headers auto-configured when the subscription
+      TLS cert is present
+- [x] `deploy/almalinux/acceptance-test.sh` added (ownership/effective
+      access, services, listeners, cert validity, reverse proxy,
+      no-public-listener checks)
+- [x] CI: `cargo audit` now blocking (no `|| true`); new
+      `singbox-validate` job downloads the pinned real sing-box binary
+      and runs `sing-box check` against a real rendered config
+- [x] sing-box license corrected (GPL-3.0-only, not MIT) in
+      `docs/COMPATIBILITY_VERSIONS.md`
+- [x] Subscription responses: `Cache-Control: no-store`,
+      `X-Content-Type-Options: nosniff` on every `/sub/*` response
+- [~] All of the above is implemented and unit/integration-tested in
+      this sandbox but **not executed against a real AlmaLinux 9 host,
+      VPS, or Android/Hiddify client** — see
+      `docs/PRODUCTION_HARDENING_PLAN.md` status markers.

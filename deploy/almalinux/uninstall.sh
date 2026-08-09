@@ -26,6 +26,12 @@ systemctl daemon-reload
 rm -f /usr/local/bin/vpn-admin /usr/local/bin/vpn-subscription-svc /usr/local/bin/vpn-health-check
 echo "sing-box binary left at /usr/local/bin/sing-box (remove manually if desired)."
 
+if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
+  rm -f /etc/nginx/conf.d/vpn-subscription.conf
+  if nginx -t >/dev/null 2>&1; then systemctl reload nginx 2>/dev/null || true; fi
+  echo "removed /etc/nginx/conf.d/vpn-subscription.conf (nginx itself left installed)."
+fi
+
 if [ "$PURGE_FIREWALL" -eq 1 ]; then
   ZONE="$(firewall-cmd --get-default-zone)"
   firewall-cmd --zone="$ZONE" --permanent --remove-port=443/tcp || true

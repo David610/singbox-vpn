@@ -4,6 +4,14 @@ Adversarial self-review of the compatibility (VLESS+REALITY/Hysteria2)
 stack, per spec §58. Findings are recorded honestly, including the ones
 not fully fixed — see "Remaining gaps" at the end.
 
+**Updated by the production-hardening pass** (see
+`docs/PRODUCTION_HARDENING_PLAN.md` for the full fix list). Several
+items below that were previously flagged as gaps are now fixed —
+marked `[FIXED]` inline — and several new findings from that pass are
+folded in. This review is still describing a single-VPS deployment that
+has not been run against a real AlmaLinux host/Android client — see
+"Remaining gaps".
+
 ## As a DPI/censor
 
 - **What can identify each transport?** VLESS+REALITY looks like a
@@ -36,10 +44,13 @@ not fully fixed — see "Remaining gaps" at the end.
 - Unauthenticated REALITY probes get real TLS behavior from the disguise
   site (this is sing-box's implementation, unmodified — not something
   this codebase adds risk to).
-- Hysteria2 without `masquerade` configured may respond distinguishably
-  to a probe that doesn't present valid auth, vs. a plain closed port.
-  **Not yet fixed**: `render_singbox_server_config` does not set
-  `masquerade` — flagged as a near-term follow-up in "Remaining gaps".
+- **[FIXED]** Hysteria2 now sets `masquerade` (type `file`, serving a
+  placeholder static page) when the installer-created masquerade
+  directory exists, so unauthenticated/invalid connections see a
+  plausible HTTP response instead of a distinctive auth-reject
+  signature. This only changes what an *unauthenticated probe* observes
+  — it does not hide that QUIC/UDP:443 is open and is not equivalent to
+  REALITY's live-relay disguise (Hysteria2 has no such mechanism).
 
 ## As a compromised-VPS attacker
 
@@ -66,6 +77,21 @@ not fully fixed — see "Remaining gaps" at the end.
   the necessary tradeoff for the subscription service to function
   without running as root; the alternative (running the whole
   subscription service as root) is strictly worse.
+- **[FIXED]** `config.json` (the rendered sing-box server config —
+  contains the REALITY private key, every active user's VLESS UUID, and
+  Hysteria2 password in cleartext) previously inherited the process
+  umask when written by `apply_config_atomically` (often 0644,
+  world-readable, on a root-run installer). It is now always written
+  0640 root:sing-box, including its `.bak` rollback copy, and
+  `deploy/almalinux/update.sh`'s rollback path no longer hardcodes 0644
+  when restoring it. See `docs/PRODUCTION_HARDENING_PLAN.md` #2/#29.
+- **[FIXED]** The pre-hardening installer put `reality/` and
+  `hysteria/` under groups `sing-box` never belonged to
+  (`vpn-subscription`/`root`), meaning the `sing-box` service user could
+  not actually read the REALITY private key or the Hysteria2 TLS
+  key/cert it needs to start — every directory sing-box must read is
+  now group-owned `sing-box` directly. See
+  `docs/PRODUCTION_HARDENING_PLAN.md` #1.
 
 ## As a malicious subscriber
 
@@ -98,12 +124,24 @@ not fully fixed — see "Remaining gaps" at the end.
   `enabled` systemd units (`WantedBy=multi-user.target`); REALITY
   key/short_id and `users.json` are on-disk, not regenerated at
   startup.
+- **[FIXED] Does `user disable` actually stop the disabled user's
+  traffic?** Previously: no. Every `vpn-admin user
+  create/disable/enable/remove/rotate-*` command rewrote and validated
+  `config.json` but never reloaded the running `sing-box` process — a
+  disabled user's credentials remained accepted by the live server
+  until something else restarted it. `regenerate_singbox_config` now
+  reloads (`systemctl reload-or-restart sing-box`) and verifies the
+  service is active after every config-affecting mutation; on
+  reload/health failure it restores the previous config and reports
+  failure rather than claiming the mutation succeeded. See
+  `docs/PRODUCTION_HARDENING_PLAN.md` #4.
 - **What happens after a failed config update?**
   `apply_config_atomically` never touches the live `config.json` if
   `sing-box check` fails on the staged temp file — tested
   (`apply_atomically_rejects_invalid_config_and_leaves_existing_file_untouched`).
   `update.sh` additionally rolls back binaries if the post-update health
-  check fails.
+  check fails, and now re-verifies health after the rollback itself
+  before reporting success.
 - **What happens after certificate expiration?** Only relevant to the
   subscription reverse proxy's cert (REALITY doesn't terminate its own
   TLS the way a normal HTTPS server does — see
@@ -116,21 +154,30 @@ not fully fixed — see "Remaining gaps" at the end.
 
 ## Remaining gaps (not fixed this session, documented not hidden)
 
-1. Hysteria2 `masquerade` is not configured — failed-auth probe
-   behavior is more distinguishable than it could be. Low effort,
-   next-priority follow-up.
-2. No automated network-level failure-independence test for this
+1. No automated network-level failure-independence test for this
    compatibility pair (the native stack has one; this pair does not,
    because it requires a real sing-box binary + real network
-   namespaces, unavailable in this sandbox).
-3. Distributed (many-source-IP) subscription brute force is not rate
+   namespaces, unavailable in this sandbox). `deploy/almalinux/
+   acceptance-test.sh` documents the exact commands for a privileged
+   runner but does not execute them.
+2. Distributed (many-source-IP) subscription brute force is not rate
    limited beyond per-IP — acceptable given 160-bit token entropy, but
-   an edge limiter is still the documented right answer for a public
-   deployment.
-4. `vpn-admin user create` does not yet have a single command to rotate
-   just the VLESS UUID or just the Hysteria2 password independently of
-   removing and recreating the whole user (see
-   `docs/ALMALINUX_DEPLOYMENT.md`'s rotation table) — a small but real
-   usability gap, not a security hole (the underlying primitives to add
-   it — `credentials::generate_uuid_v4`,
-   `credentials::generate_hysteria2_password` — already exist).
+   nginx now applies its own `limit_req` on `/sub/` in front of the
+   Rust service's own limiter as a second layer (see
+   `docs/PRODUCTION_HARDENING_PLAN.md` #8), which helps but does not
+   fully solve distributed abuse — a real edge/CDN limiter is still the
+   right answer for a public deployment beyond a single VPS.
+3. None of this session's fixes have been run against a real AlmaLinux
+   9 host, a real VPS, or a real Hiddify Android client — see
+   `docs/PRODUCTION_HARDENING_PLAN.md`'s status markers and the final
+   engineering report for exactly what's implemented-but-unverified
+   versus fully verified.
+
+Fixed this session (previously listed here as gaps):
+
+- Hysteria2 `masquerade` — configured (see "As an active censor
+  probing the endpoint" above).
+- `vpn-admin` credential rotation — `rotate-vless`, `rotate-hysteria`,
+  `rotate-credentials` added alongside the existing `rotate-token`.
+- User mutations not reaching the running server — fixed via
+  reload-and-verify with rollback (see "As an SRE" above).

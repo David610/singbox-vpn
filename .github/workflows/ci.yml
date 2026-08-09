@@ -43,7 +43,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-audit
-      - run: cargo audit || true # non-blocking: see docs/DEPLOYMENT.md for triage process
+      # Blocking (docs/PRODUCTION_HARDENING_PLAN.md #12): no `|| true`.
+      # If an advisory genuinely cannot be fixed yet, add a narrowly
+      # scoped `--ignore RUSTSEC-XXXX-YYYY` here with a comment citing
+      # the advisory and why — never a blanket suppression.
+      - run: cargo audit
 
   docs:
     runs-on: ubuntu-latest
@@ -51,3 +55,76 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo doc --workspace --no-deps
+
+  singbox-validate:
+    # Real-binary validation (docs/PRODUCTION_HARDENING_PLAN.md #11):
+    # downloads the exact pinned sing-box release (never `latest`),
+    # verifies it against upstream checksums when published (same logic
+    # as deploy/almalinux/install.sh, not duplicated by hand so the two
+    # can't silently drift), then renders a real server config via
+    # `vpn-admin` and validates it with the actual `sing-box check`
+    # binary — not just the injected-closure unit tests. Blocking: no
+    # `|| true` anywhere in this job.
+    runs-on: ubuntu-latest
+    env:
+      SINGBOX_VERSION: "1.13.14"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download pinned sing-box release
+        run: |
+          set -euo pipefail
+          tarball="sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
+          url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${tarball}"
+          curl -fsSL -o "$tarball" "$url"
+          sums_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box_${SINGBOX_VERSION}_checksums.txt"
+          if curl -fsSL -o checksums.txt "$sums_url"; then
+            sha256sum --ignore-missing -c checksums.txt
+          else
+            echo "no upstream checksums.txt published for this release; recording sha256 for audit:"
+            sha256sum "$tarball"
+          fi
+          tar -xzf "$tarball"
+          install -m 0755 "sing-box-${SINGBOX_VERSION}-linux-amd64/sing-box" /usr/local/bin/sing-box
+          sing-box version
+
+      - name: Build vpn-admin
+        run: cargo build --release -p admin
+
+      - name: Render + validate a real server config with the real binary
+        run: |
+          set -euo pipefail
+          STATE="$RUNNER_TEMP/vpn-compat-test"
+          mkdir -p "$STATE/hysteria"
+          # sing-box check requires a syntactically valid cert/key pair to
+          # exist at the configured paths even in a check-only run.
+          openssl req -x509 -newkey ed25519 -days 1 -nodes \
+            -keyout "$STATE/hysteria/key.pem" -out "$STATE/hysteria/cert.pem" \
+            -subj "/CN=ci-test.example.com"
+
+          cat > "$RUNNER_TEMP/deployment.toml" <<EOF
+          public_host = "ci-test.example.com"
+          subscription_host = "sub.ci-test.example.com"
+          state_dir = "$STATE"
+          singbox_binary = "/usr/local/bin/sing-box"
+
+          [reality]
+          listen_port = 443
+          handshake_server = "www.microsoft.com"
+
+          [hysteria2]
+          listen_port = 443
+
+          [subscription]
+          listen_port = 9100
+          EOF
+
+          BIN=./target/release/vpn-admin
+          "$BIN" --config "$RUNNER_TEMP/deployment.toml" init
+          "$BIN" --config "$RUNNER_TEMP/deployment.toml" user create --name ci-test-user
+          "$BIN" --config "$RUNNER_TEMP/deployment.toml" render-config
+
+          echo "running real sing-box check against the generated server config:"
+          sing-box check -c "$STATE/sing-box/config.json"

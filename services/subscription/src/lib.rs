@@ -9,7 +9,7 @@
 //! of it (spec §27) — this service performs no TLS termination itself.
 
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -153,9 +153,28 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// `/sub/*` responses embed the VLESS UUID and Hysteria2 password, so
+/// they must never be cached by an intermediate proxy or the client's
+/// disk cache. Applied to every response on this route — success and
+/// error alike — not just the 200 path.
+async fn no_store_headers(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert("cache-control", HeaderValue::from_static("no-store"));
+    headers.insert("pragma", HeaderValue::from_static("no-cache"));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    resp
+}
+
 pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
     Router::new()
-        .route("/sub/:token", get(get_subscription))
+        .route(
+            "/sub/:token",
+            get(get_subscription).layer(axum::middleware::from_fn(no_store_headers)),
+        )
         .route("/healthz", get(health))
         .with_state(state)
 }
@@ -299,6 +318,20 @@ mod tests {
         let long_token = "a".repeat(500);
         let resp = oneshot_with_addr(state, &format!("/sub/{long_token}")).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn subscription_responses_are_never_cacheable_success_or_error() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let ok_resp = oneshot_with_addr(state.clone(), "/sub/goodtoken").await;
+        assert_eq!(ok_resp.headers().get("cache-control").unwrap(), "no-store");
+        let err_resp = oneshot_with_addr(state, "/sub/wrongtoken").await;
+        assert_eq!(err_resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(err_resp.headers().get("cache-control").unwrap(), "no-store");
+        assert_eq!(
+            err_resp.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
     }
 
     #[tokio::test]

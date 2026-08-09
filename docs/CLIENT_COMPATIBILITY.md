@@ -57,4 +57,66 @@ steps — and update the table above with the date and outcome once run.
 - `services/subscription`: valid token → 200 with the expected body
   shape; unknown/disabled/expired token → generic 404 (no
   distinguishing signal); oversized token rejected cheaply; rate
-  limiting exercised.
+  limiting exercised; `Cache-Control: no-store` present on success and
+  error responses alike.
+- CI (`.github/workflows/ci.yml` job `singbox-validate`, added in the
+  production-hardening pass — see `docs/PRODUCTION_HARDENING_PLAN.md`
+  #11) downloads the real pinned sing-box binary and runs `sing-box
+  check` against an actual rendered server config on every push — this
+  is real-binary validation, still not a real client handshake.
+
+## Manual acceptance test template
+
+Copy this block, fill it in, and paste the result as a new dated entry
+below when a real device/VPS test is actually run. A row in the table
+above only ever changes to "yes" after a completed entry like this
+exists — never from spec conformance or code review alone.
+
+```
+Date:
+Hiddify version:
+Android version:
+Device:
+Network:
+VPS:
+sing-box version:
+
+VLESS REALITY:        PASS/FAIL
+Hysteria2:             PASS/FAIL
+Subscription refresh:  PASS/FAIL
+Disable user:           PASS/FAIL
+Rotate token:           PASS/FAIL
+Switch Wi-Fi -> mobile: PASS/FAIL
+
+Notes:
+```
+
+### HONOR MagicOS acceptance subsection
+
+HONOR MagicOS is a named target for this project's user base but is
+**not** the same thing as "generic Android" for VPN app reliability —
+MagicOS's aggressive background-process/battery management has a
+documented history of killing always-on VPN services that stock
+Android and other OEM skins leave running. Do not claim MagicOS
+support merely because a test passed on stock/AOSP Android or a
+different OEM skin. A MagicOS-specific pass requires checking, in
+addition to the generic template above:
+
+```
+MagicOS version:
+Device model:
+
+Battery optimization exemption granted for Hiddify: YES/NO
+"Manage all apps" / background app launch allowed for Hiddify: YES/NO
+VPN permission granted and persists after reboot: YES/NO
+Connects over Wi-Fi: PASS/FAIL
+Connects over mobile data: PASS/FAIL
+Stays connected with screen off for 10+ minutes: PASS/FAIL
+Reconnects automatically after Wi-Fi -> mobile data switch: PASS/FAIL
+Reconnects automatically after mobile data -> Wi-Fi switch: PASS/FAIL
+
+Notes (any MagicOS-specific settings changed to make this work):
+```
+
+No entries exist yet for either template — this section documents the
+*procedure*, not a result.

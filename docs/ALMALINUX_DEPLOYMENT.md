@@ -21,6 +21,75 @@ deploys the compatibility (sing-box) data plane only — the native
   need a certificate for `vpn.example.com` (it dials a real site's TLS
   handshake as a disguise; sing-box owns that logic).
 
+## Two independent TLS certificates — do not confuse them
+
+This deployment uses **two separate TLS certificates for two separate
+purposes**. They are not interchangeable, and this doc previously
+described them loosely enough to invite confusion — being explicit here
+on purpose:
+
+| | Hysteria2 TLS | Subscription HTTPS |
+|---|---|---|
+| Hostname (example) | `vpn.example.com` | `sub.example.com` |
+| Port | `443/udp` | `8443/tcp` |
+| Consumed by | `sing-box` directly (`tls.certificate_path`/`key_path` on the `hysteria2` inbound) | `nginx` (reverse proxy in front of the loopback-only Rust subscription service) |
+| File location | `/etc/vpn/compat/hysteria/{cert,key}.pem` | `/etc/letsencrypt/live/<SUBSCRIPTION_HOST>/{fullchain,privkey}.pem` |
+| Ownership | `root:sing-box 0640` | managed by certbot, read by nginx (root) |
+
+They **may** reuse the same domain/certificate if `PUBLIC_HOST` and
+`SUBSCRIPTION_HOST` are the same value and you deliberately copy one
+cert to both locations — nothing in this stack assumes that silently.
+By default `install.sh` treats them as fully independent and requires
+both to be separately provisioned before it will start the
+corresponding service.
+
+(VLESS+REALITY needs **no certificate at all** — REALITY dials a real
+site's TLS handshake as a disguise; sing-box owns that logic entirely.)
+
+## Certificates
+
+Both certificates above must exist **before** running `install.sh` —
+the installer does not run an ACME client for you (task requirement:
+don't hand-roll a second ACME integration; a single explicit operator
+step is simpler and has fewer moving parts for a boring V1). Provision
+them with certbot (or your own ACME client of choice):
+
+```bash
+sudo dnf install -y certbot
+# Hysteria2 cert (consumed directly by sing-box):
+sudo certbot certonly --standalone -d vpn.example.com \
+  --non-interactive --agree-tos -m admin@vpn.example.com
+sudo install -d -m 0750 -o root -g sing-box /etc/vpn/compat/hysteria
+sudo install -m 0640 -o root -g sing-box \
+  /etc/letsencrypt/live/vpn.example.com/fullchain.pem /etc/vpn/compat/hysteria/cert.pem
+sudo install -m 0640 -o root -g sing-box \
+  /etc/letsencrypt/live/vpn.example.com/privkey.pem /etc/vpn/compat/hysteria/key.pem
+
+# Subscription HTTPS cert (consumed by nginx) — same command, different
+# hostname; skip if SUBSCRIPTION_HOST equals PUBLIC_HOST and you intend
+# to reuse the cert above instead.
+sudo certbot certonly --standalone -d sub.example.com \
+  --non-interactive --agree-tos -m admin@sub.example.com
+```
+
+`install.sh`'s "certificates" stage refuses to start `sing-box.service`
+if the Hysteria2 cert/key are missing or invalid (`openssl x509
+-checkend`) — it prints the exact commands above and exits non-zero
+rather than starting a service that is guaranteed to fail. If the
+subscription cert isn't present yet, install still completes (the
+compatibility transport doesn't depend on it) but the nginx vhost is
+left unconfigured and the final status explicitly says `SUBSCRIPTION
+HTTPS: NOT CONFIGURED` — re-run `install.sh` once the cert exists.
+
+Renewal: certbot's systemd timer handles both certs automatically.
+After the Hysteria2 cert renews, re-copy it into
+`/etc/vpn/compat/hysteria/` (preserving `root:sing-box 0640`) and
+`sudo systemctl reload-or-restart sing-box` — a `certbot renew` deploy
+hook is the natural way to automate this on a real host, not
+implemented by this repo. After the subscription cert renews, `nginx -s
+reload` is enough (TLS termination lives entirely in nginx, no
+compatibility-stack service needs to restart).
+
 ## Fresh install
 
 ```bash
@@ -29,39 +98,50 @@ sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com \
   ./deploy/almalinux/install.sh
 ```
 
-This installs OS packages, builds `vpn-admin`/`vpn-subscription-svc`,
-downloads and pins `sing-box` (checksum-verified when upstream
-publishes one — see `docs/COMPATIBILITY_VERSIONS.md`), creates
-`vpn-subscription`/`sing-box` service users, generates the REALITY
-keypair (refuses to overwrite an existing one), renders
-`/etc/vpn/deployment.toml`, installs systemd units, configures
-firewalld, sets the SELinux file context on the sing-box binary, and
-starts both services.
+Explicit stages (each logged as `[install] === [N/15] ... ===`; any
+stage failing aborts the script before "Install complete." is ever
+printed):
 
-## Subscription HTTPS (reverse proxy)
+1. prerequisites (OS packages incl. `nginx`, `firewalld`)
+2. Rust build (`vpn-admin`, `vpn-subscription-svc`)
+3. sing-box installation (pinned version, checksum-verified when
+   published, `LICENSE` copied alongside the binary)
+4. users/groups (`vpn-subscription`, `sing-box` service accounts)
+5. directories (ownership matrix below)
+6. certificates (Hysteria2 TLS required; subscription TLS optional —
+   see "Certificates" above)
+7. REALITY keys (`vpn-admin init`, re-owned to `root:sing-box`/
+   `root:vpn-subscription` per file)
+8. server config (`vpn-admin render-config` — **not** wrapped in
+   `|| true`; a render/validate failure aborts install)
+9. nginx/subscription HTTPS (auto-configured if the subscription cert
+   is present; skipped with a clear status otherwise)
+10. firewall (firewalld: 22, 443/tcp, 443/udp, 8443/tcp only)
+11. SELinux (fcontext labeling for the binary and secret-serving
+    directories)
+12. systemd (unit install + daemon-reload)
+13. validation (`sing-box check` against the rendered config)
+14. start (enable + start both services)
+15. acceptance test (`vpn-health-check` must pass)
 
-`services/subscription` binds `127.0.0.1:9100` only (spec §27). Put a
-TLS-terminating reverse proxy in front of it on `8443/tcp` — we do not
-build custom TLS termination. Minimal nginx example:
+### File ownership (docs/PRODUCTION_HARDENING_PLAN.md #1)
 
-```nginx
-server {
-    listen 8443 ssl http2;
-    server_name sub.example.com;
-    ssl_certificate     /etc/letsencrypt/live/sub.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/sub.example.com/privkey.pem;
-    location / {
-        proxy_pass http://127.0.0.1:9100;
-    }
-}
-```
+Every path is owned by the group that actually needs to read it at
+runtime — `sing-box` (`User=sing-box`) and `vpn-subscription`
+(`User=vpn-subscription`) never share a group, and neither can read the
+other's secrets:
 
-Obtain the certificate with `certbot --nginx -d sub.example.com`
-(HTTP-01 on port 80, which is free since REALITY/Hysteria2 only use
-443). Renewal: certbot's systemd timer handles this automatically;
-`nginx -s reload` is enough after renewal (no compatibility-stack
-service needs to restart, since TLS termination lives entirely in
-nginx).
+| Path | Owner | Mode | Read by |
+|---|---|---|---|
+| `/etc/vpn/compat/reality/private.key` | `root:sing-box` | `0640` | sing-box |
+| `/etc/vpn/compat/reality/public.key`, `short_id.txt` | `root:vpn-subscription` | `0640` | vpn-subscription |
+| `/etc/vpn/compat/users/users.json` | `root:vpn-subscription` | `0640` | vpn-subscription |
+| `/etc/vpn/compat/hysteria/{cert,key}.pem` | `root:sing-box` | `0640` | sing-box |
+| `/etc/vpn/compat/sing-box/config.json` | `root:sing-box` | `0640` | sing-box |
+
+Verify this on a live host with
+`sudo ./deploy/almalinux/acceptance-test.sh` (checks both nominal
+ownership/mode *and* effective `sudo -u <user> test -r <path>` access).
 
 ## Creating the first user
 
@@ -112,19 +192,32 @@ sudo ss -tulpn
 
 ```bash
 sudo vpn-admin --config /etc/vpn/deployment.toml user disable user_xxxxxxxx
-# old credentials now rejected: sing-box config was regenerated + reloaded
-# with that user excluded (spec §29).
 sudo vpn-admin --config /etc/vpn/deployment.toml user remove user_xxxxxxxx
 ```
+
+Both commands render + validate + apply the new config, then reload
+`sing-box` (`systemctl reload-or-restart`) and verify it comes back
+active — the command does not report success until the running server
+has actually stopped accepting the old credentials. If the reload
+itself fails, the previous config is restored and reloaded back, and
+the command exits non-zero explaining exactly that (see
+`docs/PRODUCTION_HARDENING_PLAN.md` #4/#7) — it never prints "user
+disabled successfully" while the old credentials are still live.
 
 ## Credential rotation
 
 | What | Command | Client impact |
 |---|---|---|
 | Subscription token | `vpn-admin user rotate-token <id>` | Old subscription URL stops working; VLESS/Hysteria2 credentials unchanged, so already-connected clients using the sing-box native app config keep working until they re-fetch. |
-| VLESS UUID / Hysteria2 password | not yet a single command — `user remove` + `user create` for that person | User must re-import a fresh subscription URL. |
+| VLESS UUID only | `vpn-admin user rotate-vless <id>` | User must re-import; Hysteria2 credentials unaffected. |
+| Hysteria2 password only | `vpn-admin user rotate-hysteria <id>` | User must re-import; VLESS credentials unaffected. |
+| Both VLESS UUID + Hysteria2 password | `vpn-admin user rotate-credentials <id>` | User must re-import both transports. |
 | REALITY keypair | `vpn-admin init --rotate` | **Every** client using this server must re-import (spec §12/§30: high impact, do this deliberately, rarely). |
-| TLS certificate (subscription reverse proxy) | `certbot renew` (automatic) | None — reverse proxy only. |
+| TLS certificate (Hysteria2) | manual re-copy + `systemctl reload-or-restart sing-box` (see "Certificates" above) | None — same cert, just renewed. |
+| TLS certificate (subscription reverse proxy) | `certbot renew` (automatic) + `nginx -s reload` | None — reverse proxy only. |
+
+All four `rotate-*`/`disable`/`enable`/`remove` commands go through the
+same render→validate→apply→reload→verify→rollback-on-failure path.
 
 ## Updating
 
@@ -178,11 +271,63 @@ sudo ./deploy/almalinux/uninstall.sh                 # keeps /etc/vpn
 sudo ./deploy/almalinux/uninstall.sh --purge-state --purge-firewall  # full removal
 ```
 
-## Known limitation of this deployment doc
+`uninstall.sh` never deletes `/etc/vpn` (REALITY private key,
+`users.json`, TLS material) without the explicit `--purge-state` flag,
+and never touches firewall rules without `--purge-firewall`.
+`--purge-state` prints exactly what it is about to remove before doing
+so.
 
-This runbook was written and syntax-checked
-(`bash -n deploy/almalinux/*.sh`) but **not executed against a real
-AlmaLinux host** in this development session — the sandbox has no root
-network capability, no `dnf`, and no real domain/VPS. Treat the first
-real run as the actual validation pass and update
-`docs/CLIENT_COMPATIBILITY.md` with the outcome.
+## Acceptance test
+
+```bash
+sudo ./deploy/almalinux/acceptance-test.sh
+```
+
+Verifies OS version, SELinux enforcing, firewalld active, file
+ownership/permissions (nominal *and* effective per-user access via
+`sudo -u <user> test -r/-w`), both services active, `sing-box check`,
+Hysteria TLS cert validity/expiry, the subscription reverse proxy
+reachable over HTTPS, and that ports 1080/9000/9100 are not publicly
+listening. Never prints secrets. Exits non-zero on any required
+failure. Distinguishes a container smoke test (package/script syntax
+only) from a real VM/VPS run (SELinux/firewalld/systemd/low-port
+behavior) — see the script's own header comment.
+
+## SELinux troubleshooting
+
+`install.sh` labels the sing-box binary and the directories it reads
+from (`fcontext` + `restorecon`), which should be sufficient on a
+stock AlmaLinux 9 policy. If `sing-box` still fails to start or bind
+443 with SELinux enforcing, check for AVC denials before doing anything
+else:
+
+```bash
+sudo ausearch -m AVC -ts recent
+sudo journalctl -u sing-box --since "5 min ago"
+```
+
+If a denial appears, generate the smallest policy addition for exactly
+that denial (`audit2allow`) rather than disabling enforcement:
+
+```bash
+sudo ausearch -m AVC -ts recent | audit2allow -M vpn-compat-local
+sudo semodule -i vpn-compat-local.pp
+```
+
+**`setenforce 0` is not an acceptable production fix** — it disables
+SELinux confinement for the entire host, not just this service.
+
+## Known limitations of this deployment doc
+
+This runbook and the scripts it documents are syntax-checked
+(`bash -n`/`shellcheck deploy/almalinux/*.sh`, both clean) and the
+underlying Rust logic (ownership/permission modes, reload/rollback,
+credential generation) is unit- and integration-tested. The scripts
+themselves have **not been executed against a real AlmaLinux 9 host, a
+real VPS, or a real domain/DNS/TLS setup** in this development
+session — this sandbox has no root network capability, no `dnf`, and
+no real VPS. Treat the first real run (`install.sh` followed by
+`acceptance-test.sh`) as the actual validation pass, and record the
+outcome in `docs/CLIENT_COMPATIBILITY.md`'s manual acceptance log —
+do not treat this document's existence as proof of a validated
+deployment.

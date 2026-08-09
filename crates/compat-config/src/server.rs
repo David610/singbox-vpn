@@ -61,6 +61,19 @@ pub fn render_singbox_server_config(
             "key_path": hysteria.tls_key_path,
         }
     });
+    // Unauthenticated/invalid Hysteria2 connections get a plausible
+    // static-file HTTP response instead of a distinctive auth-reject
+    // signature (sing-box 1.13.x `masquerade` — see
+    // docs/COMPATIBILITY_VERSIONS.md). This only affects what a passive/
+    // active *unauthenticated* probe observes; it does not hide that
+    // QUIC/UDP is listening on this port and is not a substitute for
+    // REALITY-style live-relay disguise (Hysteria2 has no equivalent).
+    if let Some(masq_path) = &hysteria.masquerade_dir_path {
+        hysteria_inbound["masquerade"] = json!({
+            "type": "file",
+            "path": masq_path,
+        });
+    }
     if let Some(obfs_pw) = &hysteria.obfs_password {
         hysteria_inbound["obfs"] = json!({
             "type": "salamander",
@@ -134,6 +147,20 @@ impl CompatibilityBackend for SingBoxBackend {
     }
 }
 
+/// Path of the `.bak` copy `apply_config_atomically` keeps of the
+/// previously-live config, exposed so callers (e.g. `vpn-admin`'s
+/// reload-rollback path) can restore it without duplicating this naming
+/// convention.
+pub fn config_backup_path(target_path: &Path) -> std::path::PathBuf {
+    let mut p = target_path.to_path_buf();
+    let name = target_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config.json");
+    p.set_file_name(format!("{name}.bak"));
+    p
+}
+
 /// Write-validate-swap: never overwrites a known-working config with an
 /// invalid one (spec §16). `validate_fn` is injected so this logic is
 /// unit-testable without the real `sing-box` binary.
@@ -156,7 +183,7 @@ pub fn apply_config_atomically(
     };
     let bytes =
         serde_json::to_vec_pretty(new_config).map_err(|e| CompatError::Parse(e.to_string()))?;
-    std::fs::write(&tmp_path, &bytes).map_err(|e| CompatError::Io(e.to_string()))?;
+    write_config_file_mode_0640(&tmp_path, &bytes)?;
 
     if let Err(e) = validate_fn(&tmp_path) {
         let _ = std::fs::remove_file(&tmp_path);
@@ -164,21 +191,73 @@ pub fn apply_config_atomically(
     }
 
     if target_path.exists() {
-        let backup_path = {
-            let mut p = target_path.to_path_buf();
-            let name = target_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("config.json");
-            p.set_file_name(format!("{name}.bak"));
-            p
-        };
+        let backup_path = config_backup_path(target_path);
         std::fs::copy(target_path, &backup_path).map_err(|e| CompatError::Io(e.to_string()))?;
+        set_file_mode_0640(&backup_path)?;
     }
 
     std::fs::rename(&tmp_path, target_path).map_err(|e| CompatError::Io(e.to_string()))?;
+    fsync_parent_dir(target_path);
     Ok(())
 }
+
+/// `config.json` contains the REALITY private key, VLESS UUIDs, and
+/// Hysteria2 passwords in cleartext — never write it with the process
+/// umask (often 0644). Written mode 0640 (root:sing-box, ownership set
+/// by the installer) and `fsync`d before it's ever handed to
+/// `sing-box check`, so a crash between write and validate never leaves
+/// an unflushed secret file behind.
+#[cfg(unix)]
+fn write_config_file_mode_0640(path: &Path, bytes: &[u8]) -> Result<(), CompatError> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o640)
+        .open(path)
+        .map_err(|e| CompatError::Io(e.to_string()))?;
+    f.write_all(bytes)
+        .map_err(|e| CompatError::Io(e.to_string()))?;
+    f.sync_all().map_err(|e| CompatError::Io(e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_config_file_mode_0640(path: &Path, bytes: &[u8]) -> Result<(), CompatError> {
+    std::fs::write(path, bytes).map_err(|e| CompatError::Io(e.to_string()))
+}
+
+#[cfg(unix)]
+fn set_file_mode_0640(path: &Path) -> Result<(), CompatError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640))
+        .map_err(|e| CompatError::Io(e.to_string()))
+}
+
+#[cfg(not(unix))]
+fn set_file_mode_0640(_path: &Path) -> Result<(), CompatError> {
+    Ok(())
+}
+
+/// `fsync` the parent directory after a rename so the directory-entry
+/// update itself is durable (renames are not implicitly fsynced on
+/// Linux). Best-effort: some filesystems/sandboxes don't support
+/// opening a directory for this, so failure here is not fatal — the
+/// config has already been correctly swapped from the caller's
+/// perspective either way.
+#[cfg(unix)]
+fn fsync_parent_dir(target_path: &Path) {
+    if let Some(parent) = target_path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn fsync_parent_dir(_target_path: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -235,6 +314,7 @@ mod tests {
             tls_cert_path: "/etc/vpn/compat/hysteria/cert.pem".into(),
             tls_key_path: "/etc/vpn/compat/hysteria/key.pem".into(),
             obfs_password: None,
+            masquerade_dir_path: Some("/etc/vpn/compat/hysteria/masquerade".into()),
         }
     }
 
@@ -321,5 +401,66 @@ mod tests {
         apply_config_atomically(&new_cfg, &target, |_p| Ok(())).unwrap();
         assert!(target.exists());
         assert!(!dir.path().join("config.json.bak").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn applied_config_and_backup_are_never_world_or_group_writable_and_are_0640() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.json");
+        std::fs::write(&target, b"{\"old\":true}").unwrap();
+
+        apply_config_atomically(&json!({"new": true}), &target, |_p| Ok(())).unwrap();
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o640,
+            "live config.json must be 0640, not world-readable"
+        );
+
+        // second apply produces a .bak from the first live config
+        apply_config_atomically(&json!({"newer": true}), &target, |_p| Ok(())).unwrap();
+        let backup = dir.path().join("config.json.bak");
+        let backup_mode = std::fs::metadata(&backup).unwrap().permissions().mode();
+        assert_eq!(
+            backup_mode & 0o777,
+            0o640,
+            "config.json.bak must also be 0640"
+        );
+    }
+
+    #[test]
+    fn hysteria_masquerade_is_set_when_configured() {
+        let cfg = render_singbox_server_config(
+            &users(),
+            &reality(),
+            &hysteria(),
+            ServerPorts {
+                vless_reality_port: 443,
+                hysteria2_port: 443,
+            },
+            1000,
+        );
+        let masquerade = &cfg["inbounds"][1]["masquerade"];
+        assert_eq!(masquerade["type"], "file");
+        assert_eq!(masquerade["path"], "/etc/vpn/compat/hysteria/masquerade");
+    }
+
+    #[test]
+    fn hysteria_masquerade_omitted_when_not_configured() {
+        let mut h = hysteria();
+        h.masquerade_dir_path = None;
+        let cfg = render_singbox_server_config(
+            &users(),
+            &reality(),
+            &h,
+            ServerPorts {
+                vless_reality_port: 443,
+                hysteria2_port: 443,
+            },
+            1000,
+        );
+        assert!(cfg["inbounds"][1].get("masquerade").is_none());
     }
 }

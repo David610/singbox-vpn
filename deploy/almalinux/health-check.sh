@@ -30,4 +30,15 @@ if command -v ss >/dev/null 2>&1; then
   check "Hysteria2 listening (443/udp)" bash -c "ss -ulnp 2>/dev/null | grep -q ':443 '"
 fi
 
+check "Hysteria TLS cert present" test -s "$STATE_DIR/hysteria/cert.pem"
+if [ -s "$STATE_DIR/hysteria/cert.pem" ]; then
+  check "Hysteria TLS cert not expired" openssl x509 -in "$STATE_DIR/hysteria/cert.pem" -noout -checkend 0
+fi
+if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
+  check "nginx subscription vhost reachable (8443)" \
+    curl -fsSk -o /dev/null "https://127.0.0.1:8443/healthz"
+else
+  echo "nginx subscription vhost         NOT CONFIGURED (run install.sh again once a subscription TLS cert is present)"
+fi
+
 exit $FAIL

@@ -25,8 +25,10 @@ plane because:
   subscriptions (`sing-box` format), so the subscription renderer can
   target sing-box's own schema directly instead of translating between
   two incompatible upstream schemas.
-- MIT-licensed, actively maintained, single static Go binary, official
-  release artifacts published per architecture.
+- Actively maintained, single static Go binary, official release
+  artifacts published per architecture. (Its license is GPL-3.0-only —
+  see "License" below; this is not a reason it was chosen, just a fact
+  to be accurate about.)
 
 No concrete incompatibility with Xray-core was found that would force a
 change; if one is discovered later, `CompatibilityBackend` (see
@@ -65,3 +67,29 @@ touching user management or subscription logic (constraint from spec §53).
 These are documented, not invented — see `docs/CLIENT_COMPATIBILITY.md`
 for which client/format combinations were actually validated versus
 assumed compatible by spec conformance.
+
+## License
+
+**This repository's own code** is licensed as stated in the workspace
+`Cargo.toml`/root license file — it never links, statically or
+dynamically, against sing-box.
+
+**sing-box** (`SagerNet/sing-box`, pinned `v1.13.14`) is licensed
+**GPL-3.0-only** upstream — verify against the `LICENSE` file at that
+exact tag in the SagerNet/sing-box repository before relying on this
+statement for anything beyond this project's own documentation; this is
+not a legal opinion, only a citation of what the upstream license file
+says. A previous version of this document incorrectly stated "MIT" —
+corrected here.
+
+**How sing-box is obtained/used**: `deploy/almalinux/install.sh`
+downloads the official pre-built release binary for the pinned version
+from `https://github.com/SagerNet/sing-box/releases`, verifies it
+against upstream-published checksums when available, and installs it as
+an unmodified external binary invoked via subprocess (`sing-box run`,
+`sing-box check`, `sing-box generate reality-keypair`) — this project
+does not vendor, patch, or compile sing-box's source, and no Rust binary
+in this repository links against it. `install.sh` also copies sing-box's
+own `LICENSE` file alongside the installed binary
+(`/usr/local/bin/sing-box.LICENSE`) so its terms travel with the binary
+if this system image is itself redistributed.
