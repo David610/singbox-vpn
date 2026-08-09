@@ -20,6 +20,10 @@ for f in vpn-admin vpn-subscription-svc; do
 done
 [ -f /etc/vpn/compat/sing-box/config.json ] && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
 
+log "running tests before touching any installed binary..."
+( cd "$REPO_ROOT" && cargo test --workspace -p admin -p subscription -p compat-config ) \
+  || die "tests failed — refusing to build/install new binaries. Nothing was changed."
+
 log "building new binaries..."
 ( cd "$REPO_ROOT" && cargo build --release -p admin -p subscription )
 
@@ -45,11 +49,25 @@ if ! /usr/local/bin/vpn-health-check; then
     [ -f "$BACKUP_DIR/$f" ] && install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f"
   done
   if [ -f "$BACKUP_DIR/config.json" ]; then
-    install -m 0644 "$BACKUP_DIR/config.json" /etc/vpn/compat/sing-box/config.json
+    # `cp -a` preserves the backup's own mode/owner (0640 root:sing-box,
+    # set by apply_config_atomically when it was originally written) —
+    # never hardcode 0644 here (docs/PRODUCTION_HARDENING_PLAN.md #29).
+    # config.json contains the REALITY private key, VLESS UUIDs, and
+    # Hysteria2 passwords in cleartext; restoring it world-readable would
+    # undo the whole point of the rollback.
+    cp -a "$BACKUP_DIR/config.json" /etc/vpn/compat/sing-box/config.json
   fi
   systemctl restart vpn-subscription
   systemctl reload-or-restart sing-box
-  die "rolled back to previous binaries/config — update did not complete"
+
+  # A rollback is only a success if the RESTORED services are actually
+  # healthy — re-run the health check rather than assuming the restart
+  # succeeded (docs/PRODUCTION_HARDENING_PLAN.md #28).
+  if /usr/local/bin/vpn-health-check; then
+    die "rolled back to previous binaries/config — ROLLBACK SUCCESS (services healthy on previous version); update itself did not complete"
+  else
+    die "ROLLBACK FAILED: restored previous binaries/config but the post-rollback health check ALSO failed. Manual intervention required — check 'systemctl status sing-box vpn-subscription' and 'journalctl -u sing-box -u vpn-subscription'."
+  fi
 fi
 
 log "update complete. Previous version backed up at $BACKUP_DIR."

@@ -1,0 +1,59 @@
+# /etc/nginx/conf.d/vpn-subscription.conf — rendered once by install.sh.
+# Terminates public HTTPS for the subscription endpoint and proxies to
+# the loopback-only Rust subscription service. Never overwritten by
+# install.sh on re-run; edit by hand afterwards if needed.
+#
+# Two separate TLS concerns, do not confuse them (see
+# docs/ALMALINUX_DEPLOYMENT.md "Two independent TLS certificates"):
+#   - THIS file terminates HTTPS for {{SUBSCRIPTION_HOST}}:8443 (subscription API).
+#   - Hysteria2's TLS is handled directly by sing-box for {{PUBLIC_HOST}}:443/udp
+#     and has nothing to do with nginx.
+#
+# Rate limiting happens HERE, not in the Rust service: the Rust service
+# sees every request as coming from 127.0.0.1 once it's behind this
+# proxy, so its own per-IP limiter would collapse to one global bucket.
+# nginx sees the real client IP because it terminates the actual client
+# TCP connection, so this is the trustworthy place to do it.
+limit_req_zone $binary_remote_addr zone=vpn_subscription:10m rate=5r/s;
+
+server {
+    listen 8443 ssl;
+    listen [::]:8443 ssl;
+    server_name {{SUBSCRIPTION_HOST}};
+
+    # Certbot (or your own ACME client) manages these — see
+    # docs/ALMALINUX_DEPLOYMENT.md "Certificates" for the exact command.
+    # install.sh refuses to enable this vhost until both files exist.
+    ssl_certificate     /etc/letsencrypt/live/{{SUBSCRIPTION_HOST}}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{SUBSCRIPTION_HOST}}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location /sub/ {
+        limit_req zone=vpn_subscription burst=10 nodelay;
+
+        proxy_pass http://127.0.0.1:9100;
+        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+
+        # Subscription bodies carry live credentials — never let this
+        # proxy or an intermediate cache serve a stale/cached copy.
+        proxy_no_cache 1;
+        proxy_cache_bypass 1;
+        add_header Cache-Control "no-store" always;
+        add_header Pragma "no-cache" always;
+
+        # Deliberately not forwarding X-Forwarded-For/X-Real-IP: the
+        # backend does not read them (see
+        # docs/PRODUCTION_HARDENING_PLAN.md #8) — no client-controlled
+        # header can spoof identity into the Rust service.
+    }
+
+    location /healthz {
+        proxy_pass http://127.0.0.1:9100;
+        proxy_set_header Host $host;
+    }
+
+    location / {
+        return 404;
+    }
+}

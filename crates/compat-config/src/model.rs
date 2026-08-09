@@ -100,4 +100,10 @@ pub struct Hysteria2ServerParams {
     pub tls_cert_path: String,
     pub tls_key_path: String,
     pub obfs_password: Option<SecretString>,
+    /// Directory served back to unauthenticated/invalid Hysteria2
+    /// connections (sing-box `masquerade` of type `file`), so failed
+    /// probes see plausible HTTP content instead of a distinctive
+    /// auth-reject signature. `None` disables masquerade (e.g. in tests
+    /// that don't care about this behavior).
+    pub masquerade_dir_path: Option<String>,
 }
