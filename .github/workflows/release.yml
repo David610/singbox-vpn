@@ -1,0 +1,109 @@
+name: Release
+
+# Builds prebuilt vpn1 binaries (vpn-admin, subscription) so
+# deploy/almalinux/install.sh (and the root install.sh bootstrap) can
+# install a production VPS without a Rust toolchain. Triggered on
+# `v*` tags; each tag produces one GitHub Release with per-arch tarballs
+# plus a SHA256SUMS file the installer verifies before using anything.
+#
+# The installer falls back to `cargo build --release` from source when
+# no matching release exists (e.g. before the first tag is ever pushed,
+# or for untagged main-branch installs) — this workflow is what removes
+# that fallback from the common path going forward.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g. v0.1.0)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compilation toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Configure aarch64 linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }} -p admin -p subscription
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          out="vpn1-${{ matrix.target }}"
+          mkdir -p "$out"
+          cp "target/${{ matrix.target }}/release/vpn-admin" "$out/vpn-admin"
+          cp "target/${{ matrix.target }}/release/subscription" "$out/subscription"
+          cp README.md LICENSE "$out/" 2>/dev/null || true
+          tar -czf "${out}.tar.gz" "$out"
+          sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpn1-${{ matrix.target }}
+          path: |
+            vpn1-${{ matrix.target }}.tar.gz
+            vpn1-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build combined checksum file
+        run: |
+          cd dist
+          cat ./*.tar.gz.sha256 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          generate_release_notes: true

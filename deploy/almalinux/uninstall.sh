@@ -23,7 +23,7 @@ systemctl disable --now vpn-subscription.service 2>/dev/null || true
 rm -f /etc/systemd/system/sing-box.service /etc/systemd/system/vpn-subscription.service
 systemctl daemon-reload
 
-rm -f /usr/local/bin/vpn-admin /usr/local/bin/vpn-subscription-svc /usr/local/bin/vpn-health-check
+rm -f /usr/local/bin/vpn-admin /usr/local/bin/vpn /usr/local/bin/vpn-subscription-svc /usr/local/bin/vpn-health-check
 echo "sing-box binary left at /usr/local/bin/sing-box (remove manually if desired)."
 
 if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
@@ -33,11 +33,17 @@ if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
 fi
 
 if [ "$PURGE_FIREWALL" -eq 1 ]; then
-  ZONE="$(firewall-cmd --get-default-zone)"
-  firewall-cmd --zone="$ZONE" --permanent --remove-port=443/tcp || true
-  firewall-cmd --zone="$ZONE" --permanent --remove-port=443/udp || true
-  firewall-cmd --zone="$ZONE" --permanent --remove-port=8443/tcp || true
-  firewall-cmd --reload
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    ZONE="$(firewall-cmd --get-default-zone)"
+    firewall-cmd --zone="$ZONE" --permanent --remove-port=443/tcp || true
+    firewall-cmd --zone="$ZONE" --permanent --remove-port=443/udp || true
+    firewall-cmd --zone="$ZONE" --permanent --remove-port=8443/tcp || true
+    firewall-cmd --reload
+  elif command -v ufw >/dev/null 2>&1; then
+    ufw delete allow 443/tcp || true
+    ufw delete allow 443/udp || true
+    ufw delete allow 8443/tcp || true
+  fi
 fi
 
 if [ "$PURGE_STATE" -eq 1 ]; then

@@ -1,24 +1,46 @@
 # ALMALINUX_DEPLOYMENT.md
 
 Production runbook for the Hiddify/VLESS-REALITY/Hysteria2 compatibility
-stack on AlmaLinux 9. Every command below is copy-pasteable. This
-deploys the compatibility (sing-box) data plane only — the native
-`direct-tls`/`noise-quic` stack stays on `deploy/local/` (see
-`docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` §14).
+stack. Despite the filename/directory name (kept for backwards
+compatibility with existing links), this deployment path now supports
+the RHEL family (AlmaLinux, Rocky Linux, RHEL 9) and the Debian family
+(Ubuntu 22.04/24.04, Debian 12/13) — see `deploy/lib/os.sh`. Every
+command below is copy-pasteable. This deploys the compatibility
+(sing-box) data plane only — the native `direct-tls`/`noise-quic` stack
+stays on `deploy/local/` (see `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md`
+§14).
 
-## Prerequisites
+**Most installs should use the one-command bootstrap** described in the
+top-level [`README.md`](../README.md#quick-install):
 
-- A fresh AlmaLinux 9 VPS with a public IPv4 (IPv6 optional), root SSH
-  access, `firewalld` and SELinux enforcing (the default).
-- A domain name pointed at the VPS (an A record for both
-  `vpn.example.com` and, if different, `sub.example.com`). REALITY's
-  disguise handshake target and Hiddify's own TLS validation both
-  benefit from a real domain, not a bare IP.
-- A Rust toolchain installed (e.g. via `rustup`) — the installer builds
-  from source, it does not download prebuilt Rust binaries.
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
+```
+
+That command downloads this repo, auto-detects your public IP, issues a
+real (non-self-signed) TLS certificate automatically via
+[sslip.io](https://sslip.io) + certbot, and runs everything below for
+you — no domain, no manual certbot step, no Rust toolchain (it prefers
+a prebuilt release binary and only falls back to `cargo build` when
+none exists yet). The rest of this document describes what that
+one-liner does internally, and how to run every stage manually if you
+want full control (your own domain, hand-provisioned certs, etc).
+
+## Prerequisites (manual path)
+
+- A fresh, supported VPS with a public IPv4 (IPv6 optional), root SSH
+  access.
+- Optionally, a domain name pointed at the VPS (an A record for both
+  `vpn.example.com` and, if different, `sub.example.com`) if you don't
+  want the automatic `sslip.io`-based hostname. REALITY's disguise
+  handshake target does not need a domain at all — VLESS+REALITY works
+  identically either way.
+- A Rust toolchain installed (e.g. via `rustup`) if you want to force a
+  from-source build instead of the installer's prebuilt-release path.
 - A TLS certificate for `sub.example.com` (Let's Encrypt via a reverse
-  proxy — see "Subscription HTTPS" below). REALITY itself does **not**
-  need a certificate for `vpn.example.com` (it dials a real site's TLS
+  proxy — see "Subscription HTTPS" below), unless you let the installer
+  provision one automatically. REALITY itself does **not** need a
+  certificate for `vpn.example.com` (it dials a real site's TLS
   handshake as a disguise; sing-box owns that logic).
 
 ## Two independent TLS certificates — do not confuse them
@@ -90,7 +112,7 @@ implemented by this repo. After the subscription cert renews, `nginx -s
 reload` is enough (TLS termination lives entirely in nginx, no
 compatibility-stack service needs to restart).
 
-## Fresh install
+## Fresh install (manual, own domain)
 
 ```bash
 git clone <this-repo-url> vpn1 && cd vpn1
@@ -98,31 +120,43 @@ sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com \
   ./deploy/almalinux/install.sh
 ```
 
-Explicit stages (each logged as `[install] === [N/15] ... ===`; any
+Explicit stages (each logged as `[install] === [N/17] ... ===`; any
 stage failing aborts the script before "Install complete." is ever
 printed):
 
-1. prerequisites (OS packages incl. `nginx`, `firewalld`)
-2. Rust build (`vpn-admin`, `vpn-subscription-svc`)
-3. sing-box installation (pinned version, checksum-verified when
+1. preflight (root, OS/arch detection, disk/RAM/connectivity/DNS,
+   port-conflict checks, existing-install detection)
+2. OS packages (`dnf` on RHEL family, `apt` on Debian family — incl.
+   `nginx`, `firewalld`/`ufw`, `certbot`)
+3. host configuration (uses `PUBLIC_HOST` if set; otherwise
+   auto-detects the public IP and assigns an `sslip.io` hostname)
+4. vpn1 binaries (prebuilt release if available and checksum-verified;
+   otherwise `cargo build --release`, auto-installing `rustup` if
+   `cargo` is missing)
+5. sing-box installation (pinned version, checksum-verified when
    published, `LICENSE` copied alongside the binary)
-4. users/groups (`vpn-subscription`, `sing-box` service accounts)
-5. directories (ownership matrix below)
-6. certificates (Hysteria2 TLS required; subscription TLS optional —
-   see "Certificates" above)
-7. REALITY keys (`vpn-admin init`, re-owned to `root:sing-box`/
+6. users/groups (`vpn-subscription`, `sing-box` service accounts)
+7. directories (ownership matrix below)
+8. certificates (Hysteria2 TLS required — auto-issued via certbot when
+   no domain was manually supplied; subscription TLS optional — see
+   "Certificates" above)
+9. REALITY keys (`vpn-admin init`, re-owned to `root:sing-box`/
    `root:vpn-subscription` per file)
-8. server config (`vpn-admin render-config` — **not** wrapped in
-   `|| true`; a render/validate failure aborts install)
-9. nginx/subscription HTTPS (auto-configured if the subscription cert
-   is present; skipped with a clear status otherwise)
-10. firewall (firewalld: 22, 443/tcp, 443/udp, 8443/tcp only)
-11. SELinux (fcontext labeling for the binary and secret-serving
-    directories)
-12. systemd (unit install + daemon-reload)
-13. validation (`sing-box check` against the rendered config)
-14. start (enable + start both services)
-15. acceptance test (`vpn-health-check` must pass)
+10. server config (`vpn-admin render-config` — **not** wrapped in
+    `|| true`; a render/validate failure aborts install)
+11. nginx/subscription HTTPS (auto-configured if the subscription cert
+    is present; skipped with a clear status otherwise)
+12. firewall (`firewalld` on RHEL family, `ufw` on Debian family: SSH,
+    443/tcp, 443/udp, 8443/tcp only)
+13. SELinux (RHEL family only — fcontext labeling for the binary and
+    secret-serving directories)
+14. systemd (unit install + daemon-reload)
+15. validation + start (`sing-box check`, then enable + start both
+    services)
+16. first user + acceptance test (auto-creates a `default` user if none
+    exists yet; `vpn-health-check` must pass)
+17. summary (prints the subscription URL and, if `qrencode` is
+    installed, a terminal QR code)
 
 ### File ownership (docs/PRODUCTION_HARDENING_PLAN.md #1)
 
