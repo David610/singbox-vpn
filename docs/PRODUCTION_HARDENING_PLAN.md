@@ -227,7 +227,10 @@ this sandbox), `[ ]` documented only / deferred with reason.
 - **Fix**: per current sing-box 1.13.x docs
   (`https://sing-box.sagernet.org/configuration/inbound/hysteria2/#masquerade`),
   the inbound gains a static-file masquerade default:
-  `{"type": "file", "path": "/etc/vpn/compat/hysteria/masquerade"}`
+  `{"type": "file", "directory": "/etc/vpn/compat/hysteria/masquerade"}`
+  (note: `directory`, not `path` — an earlier revision of this fix used
+  `path`, which sing-box 1.13.14 rejects with `unknown field "path"`;
+  caught on a real AlmaLinux install, fixed in `server.rs`)
   serving an innocuous placeholder directory (installer creates a
   minimal static HTML file there), so unauthenticated/invalid Hysteria2
   connections receive a plausible HTTP response instead of a

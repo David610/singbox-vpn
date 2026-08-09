@@ -9,7 +9,7 @@
 #
 # Two separate TLS concerns, do not confuse them (see
 # docs/ALMALINUX_DEPLOYMENT.md "Two independent TLS certificates"):
-#   - THIS file terminates HTTPS for {{SUBSCRIPTION_HOST}}:8443 (subscription API).
+#   - THIS file terminates HTTPS for {{SUBSCRIPTION_HOST}}:{{SUBSCRIPTION_PORT}} (subscription API).
 #   - Hysteria2's TLS is handled directly by sing-box for {{PUBLIC_HOST}}:443/udp
 #     and has nothing to do with nginx.
 #
@@ -21,8 +21,8 @@
 limit_req_zone $binary_remote_addr zone=vpn_subscription:10m rate=5r/s;
 
 server {
-    listen 8443 ssl;
-    listen [::]:8443 ssl;
+    listen {{SUBSCRIPTION_PORT}} ssl;
+    listen [::]:{{SUBSCRIPTION_PORT}} ssl;
     server_name {{SUBSCRIPTION_HOST}};
 
     # Certbot (or your own ACME client) manages these — see

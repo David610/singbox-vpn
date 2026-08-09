@@ -158,7 +158,10 @@ preflight_validate_port() {
 preflight_detect_public_ip() {
   local ip=""
   for url in "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com"; do
-    ip="$(curl -fsS --max-time 6 "$url" 2>/dev/null | tr -d '[:space:]')"
+    # `|| true`: under `set -e`/pipefail a failed lookup (timeout,
+    # non-200, DNS block) would otherwise abort the whole installer on
+    # the first candidate instead of trying the next fallback URL.
+    ip="$(curl -fsS --max-time 6 "$url" 2>/dev/null | tr -d '[:space:]')" || true
     if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
       echo "$ip"
       return 0

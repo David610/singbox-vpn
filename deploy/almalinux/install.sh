@@ -64,6 +64,16 @@ die() {
 }
 stage() { echo; echo "[install] === [$1/17] $2 ==="; }
 
+# Shared curl flags for network fetches below (sing-box release asset,
+# checksums, prebuilt vpn1 release). `--retry` alone does not protect
+# against a connection that opens fine but then stalls at zero
+# throughput partway through — curl only retries a *completed* failure,
+# so a stalled transfer just hangs forever with no error. Observed for
+# real on a flaky VPS network. `--speed-limit`/`--speed-time` makes
+# curl itself detect and abort a stalled transfer so `--retry` gets a
+# chance to run; `--connect-timeout`/`--max-time` bound the rest.
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/os.sh"
 # shellcheck source=/dev/null
@@ -76,9 +86,32 @@ existing_install_present() {
   [ -f "$DEPLOYMENT_TOML" ] || [ -x "$SINGBOX_BIN" ]
 }
 
+# The subscription HTTPS port is operator-configurable (SUBSCRIPTION_PORT,
+# default 8443) — some VPSes already run something else on 8443. Resolved
+# early (before the stage-1 port-conflict check needs it) and reused as-is
+# by every later stage (deployment.toml, nginx vhost, firewall rules) so
+# the whole install is self-consistent. On a re-run against an existing
+# install, the already-committed port always wins — changing it out from
+# under an already-configured nginx vhost/firewall rule would break the
+# deployment, not repair it, exactly like PUBLIC_HOST above.
+resolve_subscription_port() {
+  if [ -n "${SUBSCRIPTION_PORT:-}" ] && [ -f "$DEPLOYMENT_TOML" ]; then
+    : # already resolved earlier in this run; do not re-derive.
+  elif [ -f "$DEPLOYMENT_TOML" ]; then
+    local existing_port
+    existing_port="$(grep -E '^public_port' "$DEPLOYMENT_TOML" | sed -E 's/^public_port *= *([0-9]+).*/\1/')"
+    [ -n "$existing_port" ] && SUBSCRIPTION_PORT="$existing_port"
+  fi
+  SUBSCRIPTION_PORT="${SUBSCRIPTION_PORT:-8443}"
+  preflight_validate_port "$SUBSCRIPTION_PORT" "SUBSCRIPTION_PORT" || die "invalid SUBSCRIPTION_PORT — refusing to interpolate it into deployment.toml/nginx config/firewall rules."
+  export SUBSCRIPTION_PORT
+}
+
 check_ports_free() {
+  resolve_subscription_port
   # Skip the check for ports vpn1 itself already owns on a re-run — an
-  # already-installed vpn1 legitimately holds 443/tcp+udp.
+  # already-installed vpn1 legitimately holds 443/tcp+udp and its
+  # already-committed SUBSCRIPTION_PORT.
   if existing_install_present; then
     log "existing installation detected — skipping port-conflict checks (vpn1 owns these ports already)."
     return
@@ -86,11 +119,11 @@ check_ports_free() {
   local failed=0
   preflight_check_port_free tcp 443 || failed=1
   preflight_check_port_free udp 443 || failed=1
-  preflight_check_port_free tcp 8443 || failed=1
+  preflight_check_port_free tcp "$SUBSCRIPTION_PORT" || failed=1
   if [ "$failed" -eq 1 ]; then
-    die "vpn1 cannot safely continue while a required port is occupied by another service. Free the port(s) above (or move the other service) and re-run."
+    die "vpn1 cannot safely continue while a required port is occupied by another service. Free the port(s) above (or move the other service, or set SUBSCRIPTION_PORT=<free-port> to relocate the subscription HTTPS endpoint) and re-run."
   fi
-  log "required ports (443/tcp, 443/udp, 8443/tcp) are free."
+  log "required ports (443/tcp, 443/udp, ${SUBSCRIPTION_PORT}/tcp) are free."
 }
 
 # When invoked via the curl|bash bootstrap, $REPO_ROOT points at a
@@ -213,29 +246,78 @@ derive_auto_host() {
   echo "${ip//./-}.sslip.io"
 }
 
+derive_punycode_host() {
+  # Best-effort ASCII/punycode normalization for a domain typed at the
+  # interactive prompt (Cyrillic/other IDN input is common when copying
+  # a domain out of a DNS dashboard). Falls back to the raw input
+  # unchanged if no IDN converter is available or it is already ASCII —
+  # preflight_validate_hostname() rejects whatever comes out of this if
+  # it still isn't a syntactically valid ASCII hostname.
+  local input="$1"
+  case "$input" in
+    *[!\ -~]*)
+      if command -v idn2 >/dev/null 2>&1; then
+        idn2 "$input" 2>/dev/null || echo "$input"
+      elif command -v idn >/dev/null 2>&1; then
+        idn --quiet -a "$input" 2>/dev/null || echo "$input"
+      else
+        echo "$input"
+      fi
+      ;;
+    *)
+      echo "$input"
+      ;;
+  esac
+}
+
+# Interactively ask for a domain when none was supplied via
+# PUBLIC_HOST/SUBSCRIPTION_HOST env vars and stdin isn't already the
+# install script itself (the classic `curl | sudo bash` problem: bash's
+# stdin is the piped script, not the terminal, so a plain `read` would
+# silently read from the script body instead of the user). Reading from
+# /dev/tty works even when invoked that way, as long as a real terminal
+# is attached; non-interactive/CI invocations (no /dev/tty) fall back to
+# the sslip.io auto-assigned hostname with an explicit log line, never
+# silently hang.
+prompt_for_public_host() {
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    return 1
+  fi
+  local reply=""
+  printf '\nUse your own domain for this VPN instead of an auto-assigned sslip.io hostname?\n' >/dev/tty
+  printf 'Point its DNS A/AAAA record at this server first, then enter it (or press Enter to skip): ' >/dev/tty
+  IFS= read -r reply </dev/tty || return 1
+  [ -n "$reply" ] || return 1
+  reply="$(derive_punycode_host "$reply")"
+  printf '%s' "$reply"
+}
+
 resolve_host_config() {
   if load_existing_host_config; then
     log "using host configuration from existing $DEPLOYMENT_TOML: PUBLIC_HOST=$PUBLIC_HOST SUBSCRIPTION_HOST=$SUBSCRIPTION_HOST"
     export PUBLIC_HOST SUBSCRIPTION_HOST
-    AUTO_TLS_DOMAIN=0
     return
+  fi
+
+  if [ -z "${PUBLIC_HOST:-}" ]; then
+    local prompted
+    prompted="$(prompt_for_public_host)" || prompted=""
+    [ -n "$prompted" ] && PUBLIC_HOST="$prompted"
   fi
 
   if [ -n "${PUBLIC_HOST:-}" ]; then
     log "using operator-supplied PUBLIC_HOST=$PUBLIC_HOST"
-    AUTO_TLS_DOMAIN=0
   else
     log "no PUBLIC_HOST set — detecting public IP for zero-touch install..."
     PUBLIC_IP="$(preflight_detect_public_ip)" || die "could not auto-detect this server's public IP. Re-run with PUBLIC_HOST=your.domain.com set explicitly."
     log "detected public IP: $PUBLIC_IP"
     PUBLIC_HOST="$(derive_auto_host "$PUBLIC_IP")"
     log "auto-assigned hostname: $PUBLIC_HOST (resolves to $PUBLIC_IP via sslip.io, no DNS setup needed)"
-    AUTO_TLS_DOMAIN=1
   fi
   SUBSCRIPTION_HOST="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
   preflight_validate_hostname "$PUBLIC_HOST" "PUBLIC_HOST" || die "invalid PUBLIC_HOST — refusing to interpolate it into deployment.toml/nginx config."
   preflight_validate_hostname "$SUBSCRIPTION_HOST" "SUBSCRIPTION_HOST" || die "invalid SUBSCRIPTION_HOST — refusing to interpolate it into deployment.toml/nginx config."
-  export PUBLIC_HOST SUBSCRIPTION_HOST AUTO_TLS_DOMAIN
+  export PUBLIC_HOST SUBSCRIPTION_HOST
 }
 
 host_config_stage() {
@@ -258,12 +340,12 @@ fetch_release_binaries() {
   tmp="$(mktemp -d)"
   local asset="vpn1-${target}.tar.gz"
   log "checking for a prebuilt release ($asset)..."
-  if ! curl -fsSL -o "$tmp/$asset" "$base_url/$asset" 2>/dev/null; then
+  if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmp/$asset" "$base_url/$asset" 2>/dev/null; then
     log "no prebuilt release available (this is expected until a release is tagged) — falling back to building from source."
     rm -rf "$tmp"
     return 1
   fi
-  if curl -fsSL -o "$tmp/SHA256SUMS" "$base_url/SHA256SUMS" 2>/dev/null; then
+  if curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmp/SHA256SUMS" "$base_url/SHA256SUMS" 2>/dev/null; then
     ( cd "$tmp" && sha256sum --ignore-missing -c SHA256SUMS ) || die "checksum verification failed for $asset — refusing to install unverified binaries."
     log "checksum verified against release SHA256SUMS."
   else
@@ -295,6 +377,18 @@ install_rustup_noninteractive() {
 }
 
 build_binaries_from_source() {
+  # A `curl | sudo bash` session starts with a minimal PATH that never
+  # includes `~/.cargo/bin`, so `command -v cargo` fails even when an
+  # earlier run of this same script already installed a toolchain via
+  # rustup — that earlier install just isn't on PATH *yet*. Source
+  # rustup's own env file first so an already-installed toolchain is
+  # actually found before falling back to a full network reinstall
+  # (which, being unnecessary AND a real network round-trip, is exactly
+  # the kind of thing that can hang on a flaky connection for no reason).
+  if [ -f "$HOME/.cargo/env" ]; then
+    # shellcheck disable=SC1091
+    . "$HOME/.cargo/env"
+  fi
   if ! command -v cargo >/dev/null 2>&1; then
     install_rustup_noninteractive
   fi
@@ -323,7 +417,7 @@ install_singbox() {
   tarball="sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"
   local url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${tarball}"
   log "downloading pinned sing-box ${SINGBOX_VERSION} (${ARCH}) from official release assets..."
-  curl -fsSL -o "$tmpdir/$tarball" "$url" || die "download failed: $url"
+  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmpdir/$tarball" "$url" || die "download failed: $url"
 
   # Verify integrity before extracting/installing ANYTHING. Preferred:
   # upstream's own published checksums.txt when it exists for this
@@ -335,7 +429,7 @@ install_singbox() {
   # downgrade to an unverified install.
   local sums_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box_${SINGBOX_VERSION}_checksums.txt"
   local actual_sha256 expected_sha256=""
-  if curl -fsSL -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
+  if curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
     ( cd "$tmpdir" && sha256sum --ignore-missing -c checksums.txt ) || die "checksum verification failed for $tarball (upstream checksums.txt) — refusing to install."
     log "checksum verified against upstream checksums.txt."
   else
@@ -371,7 +465,34 @@ singbox_install_stage() {
 }
 
 # ---------------------------------------------------------------------
-# [6] users/groups
+# [6] systemd
+# ---------------------------------------------------------------------
+# Installed early (right after sing-box itself, well before the config
+# render/reload in stage 11) so that any fix to these unit files is
+# already on disk before anything ever tries to reload the service
+# against them. Getting this ordering wrong is not hypothetical: it
+# broke a real upgrade run where a stale, already-broken unit file from
+# an earlier partial install was still in place when stage 11's
+# `vpn-admin render-config` attempted `systemctl reload-or-restart
+# sing-box` against it, hard-failing the whole installer even though
+# the corrected unit was one stage away from being installed. These
+# files are static installer-owned templates with no placeholders and
+# no dependency on state created by any other stage, so installing them
+# this early is safe.
+install_systemd_units() {
+  log "installing systemd units..."
+  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service
+  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service
+  systemctl daemon-reload
+}
+
+systemd_stage() {
+  stage 6 "systemd"
+  install_systemd_units
+}
+
+# ---------------------------------------------------------------------
+# [7] users/groups
 # ---------------------------------------------------------------------
 create_service_users() {
   id vpn-subscription >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin vpn-subscription
@@ -389,12 +510,12 @@ create_service_users() {
 }
 
 users_groups_stage() {
-  stage 6 "users/groups"
+  stage 7 "users/groups"
   create_service_users
 }
 
 # ---------------------------------------------------------------------
-# [7] directories
+# [8] directories
 # ---------------------------------------------------------------------
 # Ownership matrix (docs/PRODUCTION_HARDENING_PLAN.md #1, revised —
 # docs/FINAL_PRODUCTION_AUDIT.md P0-1): every FILE is owned by the group
@@ -428,29 +549,35 @@ create_directories() {
 }
 
 directories_stage() {
-  stage 7 "directories"
+  stage 8 "directories"
   create_directories
 }
 
 # ---------------------------------------------------------------------
-# [8] certificates
+# [9] certificates
 # ---------------------------------------------------------------------
-# Hysteria2 requires a valid TLS cert/key BEFORE sing-box can start.
-# When AUTO_TLS_DOMAIN=1 (no operator-supplied domain), we issue a real
-# certificate automatically for the sslip.io hostname assigned in stage
-# 3 via certbot's HTTP-01 challenge — no manual DNS/domain steps, no
-# hand-rolled ACME client (still using certbot). This only requires
+# Hysteria2 requires a valid TLS cert/key BEFORE sing-box can start. We
+# always attempt to issue a real certificate automatically via certbot's
+# HTTP-01 challenge — for the auto-assigned sslip.io hostname (stage 3)
+# just as much as for an operator-supplied PUBLIC_HOST whose DNS record
+# already points at this server (attempt_automatic_certbot's own guards
+# — certbot installed, port 80 free, firewall opened/closed cleanly
+# either way — make this safe to attempt unconditionally; a
+# misconfigured/not-yet-propagated custom domain just fails the HTTP-01
+# challenge and falls through to the manual instructions below, exactly
+# like any other automatic-issuance failure). This only requires
 # outbound HTTPS + port 80 briefly free, both true on a fresh VPS. If it
-# fails (egress blocked, port 80 unavailable, etc.) we stop with the
-# exact manual recovery commands rather than silently degrading to a
-# cert that client apps will reject.
+# fails (egress blocked, port 80 unavailable, DNS not pointed here yet,
+# etc.) we stop with the exact manual recovery commands rather than
+# silently degrading to a cert that client apps will reject.
 # Temporarily allow inbound TCP/80 for certbot's HTTP-01 challenge, and
 # remove EXACTLY that rule again afterwards — never touching any
 # pre-existing firewall rule vpn1 did not add itself
 # (docs/FINAL_PRODUCTION_AUDIT.md P0-9). firewalld/ufw are already
 # enabled by packages_stage (stage 2) with distro-default deny rules by
-# the time this runs, and vpn1's own permanent rules (443/tcp+udp/8443,
-# never 80) aren't added until firewall_stage (stage 12) — so without
+# the time this runs, and vpn1's own permanent rules (443/tcp+udp plus
+# SUBSCRIPTION_PORT, never 80) aren't added until firewall_stage (stage
+# 13) — so without
 # this, certbot's challenge has no way to receive inbound traffic.
 firewall_open_port_80_temp() {
   case "$FIREWALL_BACKEND" in
@@ -514,9 +641,7 @@ ensure_tls_material() {
   if [ -s "$le_cert" ]; then
     return 0
   fi
-  if [ "${AUTO_TLS_DOMAIN:-0}" -eq 1 ] || [ -n "${VPN1_AUTO_CERTBOT:-}" ]; then
-    attempt_automatic_certbot "$host" && return 0
-  fi
+  attempt_automatic_certbot "$host" && return 0
   return 1
 }
 
@@ -627,7 +752,7 @@ install_certbot_renewal_hook() {
 }
 
 certificates_stage() {
-  stage 8 "certificates"
+  stage 9 "certificates"
   create_hysteria_masquerade_placeholder
   require_hysteria_tls
   require_subscription_tls
@@ -636,7 +761,7 @@ certificates_stage() {
 }
 
 # ---------------------------------------------------------------------
-# [9] REALITY keys
+# [10] REALITY keys
 # ---------------------------------------------------------------------
 render_deployment_toml() {
   if [ -f "$DEPLOYMENT_TOML" ]; then
@@ -645,10 +770,12 @@ render_deployment_toml() {
   fi
   : "${PUBLIC_HOST:?Set PUBLIC_HOST=vpn.example.com before running install.sh}"
   : "${SUBSCRIPTION_HOST:="$PUBLIC_HOST"}"
+  : "${SUBSCRIPTION_PORT:=8443}"
   : "${REALITY_HANDSHAKE_SERVER:="www.microsoft.com"}"
   preflight_validate_hostname "$REALITY_HANDSHAKE_SERVER" "REALITY_HANDSHAKE_SERVER" || die "invalid REALITY_HANDSHAKE_SERVER."
   sed -e "s/{{PUBLIC_HOST}}/$PUBLIC_HOST/" \
       -e "s/{{SUBSCRIPTION_HOST}}/$SUBSCRIPTION_HOST/" \
+      -e "s/{{SUBSCRIPTION_PORT}}/$SUBSCRIPTION_PORT/" \
       -e "s/{{REALITY_HANDSHAKE_SERVER}}/$REALITY_HANDSHAKE_SERVER/" \
       "$REPO_ROOT/deploy/almalinux/templates/deployment.toml.template" >"$DEPLOYMENT_TOML"
   chmod 0644 "$DEPLOYMENT_TOML"
@@ -672,13 +799,13 @@ init_reality_keys() {
 }
 
 reality_keys_stage() {
-  stage 9 "REALITY keys"
+  stage 10 "REALITY keys"
   render_deployment_toml
   init_reality_keys
 }
 
 # ---------------------------------------------------------------------
-# [10] server config
+# [11] server config
 # ---------------------------------------------------------------------
 render_server_config() {
   log "rendering initial sing-box config..."
@@ -692,39 +819,100 @@ render_server_config() {
 }
 
 server_config_stage() {
-  stage 10 "server config"
+  stage 11 "server config"
   render_server_config
 }
 
 # ---------------------------------------------------------------------
-# [11] nginx / subscription HTTPS
+# [12] nginx / subscription HTTPS
 # ---------------------------------------------------------------------
 configure_nginx() {
   if [ "${SUBSCRIPTION_TLS_READY:-0}" -ne 1 ]; then
-    log "skipping nginx vhost: subscription TLS certificate not yet present (see stage 8 output)."
+    log "skipping nginx vhost: subscription TLS certificate not yet present (see stage 9 output)."
     return
   fi
   local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
+  local port="${SUBSCRIPTION_PORT:-8443}"
   sed -e "s/{{SUBSCRIPTION_HOST}}/$host/" -e "s/{{PUBLIC_HOST}}/${PUBLIC_HOST:-$host}/" \
+      -e "s/{{SUBSCRIPTION_PORT}}/$port/" \
     "$REPO_ROOT/deploy/almalinux/templates/nginx-vpn-subscription.conf.template" >"$NGINX_CONF.tmp"
   install -d -m 0755 "$(dirname "$NGINX_CONF")"
   install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"
   rm -f "$NGINX_CONF.tmp"
+  # SELinux (RHEL family) only lets nginx (httpd_t) bind() to a fixed
+  # allow-list of ports labeled http_port_t (80/443/8080/8443/etc. are
+  # on it by default) — a custom SUBSCRIPTION_PORT is very likely NOT on
+  # that list, so the kernel silently denies the bind with a bare
+  # "Permission denied" that looks identical to any other bind failure.
+  # Caught on a real AlmaLinux install (`ausearch -m avc` showed
+  # `denied { name_bind } ... tcontext=...unreserved_port_t`): nginx
+  # then quietly kept running its OLD config instead of crashing, so
+  # `systemctl status` reported "active" the whole time even though
+  # nothing was listening on the new port at all. Label the port for
+  # httpd_t before ever trying to bind it — modify the existing mapping
+  # if some other type already claims this port, add a new one
+  # otherwise.
+  if [ "$OS_FAMILY" = "rhel" ] && command -v semanage >/dev/null 2>&1; then
+    if semanage port -l 2>/dev/null | awk '/^http_port_t/' | grep -qw "$port"; then
+      : # already labeled http_port_t
+    elif semanage port -l 2>/dev/null | grep -w tcp | grep -qw "$port"; then
+      semanage port -m -t http_port_t -p tcp "$port" || warn "could not relabel SELinux port context for ${port}/tcp — nginx may fail to bind it."
+    else
+      semanage port -a -t http_port_t -p tcp "$port" || warn "could not add SELinux port context for ${port}/tcp — nginx may fail to bind it."
+    fi
+  fi
+  # SELinux also blocks httpd_t from making ANY outbound network
+  # connection by default (the httpd_can_network_connect boolean is off
+  # out of the box on RHEL/AlmaLinux) — this vhost's whole purpose is
+  # `proxy_pass http://127.0.0.1:9100`, so without this the reload
+  # itself succeeds (bind on SUBSCRIPTION_PORT is fine once labeled
+  # above) but every request 502s because nginx is denied when it tries
+  # to connect to the backend. Caught on the same real AlmaLinux
+  # install, immediately after fixing the port-bind denial above.
+  if [ "$OS_FAMILY" = "rhel" ] && command -v setsebool >/dev/null 2>&1; then
+    setsebool -P httpd_can_network_connect 1 || warn "could not enable SELinux boolean httpd_can_network_connect — nginx's proxy_pass to the subscription backend may 502."
+  fi
   nginx -t || die "nginx config validation failed (nginx -t) — not reloading nginx with a broken config."
-  systemctl enable --now nginx >/dev/null 2>&1 || systemctl reload nginx
+  # `systemctl enable --now` is a no-op on an already-active nginx — it
+  # does NOT reload newly-written config into the running process. On a
+  # repair/upgrade run nginx is very likely already active (e.g. started
+  # earlier in this same run for the certbot dance), so relying on
+  # `enable --now` alone silently leaves the OLD vhost config (old
+  # SUBSCRIPTION_PORT, old hostname, etc.) live while the new file just
+  # sits on disk unused — caught on a real AlmaLinux install where a
+  # SUBSCRIPTION_PORT change never actually took effect. Always
+  # explicitly reload-or-restart after enabling, regardless of prior
+  # state.
+  systemctl enable nginx >/dev/null 2>&1
+  systemctl reload-or-restart nginx
   systemctl is-active --quiet nginx || die "nginx is not active after configuring the subscription vhost."
+  # `is-active` alone is not proof the NEW config actually took effect:
+  # on a failed reload (e.g. the SELinux bind denial above, before this
+  # fix existed) nginx logs an [emerg] and keeps running its OLD config
+  # instead of crashing, so `is-active` stays true while the port this
+  # vhost is supposed to serve was never actually bound — exactly what
+  # happened on a real install. Verify the listen socket directly.
+  if command -v ss >/dev/null 2>&1; then
+    local tries=0 bound=0
+    while [ "$tries" -lt 10 ]; do
+      ss -tln 2>/dev/null | grep -q ":${port} " && { bound=1; break; }
+      tries=$((tries + 1))
+      sleep 0.3
+    done
+    [ "$bound" -eq 1 ] || die "nginx is active but is NOT actually listening on ${port}/tcp after reload — the new config did not take effect (check: journalctl -u nginx --no-pager -n 50, /var/log/nginx/error.log, and 'ausearch -m avc -ts recent' if SELinux is enforcing)."
+  fi
   NGINX_OK=1
   SUBSCRIPTION_HTTPS_OK=1
   log "nginx vhost installed and validated: $NGINX_CONF"
 }
 
 nginx_stage() {
-  stage 11 "nginx/subscription HTTPS"
+  stage 12 "nginx/subscription HTTPS"
   configure_nginx
 }
 
 # ---------------------------------------------------------------------
-# [12] firewall
+# [13] firewall
 # ---------------------------------------------------------------------
 configure_firewall() {
   case "$FIREWALL_BACKEND" in
@@ -735,13 +923,13 @@ configure_firewall() {
 }
 
 firewall_stage() {
-  stage 12 "firewall"
+  stage 13 "firewall"
   configure_firewall
   FIREWALL_OK=1
 }
 
 # ---------------------------------------------------------------------
-# [13] SELinux (RHEL family only)
+# [14] SELinux (RHEL family only)
 # ---------------------------------------------------------------------
 configure_selinux() {
   # sing-box binds 443/tcp+udp and reads config/certs from
@@ -765,27 +953,12 @@ configure_selinux() {
 }
 
 selinux_stage() {
-  stage 13 "SELinux"
+  stage 14 "SELinux"
   if [ "$OS_FAMILY" = "rhel" ]; then
     configure_selinux
   else
     log "skipping (not a RHEL-family host)."
   fi
-}
-
-# ---------------------------------------------------------------------
-# [14] systemd
-# ---------------------------------------------------------------------
-install_systemd_units() {
-  log "installing systemd units..."
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service
-  systemctl daemon-reload
-}
-
-systemd_stage() {
-  stage 14 "systemd"
-  install_systemd_units
 }
 
 # ---------------------------------------------------------------------
@@ -983,6 +1156,7 @@ main() {
   host_config_stage
   binaries_stage
   singbox_install_stage
+  systemd_stage
   users_groups_stage
   directories_stage
   certificates_stage
@@ -991,7 +1165,6 @@ main() {
   nginx_stage
   firewall_stage
   selinux_stage
-  systemd_stage
   start_stage
   acceptance_stage
   print_status

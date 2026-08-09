@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ufw rules for the compatibility stack (Debian/Ubuntu). Mirrors
 # firewall.sh (firewalld/RHEL family): SSH, VLESS+REALITY (443/tcp),
-# Hysteria2 (443/udp), subscription HTTPS (8443/tcp). Nothing else —
+# Hysteria2 (443/udp), subscription HTTPS (SUBSCRIPTION_PORT, default
+# 8443/tcp). Nothing else —
 # internal Rust services stay off the public interface entirely
 # (spec §33). Never runs `ufw --force reset` or otherwise flushes
 # pre-existing rules; only adds vpn1's own allow rules.
@@ -18,6 +19,9 @@ die() { echo "[firewall] ERROR: $*" >&2; exit 1; }
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/preflight.sh"
 
+SUBSCRIPTION_PORT="${SUBSCRIPTION_PORT:-8443}"
+preflight_validate_port "$SUBSCRIPTION_PORT" "SUBSCRIPTION_PORT" || die "invalid SUBSCRIPTION_PORT."
+
 # Never let this script be the reason SSH access is lost. Don't assume
 # port 22 (docs/FINAL_PRODUCTION_AUDIT.md P0-10): `ufw allow OpenSSH`
 # only covers the well-known port 22.
@@ -29,7 +33,7 @@ if [ "$SSH_PORT" != "22" ]; then
 fi
 ufw allow 443/tcp >/dev/null
 ufw allow 443/udp >/dev/null
-ufw allow 8443/tcp >/dev/null
+ufw allow "${SUBSCRIPTION_PORT}/tcp" >/dev/null
 
 # `ufw enable` is only safe to run non-interactively once SSH is
 # explicitly allowed above; -y skips ufw's "will disrupt existing ssh

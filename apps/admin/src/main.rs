@@ -1344,6 +1344,33 @@ fn tempdir_here() -> Result<tempfile::TempDir> {
     tempfile::tempdir().context("creating temporary staging directory")
 }
 
+// Restore later reads/copies a handful of known relative paths out of
+// the extracted archive (users/users.json, reality/private.key, ...).
+// If any of those paths — or anything else in the extracted tree — is a
+// symlink, following it would read or copy whatever the symlink target
+// happens to be instead of the archive's own content (a hostile or
+// corrupted backup archive can plant such a symlink). Walk the whole
+// extracted tree and refuse to restore from it if any entry is a
+// symlink, before any of that content is read.
+fn reject_symlinks(dir: &std::path::Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading directory {dir:?}"))? {
+        let entry = entry?;
+        let path = entry.path();
+        let meta = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("reading metadata for {path:?}"))?;
+        if meta.file_type().is_symlink() {
+            bail!(
+                "backup archive contains a symlink at {path:?} — refusing to restore \
+                 (symlinked entries are not supported for security reasons)"
+            );
+        }
+        if meta.is_dir() {
+            reject_symlinks(&path)?;
+        }
+    }
+    Ok(())
+}
+
 fn cmd_restore(
     cfg: &DeploymentConfig,
     config_path: &std::path::Path,
@@ -1360,6 +1387,8 @@ fn cmd_restore(
     if !status.success() {
         bail!("tar exited with failure extracting {archive:?}");
     }
+    reject_symlinks(staging.path())
+        .context("scanning extracted backup archive for symlink entries")?;
 
     // Validate before touching any live state (spec §20: "Validate
     // restored data before replacing active state").

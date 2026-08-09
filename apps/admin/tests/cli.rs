@@ -477,3 +477,45 @@ fn backup_then_restore_round_trips_users() {
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("erin"));
 }
+
+#[test]
+fn restore_rejects_archive_containing_a_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(state_dir.join("reality")).unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), "test-private-key").unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), "test-public-key").unwrap();
+
+    // Hand-craft a malicious archive: a valid users.json plus a
+    // `reality/private.key` that is a *symlink* to a file outside the
+    // archive. If restore ever followed it, it would read/copy whatever
+    // that target happens to contain instead of real key material.
+    let staging = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(staging.path().join("users")).unwrap();
+    std::fs::write(staging.path().join("users/users.json"), "[]").unwrap();
+    std::fs::create_dir_all(staging.path().join("reality")).unwrap();
+    let outside_secret = dir.path().join("outside-secret.txt");
+    std::fs::write(&outside_secret, "not archive content").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside_secret, staging.path().join("reality/private.key"))
+        .unwrap();
+
+    let archive_path = dir.path().join("malicious-backup.tar");
+    let status = std::process::Command::new("tar")
+        .arg("-cf")
+        .arg(&archive_path)
+        .arg("-C")
+        .arg(staging.path())
+        .arg(".")
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    admin(dir.path(), &cfg_path)
+        .arg("restore")
+        .arg(&archive_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("symlink"));
+}

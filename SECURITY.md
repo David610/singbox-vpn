@@ -7,20 +7,17 @@ There is no long-term-support branch at this time.
 
 ## Reporting a vulnerability
 
-**TODO (operator/maintainer action required):** this repository does not
-yet have a real, monitored security contact. Before this project is used
-in production by anyone other than its own maintainer, replace this
-section with:
+Please report security vulnerabilities privately, not as a public GitHub
+issue:
 
-- A real email address or GitHub Security Advisory link that is actively
-  monitored.
-- An expected response-time commitment (e.g. "acknowledged within 5
-  business days").
+- Email: mkhitaryandddd@gmail.com
+- Or use GitHub's private "Report a vulnerability" flow under this
+  repository's Security tab, if enabled.
 
-Do not report security vulnerabilities as public GitHub issues until a
-private reporting channel above is in place — use GitHub's private
-"Report a vulnerability" flow under the repository's Security tab if
-available, or hold the report until a contact is published here.
+We aim to acknowledge reports within 5 business days. Include enough
+detail to reproduce the issue (affected file/command, expected vs.
+actual behavior); for issues involving key material or credentials,
+describe the exposure without pasting the actual secret value.
 
 ## Scope
 

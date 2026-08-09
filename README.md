@@ -59,31 +59,68 @@ for the split ingress/egress topology and other variations.
 
 ## Quickstart: Hiddify-compatible mode (production)
 
-### Quick Install
+Follow these steps **in order** on a fresh, supported VPS (root/sudo
+access, public IPv4). Skipping straight to "run the installer" without
+step 1 is fine too — you'll just get an auto-assigned hostname instead
+of your own domain.
 
-On a fresh, supported VPS (root/sudo access, public IPv4):
+### 1. (Optional) Point your own domain at the VPS
+
+If you want `vpn.example.com` instead of an auto-assigned
+`<ip>.sslip.io` hostname, create the DNS record *before* running the
+installer:
+
+- Add an `A` record (and `AAAA` if the VPS has IPv6) for your chosen
+  hostname pointing at the VPS's public IP.
+- **If you're on Cloudflare (or any proxying DNS host): the record
+  must be "DNS only" (grey cloud), not proxied (orange cloud).**
+  VLESS+REALITY needs a real, unproxied TLS handshake on 443/tcp and
+  Hysteria2 needs raw UDP/443 passthrough — an HTTP(S) proxy in front
+  breaks both.
+- If your domain uses non-ASCII characters (Cyrillic, etc.), use its
+  ASCII/punycode form (`xn--...`) everywhere below — TLS/ACME/nginx
+  all require ASCII hostnames, even though your DNS dashboard may
+  display the Unicode form.
+- Give DNS a minute to propagate, then confirm before installing:
+  `dig +short vpn.example.com` (or `getent hosts vpn.example.com`)
+  should return the VPS's IP.
+
+Skip this step to get a zero-touch install with an auto-assigned
+`sslip.io` hostname instead (no DNS setup required, real TLS cert
+issued automatically either way).
+
+### 2. Run the installer
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
 ```
 
-No git clone, no manual environment variables required. This downloads
-the vpn1 source (a prebuilt release if one has been published, source
-otherwise), detects your OS/architecture, installs dependencies,
-auto-detects your server's public IP, issues a real TLS certificate for
-it automatically (via [sslip.io](https://sslip.io) + certbot — no domain
-needed), stands up VLESS+REALITY and Hysteria2 behind `sing-box`,
-configures the firewall, enables everything under systemd, creates a
-`default` user, and prints a ready-to-import subscription URL (with a
-terminal QR code, if `qrencode` is installed).
+No git clone, no manual environment variables required for the
+zero-touch path. This downloads the vpn1 source (a prebuilt release if
+one has been published, source otherwise), detects your OS/architecture,
+installs dependencies, auto-detects your server's public IP, issues a
+real TLS certificate for it automatically (via [sslip.io](https://sslip.io)
++ certbot — no domain needed), stands up VLESS+REALITY and Hysteria2
+behind `sing-box`, configures the firewall and SELinux (RHEL family),
+enables everything under systemd, creates a `default` user, and prints
+a ready-to-import subscription URL with a terminal QR code.
 
-Prefer your own domain instead of the auto-assigned one? Set
-`PUBLIC_HOST` first (point its DNS `A`/`AAAA` record at the server
-before running):
+If you set up a domain in step 1, pass it explicitly instead of
+auto-detecting (the installer also prompts for one interactively if
+you run it without this and a real terminal is attached):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com bash
+  | sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=vpn.example.com bash
+```
+
+If something else on the VPS already listens on 8443 (the default
+subscription-HTTPS port), relocate it with `SUBSCRIPTION_PORT`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
+  | sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=vpn.example.com \
+    SUBSCRIPTION_PORT=8444 bash
 ```
 
 Pin a specific release instead of the latest:
@@ -93,33 +130,55 @@ curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
   | sudo bash -s -- --version v1.2.3
 ```
 
-Running the same command again is safe — it repairs/upgrades an existing
-install in place without regenerating keys, duplicating firewall rules,
-or destroying existing users.
+Running the same command again is safe and expected if it fails partway
+through (transient network issues, etc.) — it repairs/upgrades an
+existing install in place without regenerating keys, duplicating
+firewall rules, or destroying existing users. A failed run always
+prints the exact diagnostic commands to check next.
 
-### After installation
+### 3. Get your subscription URL
+
+The installer prints a subscription URL + QR code for a new `default`
+user automatically — but if a user with that name already exists from
+an earlier run, it skips recreating it (never silently rotates a
+credential a real client might already be using). Get it yourself:
 
 ```bash
-sudo vpn status              # runtime health at a glance
-sudo vpn doctor               # numbered [OK]/[WARN]/[FAIL] diagnostics
-sudo vpn user create --name NAME --qr
-sudo vpn user list
+sudo vpn user list                       # find the user's ID (NOT its display name)
+sudo vpn user rotate-token <user-id> --qr    # prints subscription URL + QR
 ```
 
-`vpn` is an ergonomic alias for `vpn-admin` — both names run the same
-binary. Other day-2 commands: `vpn version`, `vpn backup`/`vpn restore`,
-`vpn user enable/disable/rotate-token/rotate-vless/rotate-hysteria/remove/qr`,
-`deploy/almalinux/update.sh` (safe update with automatic rollback on
-failed health check), `deploy/almalinux/uninstall.sh` (`--purge-state`
-to also remove keys/users, `--purge-firewall` to close the ports again).
+`vpn user`/`vpn-admin` commands take the user's **ID** column from
+`vpn user list` (e.g. `user_dd466bb1-...`), not its `NAME` column.
 
-### Connect
+If `sudo vpn ...` reports `command not found` even though installation
+succeeded, it's a `PATH` issue, not a missing binary: some
+distributions' `sudo` uses a `secure_path` that excludes
+`/usr/local/bin`. Use the full path instead: `sudo /usr/local/bin/vpn ...`.
+
+### 4. Connect
 
 Install [Hiddify](https://hiddify.com) (Android, iOS, Linux, Windows,
 macOS) or, for Android specifically, v2rayNG also works for the VLESS
 endpoint. Add a profile and either scan the printed QR code or paste the
 subscription URL. See `docs/clients/README.md` for per-platform guides
 (iOS, Android, HONOR MagicOS, Linux) and `docs/HIDDIFY_ANDROID.md`.
+
+### 5. Day-2 operations
+
+```bash
+sudo vpn status               # runtime health at a glance
+sudo vpn doctor                # numbered [OK]/[WARN]/[FAIL] diagnostics
+sudo vpn user create --name NAME --qr
+```
+
+`vpn` is an ergonomic alias for `vpn-admin` — both names run the same
+binary. Other day-2 commands: `vpn version`, `vpn backup`/`vpn restore`,
+`vpn user enable/disable/rotate-token/rotate-vless/rotate-hysteria/remove/qr`
+(all keyed by user ID), `deploy/almalinux/update.sh` (safe update with
+automatic rollback on failed health check), `deploy/almalinux/uninstall.sh`
+(`--purge-state` to also remove keys/users, `--purge-firewall` to close
+the ports again).
 
 ### Advanced / manual deployment
 
