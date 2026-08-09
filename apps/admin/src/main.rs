@@ -6,6 +6,7 @@
 //! at `create` or `rotate-token` time, because only its hash is persisted
 //! (spec §26).
 
+mod lock;
 mod service;
 
 use anyhow::{bail, Context, Result};
@@ -149,10 +150,38 @@ enum UserCommands {
     },
 }
 
+/// Every command that reads-then-writes `users.json` and/or
+/// `config.json` — i.e. everything except the pure-read commands
+/// (`version`, `status`, `doctor`, `user list`, `user subscription`) —
+/// must hold the system-wide state lock for its entire duration
+/// (docs/FINAL_PRODUCTION_AUDIT.md P0-4). `user qr` mutates (it rotates
+/// the token, same as `rotate-token`) and is included.
+fn command_mutates_state(cmd: &Commands) -> bool {
+    !matches!(
+        cmd,
+        Commands::Version
+            | Commands::Status
+            | Commands::Doctor
+            | Commands::User(UserCommands::List)
+            | Commands::User(UserCommands::Subscription { .. })
+    )
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = DeploymentConfig::load(&cli.config)
         .with_context(|| format!("loading deployment config from {:?}", cli.config))?;
+
+    // Held for the ENTIRE duration of a mutating command — not just the
+    // file write — so two concurrent `vpn-admin` invocations can never
+    // interleave their load->mutate->persist->apply->reload sequences.
+    let _state_lock = if command_mutates_state(&cli.command) {
+        Some(lock::acquire_state_lock().context(
+            "acquiring vpn1 state lock (another vpn-admin/install/update operation is in progress)",
+        )?)
+    } else {
+        None
+    };
 
     match cli.command {
         Commands::Init { rotate } => cmd_init(&cfg, rotate),
@@ -201,41 +230,36 @@ fn cmd_init(cfg: &DeploymentConfig, rotate: bool) -> Result<()> {
     std::fs::create_dir_all(cfg.users_file().parent().unwrap())?;
 
     let priv_path = cfg.reality_private_key_file();
-    if priv_path.exists() && !rotate {
-        println!(
-            "REALITY key already present at {priv_path:?}; refusing to overwrite (pass --rotate to replace it deliberately — this breaks every existing client's connection until they re-import)."
-        );
-    } else {
-        let output = std::process::Command::new(&cfg.singbox_binary)
-            .arg("generate")
-            .arg("reality-keypair")
-            .output()
-            .with_context(|| {
-                format!(
-                    "running {:?} generate reality-keypair (is sing-box installed at this path?)",
-                    cfg.singbox_binary
-                )
-            })?;
-        if !output.status.success() {
-            bail!(
-                "sing-box generate reality-keypair failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+    if priv_path.exists() {
+        if !rotate {
+            println!(
+                "REALITY key already present at {priv_path:?}; refusing to overwrite (pass --rotate to replace it deliberately — this breaks every existing client's connection until they re-import)."
             );
+            return Ok(());
         }
-        let text = String::from_utf8_lossy(&output.stdout);
-        let private_key = extract_field(&text, "PrivateKey")
-            .context("could not parse PrivateKey from sing-box output")?;
-        let public_key = extract_field(&text, "PublicKey")
-            .context("could not parse PublicKey from sing-box output")?;
-
-        write_secret_file(&priv_path, &private_key)?;
-        std::fs::write(cfg.reality_public_key_file(), &public_key)?;
-
-        let short_id = credentials::generate_short_id();
-        std::fs::write(cfg.reality_dir().join("short_id.txt"), &short_id)?;
-
-        println!("Generated REALITY keypair at {:?}", cfg.reality_dir());
+        // A key already exists and this is a deliberate rotation: this
+        // MUST go through the fully coordinated transactional flow
+        // (docs/FINAL_PRODUCTION_AUDIT.md P0-5) — a bare key-file swap
+        // here would leave the running sing-box serving the OLD private
+        // key (clients still connect fine) while any freshly-restarted
+        // subscription service would advertise the NEW public key
+        // (clients using it fail REALITY's handshake matching), a silent
+        // split-brain that is worse than doing nothing.
+        return cmd_reality_rotate(cfg);
     }
+
+    // First-ever generation: no running server/subscription service
+    // depends on the old key yet (there isn't one), so a plain
+    // generate-and-write is sufficient — install.sh's own explicit
+    // chown immediately after this call establishes the file-level
+    // ownership for this very first write (see docs/FINAL_PRODUCTION_AUDIT.md
+    // P0-1/P0-2 for why every SUBSEQUENT write can't rely on that
+    // one-time step).
+    let (private_key, public_key, short_id) = generate_reality_keypair(cfg)?;
+    write_secret_file(&priv_path, &private_key)?;
+    std::fs::write(cfg.reality_public_key_file(), &public_key)?;
+    std::fs::write(cfg.reality_dir().join("short_id.txt"), &short_id)?;
+    println!("Generated REALITY keypair at {:?}", cfg.reality_dir());
 
     println!(
         "Hysteria2 TLS certificate/key are not generated by vpn-admin — place a valid \
@@ -244,6 +268,289 @@ fn cmd_init(cfg: &DeploymentConfig, rotate: bool) -> Result<()> {
         cfg.hysteria_dir().join("cert.pem"),
         cfg.hysteria_dir().join("key.pem")
     );
+    Ok(())
+}
+
+fn generate_reality_keypair(cfg: &DeploymentConfig) -> Result<(String, String, String)> {
+    let output = std::process::Command::new(&cfg.singbox_binary)
+        .arg("generate")
+        .arg("reality-keypair")
+        .output()
+        .with_context(|| {
+            format!(
+                "running {:?} generate reality-keypair (is sing-box installed at this path?)",
+                cfg.singbox_binary
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "sing-box generate reality-keypair failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let private_key = extract_field(&text, "PrivateKey")
+        .context("could not parse PrivateKey from sing-box output")?;
+    let public_key = extract_field(&text, "PublicKey")
+        .context("could not parse PublicKey from sing-box output")?;
+    let short_id = credentials::generate_short_id();
+    Ok((private_key, public_key, short_id))
+}
+
+/// Sibling backup path used only for the duration of one rotate
+/// operation (created just before the risky part starts, removed on
+/// success, restored-from on failure). Not a long-term backup mechanism
+/// — see `vpn-admin backup` for that.
+fn rotate_backup_path(p: &std::path::Path) -> std::path::PathBuf {
+    let mut s = p.as_os_str().to_owned();
+    s.push(".rotate-bak");
+    std::path::PathBuf::from(s)
+}
+
+/// Copy `src` to its `.rotate-bak` sibling if `src` exists, preserving
+/// mode/ownership exactly (needed to restore a byte-for-byte identical
+/// file, including the group a service account depends on, if rotation
+/// fails partway through).
+fn backup_for_rotate(src: &std::path::Path) -> Result<Option<std::path::PathBuf>> {
+    if !src.exists() {
+        return Ok(None);
+    }
+    let bak = rotate_backup_path(src);
+    std::fs::copy(src, &bak).with_context(|| format!("backing up {src:?} to {bak:?}"))?;
+    #[cfg(unix)]
+    {
+        let meta = std::fs::metadata(src)?;
+        std::fs::set_permissions(&bak, meta.permissions())?;
+        std::os::unix::fs::chown(
+            &bak,
+            Some(std::os::unix::fs::MetadataExt::uid(&meta)),
+            Some(std::os::unix::fs::MetadataExt::gid(&meta)),
+        )
+        .ok(); // best-effort: non-root test environments can't chown to an arbitrary uid/gid
+    }
+    Ok(Some(bak))
+}
+
+/// Restore `dst` from its `.rotate-bak` sibling (written by
+/// `backup_for_rotate`) if one exists, then remove the backup file.
+fn restore_from_rotate_backup(dst: &std::path::Path) -> Result<()> {
+    let bak = rotate_backup_path(dst);
+    if bak.exists() {
+        std::fs::copy(&bak, dst)
+            .with_context(|| format!("restoring {dst:?} from backup {bak:?}"))?;
+        let _ = std::fs::remove_file(&bak);
+    }
+    Ok(())
+}
+
+fn remove_rotate_backup(p: &std::path::Path) {
+    let _ = std::fs::remove_file(rotate_backup_path(p));
+}
+
+/// Coordinated REALITY key rotation (docs/FINAL_PRODUCTION_AUDIT.md
+/// P0-5): backup -> generate candidate -> render+validate candidate
+/// config with the REAL sing-box binary -> atomically install key
+/// material -> apply config -> reload sing-box -> restart subscription
+/// (it caches the public key/short_id at startup, so a plain config
+/// reload does not pick up new REALITY public material on its own) ->
+/// verify both -> commit. Any failure after key material starts being
+/// touched triggers a full rollback of key files AND config, followed by
+/// reloading/restarting both services back to the previous state and
+/// verifying that recovery actually worked — this function only returns
+/// `Ok` if the end state is fully consistent, and its `Err` messages
+/// always say whether rollback succeeded.
+fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
+    let priv_path = cfg.reality_private_key_file();
+    let pub_path = cfg.reality_public_key_file();
+    let sid_path = cfg.reality_dir().join("short_id.txt");
+    let config_target = cfg.singbox_config_file();
+
+    if !cfg.singbox_binary.exists() {
+        bail!(
+            "cannot safely rotate: sing-box binary not found at {:?} — rotation requires \
+             validating the candidate config with the real binary before installing new key \
+             material (never rotate blind).",
+            cfg.singbox_binary
+        );
+    }
+
+    println!("Rotating REALITY key material...");
+    let (candidate_priv, candidate_pub, candidate_sid) = generate_reality_keypair(cfg)?;
+
+    let candidate_reality = RealityServerParams {
+        private_key_hex: SecretString::new(candidate_priv.clone()),
+        public_key_hex: candidate_pub.clone(),
+        short_ids: vec![candidate_sid.clone()],
+        handshake_server: cfg.reality.handshake_server.clone(),
+        handshake_port: cfg.reality.handshake_port,
+    };
+    let users = store::load_users(&cfg.users_file())?;
+    let hysteria = load_hysteria_params(cfg);
+    let ports = ServerPorts {
+        vless_reality_port: cfg.reality.listen_port,
+        hysteria2_port: cfg.hysteria2.listen_port,
+    };
+    let now = UnixSeconds::now().0 as i64;
+    let candidate_doc =
+        render_singbox_server_config(&users, &candidate_reality, &hysteria, ports, now);
+
+    let backend = SingBoxBackend {
+        binary_path: cfg.singbox_binary.clone(),
+    };
+
+    // Backups first — nothing below this point may run before every
+    // file that could need restoring has a known-good copy.
+    let priv_bak = backup_for_rotate(&priv_path)?;
+    let pub_bak = backup_for_rotate(&pub_path)?;
+    let sid_bak = backup_for_rotate(&sid_path)?;
+
+    let rollback = |reason: &str| -> String {
+        let mut restore_ok = true;
+        for p in [&priv_path, &pub_path, &sid_path] {
+            if restore_from_rotate_backup(p).is_err() {
+                restore_ok = false;
+            }
+        }
+        // apply_config_atomically already keeps target_path.bak from
+        // its OWN last successful write — restore from that if our
+        // candidate config was ever actually applied.
+        let cfg_backup = config_backup_path(&config_target);
+        if cfg_backup.exists() {
+            let _ = std::fs::copy(&cfg_backup, &config_target);
+        }
+        let singbox_mgr = CompatibilityServiceManager::default();
+        let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
+        let singbox_recovered = !singbox_mgr.is_available()
+            || !singbox_mgr.is_unit_installed()
+            || singbox_mgr.reload_and_verify().is_ok();
+        let sub_recovered = !sub_mgr.is_available()
+            || !sub_mgr.is_unit_installed()
+            || sub_mgr.reload_and_verify().is_ok();
+        if restore_ok && singbox_recovered && sub_recovered {
+            format!(
+                "REALITY rotation FAILED ({reason}). Previous key material and config were \
+                 restored and both services were verified healthy on the PREVIOUS key — no \
+                 client-visible change occurred."
+            )
+        } else {
+            format!(
+                "REALITY rotation FAILED ({reason}). ROLLBACK ALSO FAILED (files_restored={restore_ok}, \
+                 sing-box_recovered={singbox_recovered}, subscription_recovered={sub_recovered}). \
+                 The server may be in a broken/inconsistent state. Manual intervention required: \
+                 check `systemctl status sing-box vpn-subscription`, `journalctl -u sing-box -u \
+                 vpn-subscription`, and compare {:?}/{:?}/{:?} against their .rotate-bak siblings.",
+                priv_path, pub_path, sid_path
+            )
+        }
+    };
+
+    // Validate the candidate BEFORE touching any live file.
+    let tmp_validate = config_target.with_extension("rotate-candidate.json");
+    if let Err(e) = write_config_for_validation(&tmp_validate, &candidate_doc) {
+        let _ = std::fs::remove_file(&tmp_validate);
+        bail!(rollback(&format!("failed to stage candidate config: {e}")));
+    }
+    let validate_result = backend.validate(&tmp_validate);
+    let _ = std::fs::remove_file(&tmp_validate);
+    if let Err(e) = validate_result {
+        bail!(rollback(&format!(
+            "candidate config failed sing-box check: {e}"
+        )));
+    }
+
+    // Install new key material — reuses the same rename-with-preserved-
+    // ownership helper the atomic config/user-store writers use, so the
+    // existing root:sing-box / root:vpn-subscription ownership carries
+    // forward automatically (docs/FINAL_PRODUCTION_AUDIT.md P0-2).
+    if let Err(e) = install_rotated_key_file(&priv_path, &candidate_priv) {
+        bail!(rollback(&format!("failed to install new private key: {e}")));
+    }
+    if let Err(e) = install_rotated_key_file(&pub_path, &candidate_pub) {
+        bail!(rollback(&format!("failed to install new public key: {e}")));
+    }
+    if let Err(e) = install_rotated_key_file(&sid_path, &candidate_sid) {
+        bail!(rollback(&format!("failed to install new short_id: {e}")));
+    }
+
+    if let Err(e) = apply_config_atomically(&candidate_doc, &config_target, |p| backend.validate(p))
+    {
+        bail!(rollback(&format!("failed to apply candidate config: {e}")));
+    }
+
+    let singbox_mgr = CompatibilityServiceManager::default();
+    if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
+        if let Err(e) = singbox_mgr.reload_and_verify() {
+            bail!(rollback(&format!("sing-box reload failed: {e}")));
+        }
+    } else {
+        println!("warning: systemctl/sing-box.service not available — config written but sing-box was NOT reloaded.");
+    }
+
+    // The subscription service reads the REALITY public key/short_id
+    // ONCE at startup (services/subscription/src/main.rs) and has no
+    // config-reload path — it MUST be restarted, not just reloaded, or
+    // it keeps advertising the OLD public key to every client that asks
+    // for a subscription after this point (docs/FINAL_PRODUCTION_AUDIT.md
+    // P0-5's core scenario).
+    let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
+    if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
+        if let Err(e) = sub_mgr.reload_and_verify() {
+            bail!(rollback(&format!(
+                "subscription service restart failed: {e}"
+            )));
+        }
+    } else {
+        println!("warning: systemctl/vpn-subscription.service not available — new public key written but subscription service was NOT restarted.");
+    }
+
+    // Commit: only now is it safe to discard the rollback material.
+    for p in [&priv_path, &pub_path, &sid_path] {
+        remove_rotate_backup(p);
+    }
+    let _ = (priv_bak, pub_bak, sid_bak); // silence unused-if-all-None warnings; already handled above
+
+    println!(
+        "REALITY key rotated and applied. Every existing client's subscription/profile is now \
+         invalid until re-imported — the public key changed."
+    );
+    Ok(())
+}
+
+fn write_config_for_validation(path: &std::path::Path, doc: &serde_json::Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(doc)?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// Overwrite `target` (which already exists — this is only used for
+/// rotating already-installed key files) with `contents`, preserving the
+/// existing owner/group exactly, via the same tmp-file+rename+
+/// preserve-ownership pattern as `compat_config::store`/`server`. A bare
+/// `std::fs::write` would truncate-in-place (not atomic) and a naive
+/// tmp+rename would silently drop back to the writing process's own
+/// group, both of which this project treats as bugs
+/// (docs/FINAL_PRODUCTION_AUDIT.md P0-2) — this is the same fix applied
+/// to the same class of write.
+fn install_rotated_key_file(target: &std::path::Path, contents: &str) -> Result<()> {
+    let mut tmp = target.as_os_str().to_owned();
+    tmp.push(".rotate-tmp");
+    let tmp_path = std::path::PathBuf::from(tmp);
+    write_secret_file(&tmp_path, contents)?;
+    // Preserve BOTH the existing mode and owner/group across the swap —
+    // `write_secret_file` always writes 0600, but e.g. public.key/
+    // short_id.txt are 0640 root:vpn-subscription (see
+    // deploy/almalinux/install.sh's ownership matrix), and a bare rename
+    // would otherwise silently downgrade them to 0600 root:root.
+    #[cfg(unix)]
+    if let Ok(meta) = std::fs::metadata(target) {
+        std::fs::set_permissions(&tmp_path, meta.permissions())?;
+    }
+    compat_config::ownership::preserve_ownership_before_rename(&tmp_path, target)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    std::fs::rename(&tmp_path, target)?;
     Ok(())
 }
 
@@ -982,17 +1289,35 @@ fn cmd_backup(
     let staging = tempdir_here()?;
     stage_backup_contents(cfg, config_path, staging.path())?;
 
+    // Restrictive from the moment the file is CREATED
+    // (docs/FINAL_PRODUCTION_AUDIT.md P1 "backup archives must be
+    // restrictive from the start") — a `chmod` after `tar` finishes
+    // leaves a window, however short, where the archive (REALITY
+    // private key, Hysteria2 TLS key, user credential hashes) exists on
+    // disk with the process's default umask (often 0644, world-
+    // readable). Setting the umask before `tar` creates the file closes
+    // that window; the previous umask is restored right after so it
+    // doesn't leak into any later code path in this process.
+    #[cfg(unix)]
+    let previous_umask = unsafe { libc::umask(0o077) };
     let status = std::process::Command::new("tar")
         .arg("-cf")
         .arg(&dest)
         .arg("-C")
         .arg(staging.path())
         .arg(".")
-        .status()
-        .context("running tar to create backup archive")?;
+        .status();
+    #[cfg(unix)]
+    unsafe {
+        libc::umask(previous_umask);
+    }
+    let status = status.context("running tar to create backup archive")?;
     if !status.success() {
         bail!("tar exited with failure creating {dest:?}");
     }
+    // Belt-and-suspenders: also explicitly enforce 0600 in case `dest`
+    // already existed with looser permissions from a previous run (tar
+    // does not narrow an existing file's mode on its own).
     write_secret_file_at(&dest)?;
 
     println!("Backup written to {dest:?}.");

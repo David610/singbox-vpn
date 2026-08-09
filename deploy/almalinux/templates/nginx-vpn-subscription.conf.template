@@ -1,7 +1,11 @@
-# /etc/nginx/conf.d/vpn-subscription.conf — rendered once by install.sh.
+# /etc/nginx/conf.d/vpn-subscription.conf — fully managed by vpn1.
 # Terminates public HTTPS for the subscription endpoint and proxies to
-# the loopback-only Rust subscription service. Never overwritten by
-# install.sh on re-run; edit by hand afterwards if needed.
+# the loopback-only Rust subscription service. install.sh regenerates
+# this file from this template on EVERY run (not just the first) so it
+# always reflects the current PUBLIC_HOST/SUBSCRIPTION_HOST — do not
+# hand-edit the installed file, changes will be overwritten on the next
+# install.sh/update.sh run. If you need custom nginx directives, add a
+# separate file under /etc/nginx/conf.d/ rather than editing this one.
 #
 # Two separate TLS concerns, do not confuse them (see
 # docs/ALMALINUX_DEPLOYMENT.md "Two independent TLS certificates"):
@@ -30,6 +34,12 @@ server {
 
     location /sub/ {
         limit_req zone=vpn_subscription burst=10 nodelay;
+
+        # /sub/<token> — the URI itself IS a bearer credential. Never let
+        # it reach an access log (docs/FINAL_PRODUCTION_AUDIT.md P0-12):
+        # a leaked/rotated log file must never be able to hand out a live
+        # subscription token.
+        access_log off;
 
         proxy_pass http://127.0.0.1:9100;
         proxy_set_header Host $host;

@@ -13,6 +13,19 @@ die() { echo "[update] ERROR: $*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 
+# Mutual exclusion between install.sh/update.sh themselves
+# (docs/FINAL_PRODUCTION_AUDIT.md P0-4: "two concurrent administrators
+# must not lose each other's changes"). Deliberately a SEPARATE lock file
+# from vpn-admin's own /run/lock/vpn1.lock (see apps/admin/src/lock.rs):
+# this script invokes `vpn-admin render-config` below, which acquires
+# that lock itself for the duration of that one call — holding the same
+# lock around this whole script would deadlock the moment it shells out
+# to vpn-admin. This lock only serializes concurrent install.sh/update.sh
+# runs against each other; vpn-admin's own lock independently serializes
+# concurrent `vpn user ...`/`vpn restore`/`vpn init --rotate` calls.
+exec 200>/run/lock/vpn1-installer.lock
+flock -x 200
+
 log "backing up current binaries + config to $BACKUP_DIR"
 mkdir -p "$BACKUP_DIR"
 for f in vpn-admin vpn vpn-subscription-svc; do

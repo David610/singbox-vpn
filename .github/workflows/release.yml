@@ -70,9 +70,35 @@ jobs:
           mkdir -p "$out"
           cp "target/${{ matrix.target }}/release/vpn-admin" "$out/vpn-admin"
           cp "target/${{ matrix.target }}/release/subscription" "$out/subscription"
-          cp README.md LICENSE "$out/" 2>/dev/null || true
+          cp README.md LICENSE "$out/"
           tar -czf "${out}.tar.gz" "$out"
           sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
+
+      # Archive/installer contract test (docs/FINAL_PRODUCTION_AUDIT.md
+      # P0-6): extract the archive we JUST built using the exact same
+      # relative-path assumptions deploy/almalinux/install.sh's
+      # fetch_release_binaries() uses, and fail the release build if they
+      # have ever drifted apart — this is the one place both "descriptions"
+      # of the archive format (this workflow, and the installer) are
+      # checked against each other automatically instead of by hand.
+      - name: Archive/installer contract test
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          tar -xzf "vpn1-${{ matrix.target }}.tar.gz" -C "$tmp"
+          extracted="$tmp/vpn1-${{ matrix.target }}"
+          test -d "$extracted" || { echo "::error::archive did not contain vpn1-${{ matrix.target }}/ — install.sh's fetch_release_binaries() expects exactly this layout"; exit 1; }
+          test -x "$extracted/vpn-admin" || { echo "::error::vpn-admin missing or not executable in archive"; exit 1; }
+          test -x "$extracted/subscription" || { echo "::error::subscription missing or not executable in archive"; exit 1; }
+          test -f "$extracted/LICENSE" || { echo "::error::LICENSE missing from release archive"; exit 1; }
+          if [ "${{ matrix.target }}" = "$(uname -m)-unknown-linux-gnu" ]; then
+            "$extracted/vpn-admin" --version
+            "$extracted/subscription" --version
+          else
+            echo "skipping --version execution: ${{ matrix.target }} is cross-compiled, cannot run on $(uname -m) runner"
+          fi
+          rm -rf "$tmp"
+          echo "archive/installer contract OK: layout matches deploy/almalinux/install.sh's fetch_release_binaries()"
 
       - uses: actions/upload-artifact@v4
         with:
