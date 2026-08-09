@@ -270,7 +270,7 @@ fn cmd_render_config(cfg: &DeploymentConfig) -> Result<()> {
 
 fn cmd_user_create(cfg: &DeploymentConfig, name: &str, expires_at: Option<i64>) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
-    let id = format!("user_{}", &credentials::generate_short_id());
+    let id = format!("user_{}", credentials::generate_short_id());
     let token = credentials::generate_subscription_token();
     let user = CompatUser {
         id: id.clone(),
