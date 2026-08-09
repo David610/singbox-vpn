@@ -839,6 +839,28 @@ configure_nginx() {
   install -d -m 0755 "$(dirname "$NGINX_CONF")"
   install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"
   rm -f "$NGINX_CONF.tmp"
+  # SELinux (RHEL family) only lets nginx (httpd_t) bind() to a fixed
+  # allow-list of ports labeled http_port_t (80/443/8080/8443/etc. are
+  # on it by default) — a custom SUBSCRIPTION_PORT is very likely NOT on
+  # that list, so the kernel silently denies the bind with a bare
+  # "Permission denied" that looks identical to any other bind failure.
+  # Caught on a real AlmaLinux install (`ausearch -m avc` showed
+  # `denied { name_bind } ... tcontext=...unreserved_port_t`): nginx
+  # then quietly kept running its OLD config instead of crashing, so
+  # `systemctl status` reported "active" the whole time even though
+  # nothing was listening on the new port at all. Label the port for
+  # httpd_t before ever trying to bind it — modify the existing mapping
+  # if some other type already claims this port, add a new one
+  # otherwise.
+  if [ "$OS_FAMILY" = "rhel" ] && command -v semanage >/dev/null 2>&1; then
+    if semanage port -l 2>/dev/null | awk '/^http_port_t/' | grep -qw "$port"; then
+      : # already labeled http_port_t
+    elif semanage port -l 2>/dev/null | grep -w tcp | grep -qw "$port"; then
+      semanage port -m -t http_port_t -p tcp "$port" || warn "could not relabel SELinux port context for ${port}/tcp — nginx may fail to bind it."
+    else
+      semanage port -a -t http_port_t -p tcp "$port" || warn "could not add SELinux port context for ${port}/tcp — nginx may fail to bind it."
+    fi
+  fi
   nginx -t || die "nginx config validation failed (nginx -t) — not reloading nginx with a broken config."
   # `systemctl enable --now` is a no-op on an already-active nginx — it
   # does NOT reload newly-written config into the running process. On a
@@ -853,6 +875,21 @@ configure_nginx() {
   systemctl enable nginx >/dev/null 2>&1
   systemctl reload-or-restart nginx
   systemctl is-active --quiet nginx || die "nginx is not active after configuring the subscription vhost."
+  # `is-active` alone is not proof the NEW config actually took effect:
+  # on a failed reload (e.g. the SELinux bind denial above, before this
+  # fix existed) nginx logs an [emerg] and keeps running its OLD config
+  # instead of crashing, so `is-active` stays true while the port this
+  # vhost is supposed to serve was never actually bound — exactly what
+  # happened on a real install. Verify the listen socket directly.
+  if command -v ss >/dev/null 2>&1; then
+    local tries=0 bound=0
+    while [ "$tries" -lt 10 ]; do
+      ss -tln 2>/dev/null | grep -q ":${port} " && { bound=1; break; }
+      tries=$((tries + 1))
+      sleep 0.3
+    done
+    [ "$bound" -eq 1 ] || die "nginx is active but is NOT actually listening on ${port}/tcp after reload — the new config did not take effect (check: journalctl -u nginx --no-pager -n 50, /var/log/nginx/error.log, and 'ausearch -m avc -ts recent' if SELinux is enforcing)."
+  fi
   NGINX_OK=1
   SUBSCRIPTION_HTTPS_OK=1
   log "nginx vhost installed and validated: $NGINX_CONF"
