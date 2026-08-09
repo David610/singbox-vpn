@@ -152,9 +152,13 @@ resolve_version() {
   fi
   log "resolving latest stable release tag for $VPN1_REPO..."
   local latest_tag
+  # `|| true`: a 404 (no release published yet) makes `curl -f` fail,
+  # which under `set -e`/pipefail would otherwise abort the whole
+  # installer right here instead of reaching the intended "no release
+  # found, fall back to $VPN1_REF" branch below.
   latest_tag="$(curl -fsSL --retry 3 --retry-delay 2 \
       "https://api.github.com/repos/$VPN1_REPO/releases/latest" 2>/dev/null \
-      | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name" *: *"([^"]*)".*/\1/')"
+      | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name" *: *"([^"]*)".*/\1/')" || true
   if [ -n "$latest_tag" ]; then
     VPN1_VERSION="$latest_tag"
     log "resolved stable release: $VPN1_VERSION — source and binaries will both come from this exact tag."
