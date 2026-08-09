@@ -35,6 +35,18 @@ log() { echo "[bootstrap] $*" >&2; }
 warn() { echo "[bootstrap] WARNING: $*" >&2; }
 die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 
+# Shared curl flags for every network fetch below. `--retry` alone does
+# NOT protect against a connection that opens fine but then stalls
+# (zero throughput) partway through — curl only retries on a completed
+# failure, so a stalled-but-technically-open transfer hangs forever
+# with no error and no way for `--retry` to ever kick in. Observed for
+# real: this exact installer hanging indefinitely on a flaky VPS
+# network mid-download, requiring a manual Ctrl+C every time.
+# `--speed-limit`/`--speed-time` makes curl itself detect and abort a
+# stalled transfer so `--retry` actually gets a chance to run;
+# `--connect-timeout`/`--max-time` bound the rest.
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+
 # ---------------------------------------------------------------------
 # argument parsing (curl ... | sudo bash -s -- --version v1.2.3)
 # ---------------------------------------------------------------------
@@ -118,7 +130,7 @@ download_source() {
     url="https://codeload.github.com/$VPN1_REPO/tar.gz/refs/tags/$VPN1_VERSION"
   fi
   log "downloading vpn1 source (ref=$ref)..."
-  if ! curl -fsSL --retry 3 --retry-delay 2 -o "$tarball" "$url"; then
+  if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$url"; then
     if [ -n "$VPN1_VERSION" ]; then
       die "could not download source for ref '$VPN1_VERSION' from $VPN1_REPO. Check the version exists and try again."
     fi
@@ -160,7 +172,7 @@ resolve_version() {
   # which under `set -e`/pipefail would otherwise abort the whole
   # installer right here instead of reaching the intended "no release
   # found, fall back to $VPN1_REF" branch below.
-  latest_tag="$(curl -fsSL --retry 3 --retry-delay 2 \
+  latest_tag="$(curl -fsSL "${CURL_NET_FLAGS[@]}" \
       "https://api.github.com/repos/$VPN1_REPO/releases/latest" 2>/dev/null \
       | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name" *: *"([^"]*)".*/\1/')" || true
   if [ -n "$latest_tag" ]; then

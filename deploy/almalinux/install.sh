@@ -64,6 +64,16 @@ die() {
 }
 stage() { echo; echo "[install] === [$1/17] $2 ==="; }
 
+# Shared curl flags for network fetches below (sing-box release asset,
+# checksums, prebuilt vpn1 release). `--retry` alone does not protect
+# against a connection that opens fine but then stalls at zero
+# throughput partway through — curl only retries a *completed* failure,
+# so a stalled transfer just hangs forever with no error. Observed for
+# real on a flaky VPS network. `--speed-limit`/`--speed-time` makes
+# curl itself detect and abort a stalled transfer so `--retry` gets a
+# chance to run; `--connect-timeout`/`--max-time` bound the rest.
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/os.sh"
 # shellcheck source=/dev/null
@@ -330,12 +340,12 @@ fetch_release_binaries() {
   tmp="$(mktemp -d)"
   local asset="vpn1-${target}.tar.gz"
   log "checking for a prebuilt release ($asset)..."
-  if ! curl -fsSL -o "$tmp/$asset" "$base_url/$asset" 2>/dev/null; then
+  if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmp/$asset" "$base_url/$asset" 2>/dev/null; then
     log "no prebuilt release available (this is expected until a release is tagged) — falling back to building from source."
     rm -rf "$tmp"
     return 1
   fi
-  if curl -fsSL -o "$tmp/SHA256SUMS" "$base_url/SHA256SUMS" 2>/dev/null; then
+  if curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmp/SHA256SUMS" "$base_url/SHA256SUMS" 2>/dev/null; then
     ( cd "$tmp" && sha256sum --ignore-missing -c SHA256SUMS ) || die "checksum verification failed for $asset — refusing to install unverified binaries."
     log "checksum verified against release SHA256SUMS."
   else
@@ -407,7 +417,7 @@ install_singbox() {
   tarball="sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"
   local url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${tarball}"
   log "downloading pinned sing-box ${SINGBOX_VERSION} (${ARCH}) from official release assets..."
-  curl -fsSL -o "$tmpdir/$tarball" "$url" || die "download failed: $url"
+  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmpdir/$tarball" "$url" || die "download failed: $url"
 
   # Verify integrity before extracting/installing ANYTHING. Preferred:
   # upstream's own published checksums.txt when it exists for this
@@ -419,7 +429,7 @@ install_singbox() {
   # downgrade to an unverified install.
   local sums_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box_${SINGBOX_VERSION}_checksums.txt"
   local actual_sha256 expected_sha256=""
-  if curl -fsSL -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
+  if curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
     ( cd "$tmpdir" && sha256sum --ignore-missing -c checksums.txt ) || die "checksum verification failed for $tarball (upstream checksums.txt) — refusing to install."
     log "checksum verified against upstream checksums.txt."
   else
