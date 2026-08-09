@@ -286,7 +286,6 @@ resolve_host_config() {
   if load_existing_host_config; then
     log "using host configuration from existing $DEPLOYMENT_TOML: PUBLIC_HOST=$PUBLIC_HOST SUBSCRIPTION_HOST=$SUBSCRIPTION_HOST"
     export PUBLIC_HOST SUBSCRIPTION_HOST
-    AUTO_TLS_DOMAIN=0
     return
   fi
 
@@ -298,19 +297,17 @@ resolve_host_config() {
 
   if [ -n "${PUBLIC_HOST:-}" ]; then
     log "using operator-supplied PUBLIC_HOST=$PUBLIC_HOST"
-    AUTO_TLS_DOMAIN=0
   else
     log "no PUBLIC_HOST set — detecting public IP for zero-touch install..."
     PUBLIC_IP="$(preflight_detect_public_ip)" || die "could not auto-detect this server's public IP. Re-run with PUBLIC_HOST=your.domain.com set explicitly."
     log "detected public IP: $PUBLIC_IP"
     PUBLIC_HOST="$(derive_auto_host "$PUBLIC_IP")"
     log "auto-assigned hostname: $PUBLIC_HOST (resolves to $PUBLIC_IP via sslip.io, no DNS setup needed)"
-    AUTO_TLS_DOMAIN=1
   fi
   SUBSCRIPTION_HOST="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
   preflight_validate_hostname "$PUBLIC_HOST" "PUBLIC_HOST" || die "invalid PUBLIC_HOST — refusing to interpolate it into deployment.toml/nginx config."
   preflight_validate_hostname "$SUBSCRIPTION_HOST" "SUBSCRIPTION_HOST" || die "invalid SUBSCRIPTION_HOST — refusing to interpolate it into deployment.toml/nginx config."
-  export PUBLIC_HOST SUBSCRIPTION_HOST AUTO_TLS_DOMAIN
+  export PUBLIC_HOST SUBSCRIPTION_HOST
 }
 
 host_config_stage() {
@@ -510,15 +507,20 @@ directories_stage() {
 # ---------------------------------------------------------------------
 # [8] certificates
 # ---------------------------------------------------------------------
-# Hysteria2 requires a valid TLS cert/key BEFORE sing-box can start.
-# When AUTO_TLS_DOMAIN=1 (no operator-supplied domain), we issue a real
-# certificate automatically for the sslip.io hostname assigned in stage
-# 3 via certbot's HTTP-01 challenge — no manual DNS/domain steps, no
-# hand-rolled ACME client (still using certbot). This only requires
+# Hysteria2 requires a valid TLS cert/key BEFORE sing-box can start. We
+# always attempt to issue a real certificate automatically via certbot's
+# HTTP-01 challenge — for the auto-assigned sslip.io hostname (stage 3)
+# just as much as for an operator-supplied PUBLIC_HOST whose DNS record
+# already points at this server (attempt_automatic_certbot's own guards
+# — certbot installed, port 80 free, firewall opened/closed cleanly
+# either way — make this safe to attempt unconditionally; a
+# misconfigured/not-yet-propagated custom domain just fails the HTTP-01
+# challenge and falls through to the manual instructions below, exactly
+# like any other automatic-issuance failure). This only requires
 # outbound HTTPS + port 80 briefly free, both true on a fresh VPS. If it
-# fails (egress blocked, port 80 unavailable, etc.) we stop with the
-# exact manual recovery commands rather than silently degrading to a
-# cert that client apps will reject.
+# fails (egress blocked, port 80 unavailable, DNS not pointed here yet,
+# etc.) we stop with the exact manual recovery commands rather than
+# silently degrading to a cert that client apps will reject.
 # Temporarily allow inbound TCP/80 for certbot's HTTP-01 challenge, and
 # remove EXACTLY that rule again afterwards — never touching any
 # pre-existing firewall rule vpn1 did not add itself
@@ -590,9 +592,7 @@ ensure_tls_material() {
   if [ -s "$le_cert" ]; then
     return 0
   fi
-  if [ "${AUTO_TLS_DOMAIN:-0}" -eq 1 ] || [ -n "${VPN1_AUTO_CERTBOT:-}" ]; then
-    attempt_automatic_certbot "$host" && return 0
-  fi
+  attempt_automatic_certbot "$host" && return 0
   return 1
 }
 
