@@ -9,6 +9,14 @@ publish.workspace = true
 name = "vpn-admin"
 path = "src/main.rs"
 
+# Ergonomic end-user-facing alias for the same binary (spec: normal users
+# should be able to type `vpn ...`, not `vpn-admin ...`). Same main.rs,
+# same clap parser — `vpn-admin` keeps working unchanged for any existing
+# script/doc that references it.
+[[bin]]
+name = "vpn"
+path = "src/main.rs"
+
 [dependencies]
 clap.workspace = true
 serde.workspace = true
@@ -17,6 +25,8 @@ toml.workspace = true
 common = { path = "../../crates/common" }
 compat-config = { path = "../../crates/compat-config" }
 anyhow = "1"
+qrcode = { version = "0.14", default-features = false }
+tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"

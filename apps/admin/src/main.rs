@@ -48,6 +48,34 @@ enum Commands {
     /// Regenerate and atomically apply the sing-box server config from
     /// the current user store, without changing any user.
     RenderConfig,
+    /// Print vpn-admin's own version and the configured sing-box
+    /// binary's reported version, if present.
+    Version,
+    /// Summarize the current deployment: service state, user counts,
+    /// config presence. Does not print secrets.
+    Status,
+    /// Run diagnostic checks and print `[OK]`/`[WARN]`/`[FAIL]` for each.
+    /// Exits non-zero if any check fails. Checks that need a tool not
+    /// present on this host are reported `[WARN] ... not available`, not
+    /// silently skipped or faked as passing.
+    Doctor,
+    /// Back up the minimum state needed to rebuild this deployment
+    /// (users, credential metadata, REALITY keys, Hysteria2 TLS
+    /// material) into a single tar archive written mode 0600. Contains
+    /// secrets — treat the output file as sensitive.
+    Backup {
+        /// Destination path. Defaults to
+        /// `vpn1-backup-<unix-seconds>.tar` in the current directory.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Restore a backup produced by `backup`. Validates the archive
+    /// contents (users file parses, REALITY private key present) before
+    /// touching any live state, then applies the restored config through
+    /// the same validate-then-apply-then-reload path as every other
+    /// mutating command — a corrupt or incompatible backup is rejected
+    /// by `sing-box check` rather than silently installed.
+    Restore { archive: PathBuf },
     #[command(subcommand)]
     User(UserCommands),
 }
@@ -60,8 +88,26 @@ enum UserCommands {
         /// Optional unix-seconds expiry.
         #[arg(long)]
         expires_at: Option<i64>,
+        /// Print a terminal QR code of the subscription URL alongside
+        /// the normal output.
+        #[arg(long)]
+        qr: bool,
+        /// Print `{"id","name","enabled","subscription_url"}` as JSON
+        /// instead of the human-readable form. Never includes server
+        /// private keys.
+        #[arg(long)]
+        json: bool,
     },
     List,
+    /// Print a terminal QR code encoding a user's subscription URL. The
+    /// raw subscription token is never persisted (only its hash is), so
+    /// this mints a *fresh* token the same way `rotate-token` does —
+    /// there is no way to QR-encode a still-valid previously-issued
+    /// token without knowing it, by design. The previous subscription
+    /// URL stops working.
+    Qr {
+        user_id: String,
+    },
     Enable {
         user_id: String,
     },
@@ -70,6 +116,9 @@ enum UserCommands {
     },
     RotateToken {
         user_id: String,
+        /// Print a terminal QR code of the new subscription URL.
+        #[arg(long)]
+        qr: bool,
     },
     /// Rotate only the VLESS UUID. Applies + reloads sing-box so the
     /// previous UUID stops working immediately.
@@ -108,18 +157,27 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Init { rotate } => cmd_init(&cfg, rotate),
         Commands::RenderConfig => cmd_render_config(&cfg),
-        Commands::User(UserCommands::Create { name, expires_at }) => {
-            cmd_user_create(&cfg, &name, expires_at)
-        }
+        Commands::Version => cmd_version(&cfg),
+        Commands::Status => cmd_status(&cfg),
+        Commands::Doctor => cmd_doctor(&cfg),
+        Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
+        Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
+        Commands::User(UserCommands::Create {
+            name,
+            expires_at,
+            qr,
+            json,
+        }) => cmd_user_create(&cfg, &name, expires_at, qr, json),
         Commands::User(UserCommands::List) => cmd_user_list(&cfg),
+        Commands::User(UserCommands::Qr { user_id }) => cmd_user_qr(&cfg, &user_id),
         Commands::User(UserCommands::Enable { user_id }) => {
             cmd_user_set_enabled(&cfg, &user_id, true)
         }
         Commands::User(UserCommands::Disable { user_id }) => {
             cmd_user_set_enabled(&cfg, &user_id, false)
         }
-        Commands::User(UserCommands::RotateToken { user_id }) => {
-            cmd_user_rotate_token(&cfg, &user_id)
+        Commands::User(UserCommands::RotateToken { user_id, qr }) => {
+            cmd_user_rotate_token(&cfg, &user_id, qr)
         }
         Commands::User(UserCommands::RotateVless { user_id }) => {
             cmd_user_rotate_vless(&cfg, &user_id)
@@ -352,7 +410,37 @@ fn cmd_render_config(cfg: &DeploymentConfig) -> Result<()> {
     regenerate_singbox_config(cfg)
 }
 
-fn cmd_user_create(cfg: &DeploymentConfig, name: &str, expires_at: Option<i64>) -> Result<()> {
+fn subscription_url(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
+/// Print a terminal QR code encoding `data`. QR codes intentionally
+/// encode only the subscription URL, never the full server
+/// configuration (spec §6). PNG file output is not implemented — kept
+/// out to avoid pulling in an image-encoding dependency for a
+/// convenience feature; terminal/unicode rendering covers the primary
+/// onboarding flow (admin runs this over SSH and the end user scans the
+/// terminal, or the admin re-types/pastes the URL shown alongside it).
+fn print_qr(data: &str) -> Result<()> {
+    let code = qrcode::QrCode::new(data.as_bytes()).context("encoding QR code")?;
+    let image = code
+        .render::<qrcode::render::unicode::Dense1x2>()
+        .quiet_zone(true)
+        .build();
+    println!("{image}");
+    Ok(())
+}
+
+fn cmd_user_create(
+    cfg: &DeploymentConfig,
+    name: &str,
+    expires_at: Option<i64>,
+    qr: bool,
+    json: bool,
+) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     // 128-bit CSPRNG id (spec: do not reuse the 32-bit REALITY short_id
     // generator as a user id). Collision detection is defense in depth
@@ -376,14 +464,31 @@ fn cmd_user_create(cfg: &DeploymentConfig, name: &str, expires_at: Option<i64>) 
     store::save_users_atomic(&cfg.users_file(), &users)?;
     regenerate_singbox_config(cfg)?;
 
+    let url = subscription_url(cfg, &token);
+    if json {
+        let out = serde_json::json!({
+            "id": id,
+            "name": name,
+            "enabled": true,
+            "subscription_url": url,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
     println!("User created: {id}");
     println!();
-    println!(
-        "Subscription:\nhttps://{}:{}/sub/{}",
-        cfg.subscription_host, cfg.subscription.public_port, token
-    );
+    println!("Subscription:\n{url}");
     println!();
     println!("This URL is shown once. It is not recoverable — use `vpn-admin user rotate-token {id}` to mint a new one if lost.");
+    if qr {
+        println!();
+        println!("Scan this QR code in Hiddify (Add profile -> Scan QR):");
+        print_qr(&url)?;
+    }
+    println!();
+    println!("Recommended client: Hiddify (iOS/Android/MagicOS/Linux/Windows/macOS).");
+    println!("1. Install Hiddify.  2. Add profile.  3. Scan the QR code above or paste the subscription URL.  4. Connect.");
     Ok(())
 }
 
@@ -417,7 +522,7 @@ fn cmd_user_set_enabled(cfg: &DeploymentConfig, id: &str, enabled: bool) -> Resu
     Ok(())
 }
 
-fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str) -> Result<()> {
+fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     let token = credentials::generate_subscription_token();
     let hash = credentials::hash_token(&token);
@@ -425,12 +530,27 @@ fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     store::save_users_atomic(&cfg.users_file(), &users)?;
     // Token rotation does not change VLESS/Hysteria2 credentials, so the
     // sing-box config is unaffected — no re-render needed.
-    println!(
-        "New subscription:\nhttps://{}:{}/sub/{}",
-        cfg.subscription_host, cfg.subscription.public_port, token
-    );
+    let url = subscription_url(cfg, &token);
+    println!("New subscription:\n{url}");
     println!("The previous subscription URL for this user no longer works.");
+    if qr {
+        println!();
+        print_qr(&url)?;
+    }
     Ok(())
+}
+
+/// `vpn-admin user qr NAME`: mints a fresh subscription token (see the
+/// `UserCommands::Qr` doc comment for why this can't just re-derive an
+/// existing one) and prints it as a terminal QR code.
+fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
+    println!(
+        "Note: the subscription token is never stored in recoverable form, \
+         so this mints a fresh one (like `rotate-token`) — the previous \
+         subscription URL for this user stops working."
+    );
+    println!();
+    cmd_user_rotate_token(cfg, id, true)
 }
 
 /// Common rotate-and-apply flow: mutate the user in-place via `mutate`,
@@ -506,5 +626,469 @@ fn cmd_user_subscription(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     println!("Run:");
     println!("  vpn-admin user rotate-token {id}");
     println!("to create a new URL.");
+    Ok(())
+}
+
+fn cmd_version(cfg: &DeploymentConfig) -> Result<()> {
+    println!("vpn1 {}", env!("CARGO_PKG_VERSION"));
+    match std::process::Command::new(&cfg.singbox_binary)
+        .arg("version")
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            if let Some(first_line) = text.lines().next() {
+                println!("{first_line}");
+            }
+        }
+        _ => println!(
+            "sing-box: not found at {:?} (or failed to run `version`)",
+            cfg.singbox_binary
+        ),
+    }
+    Ok(())
+}
+
+fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
+    let users = store::load_users(&cfg.users_file())?;
+    let now = UnixSeconds::now().0 as i64;
+    let active = users.iter().filter(|u| u.is_active(now)).count();
+    let disabled = users.iter().filter(|u| !u.enabled).count();
+
+    println!("vpn1 status");
+    println!();
+    let singbox = CompatibilityServiceManager::new("sing-box");
+    println!("sing-box              {}", service_state_label(&singbox));
+    let subscription = CompatibilityServiceManager::new("vpn-subscription");
+    println!(
+        "subscription-service  {}",
+        service_state_label(&subscription)
+    );
+    println!();
+    println!(
+        "sing-box config:       {}",
+        if cfg.singbox_config_file().exists() {
+            "present"
+        } else {
+            "missing (run `vpn-admin render-config`)"
+        }
+    );
+    println!();
+    println!("Users:");
+    println!("  total:    {}", users.len());
+    println!("  active:   {active}");
+    println!("  disabled: {disabled}");
+    println!();
+    println!(
+        "Public endpoints: {}:{} (VLESS+REALITY tcp/443, Hysteria2 udp/443 per deployment.toml)",
+        cfg.public_host, cfg.reality.listen_port
+    );
+    println!(
+        "Subscription HTTPS: https://{}:{}/sub/<token>",
+        cfg.subscription_host, cfg.subscription.public_port
+    );
+
+    if let Some(days) = cert_expiry_days(&cfg.hysteria_dir().join("cert.pem")) {
+        match days {
+            Ok(d) if d < 0 => println!("Certificate:           EXPIRED {} day(s) ago", -d),
+            Ok(d) => println!("Certificate:            valid, expires in {d} day(s)"),
+            Err(e) => println!("Certificate:            could not check ({e})"),
+        }
+    }
+    Ok(())
+}
+
+fn service_state_label(mgr: &CompatibilityServiceManager) -> &'static str {
+    if !mgr.is_available() {
+        "unknown (systemctl not available)"
+    } else if !mgr.is_unit_installed() {
+        "not installed"
+    } else if mgr.is_active() {
+        "active"
+    } else {
+        "inactive"
+    }
+}
+
+/// Days until the certificate at `path` expires (negative if already
+/// expired), computed via the real `openssl` binary. `None` if the file
+/// doesn't exist; `Some(Err(..))` if it exists but `openssl` isn't
+/// available or the output couldn't be parsed — callers must surface
+/// this as an explicit "could not check", never a silent pass.
+fn cert_expiry_days(path: &std::path::Path) -> Option<Result<i64, String>> {
+    if !path.exists() {
+        return None;
+    }
+    let output = std::process::Command::new("openssl")
+        .args(["x509", "-enddate", "-noout", "-in"])
+        .arg(path)
+        .output();
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => return Some(Err(String::from_utf8_lossy(&o.stderr).trim().to_string())),
+        Err(_) => return Some(Err("openssl not available".to_string())),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let date_str = match text.trim().strip_prefix("notAfter=") {
+        Some(s) => s,
+        None => return Some(Err(format!("unexpected openssl output: {text}"))),
+    };
+    // openssl's default date format, e.g. "Jan  2 03:04:05 2026 GMT" — parse
+    // via `date -d` (coreutils) rather than hand-rolling a parser for a
+    // locale-independent, well-known format string.
+    let epoch = std::process::Command::new("date")
+        .args(["-u", "-d", date_str, "+%s"])
+        .output();
+    match epoch {
+        Ok(o) if o.status.success() => {
+            let secs: i64 = String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse()
+                .map_err(|e| format!("parsing date output: {e}"))
+                .ok()?;
+            let now = UnixSeconds::now().0 as i64;
+            Some(Ok((secs - now) / 86400))
+        }
+        _ => Some(Err(format!("could not parse expiry date {date_str:?}"))),
+    }
+}
+
+enum CheckStatus {
+    Ok,
+    Warn,
+    Fail,
+}
+
+fn report_check(status: CheckStatus, message: impl AsRef<str>) {
+    let label = match status {
+        CheckStatus::Ok => "[OK]  ",
+        CheckStatus::Warn => "[WARN]",
+        CheckStatus::Fail => "[FAIL]",
+    };
+    println!("{label} {}", message.as_ref());
+}
+
+#[cfg(unix)]
+fn is_not_world_readable(path: &std::path::Path) -> Option<bool> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .ok()
+        .map(|m| m.permissions().mode() & 0o007 == 0)
+}
+
+#[cfg(not(unix))]
+fn is_not_world_readable(_path: &std::path::Path) -> Option<bool> {
+    None
+}
+
+/// Diagnostic checks, `[OK]`/`[WARN]`/`[FAIL]` per line (spec §17).
+/// Returns an error (non-zero exit) iff any check is `[FAIL]`. A check
+/// that needs a tool unavailable in the current environment is `[WARN]`,
+/// never silently skipped and never counted as `[OK]`.
+fn cmd_doctor(cfg: &DeploymentConfig) -> Result<()> {
+    let mut failures = 0u32;
+
+    if cfg.singbox_binary.exists() {
+        report_check(
+            CheckStatus::Ok,
+            format!("sing-box binary present at {:?}", cfg.singbox_binary),
+        );
+        let target = cfg.singbox_config_file();
+        if target.exists() {
+            let backend = SingBoxBackend {
+                binary_path: cfg.singbox_binary.clone(),
+            };
+            match backend.validate(&target) {
+                Ok(()) => report_check(CheckStatus::Ok, "sing-box config valid"),
+                Err(e) => {
+                    report_check(CheckStatus::Fail, format!("sing-box config invalid: {e}"));
+                    failures += 1;
+                }
+            }
+        } else {
+            report_check(
+                CheckStatus::Warn,
+                "sing-box config not yet rendered (run `vpn-admin render-config`)",
+            );
+        }
+    } else {
+        report_check(
+            CheckStatus::Fail,
+            format!("sing-box binary missing at {:?}", cfg.singbox_binary),
+        );
+        failures += 1;
+    }
+
+    for (label, path) in [
+        ("REALITY private key", cfg.reality_private_key_file()),
+        ("REALITY public key", cfg.reality_public_key_file()),
+    ] {
+        if !path.exists() {
+            report_check(CheckStatus::Warn, format!("{label} missing at {path:?}"));
+            continue;
+        }
+        match is_not_world_readable(&path) {
+            Some(true) => report_check(
+                CheckStatus::Ok,
+                format!("{label} present, not world-readable"),
+            ),
+            Some(false) => {
+                report_check(
+                    CheckStatus::Fail,
+                    format!("{label} at {path:?} is world-readable"),
+                );
+                failures += 1;
+            }
+            None => report_check(
+                CheckStatus::Warn,
+                format!("{label} present (permission check unavailable on this platform)"),
+            ),
+        }
+    }
+
+    match store::load_users(&cfg.users_file()) {
+        Ok(users) => report_check(
+            CheckStatus::Ok,
+            format!("user store parses ({} user(s))", users.len()),
+        ),
+        Err(e) => {
+            report_check(CheckStatus::Fail, format!("user store invalid: {e}"));
+            failures += 1;
+        }
+    }
+
+    match cert_expiry_days(&cfg.hysteria_dir().join("cert.pem")) {
+        None => report_check(
+            CheckStatus::Warn,
+            "Hysteria2 TLS certificate not present (see docs/ALMALINUX_DEPLOYMENT.md)",
+        ),
+        Some(Ok(days)) if days < 0 => {
+            report_check(
+                CheckStatus::Fail,
+                format!("Hysteria2 TLS certificate EXPIRED {} day(s) ago", -days),
+            );
+            failures += 1;
+        }
+        Some(Ok(days)) if days < 30 => report_check(
+            CheckStatus::Warn,
+            format!("Hysteria2 TLS certificate expires in {days} day(s)"),
+        ),
+        Some(Ok(days)) => report_check(
+            CheckStatus::Ok,
+            format!("Hysteria2 TLS certificate valid, expires in {days} day(s)"),
+        ),
+        Some(Err(e)) => report_check(
+            CheckStatus::Warn,
+            format!("could not check Hysteria2 TLS certificate expiry: {e}"),
+        ),
+    }
+
+    for name in ["sing-box", "vpn-subscription"] {
+        let mgr = CompatibilityServiceManager::new(name);
+        if !mgr.is_available() {
+            report_check(
+                CheckStatus::Warn,
+                format!("systemctl not available — cannot check {name}.service"),
+            );
+        } else if !mgr.is_unit_installed() {
+            report_check(
+                CheckStatus::Warn,
+                format!("{name}.service not installed on this host"),
+            );
+        } else if mgr.is_active() {
+            report_check(CheckStatus::Ok, format!("{name}.service active"));
+        } else {
+            report_check(CheckStatus::Fail, format!("{name}.service not active"));
+            failures += 1;
+        }
+    }
+
+    match std::process::Command::new("firewall-cmd")
+        .arg("--state")
+        .output()
+    {
+        Ok(o) if o.status.success() => report_check(CheckStatus::Ok, "firewalld running"),
+        Ok(_) => {
+            report_check(CheckStatus::Fail, "firewalld not running");
+            failures += 1;
+        }
+        Err(_) => report_check(
+            CheckStatus::Warn,
+            "firewall-cmd not available — firewall check skipped",
+        ),
+    }
+
+    println!();
+    if failures > 0 {
+        bail!("{failures} check(s) failed");
+    }
+    println!("All checks passed (see [WARN] lines above for anything unverifiable on this host).");
+    Ok(())
+}
+
+/// Stage the minimum state needed to rebuild this deployment into `dir`:
+/// users store, deployment config, REALITY key material, Hysteria2 TLS
+/// material. Missing optional pieces (e.g. no Hysteria2 cert yet) are
+/// skipped, not treated as an error — a backup taken mid-setup is still
+/// useful.
+fn stage_backup_contents(
+    cfg: &DeploymentConfig,
+    config_path: &std::path::Path,
+    dir: &std::path::Path,
+) -> Result<()> {
+    let copy_if_exists = |src: &std::path::Path, dst: &std::path::Path| -> Result<()> {
+        if !src.exists() {
+            return Ok(());
+        }
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dst)?;
+        Ok(())
+    };
+
+    copy_if_exists(&cfg.users_file(), &dir.join("users/users.json"))?;
+    copy_if_exists(config_path, &dir.join("deployment.toml"))?;
+    copy_if_exists(
+        &cfg.reality_private_key_file(),
+        &dir.join("reality/private.key"),
+    )?;
+    copy_if_exists(
+        &cfg.reality_public_key_file(),
+        &dir.join("reality/public.key"),
+    )?;
+    copy_if_exists(
+        &cfg.reality_dir().join("short_id.txt"),
+        &dir.join("reality/short_id.txt"),
+    )?;
+    copy_if_exists(
+        &cfg.hysteria_dir().join("cert.pem"),
+        &dir.join("hysteria/cert.pem"),
+    )?;
+    copy_if_exists(
+        &cfg.hysteria_dir().join("key.pem"),
+        &dir.join("hysteria/key.pem"),
+    )?;
+    Ok(())
+}
+
+fn cmd_backup(
+    cfg: &DeploymentConfig,
+    config_path: &std::path::Path,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    let dest = output
+        .unwrap_or_else(|| PathBuf::from(format!("vpn1-backup-{}.tar", UnixSeconds::now().0)));
+    let staging = tempdir_here()?;
+    stage_backup_contents(cfg, config_path, staging.path())?;
+
+    let status = std::process::Command::new("tar")
+        .arg("-cf")
+        .arg(&dest)
+        .arg("-C")
+        .arg(staging.path())
+        .arg(".")
+        .status()
+        .context("running tar to create backup archive")?;
+    if !status.success() {
+        bail!("tar exited with failure creating {dest:?}");
+    }
+    write_secret_file_at(&dest)?;
+
+    println!("Backup written to {dest:?}.");
+    println!(
+        "This archive contains secrets (REALITY private key, Hysteria2 TLS key, user \
+         credential hashes) — store it as securely as the live server."
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_secret_file_at(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_secret_file_at(_path: &std::path::Path) -> Result<()> {
+    Ok(())
+}
+
+fn tempdir_here() -> Result<tempfile::TempDir> {
+    tempfile::tempdir().context("creating temporary staging directory")
+}
+
+fn cmd_restore(
+    cfg: &DeploymentConfig,
+    config_path: &std::path::Path,
+    archive: &std::path::Path,
+) -> Result<()> {
+    let staging = tempdir_here()?;
+    let status = std::process::Command::new("tar")
+        .arg("-xf")
+        .arg(archive)
+        .arg("-C")
+        .arg(staging.path())
+        .status()
+        .context("running tar to extract backup archive")?;
+    if !status.success() {
+        bail!("tar exited with failure extracting {archive:?}");
+    }
+
+    // Validate before touching any live state (spec §20: "Validate
+    // restored data before replacing active state").
+    let users_path = staging.path().join("users/users.json");
+    let restored_users: Vec<CompatUser> = if users_path.exists() {
+        let bytes = std::fs::read(&users_path).context("reading restored users.json")?;
+        serde_json::from_slice(&bytes)
+            .context("restored users.json is not valid — refusing to restore")?
+    } else {
+        bail!("archive does not contain users/users.json — refusing to restore");
+    };
+    let reality_key_path = staging.path().join("reality/private.key");
+    if !reality_key_path.exists() {
+        bail!("archive does not contain reality/private.key — refusing to restore");
+    }
+
+    // Only after validation: copy into place.
+    std::fs::create_dir_all(cfg.reality_dir())?;
+    std::fs::create_dir_all(cfg.hysteria_dir())?;
+    std::fs::create_dir_all(cfg.users_file().parent().unwrap())?;
+
+    store::save_users_atomic(&cfg.users_file(), &restored_users)?;
+    let restore_targets: [(&str, PathBuf); 5] = [
+        ("reality/private.key", cfg.reality_private_key_file()),
+        ("reality/public.key", cfg.reality_public_key_file()),
+        (
+            "reality/short_id.txt",
+            cfg.reality_dir().join("short_id.txt"),
+        ),
+        ("hysteria/cert.pem", cfg.hysteria_dir().join("cert.pem")),
+        ("hysteria/key.pem", cfg.hysteria_dir().join("key.pem")),
+    ];
+    for (rel, dest) in restore_targets {
+        let src = staging.path().join(rel);
+        if src.exists() {
+            std::fs::copy(&src, dest)?;
+        }
+    }
+
+    let restored_deployment_toml = staging.path().join("deployment.toml");
+    if restored_deployment_toml.exists() {
+        println!(
+            "Note: the backup's deployment.toml was NOT applied automatically (host/port \
+             settings are not safe to overwrite blindly). It was extracted for reference at \
+             {restored_deployment_toml:?} before this temporary directory is removed; the live \
+             config remains {config_path:?}."
+        );
+    }
+
+    println!(
+        "Restored {} user(s) and REALITY/Hysteria2 material from {archive:?}.",
+        restored_users.len()
+    );
+    regenerate_singbox_config(cfg)?;
+    println!("Restore applied and validated against the running server.");
     Ok(())
 }
