@@ -1,0 +1,18 @@
+# /etc/vpn/deployment.toml — rendered once by install.sh from this
+# template. Safe to hand-edit afterwards; install.sh never overwrites an
+# existing file. See docs/ALMALINUX_DEPLOYMENT.md.
+
+public_host = "{{PUBLIC_HOST}}"
+subscription_host = "{{SUBSCRIPTION_HOST}}"
+
+[reality]
+listen_port = 443
+handshake_server = "{{REALITY_HANDSHAKE_SERVER}}"
+handshake_port = 443
+
+[hysteria2]
+listen_port = 443
+
+[subscription]
+listen_port = 9100
+public_port = 8443

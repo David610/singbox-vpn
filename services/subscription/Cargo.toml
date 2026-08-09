@@ -1,0 +1,30 @@
+[package]
+name = "subscription"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "subscription"
+path = "src/lib.rs"
+
+[[bin]]
+name = "subscription"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+axum = "0.7"
+common = { path = "../../crates/common" }
+compat-config = { path = "../../crates/compat-config" }
+anyhow = "1"
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+tempfile = "3"

@@ -1,0 +1,32 @@
+[Unit]
+Description=vpn compatibility subscription HTTP service (loopback only)
+After=network.target
+
+[Service]
+Type=simple
+User=vpn-subscription
+Group=vpn-subscription
+ExecStart=/usr/local/bin/vpn-subscription-svc --config /etc/vpn/deployment.toml
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info
+
+# Never needs to write anywhere except read the user store (read-only
+# from this service's perspective — vpn-admin, run as root, is the only
+# writer) and bind loopback only, so this can be sandboxed tightly.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadOnlyPaths=/etc/vpn/compat/users /etc/vpn/compat/reality /etc/vpn/deployment.toml
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+IPAddressAllow=127.0.0.0/8 ::1/128
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target

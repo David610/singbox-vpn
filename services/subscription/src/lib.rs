@@ -1,0 +1,310 @@
+//! Subscription HTTP service: `GET /sub/{token}` returns a per-user
+//! client configuration (sing-box JSON, or a plain URI list) covering
+//! both VLESS+REALITY and Hysteria2 endpoints. Deliberately not part of
+//! the native `services/rendezvous` protocol (spec §17) — third-party
+//! clients have a different trust model (a bearer token over HTTPS, not
+//! a signed bundle chain).
+//!
+//! Binds loopback only; a reverse proxy terminates public HTTPS in front
+//! of it (spec §27) — this service performs no TLS termination itself.
+
+use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
+use compat_config::model::{CompatEndpoint, CompatTransport, PublicParameters};
+use compat_config::{credentials, render, CompatUser};
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::Mutex;
+use std::time::Instant;
+
+pub struct AppState {
+    pub users_file: std::path::PathBuf,
+    pub endpoints: Vec<CompatEndpoint>,
+    pub rate_limiter: Mutex<RateLimiter>,
+}
+
+/// Same per-source-IP token-bucket approach as `services/rendezvous`
+/// (see `docs/RENDEZVOUS_DESIGN.md`) — adequate for a single VPS, an
+/// edge/CDN limiter is the documented follow-up for a larger deployment.
+pub struct RateLimiter {
+    buckets: HashMap<IpAddr, (f64, Instant)>,
+    capacity: f64,
+    refill_per_sec: f64,
+}
+
+impl RateLimiter {
+    pub fn new(capacity: f64, refill_per_sec: f64) -> Self {
+        Self {
+            buckets: HashMap::new(),
+            capacity,
+            refill_per_sec,
+        }
+    }
+
+    pub fn allow(&mut self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let (tokens, last) = self.buckets.entry(ip).or_insert((self.capacity, now));
+        let elapsed = now.duration_since(*last).as_secs_f64();
+        *tokens = (*tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        *last = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Looks up the user whose token hash matches, without ever comparing
+/// against a specific user by index/short-circuiting early — every
+/// active user's hash is checked via constant-time comparison so timing
+/// cannot reveal how close a guessed token got, and there is no
+/// enumerable "which user does this token belong to" side channel
+/// (spec §26: no user enumeration).
+fn find_user_by_token(users: &[CompatUser], token: &str, now_unix: i64) -> Option<CompatUser> {
+    let mut found = None;
+    for u in users {
+        let matches = credentials::verify_token(token, &u.subscription_token_hash_hex);
+        if matches && u.is_active(now_unix) {
+            found = Some(u.clone());
+        }
+    }
+    found
+}
+
+#[derive(serde::Deserialize)]
+pub struct SubQuery {
+    pub format: Option<String>,
+}
+
+async fn get_subscription(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxumPath(token): AxumPath<String>,
+    Query(query): Query<SubQuery>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    {
+        let mut limiter = state.rate_limiter.lock().unwrap();
+        if !limiter.allow(addr.ip()) {
+            return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
+        }
+    }
+
+    // Bound token length before any comparison work — reject obviously
+    // malformed input cheaply (spec §26 hardening, same pattern as the
+    // native config/rendezvous parsers' max-length checks).
+    if token.is_empty() || token.len() > 128 {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+
+    let users = match compat_config::store::load_users(&state.users_file) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load user store");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    let now = common::UnixSeconds::now().0 as i64;
+    let user = match find_user_by_token(&users, &token, now) {
+        // Generic 404 whether the token is unknown, disabled, or
+        // expired — an attacker cannot distinguish "wrong token" from
+        // "right token, disabled user" (spec §26/§29).
+        None => return (StatusCode::NOT_FOUND, "not found").into_response(),
+        Some(u) => u,
+    };
+
+    tracing::info!(user_id = %user.id, format = ?query.format, "subscription served");
+
+    let format = query.format.as_deref().unwrap_or("singbox");
+    match format {
+        "singbox" => match render::render_singbox_client_subscription(&user, &state.endpoints) {
+            Ok(doc) => (
+                StatusCode::OK,
+                [("content-type", "application/json")],
+                serde_json::to_string_pretty(&doc).unwrap(),
+            )
+                .into_response(),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to render singbox subscription");
+                (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+            }
+        },
+        "uri" | "hiddify" => match render::render_uri_list(&user, &state.endpoints) {
+            Ok(body) => (
+                StatusCode::OK,
+                [("content-type", "text/plain; charset=utf-8")],
+                body,
+            )
+                .into_response(),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to render uri list");
+                (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+            }
+        },
+        _ => (StatusCode::BAD_REQUEST, "unknown format").into_response(),
+    }
+}
+
+async fn health() -> &'static str {
+    "ok"
+}
+
+pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
+    Router::new()
+        .route("/sub/:token", get(get_subscription))
+        .route("/healthz", get(health))
+        .with_state(state)
+}
+
+/// Test/documentation helper: build the two standard endpoint labels
+/// ("<region> - Reality" / "<region> - Hysteria2") from deployment
+/// values. Kept here (not in `compat-config`) because it encodes this
+/// service's presentation choice, not a domain invariant.
+pub fn standard_endpoints(
+    public_host: &str,
+    reality_port: u16,
+    hysteria_port: u16,
+    reality_public_key_hex: &str,
+    reality_short_id: &str,
+    handshake_server: &str,
+) -> Vec<CompatEndpoint> {
+    vec![
+        CompatEndpoint {
+            id: "reality-1".into(),
+            transport: CompatTransport::VlessReality,
+            host: public_host.into(),
+            port: reality_port,
+            server_name: Some(handshake_server.into()),
+            label: "Reality".into(),
+            public_parameters: PublicParameters::Reality {
+                public_key_hex: reality_public_key_hex.into(),
+                short_id: reality_short_id.into(),
+                fingerprint: "chrome".into(),
+            },
+        },
+        CompatEndpoint {
+            id: "hysteria2-1".into(),
+            transport: CompatTransport::Hysteria2,
+            host: public_host.into(),
+            port: hysteria_port,
+            server_name: Some(public_host.into()),
+            label: "Hysteria2".into(),
+            public_parameters: PublicParameters::Hysteria2 {
+                obfs_password: None,
+            },
+        },
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use compat_config::secret::SecretString;
+
+    fn user_with_token(token: &str, enabled: bool) -> CompatUser {
+        CompatUser {
+            id: "u1".into(),
+            name: "test".into(),
+            enabled,
+            vless_uuid: "11111111-1111-4111-8111-111111111111".into(),
+            hysteria2_password: SecretString::new("pw"),
+            subscription_token_hash_hex: credentials::hash_token(token),
+            created_at: 0,
+            expires_at: None,
+        }
+    }
+
+    fn make_state(users: Vec<CompatUser>) -> std::sync::Arc<AppState> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        compat_config::store::save_users_atomic(&path, &users).unwrap();
+        std::mem::forget(dir); // keep temp dir alive for the test's duration
+        std::sync::Arc::new(AppState {
+            users_file: path,
+            endpoints: standard_endpoints(
+                "vpn.example.com",
+                443,
+                443,
+                "pub",
+                "short",
+                "www.microsoft.com",
+            ),
+            rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+        })
+    }
+
+    // axum 0.7's `ConnectInfo` extractor requires the router to be served
+    // via `into_make_service_with_connect_info`; drive it directly rather
+    // than `oneshot` so a real per-connection `SocketAddr` is available
+    // to the rate limiter under test.
+    async fn oneshot_with_addr(state: std::sync::Arc<AppState>, uri: &str) -> Response {
+        use tower::Service;
+        let mut app =
+            build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let mut svc = app.call(addr).await.unwrap();
+        svc.call(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn valid_token_returns_singbox_subscription() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.contains("vless"));
+        assert!(s.contains("hysteria2"));
+    }
+
+    #[tokio::test]
+    async fn unknown_token_returns_generic_404() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/wrongtoken").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn disabled_user_token_returns_404_not_a_distinguishable_error() {
+        let state = make_state(vec![user_with_token("goodtoken", false)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn uri_format_returns_plaintext_share_links() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.starts_with("vless://"));
+    }
+
+    #[tokio::test]
+    async fn oversized_token_is_rejected_cheaply() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let long_token = "a".repeat(500);
+        let resp = oneshot_with_addr(state, &format!("/sub/{long_token}")).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn healthz_responds_ok() {
+        let state = make_state(vec![]);
+        let resp = oneshot_with_addr(state, "/healthz").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}

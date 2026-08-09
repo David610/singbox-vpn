@@ -1,0 +1,136 @@
+# COMPATIBILITY_SECURITY_REVIEW.md
+
+Adversarial self-review of the compatibility (VLESS+REALITY/Hysteria2)
+stack, per spec §58. Findings are recorded honestly, including the ones
+not fully fixed — see "Remaining gaps" at the end.
+
+## As a DPI/censor
+
+- **What can identify each transport?** VLESS+REALITY looks like a
+  normal TLS 1.3 handshake to whatever `handshake_server` is configured
+  (a real, popular site) — REALITY's entire design point is that an
+  active MITM/replay probe against the disguise target gets a real
+  certificate/response, not a fake one, because sing-box actually
+  relays the initial handshake to the real site. Hysteria2 is QUIC and
+  looks like generic HTTP/3 traffic; sing-box's `masquerade` option
+  (not yet configured by `render_singbox_server_config` — see gaps
+  below) can make failed-auth connections serve real-looking HTTP/3
+  content instead of an obvious reset.
+- **UDP blocked entirely?** Hysteria2 fails; VLESS+REALITY (TCP/443)
+  keeps working — this is the whole reason both transports were chosen
+  (independent failure modes, matching the native stack's
+  direct-tls/noise-quic split). Client-side, sing-box's `urltest`
+  selector (configured in `render_singbox_client_subscription`) routes
+  around the failed one automatically.
+- **TCP 443 reset / SNI-blocked?** Hysteria2 (UDP) keeps working. This
+  is failure-independence at the protocol-family level, not just
+  endpoint level — see `tests/` in `crates/compat-config` for what's
+  actually asserted (rendering correctness); true network-level
+  failure-independence for this specific pair has **not** been proven
+  with an executed test (unlike the native stack's
+  `tests/failure_independence.rs`) because this sandbox cannot run real
+  sing-box/network-namespace tests. Documented gap, not claimed solved.
+
+## As an active censor probing the endpoint
+
+- Unauthenticated REALITY probes get real TLS behavior from the disguise
+  site (this is sing-box's implementation, unmodified — not something
+  this codebase adds risk to).
+- Hysteria2 without `masquerade` configured may respond distinguishably
+  to a probe that doesn't present valid auth, vs. a plain closed port.
+  **Not yet fixed**: `render_singbox_server_config` does not set
+  `masquerade` — flagged as a near-term follow-up in "Remaining gaps".
+
+## As a compromised-VPS attacker
+
+- **Which secrets are exposed?** REALITY private key
+  (`/etc/vpn/compat/reality/private.key`, mode 0600, root-owned), every
+  active user's VLESS UUID + Hysteria2 password (`users.json`, mode
+  0640, root:vpn-subscription) — a full VPS compromise yields all
+  current user credentials and the REALITY key, exactly as expected for
+  a single-VPS deployment (spec never promised protection against full
+  host compromise, see `docs/THREAT_MODEL.md`).
+- **Can offline root signing keys remain offline?** Yes — the
+  compatibility stack has no relationship to the native
+  root→release→bundle signing hierarchy at all (spec §5/§28 hard
+  boundary, enforced by keeping `compat-config` a fully separate crate
+  with no dependency on `crypto::hierarchy` or `config`). Compromising
+  this VPS cannot forge a native signed `RelayBundle`.
+- **Documented, intentional exception**: `users.json` is 0640 (not
+  0600) so the non-root `vpn-subscription` service user can read it —
+  see the doc comment on `compat_config::store::save_users_atomic`.
+  This means compromising the `vpn-subscription` service user (a much
+  smaller attack surface than root — no shell, no write access, network
+  sandboxed to loopback via `IPAddressAllow=127.0.0.0/8 ::1/128` in the
+  systemd unit) yields read access to all user credentials. This is
+  the necessary tradeoff for the subscription service to function
+  without running as root; the alternative (running the whole
+  subscription service as root) is strictly worse.
+
+## As a malicious subscriber
+
+- **Can they enumerate users?** No new IDs, no incrementing counters
+  are exposed anywhere in the subscription API; `GET /sub/{token}`
+  returns an identical generic 404 for "token doesn't exist", "token
+  belongs to a disabled user", and "token belongs to an expired user"
+  (`services/subscription::get_subscription`, tested in
+  `unknown_token_returns_generic_404` /
+  `disabled_user_token_returns_404_not_a_distinguishable_error`).
+- **Can they retrieve another user's subscription?** No — lookup is by
+  presented-token hash match only; there is no user-ID-based lookup
+  endpoint.
+- **Can they brute-force subscription tokens?** Tokens are 160-bit
+  CSPRNG values (`generate_subscription_token`), infeasible to guess.
+  Per-source-IP rate limiting (20 burst, 0.5/s refill, same pattern as
+  `services/rendezvous`) slows a single-IP brute force to a crawl but,
+  as documented in `docs/RENDEZVOUS_DESIGN.md` for the equivalent native
+  case, a **distributed** brute force across many source IPs is not
+  mitigated by this in-process limiter — flagged as needing a real
+  edge/CDN rate limiter in front of any public deployment, not solved
+  by this codebase alone. Given 160 bits of entropy, distributed
+  brute force is still computationally infeasible regardless (this is
+  a defense-in-depth gap, not an exploitable weakness at current
+  entropy).
+
+## As an SRE
+
+- **What survives reboot?** `sing-box` and `vpn-subscription` are
+  `enabled` systemd units (`WantedBy=multi-user.target`); REALITY
+  key/short_id and `users.json` are on-disk, not regenerated at
+  startup.
+- **What happens after a failed config update?**
+  `apply_config_atomically` never touches the live `config.json` if
+  `sing-box check` fails on the staged temp file — tested
+  (`apply_atomically_rejects_invalid_config_and_leaves_existing_file_untouched`).
+  `update.sh` additionally rolls back binaries if the post-update health
+  check fails.
+- **What happens after certificate expiration?** Only relevant to the
+  subscription reverse proxy's cert (REALITY doesn't terminate its own
+  TLS the way a normal HTTPS server does — see
+  `docs/COMPATIBILITY_VERSIONS.md`). certbot's renewal timer handles
+  this; documented, not automated by this codebase (nginx/certbot are
+  external, well-maintained components per spec §13/§27).
+- **What happens if sing-box crashes?** `Restart=on-failure` +
+  `RestartSec=2` in `sing-box.service`; `vpn-health-check` will report
+  `sing-box service FAIL` until it recovers or an operator intervenes.
+
+## Remaining gaps (not fixed this session, documented not hidden)
+
+1. Hysteria2 `masquerade` is not configured — failed-auth probe
+   behavior is more distinguishable than it could be. Low effort,
+   next-priority follow-up.
+2. No automated network-level failure-independence test for this
+   compatibility pair (the native stack has one; this pair does not,
+   because it requires a real sing-box binary + real network
+   namespaces, unavailable in this sandbox).
+3. Distributed (many-source-IP) subscription brute force is not rate
+   limited beyond per-IP — acceptable given 160-bit token entropy, but
+   an edge limiter is still the documented right answer for a public
+   deployment.
+4. `vpn-admin user create` does not yet have a single command to rotate
+   just the VLESS UUID or just the Hysteria2 password independently of
+   removing and recreating the whole user (see
+   `docs/ALMALINUX_DEPLOYMENT.md`'s rotation table) — a small but real
+   usability gap, not a security hole (the underlying primitives to add
+   it — `credentials::generate_uuid_v4`,
+   `credentials::generate_hysteria2_password` — already exist).

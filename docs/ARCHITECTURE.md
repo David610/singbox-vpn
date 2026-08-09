@@ -76,6 +76,34 @@ fuzz/
   cargo-fuzz targets for config + rendezvous parsing
 ```
 
+## Compatibility stack (Hiddify / VLESS+REALITY / Hysteria2)
+
+A second, parallel client-compatibility stack exists beside the native
+one above — see `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` for the
+full design. Summary:
+
+```
+crates/
+  compat-config       CompatUser/CompatEndpoint types, credential
+                       generation, URI/sing-box JSON rendering,
+                       CompatibilityBackend trait — separate from
+                       config/transport-api, never signed into a
+                       RelayBundle (spec §5)
+apps/
+  admin               vpn-admin: user lifecycle CLI, sing-box config
+                       render/validate/apply
+services/
+  subscription        loopback-only HTTP service, GET /sub/{token}
+deploy/
+  almalinux/          production installer (separate from deploy/local/)
+```
+
+External, unmodified `sing-box` is the data plane (not vendored, not
+reimplemented — see `docs/COMPATIBILITY_VERSIONS.md`). Nothing in
+`transport-api`, `policy`, `failure-classifier`, `transport-native`,
+`config`, or `rendezvous-client` was changed to support this — the two
+stacks share a Cargo workspace and nothing else at the type level.
+
 ## Bootstrap vs steady-state path
 
 `transport-api::Transport` separates `connect()` (bootstrap: handshake,

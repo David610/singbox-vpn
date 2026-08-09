@@ -143,3 +143,46 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` completed · `[!]
 - [x] cargo fmt / clippy / test clean
 - [x] Final security self-review notes in docs/THREAT_MODEL.md §Review
 - [x] Final engineering report delivered to user
+
+## Phase 14 — Hiddify/VLESS-REALITY/Hysteria2 compatibility stack
+
+See `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` for the full plan.
+
+- [x] docs/COMPATIBILITY_VERSIONS.md (pinned sing-box 1.13.14, syntax sources)
+- [x] docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md
+- [x] crates/compat-config: CompatUser/CompatEndpoint/CompatTransport
+      types, kept fully separate from `config`/`transport-api` (spec §5)
+- [x] crates/compat-config: credential generation (UUID v4, Hysteria2
+      password, REALITY short_id, 160-bit subscription token),
+      constant-time token verification, tested
+- [x] crates/compat-config: VLESS/Hysteria2 URI rendering + sing-box
+      client subscription JSON rendering, tested against current
+      sing-box config schema
+- [x] crates/compat-config: sing-box server config rendering
+      (disabled/expired users excluded — revocation), atomic
+      validate-then-apply with backup, `CompatibilityBackend` trait for
+      future Xray swap-in (spec §53), tested
+- [x] apps/admin (`vpn-admin`): user create/list/enable/disable/
+      rotate-token/remove/subscription, `init` (REALITY keypair via
+      real `sing-box generate reality-keypair`, refuses to overwrite
+      without `--rotate`), `render-config`; end-to-end CLI tests
+- [x] services/subscription: `GET /sub/{token}` (formats: singbox, uri,
+      hiddify), loopback-only, generic 404 on unknown/disabled/expired
+      token, per-IP rate limiting, tested
+- [x] deploy/almalinux/: install.sh, update.sh (auto-rollback),
+      uninstall.sh, firewall.sh, health-check.sh, render-config.sh,
+      hardened systemd units, deployment.toml template — written and
+      shellcheck/`bash -n`-clean, **not executed against a real host**
+      (sandbox has no root network capability / dnf / real VPS)
+- [x] docs/CLIENT_COMPATIBILITY.md, docs/HIDDIFY_ANDROID.md,
+      docs/ALMALINUX_DEPLOYMENT.md, docs/COMPATIBILITY_SECURITY_REVIEW.md
+- [!] Real Hiddify/v2rayNG import validation — not performed (no Android
+      device, no public VPS/DNS/TLS cert available in this session);
+      documented as the required manual acceptance test in
+      `docs/CLIENT_COMPATIBILITY.md`, not claimed as done.
+- [!] Hysteria2 `masquerade` config — not set (flagged in
+      COMPATIBILITY_SECURITY_REVIEW.md as a near-term follow-up)
+- [!] Network-level failure-independence test for this transport pair
+      (UDP-blocked / TCP-reset scenarios) — not executed, same
+      `iproute2`/root-network-namespace limitation as the native
+      stack's `tests/hostile_network/` (see Phase 11 above)
