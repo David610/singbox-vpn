@@ -367,6 +367,18 @@ install_rustup_noninteractive() {
 }
 
 build_binaries_from_source() {
+  # A `curl | sudo bash` session starts with a minimal PATH that never
+  # includes `~/.cargo/bin`, so `command -v cargo` fails even when an
+  # earlier run of this same script already installed a toolchain via
+  # rustup — that earlier install just isn't on PATH *yet*. Source
+  # rustup's own env file first so an already-installed toolchain is
+  # actually found before falling back to a full network reinstall
+  # (which, being unnecessary AND a real network round-trip, is exactly
+  # the kind of thing that can hang on a flaky connection for no reason).
+  if [ -f "$HOME/.cargo/env" ]; then
+    # shellcheck disable=SC1091
+    . "$HOME/.cargo/env"
+  fi
   if ! command -v cargo >/dev/null 2>&1; then
     install_rustup_noninteractive
   fi
