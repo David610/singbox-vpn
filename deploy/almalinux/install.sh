@@ -213,12 +213,64 @@ derive_auto_host() {
   echo "${ip//./-}.sslip.io"
 }
 
+derive_punycode_host() {
+  # Best-effort ASCII/punycode normalization for a domain typed at the
+  # interactive prompt (Cyrillic/other IDN input is common when copying
+  # a domain out of a DNS dashboard). Falls back to the raw input
+  # unchanged if no IDN converter is available or it is already ASCII —
+  # preflight_validate_hostname() rejects whatever comes out of this if
+  # it still isn't a syntactically valid ASCII hostname.
+  local input="$1"
+  case "$input" in
+    *[!\ -~]*)
+      if command -v idn2 >/dev/null 2>&1; then
+        idn2 "$input" 2>/dev/null || echo "$input"
+      elif command -v idn >/dev/null 2>&1; then
+        idn --quiet -a "$input" 2>/dev/null || echo "$input"
+      else
+        echo "$input"
+      fi
+      ;;
+    *)
+      echo "$input"
+      ;;
+  esac
+}
+
+# Interactively ask for a domain when none was supplied via
+# PUBLIC_HOST/SUBSCRIPTION_HOST env vars and stdin isn't already the
+# install script itself (the classic `curl | sudo bash` problem: bash's
+# stdin is the piped script, not the terminal, so a plain `read` would
+# silently read from the script body instead of the user). Reading from
+# /dev/tty works even when invoked that way, as long as a real terminal
+# is attached; non-interactive/CI invocations (no /dev/tty) fall back to
+# the sslip.io auto-assigned hostname with an explicit log line, never
+# silently hang.
+prompt_for_public_host() {
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    return 1
+  fi
+  local reply=""
+  printf '\nUse your own domain for this VPN instead of an auto-assigned sslip.io hostname?\n' >/dev/tty
+  printf 'Point its DNS A/AAAA record at this server first, then enter it (or press Enter to skip): ' >/dev/tty
+  IFS= read -r reply </dev/tty || return 1
+  [ -n "$reply" ] || return 1
+  reply="$(derive_punycode_host "$reply")"
+  printf '%s' "$reply"
+}
+
 resolve_host_config() {
   if load_existing_host_config; then
     log "using host configuration from existing $DEPLOYMENT_TOML: PUBLIC_HOST=$PUBLIC_HOST SUBSCRIPTION_HOST=$SUBSCRIPTION_HOST"
     export PUBLIC_HOST SUBSCRIPTION_HOST
     AUTO_TLS_DOMAIN=0
     return
+  fi
+
+  if [ -z "${PUBLIC_HOST:-}" ]; then
+    local prompted
+    prompted="$(prompt_for_public_host)" || prompted=""
+    [ -n "$prompted" ] && PUBLIC_HOST="$prompted"
   fi
 
   if [ -n "${PUBLIC_HOST:-}" ]; then

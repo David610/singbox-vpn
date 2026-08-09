@@ -124,10 +124,13 @@ CI too).
    tree in this pass — a real dependency-vulnerability gate is missing
    until someone runs it (ideally in CI, which now has a job wired up
    and ready — it just couldn't execute here).
-5. Backup/restore does not yet reject symlink entries during extraction
-   (path-traversal via `..`/absolute paths is already blocked by the
-   fixed relative-path allow-list, but explicit symlink rejection is not
-   implemented).
+5. ~~Backup/restore does not yet reject symlink entries during
+   extraction~~ — fixed: `vpn-admin restore` now walks the extracted
+   archive and refuses to restore if any entry is a symlink, before
+   reading/copying any of it (see `reject_symlinks` in
+   `apps/admin/src/main.rs`, covered by
+   `restore_rejects_archive_containing_a_symlink` in
+   `apps/admin/tests/cli.rs`).
 
 ## Can this repository truthfully be called "production-ready"?
 
