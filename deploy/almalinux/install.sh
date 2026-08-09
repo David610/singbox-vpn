@@ -455,7 +455,34 @@ singbox_install_stage() {
 }
 
 # ---------------------------------------------------------------------
-# [6] users/groups
+# [6] systemd
+# ---------------------------------------------------------------------
+# Installed early (right after sing-box itself, well before the config
+# render/reload in stage 11) so that any fix to these unit files is
+# already on disk before anything ever tries to reload the service
+# against them. Getting this ordering wrong is not hypothetical: it
+# broke a real upgrade run where a stale, already-broken unit file from
+# an earlier partial install was still in place when stage 11's
+# `vpn-admin render-config` attempted `systemctl reload-or-restart
+# sing-box` against it, hard-failing the whole installer even though
+# the corrected unit was one stage away from being installed. These
+# files are static installer-owned templates with no placeholders and
+# no dependency on state created by any other stage, so installing them
+# this early is safe.
+install_systemd_units() {
+  log "installing systemd units..."
+  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service
+  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service
+  systemctl daemon-reload
+}
+
+systemd_stage() {
+  stage 6 "systemd"
+  install_systemd_units
+}
+
+# ---------------------------------------------------------------------
+# [7] users/groups
 # ---------------------------------------------------------------------
 create_service_users() {
   id vpn-subscription >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin vpn-subscription
@@ -473,12 +500,12 @@ create_service_users() {
 }
 
 users_groups_stage() {
-  stage 6 "users/groups"
+  stage 7 "users/groups"
   create_service_users
 }
 
 # ---------------------------------------------------------------------
-# [7] directories
+# [8] directories
 # ---------------------------------------------------------------------
 # Ownership matrix (docs/PRODUCTION_HARDENING_PLAN.md #1, revised —
 # docs/FINAL_PRODUCTION_AUDIT.md P0-1): every FILE is owned by the group
@@ -512,12 +539,12 @@ create_directories() {
 }
 
 directories_stage() {
-  stage 7 "directories"
+  stage 8 "directories"
   create_directories
 }
 
 # ---------------------------------------------------------------------
-# [8] certificates
+# [9] certificates
 # ---------------------------------------------------------------------
 # Hysteria2 requires a valid TLS cert/key BEFORE sing-box can start. We
 # always attempt to issue a real certificate automatically via certbot's
@@ -540,7 +567,7 @@ directories_stage() {
 # enabled by packages_stage (stage 2) with distro-default deny rules by
 # the time this runs, and vpn1's own permanent rules (443/tcp+udp plus
 # SUBSCRIPTION_PORT, never 80) aren't added until firewall_stage (stage
-# 12) — so without
+# 13) — so without
 # this, certbot's challenge has no way to receive inbound traffic.
 firewall_open_port_80_temp() {
   case "$FIREWALL_BACKEND" in
@@ -715,7 +742,7 @@ install_certbot_renewal_hook() {
 }
 
 certificates_stage() {
-  stage 8 "certificates"
+  stage 9 "certificates"
   create_hysteria_masquerade_placeholder
   require_hysteria_tls
   require_subscription_tls
@@ -724,7 +751,7 @@ certificates_stage() {
 }
 
 # ---------------------------------------------------------------------
-# [9] REALITY keys
+# [10] REALITY keys
 # ---------------------------------------------------------------------
 render_deployment_toml() {
   if [ -f "$DEPLOYMENT_TOML" ]; then
@@ -762,13 +789,13 @@ init_reality_keys() {
 }
 
 reality_keys_stage() {
-  stage 9 "REALITY keys"
+  stage 10 "REALITY keys"
   render_deployment_toml
   init_reality_keys
 }
 
 # ---------------------------------------------------------------------
-# [10] server config
+# [11] server config
 # ---------------------------------------------------------------------
 render_server_config() {
   log "rendering initial sing-box config..."
@@ -782,12 +809,12 @@ render_server_config() {
 }
 
 server_config_stage() {
-  stage 10 "server config"
+  stage 11 "server config"
   render_server_config
 }
 
 # ---------------------------------------------------------------------
-# [11] nginx / subscription HTTPS
+# [12] nginx / subscription HTTPS
 # ---------------------------------------------------------------------
 configure_nginx() {
   if [ "${SUBSCRIPTION_TLS_READY:-0}" -ne 1 ]; then
@@ -811,12 +838,12 @@ configure_nginx() {
 }
 
 nginx_stage() {
-  stage 11 "nginx/subscription HTTPS"
+  stage 12 "nginx/subscription HTTPS"
   configure_nginx
 }
 
 # ---------------------------------------------------------------------
-# [12] firewall
+# [13] firewall
 # ---------------------------------------------------------------------
 configure_firewall() {
   case "$FIREWALL_BACKEND" in
@@ -827,13 +854,13 @@ configure_firewall() {
 }
 
 firewall_stage() {
-  stage 12 "firewall"
+  stage 13 "firewall"
   configure_firewall
   FIREWALL_OK=1
 }
 
 # ---------------------------------------------------------------------
-# [13] SELinux (RHEL family only)
+# [14] SELinux (RHEL family only)
 # ---------------------------------------------------------------------
 configure_selinux() {
   # sing-box binds 443/tcp+udp and reads config/certs from
@@ -857,27 +884,12 @@ configure_selinux() {
 }
 
 selinux_stage() {
-  stage 13 "SELinux"
+  stage 14 "SELinux"
   if [ "$OS_FAMILY" = "rhel" ]; then
     configure_selinux
   else
     log "skipping (not a RHEL-family host)."
   fi
-}
-
-# ---------------------------------------------------------------------
-# [14] systemd
-# ---------------------------------------------------------------------
-install_systemd_units() {
-  log "installing systemd units..."
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service
-  systemctl daemon-reload
-}
-
-systemd_stage() {
-  stage 14 "systemd"
-  install_systemd_units
 }
 
 # ---------------------------------------------------------------------
@@ -1075,6 +1087,7 @@ main() {
   host_config_stage
   binaries_stage
   singbox_install_stage
+  systemd_stage
   users_groups_stage
   directories_stage
   certificates_stage
@@ -1083,7 +1096,6 @@ main() {
   nginx_stage
   firewall_stage
   selinux_stage
-  systemd_stage
   start_stage
   acceptance_stage
   print_status
