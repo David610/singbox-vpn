@@ -71,7 +71,7 @@ pub fn render_singbox_server_config(
     if let Some(masq_path) = &hysteria.masquerade_dir_path {
         hysteria_inbound["masquerade"] = json!({
             "type": "file",
-            "path": masq_path,
+            "directory": masq_path,
         });
     }
     if let Some(obfs_pw) = &hysteria.obfs_password {
@@ -465,7 +465,10 @@ mod tests {
         );
         let masquerade = &cfg["inbounds"][1]["masquerade"];
         assert_eq!(masquerade["type"], "file");
-        assert_eq!(masquerade["path"], "/etc/vpn/compat/hysteria/masquerade");
+        assert_eq!(
+            masquerade["directory"],
+            "/etc/vpn/compat/hysteria/masquerade"
+        );
     }
 
     #[test]
