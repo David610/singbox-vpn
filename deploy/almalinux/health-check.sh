@@ -59,8 +59,11 @@ fi
 echo
 echo "== TLS validity (real hostname, real trust chain — no -k) =="
 SUBSCRIPTION_HOST=""
+SUBSCRIPTION_PORT="8443"
 if [ -f "$DEPLOYMENT_TOML" ]; then
   SUBSCRIPTION_HOST="$(grep -E '^subscription_host' "$DEPLOYMENT_TOML" | sed -E 's/^subscription_host *= *"([^"]*)".*/\1/')"
+  existing_port="$(grep -E '^public_port' "$DEPLOYMENT_TOML" | sed -E 's/^public_port *= *([0-9]+).*/\1/')"
+  [ -n "$existing_port" ] && SUBSCRIPTION_PORT="$existing_port"
 fi
 if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
   if [ -z "$SUBSCRIPTION_HOST" ]; then
@@ -73,9 +76,9 @@ if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
     # over the internet would check them. This is what actually
     # exercises whether a client's TLS stack would accept the
     # certificate — `curl -k` never did.
-    check "nginx subscription vhost reachable+trusted (8443, hostname=$SUBSCRIPTION_HOST)" \
-      curl -fsS --resolve "${SUBSCRIPTION_HOST}:8443:127.0.0.1" -o /dev/null \
-        "https://${SUBSCRIPTION_HOST}:8443/healthz"
+    check "nginx subscription vhost reachable+trusted (${SUBSCRIPTION_PORT}, hostname=$SUBSCRIPTION_HOST)" \
+      curl -fsS --resolve "${SUBSCRIPTION_HOST}:${SUBSCRIPTION_PORT}:127.0.0.1" -o /dev/null \
+        "https://${SUBSCRIPTION_HOST}:${SUBSCRIPTION_PORT}/healthz"
     if [ -f "/etc/letsencrypt/live/$SUBSCRIPTION_HOST/fullchain.pem" ]; then
       check "subscription TLS cert not expiring within 14 days" \
         openssl x509 -in "/etc/letsencrypt/live/$SUBSCRIPTION_HOST/fullchain.pem" -noout -checkend $((14 * 86400))

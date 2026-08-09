@@ -18,6 +18,10 @@
 #   VPN1_REPO=owner/repo  install from a fork
 #   PUBLIC_HOST=vpn.example.com   use your own domain instead of the
 #                                 auto-detected-IP + sslip.io default
+#   SUBSCRIPTION_PORT=8443        public port for the subscription HTTPS
+#                                 endpoint (default 8443); change it if
+#                                 something else on the VPS already
+#                                 listens on 8443
 #   --version v1.2.3 / -s -- --version v1.2.3   same as VPN1_VERSION,
 #                                 usable through `curl | sudo bash -s --`
 set -Eeuo pipefail

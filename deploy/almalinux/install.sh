@@ -76,9 +76,32 @@ existing_install_present() {
   [ -f "$DEPLOYMENT_TOML" ] || [ -x "$SINGBOX_BIN" ]
 }
 
+# The subscription HTTPS port is operator-configurable (SUBSCRIPTION_PORT,
+# default 8443) — some VPSes already run something else on 8443. Resolved
+# early (before the stage-1 port-conflict check needs it) and reused as-is
+# by every later stage (deployment.toml, nginx vhost, firewall rules) so
+# the whole install is self-consistent. On a re-run against an existing
+# install, the already-committed port always wins — changing it out from
+# under an already-configured nginx vhost/firewall rule would break the
+# deployment, not repair it, exactly like PUBLIC_HOST above.
+resolve_subscription_port() {
+  if [ -n "${SUBSCRIPTION_PORT:-}" ] && [ -f "$DEPLOYMENT_TOML" ]; then
+    : # already resolved earlier in this run; do not re-derive.
+  elif [ -f "$DEPLOYMENT_TOML" ]; then
+    local existing_port
+    existing_port="$(grep -E '^public_port' "$DEPLOYMENT_TOML" | sed -E 's/^public_port *= *([0-9]+).*/\1/')"
+    [ -n "$existing_port" ] && SUBSCRIPTION_PORT="$existing_port"
+  fi
+  SUBSCRIPTION_PORT="${SUBSCRIPTION_PORT:-8443}"
+  preflight_validate_port "$SUBSCRIPTION_PORT" "SUBSCRIPTION_PORT" || die "invalid SUBSCRIPTION_PORT — refusing to interpolate it into deployment.toml/nginx config/firewall rules."
+  export SUBSCRIPTION_PORT
+}
+
 check_ports_free() {
+  resolve_subscription_port
   # Skip the check for ports vpn1 itself already owns on a re-run — an
-  # already-installed vpn1 legitimately holds 443/tcp+udp.
+  # already-installed vpn1 legitimately holds 443/tcp+udp and its
+  # already-committed SUBSCRIPTION_PORT.
   if existing_install_present; then
     log "existing installation detected — skipping port-conflict checks (vpn1 owns these ports already)."
     return
@@ -86,11 +109,11 @@ check_ports_free() {
   local failed=0
   preflight_check_port_free tcp 443 || failed=1
   preflight_check_port_free udp 443 || failed=1
-  preflight_check_port_free tcp 8443 || failed=1
+  preflight_check_port_free tcp "$SUBSCRIPTION_PORT" || failed=1
   if [ "$failed" -eq 1 ]; then
-    die "vpn1 cannot safely continue while a required port is occupied by another service. Free the port(s) above (or move the other service) and re-run."
+    die "vpn1 cannot safely continue while a required port is occupied by another service. Free the port(s) above (or move the other service, or set SUBSCRIPTION_PORT=<free-port> to relocate the subscription HTTPS endpoint) and re-run."
   fi
-  log "required ports (443/tcp, 443/udp, 8443/tcp) are free."
+  log "required ports (443/tcp, 443/udp, ${SUBSCRIPTION_PORT}/tcp) are free."
 }
 
 # When invoked via the curl|bash bootstrap, $REPO_ROOT points at a
@@ -501,8 +524,9 @@ directories_stage() {
 # pre-existing firewall rule vpn1 did not add itself
 # (docs/FINAL_PRODUCTION_AUDIT.md P0-9). firewalld/ufw are already
 # enabled by packages_stage (stage 2) with distro-default deny rules by
-# the time this runs, and vpn1's own permanent rules (443/tcp+udp/8443,
-# never 80) aren't added until firewall_stage (stage 12) — so without
+# the time this runs, and vpn1's own permanent rules (443/tcp+udp plus
+# SUBSCRIPTION_PORT, never 80) aren't added until firewall_stage (stage
+# 12) — so without
 # this, certbot's challenge has no way to receive inbound traffic.
 firewall_open_port_80_temp() {
   case "$FIREWALL_BACKEND" in
@@ -697,10 +721,12 @@ render_deployment_toml() {
   fi
   : "${PUBLIC_HOST:?Set PUBLIC_HOST=vpn.example.com before running install.sh}"
   : "${SUBSCRIPTION_HOST:="$PUBLIC_HOST"}"
+  : "${SUBSCRIPTION_PORT:=8443}"
   : "${REALITY_HANDSHAKE_SERVER:="www.microsoft.com"}"
   preflight_validate_hostname "$REALITY_HANDSHAKE_SERVER" "REALITY_HANDSHAKE_SERVER" || die "invalid REALITY_HANDSHAKE_SERVER."
   sed -e "s/{{PUBLIC_HOST}}/$PUBLIC_HOST/" \
       -e "s/{{SUBSCRIPTION_HOST}}/$SUBSCRIPTION_HOST/" \
+      -e "s/{{SUBSCRIPTION_PORT}}/$SUBSCRIPTION_PORT/" \
       -e "s/{{REALITY_HANDSHAKE_SERVER}}/$REALITY_HANDSHAKE_SERVER/" \
       "$REPO_ROOT/deploy/almalinux/templates/deployment.toml.template" >"$DEPLOYMENT_TOML"
   chmod 0644 "$DEPLOYMENT_TOML"
@@ -757,7 +783,9 @@ configure_nginx() {
     return
   fi
   local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
+  local port="${SUBSCRIPTION_PORT:-8443}"
   sed -e "s/{{SUBSCRIPTION_HOST}}/$host/" -e "s/{{PUBLIC_HOST}}/${PUBLIC_HOST:-$host}/" \
+      -e "s/{{SUBSCRIPTION_PORT}}/$port/" \
     "$REPO_ROOT/deploy/almalinux/templates/nginx-vpn-subscription.conf.template" >"$NGINX_CONF.tmp"
   install -d -m 0755 "$(dirname "$NGINX_CONF")"
   install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"

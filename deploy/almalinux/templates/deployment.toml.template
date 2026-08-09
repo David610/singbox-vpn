@@ -15,4 +15,4 @@ listen_port = 443
 
 [subscription]
 listen_port = 9100
-public_port = 8443
+public_port = {{SUBSCRIPTION_PORT}}

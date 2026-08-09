@@ -33,16 +33,21 @@ if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
 fi
 
 if [ "$PURGE_FIREWALL" -eq 1 ]; then
+  SUBSCRIPTION_PORT="8443"
+  if [ -f /etc/vpn/deployment.toml ]; then
+    existing_port="$(grep -E '^public_port' /etc/vpn/deployment.toml | sed -E 's/^public_port *= *([0-9]+).*/\1/')"
+    [ -n "$existing_port" ] && SUBSCRIPTION_PORT="$existing_port"
+  fi
   if command -v firewall-cmd >/dev/null 2>&1; then
     ZONE="$(firewall-cmd --get-default-zone)"
     firewall-cmd --zone="$ZONE" --permanent --remove-port=443/tcp || true
     firewall-cmd --zone="$ZONE" --permanent --remove-port=443/udp || true
-    firewall-cmd --zone="$ZONE" --permanent --remove-port=8443/tcp || true
+    firewall-cmd --zone="$ZONE" --permanent --remove-port="${SUBSCRIPTION_PORT}/tcp" || true
     firewall-cmd --reload
   elif command -v ufw >/dev/null 2>&1; then
     ufw delete allow 443/tcp || true
     ufw delete allow 443/udp || true
-    ufw delete allow 8443/tcp || true
+    ufw delete allow "${SUBSCRIPTION_PORT}/tcp" || true
   fi
 fi
 

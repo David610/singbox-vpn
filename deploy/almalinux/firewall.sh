@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # firewalld rules for the compatibility stack. Public: SSH, VLESS+REALITY
-# (443/tcp), Hysteria2 (443/udp), subscription HTTPS (8443/tcp). Nothing
+# (443/tcp), Hysteria2 (443/udp), subscription HTTPS (SUBSCRIPTION_PORT,
+# default 8443/tcp). Nothing
 # else — internal Rust services (rendezvous, subscription's own loopback
 # bind) stay off the public zone entirely (spec §33).
 set -euo pipefail
@@ -16,6 +17,9 @@ warn() { echo "[firewall] WARNING: $*" >&2; }
 die() { echo "[firewall] ERROR: $*" >&2; exit 1; }
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/preflight.sh"
+
+SUBSCRIPTION_PORT="${SUBSCRIPTION_PORT:-8443}"
+preflight_validate_port "$SUBSCRIPTION_PORT" "SUBSCRIPTION_PORT" || die "invalid SUBSCRIPTION_PORT."
 
 ZONE="$(firewall-cmd --get-default-zone)"
 
@@ -33,7 +37,7 @@ if [ "$SSH_PORT" != "22" ]; then
 fi
 firewall-cmd --zone="$ZONE" --permanent --add-port=443/tcp
 firewall-cmd --zone="$ZONE" --permanent --add-port=443/udp
-firewall-cmd --zone="$ZONE" --permanent --add-port=8443/tcp
+firewall-cmd --zone="$ZONE" --permanent --add-port="${SUBSCRIPTION_PORT}/tcp"
 
 # Explicitly documented as NOT exposed publicly (spec §33): 1080 (any
 # local SOCKS proxy), 9000/9100-class internal control-plane ports.

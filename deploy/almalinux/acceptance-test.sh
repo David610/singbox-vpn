@@ -157,11 +157,16 @@ section "subscription reverse proxy"
 # TLS works, it's proof TLS verification was turned off).
 DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
 SUBSCRIPTION_HOST=""
-[ -f "$DEPLOYMENT_TOML" ] && SUBSCRIPTION_HOST="$(grep -E '^subscription_host' "$DEPLOYMENT_TOML" | sed -E 's/^subscription_host *= *"([^"]*)".*/\1/')"
-if [ -n "$SUBSCRIPTION_HOST" ] && curl -fsS -o /dev/null --resolve "${SUBSCRIPTION_HOST}:8443:127.0.0.1" "https://${SUBSCRIPTION_HOST}:8443/healthz" 2>/dev/null; then
-  pass "subscription reachable+trusted over HTTPS (8443, hostname=$SUBSCRIPTION_HOST)"
+SUBSCRIPTION_PORT="8443"
+if [ -f "$DEPLOYMENT_TOML" ]; then
+  SUBSCRIPTION_HOST="$(grep -E '^subscription_host' "$DEPLOYMENT_TOML" | sed -E 's/^subscription_host *= *"([^"]*)".*/\1/')"
+  existing_port="$(grep -E '^public_port' "$DEPLOYMENT_TOML" | sed -E 's/^public_port *= *([0-9]+).*/\1/')"
+  [ -n "$existing_port" ] && SUBSCRIPTION_PORT="$existing_port"
+fi
+if [ -n "$SUBSCRIPTION_HOST" ] && curl -fsS -o /dev/null --resolve "${SUBSCRIPTION_HOST}:${SUBSCRIPTION_PORT}:127.0.0.1" "https://${SUBSCRIPTION_HOST}:${SUBSCRIPTION_PORT}/healthz" 2>/dev/null; then
+  pass "subscription reachable+trusted over HTTPS (${SUBSCRIPTION_PORT}, hostname=$SUBSCRIPTION_HOST)"
 else
-  fail "subscription reachable+trusted over HTTPS (8443)" "(nginx vhost may not be configured yet, or subscription_host unreadable from $DEPLOYMENT_TOML — see install.sh output)"
+  fail "subscription reachable+trusted over HTTPS (${SUBSCRIPTION_PORT})" "(nginx vhost may not be configured yet, or subscription_host unreadable from $DEPLOYMENT_TOML — see install.sh output)"
 fi
 
 section "health endpoint"
