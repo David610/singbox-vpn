@@ -861,6 +861,17 @@ configure_nginx() {
       semanage port -a -t http_port_t -p tcp "$port" || warn "could not add SELinux port context for ${port}/tcp — nginx may fail to bind it."
     fi
   fi
+  # SELinux also blocks httpd_t from making ANY outbound network
+  # connection by default (the httpd_can_network_connect boolean is off
+  # out of the box on RHEL/AlmaLinux) — this vhost's whole purpose is
+  # `proxy_pass http://127.0.0.1:9100`, so without this the reload
+  # itself succeeds (bind on SUBSCRIPTION_PORT is fine once labeled
+  # above) but every request 502s because nginx is denied when it tries
+  # to connect to the backend. Caught on the same real AlmaLinux
+  # install, immediately after fixing the port-bind denial above.
+  if [ "$OS_FAMILY" = "rhel" ] && command -v setsebool >/dev/null 2>&1; then
+    setsebool -P httpd_can_network_connect 1 || warn "could not enable SELinux boolean httpd_can_network_connect — nginx's proxy_pass to the subscription backend may 502."
+  fi
   nginx -t || die "nginx config validation failed (nginx -t) — not reloading nginx with a broken config."
   # `systemctl enable --now` is a no-op on an already-active nginx — it
   # does NOT reload newly-written config into the running process. On a
