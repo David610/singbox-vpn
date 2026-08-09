@@ -51,25 +51,33 @@ impl CompatibilityServiceManager {
         self
     }
 
-    /// True if a usable `systemctl` is on PATH — false in local dev /
-    /// unit-test environments, where reload is skipped with a warning
-    /// rather than treated as a hard failure. Retries once on a spawn
-    /// failure (`Command::output()` erroring, not the process itself
-    /// failing) before concluding "unavailable" — a transient fork/exec
-    /// failure under host load must not be mistaken for "not installed"
-    /// and silently skip a reload that should have happened.
-    pub fn is_available(&self) -> bool {
-        for attempt in 0..2 {
-            match Command::new(&self.systemctl_binary)
-                .arg("--version")
-                .output()
-            {
-                Ok(o) => return o.status.success(),
-                Err(_) if attempt == 0 => std::thread::sleep(Duration::from_millis(50)),
-                Err(_) => return false,
+    /// Runs `systemctl` with the given args, retrying once on a
+    /// transient spawn/exec failure (`Command::output()` erroring, not
+    /// the process itself running and failing) before giving up. A
+    /// fork/exec under host load can fail transiently for reasons that
+    /// have nothing to do with whether `systemctl`/the unit is actually
+    /// present — every caller in this file must not mistake that for a
+    /// real "not available"/"not installed"/"not active" answer, so this
+    /// retry lives in one place instead of being copy-pasted (or, as
+    /// happened before, present on some call sites and silently missing
+    /// on others).
+    fn run(&self, args: &[&str]) -> std::io::Result<std::process::Output> {
+        match Command::new(&self.systemctl_binary).args(args).output() {
+            Ok(o) => Ok(o),
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(50));
+                Command::new(&self.systemctl_binary).args(args).output()
             }
         }
-        false
+    }
+
+    /// True if a usable `systemctl` is on PATH — false in local dev /
+    /// unit-test environments, where reload is skipped with a warning
+    /// rather than treated as a hard failure.
+    pub fn is_available(&self) -> bool {
+        self.run(&["--version"])
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     /// True if the unit is actually installed (`systemctl` itself can be
@@ -80,17 +88,14 @@ impl CompatibilityServiceManager {
     /// CI and local dev without a real systemd deployment.
     pub fn is_unit_installed(&self) -> bool {
         let unit = format!("{}.service", self.service_name);
-        Command::new(&self.systemctl_binary)
-            .args(["show", "-p", "LoadState", "--value", &unit])
-            .output()
+        self.run(&["show", "-p", "LoadState", "--value", &unit])
             .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "loaded")
             .unwrap_or(false)
     }
 
     fn reload_or_restart(&self) -> Result<(), String> {
-        let output = Command::new(&self.systemctl_binary)
-            .args(["reload-or-restart", &self.service_name])
-            .output()
+        let output = self
+            .run(&["reload-or-restart", &self.service_name])
             .map_err(|e| format!("failed to invoke systemctl: {e}"))?;
         if output.status.success() {
             Ok(())
@@ -104,10 +109,8 @@ impl CompatibilityServiceManager {
     }
 
     pub fn is_active(&self) -> bool {
-        Command::new(&self.systemctl_binary)
-            .args(["is-active", "--quiet", &self.service_name])
-            .status()
-            .map(|s| s.success())
+        self.run(&["is-active", "--quiet", &self.service_name])
+            .map(|o| o.status.success())
             .unwrap_or(false)
     }
 
@@ -150,6 +153,7 @@ exit 1
         );
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(script.as_bytes()).unwrap();
+        drop(f); // close the write handle before chmod/exec — see `run()`'s ETXTBSY retry.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }

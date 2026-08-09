@@ -15,7 +15,7 @@ die() { echo "[update] ERROR: $*" >&2; exit 1; }
 
 log "backing up current binaries + config to $BACKUP_DIR"
 mkdir -p "$BACKUP_DIR"
-for f in vpn-admin vpn-subscription-svc; do
+for f in vpn-admin vpn vpn-subscription-svc; do
   [ -f "$BIN_DIR/$f" ] && cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
 done
 [ -f /etc/vpn/compat/sing-box/config.json ] && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
@@ -29,8 +29,10 @@ log "building new binaries..."
 
 log "installing new binaries..."
 install -m 0755 "$REPO_ROOT/target/release/vpn-admin" "$BIN_DIR/vpn-admin.new"
+install -m 0755 "$REPO_ROOT/target/release/vpn-admin" "$BIN_DIR/vpn.new"
 install -m 0755 "$REPO_ROOT/target/release/subscription" "$BIN_DIR/vpn-subscription-svc.new"
 mv "$BIN_DIR/vpn-admin.new" "$BIN_DIR/vpn-admin"
+mv "$BIN_DIR/vpn.new" "$BIN_DIR/vpn"
 mv "$BIN_DIR/vpn-subscription-svc.new" "$BIN_DIR/vpn-subscription-svc"
 
 log "re-rendering + validating sing-box config against the new tooling..."
@@ -45,7 +47,7 @@ systemctl reload-or-restart sing-box
 log "running health check..."
 if ! /usr/local/bin/vpn-health-check; then
   log "health check failed — rolling back binaries from $BACKUP_DIR"
-  for f in vpn-admin vpn-subscription-svc; do
+  for f in vpn-admin vpn vpn-subscription-svc; do
     [ -f "$BACKUP_DIR/$f" ] && install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f"
   done
   if [ -f "$BACKUP_DIR/config.json" ]; then
