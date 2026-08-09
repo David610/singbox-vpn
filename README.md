@@ -40,6 +40,8 @@ Start here:
 - [`docs/ALMALINUX_DEPLOYMENT.md`](docs/ALMALINUX_DEPLOYMENT.md) — production deployment (Hiddify-compatible mode)
 - [`docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md`](docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md) — how the two modes fit together
 - [`docs/PRODUCTION_HARDENING_PLAN.md`](docs/PRODUCTION_HARDENING_PLAN.md) — issue-by-issue security/operability hardening pass for the Hiddify-compatible deployment (permissions, credential revocation, TLS, rollback, CI validation), with an honest implemented-vs-verified status per item
+- [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) — what existed vs. what this session added (QR onboarding, `vpn status`/`doctor`/`backup`/`restore`, client docs)
+- [`docs/DEVICE_ACCEPTANCE_TESTS.md`](docs/DEVICE_ACCEPTANCE_TESTS.md) — the real-device test matrix (all cells honestly "not yet tested" until someone runs it on a real VPS + device)
 
 ## Quickstart: native mode (local, loopback only)
 
@@ -60,11 +62,21 @@ for the split ingress/egress topology and other variations.
 ```bash
 sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com \
   ./deploy/almalinux/install.sh
-sudo vpn-admin --config /etc/vpn/deployment.toml user create --name test
+sudo vpn user create --name test --qr
 ```
 
-Prints a subscription URL the user pastes directly into Hiddify — see
-`docs/HIDDIFY_ANDROID.md`.
+Prints a subscription URL (and, with `--qr`, a terminal QR code) the
+user scans or pastes directly into Hiddify — see `docs/clients/README.md`
+(per-platform: iOS, Android, HONOR MagicOS, Linux, Windows, macOS) and
+`docs/HIDDIFY_ANDROID.md`. `vpn` is an ergonomic alias for `vpn-admin` —
+both names run the same binary.
+
+Other day-2 commands: `vpn status`, `vpn doctor` (diagnostic checks),
+`vpn version`, `vpn backup`/`vpn restore`, `vpn user
+enable/disable/rotate-token/rotate-vless/rotate-hysteria/remove/qr`. See
+`docs/IMPLEMENTATION_AUDIT.md` for exactly what's implemented vs. still
+needs a real VPS to verify, and `docs/DEVICE_ACCEPTANCE_TESTS.md` for the
+manual client-import test matrix.
 
 ## Workspace layout
 
