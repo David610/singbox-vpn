@@ -281,7 +281,10 @@ mod tests {
     // `/v1/relay-bundle` needs a real per-connection SocketAddr for its
     // ConnectInfo/rate-limiter extractor, so route it through
     // into_make_service_with_connect_info rather than plain oneshot.
-    async fn oneshot_with_addr(state: std::sync::Arc<AppState>, uri: &str) -> axum::response::Response {
+    async fn oneshot_with_addr(
+        state: std::sync::Arc<AppState>,
+        uri: &str,
+    ) -> axum::response::Response {
         use tower::Service;
         let mut app =
             build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
