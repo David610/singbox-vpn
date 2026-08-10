@@ -1755,60 +1755,57 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool, require_protocol: bool) ->
     // host can send and receive basic UDP packets to public resolvers.
     // Try multiple resolvers and a small retry window to reduce false
     // negatives on transient failures.
-    match listener_reported_by_ss(cfg.hysteria2.listen_port, true) {
-        Some(true) => {
-            let probe_cfg = cfg.udp_probe_config();
-            let ipv4_candidates_vec = probe_cfg.ipv4_resolvers;
-            let ipv6_candidates_vec = probe_cfg.ipv6_resolvers;
-            let timeout = std::time::Duration::from_millis(probe_cfg.timeout_ms);
-            let retries = probe_cfg.retries;
-            let delay = std::time::Duration::from_millis(probe_cfg.delay_ms);
+    if let Some(true) = listener_reported_by_ss(cfg.hysteria2.listen_port, true) {
+        let probe_cfg = cfg.udp_probe_config();
+        let ipv4_candidates_vec = probe_cfg.ipv4_resolvers;
+        let ipv6_candidates_vec = probe_cfg.ipv6_resolvers;
+        let timeout = std::time::Duration::from_millis(probe_cfg.timeout_ms);
+        let retries = probe_cfg.retries;
+        let delay = std::time::Duration::from_millis(probe_cfg.delay_ms);
 
-            let ipv4_refs: Vec<&str> = ipv4_candidates_vec.iter().map(|s| s.as_str()).collect();
-            match run_udp_probe_candidates(&ipv4_refs, timeout, retries, delay) {
-                Some(true) => report_check(
-                    CheckStatus::Ok,
+        let ipv4_refs: Vec<&str> = ipv4_candidates_vec.iter().map(|s| s.as_str()).collect();
+        match run_udp_probe_candidates(&ipv4_refs, timeout, retries, delay) {
+            Some(true) => report_check(
+                CheckStatus::Ok,
+                "L3",
+                "UDP egress (IPv4) appears functional (DNS via UDP to public resolvers succeeded)",
+            ),
+            Some(false) => {
+                report_check(
+                    CheckStatus::Fail,
                     "L3",
-                    "UDP egress (IPv4) appears functional (DNS via UDP to public resolvers succeeded)",
-                ),
-                Some(false) => {
-                    report_check(
-                        CheckStatus::Fail,
-                        "L3",
-                        "UDP egress (IPv4) appears blocked — Hysteria2 (QUIC/UDP) may not work from this VPS (tried multiple resolvers)",
-                    );
-                    failures += 1;
-                }
-                None => report_check(
-                    CheckStatus::Warn,
-                    "L3",
-                    "UDP egress check (IPv4) unavailable on this host (socket bind/permission failed)",
-                ),
+                    "UDP egress (IPv4) appears blocked — Hysteria2 (QUIC/UDP) may not work from this VPS (tried multiple resolvers)",
+                );
+                failures += 1;
             }
-
-            let ipv6_refs: Vec<&str> = ipv6_candidates_vec.iter().map(|s| s.as_str()).collect();
-            match run_udp_probe_candidates(&ipv6_refs, timeout, retries, delay) {
-                Some(true) => report_check(
-                    CheckStatus::Ok,
-                    "L3",
-                    "UDP egress (IPv6) appears functional (DNS via UDP to public resolvers succeeded)",
-                ),
-                Some(false) => {
-                    report_check(
-                        CheckStatus::Fail,
-                        "L3",
-                        "UDP egress (IPv6) appears blocked — QUIC/UDP over IPv6 may not work from this VPS (tried multiple resolvers)",
-                    );
-                    failures += 1;
-                }
-                None => report_check(
-                    CheckStatus::Warn,
-                    "L3",
-                    "UDP egress check (IPv6) unavailable on this host (socket bind/permission failed or IPv6 disabled)",
-                ),
-            }
+            None => report_check(
+                CheckStatus::Warn,
+                "L3",
+                "UDP egress check (IPv4) unavailable on this host (socket bind/permission failed)",
+            ),
         }
-        _ => {}
+
+        let ipv6_refs: Vec<&str> = ipv6_candidates_vec.iter().map(|s| s.as_str()).collect();
+        match run_udp_probe_candidates(&ipv6_refs, timeout, retries, delay) {
+            Some(true) => report_check(
+                CheckStatus::Ok,
+                "L3",
+                "UDP egress (IPv6) appears functional (DNS via UDP to public resolvers succeeded)",
+            ),
+            Some(false) => {
+                report_check(
+                    CheckStatus::Fail,
+                    "L3",
+                    "UDP egress (IPv6) appears blocked — QUIC/UDP over IPv6 may not work from this VPS (tried multiple resolvers)",
+                );
+                failures += 1;
+            }
+            None => report_check(
+                CheckStatus::Warn,
+                "L3",
+                "UDP egress check (IPv6) unavailable on this host (socket bind/permission failed or IPv6 disabled)",
+            ),
+        }
     }
 
     check_l4_subscription_coherence(cfg, &mut failures);
@@ -2149,29 +2146,19 @@ fn tcp_port_reachable(host: &str, port: u16, timeout: std::time::Duration) -> bo
 /// plain DNS A query for `example.com` sent to the provided IP
 /// (e.g. "1.1.1.1" or "8.8.8.8").
 fn build_dns_query(name: &str) -> Vec<u8> {
-    let mut q = Vec::new();
-    // ID
-    q.push(0x12);
-    q.push(0x34);
-    // Flags: standard query, recursion desired
-    q.push(0x01);
-    q.push(0x00);
-    // QDCOUNT=1
-    q.push(0x00);
-    q.push(0x01);
-    // ANCOUNT, NSCOUNT, ARCOUNT = 0
-    q.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    let mut q = vec![
+        0x12, 0x34, // ID
+        0x01, 0x00, // Flags: standard query, recursion desired
+        0x00, 0x01, // QDCOUNT=1
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ANCOUNT, NSCOUNT, ARCOUNT = 0
+    ];
     for label in name.split('.') {
         q.push(label.len() as u8);
         q.extend_from_slice(label.as_bytes());
     }
     q.push(0x00); // end of QNAME
-    // QTYPE A
-    q.push(0x00);
-    q.push(0x01);
-    // QCLASS IN
-    q.push(0x00);
-    q.push(0x01);
+    // QTYPE and QCLASS IN
+    q.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
     q
 }
 
@@ -2300,38 +2287,6 @@ fn run_udp_probe_candidates(
     })
 }
 
-#[cfg(test)]
-mod udp_probe_tests {
-    use super::*;
-
-    #[test]
-    fn build_dns_query_contains_labels() {
-        let q = build_dns_query("example.com");
-        // Should contain label lengths 7 and 3 followed by the ascii bytes
-        assert!(q.windows(2).any(|w| w == [7, b'e']));
-        assert!(q.windows(2).any(|w| w == [3, b'c']));
-    }
-
-    #[test]
-    fn run_udp_probe_candidates_with_probe_logic() {
-        // Simulate first resolver failing twice, second resolver succeeding on first attempt
-        let candidates = ["1.2.3.4", "5.6.7.8"];
-        let mut calls = 0;
-        let probe = |cand: &str, _timeout: std::time::Duration| -> Option<bool> {
-            calls += 1;
-            if cand == "1.2.3.4" {
-                Some(false)
-            } else if cand == "5.6.7.8" {
-                Some(true)
-            } else {
-                None
-            }
-        };
-        let res = run_udp_probe_candidates_with_probe(&candidates, std::time::Duration::from_millis(10), 2, std::time::Duration::from_millis(1), probe);
-        assert_eq!(res, Some(true));
-        assert!(calls >= 3);
-    }
-}
 
 /// Minimal, dependency-free HTTP/1.0 GET over loopback: connect, send a
 /// bare request with `Connection: close`, read the whole response (the
@@ -3297,4 +3252,43 @@ fn cmd_restore(
     );
     println!("Restore applied and validated against the running server.");
     Ok(())
+}
+
+#[cfg(test)]
+mod udp_probe_tests {
+    use super::*;
+
+    #[test]
+    fn build_dns_query_contains_labels() {
+        let q = build_dns_query("example.com");
+        // Should contain label lengths 7 and 3 followed by the ascii bytes
+        assert!(q.windows(2).any(|w| w == [7, b'e']));
+        assert!(q.windows(2).any(|w| w == [3, b'c']));
+    }
+
+    #[test]
+    fn run_udp_probe_candidates_with_probe_logic() {
+        // Simulate first resolver failing twice, second resolver succeeding on first attempt
+        let candidates = ["1.2.3.4", "5.6.7.8"];
+        let mut calls = 0;
+        let probe = |cand: &str, _timeout: std::time::Duration| -> Option<bool> {
+            calls += 1;
+            if cand == "1.2.3.4" {
+                Some(false)
+            } else if cand == "5.6.7.8" {
+                Some(true)
+            } else {
+                None
+            }
+        };
+        let res = run_udp_probe_candidates_with_probe(
+            &candidates,
+            std::time::Duration::from_millis(10),
+            2,
+            std::time::Duration::from_millis(1),
+            probe,
+        );
+        assert_eq!(res, Some(true));
+        assert!(calls >= 3);
+    }
 }
