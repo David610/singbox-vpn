@@ -1,0 +1,129 @@
+# Containerized Rust services only. sing-box (VLESS+REALITY/Hysteria2 data
+# plane) stays on systemd on the host — see docs/DEPLOYMENT.md for why.
+#
+# Two independent use cases, selected via Compose profiles:
+#
+#   `production` — just `subscription`, running alongside an existing
+#   deploy/almalinux install (sing-box + vpn-admin still run natively on the
+#   host; this replaces only the vpn-subscription.service unit).
+#     SUBSCRIPTION_GID=$(getent group vpn-subscription | cut -d: -f3) \
+#       docker compose -f deploy/docker/docker-compose.yml --profile production up -d subscription
+#
+#   `dev` — the local vertical slice (rendezvous + relay-agent + test-service)
+#   as an alternative to deploy/local/run-dev-slice.sh, useful for exercising
+#   the native adaptive-transport stack without a local Rust toolchain.
+#     docker compose -f deploy/docker/docker-compose.yml --profile dev up
+#
+# Run from the REPO ROOT so the relative build context below resolves.
+
+services:
+  subscription:
+    profiles: ["production"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: subscription
+    image: vpn1/subscription:local
+    container_name: vpn1-subscription
+    restart: unless-stopped
+    # subscription's own code binds 127.0.0.1 only, by design (never meant
+    # to be reachable except via the host's own loopback — see
+    # services/subscription/src/main.rs and spec §8/§27). Docker's bridge
+    # networking cannot publish a container's 127.0.0.1 to the host, so
+    # this uses host networking instead of a port mapping — this is what
+    # actually preserves "loopback-only, not exposed publicly", and it's
+    # also what lets nginx (running natively on the host, per
+    # deploy/almalinux/templates/nginx-vpn-subscription.conf.template's
+    # `proxy_pass http://127.0.0.1:9100`) keep reaching it unchanged.
+    network_mode: "host"
+    # SELinux enforcing (target host): `:z` (shared), not `:Z` (private) —
+    # sing-box and vpn-admin keep running natively on the host and need
+    # continued access to this same directory tree; `:Z` would relabel it
+    # exclusively for this one container and lock the host processes out.
+    volumes:
+      - /etc/vpn/deployment.toml:/etc/vpn/deployment.toml:ro,z
+      - /etc/vpn/compat:/etc/vpn/compat:ro,z
+    # Must resolve to the *host's* `vpn-subscription` system group so the
+    # bind-mounted, group-readable (0640) users.json/reality files stay
+    # readable — bind mounts keep the host's on-disk numeric UID/GID,
+    # container-side usernames don't apply. Get it from the host with:
+    #   getent group vpn-subscription | cut -d: -f3
+    user: "10001:${SUBSCRIPTION_GID:?set SUBSCRIPTION_GID=$$(getent group vpn-subscription | cut -d: -f3)}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - "no-new-privileges:true"
+    environment:
+      RUST_LOG: info
+
+  rendezvous:
+    profiles: ["dev"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: rendezvous
+    image: vpn1/rendezvous:local
+    container_name: vpn1-rendezvous
+    command: ["--bind", "0.0.0.0:9000", "--pool-file", "/tmp/relay-pool.json"]
+    # Mounted inside /tmp (tmpfs, writable), not its own read-only
+    # directory: with no --key-dir given, rendezvous falls back to an
+    # ephemeral dev signing key (fine for this profile) and writes a
+    # `<pool-file>.root_pub` sidecar next to it on every boot — that write
+    # fails against a read-only bind-mounted directory, but succeeds
+    # against a writable tmpfs.
+    volumes:
+      - ../local/relay-pool.json:/tmp/relay-pool.json:ro,z
+    ports:
+      - "127.0.0.1:9000:9000" # local dev slice only — never a public bind
+    networks: ["vpn1-dev"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - "no-new-privileges:true"
+
+  relay-agent:
+    profiles: ["dev"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: relay-agent
+    image: vpn1/relay-agent:local
+    container_name: vpn1-relay-agent
+    command: ["--role", "combined", "--bind-tls", "0.0.0.0:9443"]
+    environment:
+      RELAY_TLS_PORT: "9443"
+    ports:
+      - "127.0.0.1:9443:9443" # local dev slice only — never a public bind
+    networks: ["vpn1-dev"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - "no-new-privileges:true"
+
+  test-service:
+    profiles: ["dev"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: test-service
+    image: vpn1/test-service:local
+    container_name: vpn1-test-service
+    ports:
+      - "127.0.0.1:8081:8081" # local dev slice only — never a public bind
+    networks: ["vpn1-dev"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: ["ALL"]
+    security_opt:
+      - "no-new-privileges:true"
+
+networks:
+  vpn1-dev:
+    driver: bridge
