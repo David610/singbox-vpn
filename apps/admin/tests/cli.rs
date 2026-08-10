@@ -791,9 +791,12 @@ fn doctor_l4_live_check_fails_when_running_subscription_process_is_stale() {
     // systemd): the whole point is to reproduce a process that stays up
     // across a key change, whatever the cause, and prove `doctor` can
     // still catch it purely by asking the live process.
+    // Write a VALID but different X25519 keypair (not garbage) to trigger
+    // the "keys don't match" detection in the live subscription process,
+    // not a parse error in doctor's X25519 validation.
     std::fs::write(
         dir.path().join("state/reality/public.key"),
-        "stale-key-simulated-for-test",
+        REALITY_PUBLIC_B, // Valid but different from what init() generated (A)
     )
     .unwrap();
     std::fs::write(dir.path().join("state/reality/short_id.txt"), "deadbeef").unwrap();
