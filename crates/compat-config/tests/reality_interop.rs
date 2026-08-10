@@ -168,6 +168,14 @@ fn reality_handshake_succeeds_with_matched_keypair() {
         eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
         return;
     };
+    if !common::tcp_reachable("www.microsoft.com", 443, Duration::from_secs(5)) {
+        eprintln!(
+            "skipping: this environment cannot reach www.microsoft.com:443, the REALITY decoy \
+             target this test's server dials as an inherent part of the protocol — not a failure \
+             of the code under test, just this environment's egress"
+        );
+        return;
+    }
     let (private_key, public_key) = generate_reality_keypair(&sb);
     let short_id = "e54b2158";
 
@@ -184,22 +192,32 @@ fn reality_handshake_succeeds_with_matched_keypair() {
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
     let client_path = write_json(dir.path(), "client.json", &client_cfg);
     let target = spawn_local_http_target();
+    let server_log = dir.path().join("server.log");
+    let client_log = dir.path().join("client.log");
 
-    let _server = common::Guard(sb.run(&server_path));
+    let _server = common::Guard(sb.run_logged(&server_path, &server_log));
     assert!(
         wait_for_port(reality_port, Duration::from_secs(5)),
-        "server never bound its REALITY port"
+        "server never bound its REALITY port. server log:\n{}",
+        common::read_log(&server_log)
     );
-    let _client = common::Guard(sb.run(&client_path));
+    let _client = common::Guard(sb.run_logged(&client_path, &client_log));
     assert!(
         wait_for_port(mixed_port, Duration::from_secs(5)),
-        "client never bound its local SOCKS port"
+        "client never bound its local SOCKS port. client log:\n{}",
+        common::read_log(&client_log)
     );
 
+    // Give the diagnostic dump a chance to reflect the final outcome
+    // (the client keeps writing to its log as the handshake/relay
+    // progresses) before reading it back for the assertion message.
+    let relay_ok = socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port);
     assert!(
-        socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
-        "REALITY handshake/traffic failed through a config produced by this \
-         crate's own production renderers with a matched, real keypair"
+        relay_ok,
+        "REALITY handshake/traffic failed through a config produced by this crate's own \
+         production renderers with a matched, real keypair.\n--- server log ---\n{}\n--- client log ---\n{}",
+        common::read_log(&server_log),
+        common::read_log(&client_log)
     );
 }
 

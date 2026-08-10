@@ -3,6 +3,14 @@
 //! mod.rs` (not `tests/common.rs`) is the standard Rust convention for a
 //! helper module shared across integration test binaries without being
 //! compiled as its own separate test target.
+//!
+//! This module is compiled independently into EACH consuming test
+//! binary, so an item only one of them uses is legitimately unused from
+//! the other's perspective — `dead_code` warnings would fire on
+//! whichever binary doesn't call it. `#![allow(dead_code)]` here is the
+//! standard accommodation for a shared `tests/common` module, not a
+//! blanket suppression of a real lint elsewhere in this crate.
+#![allow(dead_code)]
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -60,8 +68,17 @@ pub fn socks5_http_get_is_200(socks_port: u16, host: &str, port: u16) -> bool {
         Ok(s) => s,
         Err(_) => return false,
     };
+    // REALITY's handshake involves the server dialing a REAL external
+    // decoy target (e.g. www.microsoft.com) as part of the protocol
+    // itself — under CI network conditions (higher/variable latency
+    // than a local sandbox) that real dial-out plus TLS handshake can
+    // take noticeably longer than on a fast local link. 10s was
+    // observed to be too tight in GitHub Actions (the matched-keypair
+    // test failed there while passing consistently locally); 30s gives
+    // real headroom without masking an actual protocol failure, which
+    // still fails long before this ever becomes the limiting factor.
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
         .unwrap();
     // SOCKS5 greeting: no auth.
     if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
@@ -111,6 +128,29 @@ pub fn socks5_http_get_is_200(socks_port: u16, host: &str, port: u16) -> bool {
         return false;
     }
     response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
+}
+
+/// REALITY's own protocol design requires the server to dial a REAL
+/// external decoy/camouflage target as part of every handshake — that
+/// is not a choice this test suite makes, see `reality_interop.rs`'s
+/// module doc. Some CI network environments restrict or fail outbound
+/// egress to specific hosts (observed: a REALITY test that dials
+/// `www.microsoft.com` failed in ~0.1s on a GitHub Actions runner,
+/// too fast to be a timeout — consistent with the connection being
+/// refused/reset immediately rather than merely slow). A test that
+/// hard-requires reachability to one specific external host it does
+/// not control is exactly the kind of nondeterminism
+/// interoperability tests must avoid (this project's own review
+/// standard) — so this preflight exists to SKIP (not fail) when that
+/// specific dependency isn't available here, the same "environment
+/// can't run this" policy already used for `SING_BOX_BIN`/`openssl`
+/// availability elsewhere in these suites.
+pub fn tcp_reachable(host: &str, port: u16, timeout: std::time::Duration) -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(mut addrs) = format!("{host}:{port}").to_socket_addrs() else {
+        return false;
+    };
+    addrs.any(|addr| std::net::TcpStream::connect_timeout(&addr, timeout).is_ok())
 }
 
 pub fn free_port() -> u16 {
@@ -163,6 +203,36 @@ impl SingBox {
             .spawn()
             .expect("spawn sing-box run")
     }
+
+    /// Like `run`, but redirects stdout+stderr to `log_path` instead of
+    /// discarding them, so a CI failure can be diagnosed from the actual
+    /// sing-box log instead of a bare "assertion failed" with no
+    /// context — real handshake failures print exactly what stage
+    /// failed (REALITY handshake, decoy dial, etc.).
+    pub fn run_logged(
+        &self,
+        config_path: &std::path::Path,
+        log_path: &std::path::Path,
+    ) -> std::process::Child {
+        let log_file = std::fs::File::create(log_path).expect("create sing-box log file");
+        let log_file_err = log_file.try_clone().expect("clone log file handle");
+        std::process::Command::new(&self.path)
+            .arg("run")
+            .arg("-c")
+            .arg(config_path)
+            .stdout(std::process::Stdio::from(log_file))
+            .stderr(std::process::Stdio::from(log_file_err))
+            .spawn()
+            .expect("spawn sing-box run")
+    }
+}
+
+/// Reads back a log file written by `SingBox::run_logged`, for printing
+/// on test failure. Never fails the calling test if the log can't be
+/// read — this is diagnostic best-effort, not a correctness assertion.
+pub fn read_log(log_path: &std::path::Path) -> String {
+    std::fs::read_to_string(log_path)
+        .unwrap_or_else(|e| format!("(could not read log at {log_path:?}: {e})"))
 }
 
 pub struct Guard(pub std::process::Child);

@@ -194,21 +194,27 @@ fn hysteria2_handshake_succeeds_with_matched_password() {
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
     let client_path = write_json(dir.path(), "client.json", &client_cfg);
     let target = spawn_local_http_target();
+    let server_log = dir.path().join("server.log");
+    let client_log = dir.path().join("client.log");
 
-    let _server = common::Guard(sb.run(&server_path));
+    let _server = common::Guard(sb.run_logged(&server_path, &server_log));
     // Hysteria2 is UDP/QUIC — `wait_for_port`'s TCP connect can't
     // observe it coming up, so give sing-box a moment to bind instead.
     std::thread::sleep(Duration::from_millis(500));
-    let _client = common::Guard(sb.run(&client_path));
+    let _client = common::Guard(sb.run_logged(&client_path, &client_log));
     assert!(
         wait_for_port(mixed_port, Duration::from_secs(5)),
-        "client never bound its local SOCKS port"
+        "client never bound its local SOCKS port. client log:\n{}",
+        common::read_log(&client_log)
     );
 
     assert!(
         socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
         "Hysteria2 handshake/traffic failed through a config produced by this crate's own \
-         production renderers with a matched password and pinned test certificate"
+         production renderers with a matched password and pinned test certificate.\n\
+         --- server log ---\n{}\n--- client log ---\n{}",
+        common::read_log(&server_log),
+        common::read_log(&client_log)
     );
 }
 
