@@ -150,10 +150,23 @@ fn build_configs(
         "listen": "127.0.0.1",
         "listen_port": mixed_port,
     }]);
-    // Test-only trust pin — see this function's doc comment.
+    // Test-only trust pin — see this function's doc comment. Must be
+    // applied before the urltest/direct outbounds are dropped below,
+    // since it addresses outbounds[0] by its production-rendered index.
     client_cfg["outbounds"][0]["tls"]["certificate_path"] =
         serde_json::json!(cert_path.display().to_string());
     client_cfg["route"] = serde_json::json!({ "final": "Hysteria2" });
+    // Same fix as reality_interop.rs's build_configs: drop the
+    // production renderer's automatic `urltest` "auto" selector, which
+    // otherwise fires its own immediate, uncontrolled health-check
+    // connection through this outbound at sing-box startup — confirmed
+    // as a real CI race for the REALITY counterpart of this test, and
+    // not something this test needs, so removed here too as defense in
+    // depth rather than waiting to observe the same flake here.
+    client_cfg["outbounds"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|ob| ob["tag"] == "Hysteria2");
 
     (server_cfg, client_cfg)
 }

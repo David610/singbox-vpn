@@ -145,6 +145,27 @@ fn build_configs(
     // Route everything through the reality endpoint's own outbound tag
     // (render_singbox_client_subscription names it after the endpoint label).
     client_cfg["route"] = serde_json::json!({ "final": "Reality" });
+    // render_singbox_client_subscription always adds a `urltest` "auto"
+    // selector (spec §22) that fires its OWN immediate health-check
+    // connection through the Reality outbound at sing-box startup — a
+    // SECOND, uncontrolled REALITY connection racing against this
+    // test's own deliberate one. Confirmed as the actual cause of a CI
+    // flake: sing-box's REALITY server logged 3 separate "processed
+    // invalid connection" failures for what this test only initiates
+    // once, and the client log showed the urltest probe's own
+    // connection to www.gstatic.com failing immediately at startup,
+    // racing the mixed-inbound request that follows a few ms later.
+    // This test verifies the crate's rendered VLESS+REALITY outbound
+    // itself, which doesn't require urltest's automatic-selection
+    // machinery at all — drop it (and the now-unreachable "direct"
+    // outbound `route.final` already bypasses) so the ONLY outbound
+    // connection this client process ever makes is the one this test
+    // deliberately triggers, removing that race entirely rather than
+    // trying to out-time it.
+    client_cfg["outbounds"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|ob| ob["tag"] == "Reality");
 
     (server_cfg, client_cfg)
 }
