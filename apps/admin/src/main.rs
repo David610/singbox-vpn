@@ -1751,6 +1751,63 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool, require_protocol: bool) ->
         }
     }
 
+    // Additional UDP egress check: if Hysteria2 is listening, ensure the
+    // host can send and receive basic UDP packets to public resolvers.
+    // Try multiple resolvers and a small retry window to reduce false
+    // negatives on transient failures.
+    match listener_reported_by_ss(cfg.hysteria2.listen_port, true) {
+        Some(true) => {
+            let ipv4_candidates = ["1.1.1.1", "8.8.8.8"];
+            let ipv6_candidates = ["2606:4700:4700::1111", "2001:4860:4860::8888"];
+            let timeout = std::time::Duration::from_secs(2);
+            let retries = 2usize;
+            let delay = std::time::Duration::from_millis(250);
+
+            match run_udp_probe_candidates(&ipv4_candidates, timeout, retries, delay) {
+                Some(true) => report_check(
+                    CheckStatus::Ok,
+                    "L3",
+                    "UDP egress (IPv4) appears functional (DNS via UDP to public resolvers succeeded)",
+                ),
+                Some(false) => {
+                    report_check(
+                        CheckStatus::Fail,
+                        "L3",
+                        "UDP egress (IPv4) appears blocked — Hysteria2 (QUIC/UDP) may not work from this VPS (tried multiple resolvers)",
+                    );
+                    failures += 1;
+                }
+                None => report_check(
+                    CheckStatus::Warn,
+                    "L3",
+                    "UDP egress check (IPv4) unavailable on this host (socket bind/permission failed)",
+                ),
+            }
+
+            match run_udp_probe_candidates(&ipv6_candidates, timeout, retries, delay) {
+                Some(true) => report_check(
+                    CheckStatus::Ok,
+                    "L3",
+                    "UDP egress (IPv6) appears functional (DNS via UDP to public resolvers succeeded)",
+                ),
+                Some(false) => {
+                    report_check(
+                        CheckStatus::Fail,
+                        "L3",
+                        "UDP egress (IPv6) appears blocked — QUIC/UDP over IPv6 may not work from this VPS (tried multiple resolvers)",
+                    );
+                    failures += 1;
+                }
+                None => report_check(
+                    CheckStatus::Warn,
+                    "L3",
+                    "UDP egress check (IPv6) unavailable on this host (socket bind/permission failed or IPv6 disabled)",
+                ),
+            }
+        }
+        _ => {}
+    }
+
     check_l4_subscription_coherence(cfg, &mut failures);
     check_l4_live_subscription_process_state(cfg, &mut failures);
 
@@ -2078,6 +2135,154 @@ fn tcp_port_reachable(host: &str, port: u16, timeout: std::time::Duration) -> bo
         Err(_) => return false,
     };
     std::net::TcpStream::connect_timeout(&addr, timeout).is_ok()
+}
+
+/// Minimal UDP DNS probe for basic outbound-UDP capability checks.
+///
+/// Returns Some(true) if a UDP DNS response was successfully received,
+/// Some(false) if the probe completed with no response (indicating a
+/// likely block), and None if the environment prevented running the
+/// probe (socket bind failure, unsupported platform, etc.). Uses a
+/// plain DNS A query for `example.com` sent to the provided IP
+/// (e.g. "1.1.1.1" or "8.8.8.8").
+
+// Build a minimal DNS query for example.com (no recursion options
+// beyond RD=1). Not a full DNS client but adequate for reachability.
+fn build_dns_query(name: &str) -> Vec<u8> {
+    let mut q = Vec::new();
+    // ID
+    q.push(0x12);
+    q.push(0x34);
+    // Flags: standard query, recursion desired
+    q.push(0x01);
+    q.push(0x00);
+    // QDCOUNT=1
+    q.push(0x00);
+    q.push(0x01);
+    // ANCOUNT, NSCOUNT, ARCOUNT = 0
+    q.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    for label in name.split('.') {
+        q.push(label.len() as u8);
+        q.extend_from_slice(label.as_bytes());
+    }
+    q.push(0x00); // end of QNAME
+    // QTYPE A
+    q.push(0x00);
+    q.push(0x01);
+    // QCLASS IN
+    q.push(0x00);
+    q.push(0x01);
+    q
+}
+
+fn udp_dns_probe(resolver_ip: &str, timeout: std::time::Duration) -> Option<bool> {
+    use std::net::{SocketAddr, UdpSocket};
+
+    let query = build_dns_query("example.com");
+
+    // Bind to an ephemeral UDP socket on all interfaces (IPv4).
+    let bind_addr = match "0.0.0.0:0".parse::<SocketAddr>() {
+        Ok(a) => a,
+        Err(_) => return None,
+    };
+    let socket = match UdpSocket::bind(bind_addr) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    let _ = socket.set_read_timeout(Some(timeout));
+    let _ = socket.set_write_timeout(Some(timeout));
+
+    let target = format!("{resolver_ip}:53");
+    let target_addr = match target.parse::<SocketAddr>() {
+        Ok(a) => a,
+        Err(_) => return None,
+    };
+
+    if socket.send_to(&query, target_addr).is_err() {
+        return Some(false);
+    }
+    let mut buf = [0u8; 512];
+    match socket.recv_from(&mut buf) {
+        Ok((n, _)) => Some(n > 0),
+        Err(_) => Some(false),
+    }
+}
+
+/// IPv6 variant of the UDP DNS probe. Binds to the IPv6 unspecified
+/// address and dials a bracketed IPv6 resolver address like
+/// "[2606:4700:4700::1111]:53".
+fn udp_dns_probe_v6(resolver_ip: &str, timeout: std::time::Duration) -> Option<bool> {
+    use std::net::{SocketAddr, UdpSocket};
+
+    let query = build_dns_query("example.com");
+
+    // Bind to an ephemeral UDP socket on all interfaces (IPv6).
+    let bind_addr = match "[::]:0".parse::<SocketAddr>() {
+        Ok(a) => a,
+        Err(_) => return None,
+    };
+    let socket = match UdpSocket::bind(bind_addr) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    let _ = socket.set_read_timeout(Some(timeout));
+    let _ = socket.set_write_timeout(Some(timeout));
+
+    let target = format!("[{resolver_ip}]:53");
+    let target_addr = match target.parse::<SocketAddr>() {
+        Ok(a) => a,
+        Err(_) => return None,
+    };
+
+    if socket.send_to(&query, target_addr).is_err() {
+        return Some(false);
+    }
+    let mut buf = [0u8; 512];
+    match socket.recv_from(&mut buf) {
+        Ok((n, _)) => Some(n > 0),
+        Err(_) => Some(false),
+    }
+}
+
+/// Try multiple resolver candidates with retries and inter-attempt delay.
+///
+/// Returns Some(true) if any candidate returned a positive response,
+/// Some(false) if probes ran but none responded, and None if every
+/// attempt failed to run (e.g., socket bind errors across attempts).
+fn run_udp_probe_candidates(
+    candidates: &[&str],
+    timeout: std::time::Duration,
+    retries: usize,
+    delay: std::time::Duration,
+) -> Option<bool> {
+    let mut any_ran = false;
+    for &cand in candidates {
+        for attempt in 0..retries {
+            let outcome = if cand.contains(":") {
+                udp_dns_probe_v6(cand, timeout)
+            } else {
+                udp_dns_probe(cand, timeout)
+            };
+            match outcome {
+                Some(true) => return Some(true),
+                Some(false) => {
+                    any_ran = true;
+                    // try again or next resolver
+                }
+                None => {
+                    // probe could not be executed for this candidate/attempt
+                }
+            }
+            if attempt + 1 < retries {
+                std::thread::sleep(delay);
+            }
+        }
+    }
+    if !any_ran {
+        None
+    } else {
+        Some(false)
+    }
 }
 
 /// Minimal, dependency-free HTTP/1.0 GET over loopback: connect, send a
