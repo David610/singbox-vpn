@@ -1179,38 +1179,62 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool) -> Result<()> {
         failures += 1;
     }
 
-    for (label, path) in [
-        ("REALITY private key", cfg.reality_private_key_file()),
-        ("REALITY public key", cfg.reality_public_key_file()),
-    ] {
-        if !path.exists() {
-            report_check(
-                CheckStatus::Warn,
-                "L2",
-                format!("{label} missing at {path:?}"),
-            );
-            continue;
-        }
-        match is_not_world_readable(&path) {
+    // Confidentiality only matters for the PRIVATE key — world-readable
+    // there is a real, `[FAIL]`-worthy exposure. The PUBLIC key and
+    // short_id are, by the REALITY protocol's own design, not secret:
+    // both are embedded in every subscription response, share link, and
+    // QR code handed to every client over the public internet. Flagging
+    // the public key's local file permissions as a hard failure was a
+    // false positive — reproduced directly: a bare `vpn-admin init` (no
+    // follow-up `chmod` from `install.sh`) leaves `public.key` at
+    // whatever the process umask produces, commonly world-readable,
+    // which is not a security problem and must not make `doctor` cry
+    // wolf on an otherwise-healthy, correctly-configured deployment.
+    if !cfg.reality_private_key_file().exists() {
+        report_check(
+            CheckStatus::Warn,
+            "L2",
+            format!(
+                "REALITY private key missing at {:?}",
+                cfg.reality_private_key_file()
+            ),
+        );
+    } else {
+        match is_not_world_readable(&cfg.reality_private_key_file()) {
             Some(true) => report_check(
                 CheckStatus::Ok,
                 "L2",
-                format!("{label} present, not world-readable"),
+                "REALITY private key present, not world-readable",
             ),
             Some(false) => {
                 report_check(
                     CheckStatus::Fail,
                     "L2",
-                    format!("{label} at {path:?} is world-readable"),
+                    format!(
+                        "REALITY private key at {:?} is world-readable",
+                        cfg.reality_private_key_file()
+                    ),
                 );
                 failures += 1;
             }
             None => report_check(
                 CheckStatus::Warn,
                 "L2",
-                format!("{label} present (permission check unavailable on this platform)"),
+                "REALITY private key present (permission check unavailable on this platform)",
             ),
         }
+    }
+    if cfg.reality_public_key_file().exists() {
+        report_check(CheckStatus::Ok, "L2", "REALITY public key present");
+    } else {
+        report_check(
+            CheckStatus::Warn,
+            "L2",
+            format!(
+                "REALITY public key missing at {:?}",
+                cfg.reality_public_key_file()
+            ),
+        );
     }
 
     match store::load_users(&cfg.users_file()) {

@@ -173,6 +173,23 @@ Beyond §2's three, this pass also found and fixed:
    (`configure_nginx`), just not applied to vpn1's own two units. Fixed:
    both are now explicitly `reload-or-restart`ed, hard-failing the
    install if either restart fails.
+8. **`doctor` `[FAIL]`ed on the REALITY *public* key being
+   world-readable — a false positive.** The REALITY public key is not a
+   secret by protocol design: it's embedded in every subscription
+   response, share link, and QR code handed to every client over the
+   public internet. `cmd_doctor` applied the same "not world-readable"
+   confidentiality check to it as to the actual private key, which is
+   the one file that genuinely needs that property. Reproduced directly
+   with the real binary against a freshly-`init`'d deployment (a bare
+   `vpn-admin init`, run without `install.sh`'s follow-up `chown`/`chmod`
+   step, leaves `public.key` at the process's default umask — commonly
+   world-readable, and not a security problem): `doctor` reported
+   `[FAIL]` and a nonzero exit on an otherwise completely healthy
+   server, which is exactly the kind of false alarm that erodes trust in
+   a diagnostic tool and trains operators to ignore its output. Fixed:
+   the world-readability check now applies only to the private key;
+   the public key check is presence-only. Regression test:
+   `apps/admin/tests/cli.rs::doctor_never_fails_on_world_readable_reality_public_key`.
 
 ## 5. Changes made
 
@@ -194,6 +211,8 @@ Beyond §2's three, this pass also found and fixed:
     (`[FAIL]`, counts toward exit status) from an inconclusive timeout
     (`[WARN]`).
   - New `http_get_local_json` helper (dependency-free loopback HTTP GET).
+  - `doctor`'s REALITY key world-readability check now only applies to
+    the private key (bug §4.8) — the public key check is presence-only.
 - `crates/compat-config/src/render.rs`:
   - `standard_endpoints` moved here from `services/subscription` so
     `vpn-admin` and `vpn-subscription` build the EXACT same endpoint set

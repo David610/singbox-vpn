@@ -539,6 +539,44 @@ fn doctor_reports_missing_singbox_binary_as_failure() {
         .stdout(predicates::str::contains("[FAIL]"));
 }
 
+/// The REALITY public key is not a secret by protocol design — it is
+/// embedded in every subscription response, share link, and QR code
+/// handed to every client over the public internet. `doctor` must never
+/// `[FAIL]` on it being world-readable; only the PRIVATE key's
+/// confidentiality is a real property to enforce. Reproduces the exact
+/// false-positive: a bare `vpn-admin init` (no `install.sh` follow-up
+/// `chmod`) leaves `public.key` at the process's default umask, which
+/// is commonly world-readable and is not a security problem.
+#[test]
+fn doctor_never_fails_on_world_readable_reality_public_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+
+    // Force the public key world-readable regardless of this test
+    // process's own umask, so the assertion below doesn't depend on
+    // the environment's umask happening to already be permissive.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let pub_key = dir.path().join("state/reality/public.key");
+        std::fs::set_permissions(&pub_key, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        !stdout.contains("public key at"),
+        "doctor must never flag the REALITY PUBLIC key's permissions (old buggy message was \
+         \"REALITY public key at <path> is world-readable\") — it is not a secret:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[OK]") && stdout.contains("REALITY public key present"),
+        "doctor should report the public key present, without a permission judgement:\n{stdout}"
+    );
+}
+
 /// L4 subscription-coherence checks pass once `init` and `render-config`
 /// have together produced a coherent REALITY key file set and a
 /// matching on-disk sing-box config — this is the "everything is fine"
