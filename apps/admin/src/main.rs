@@ -1757,13 +1757,15 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool, require_protocol: bool) ->
     // negatives on transient failures.
     match listener_reported_by_ss(cfg.hysteria2.listen_port, true) {
         Some(true) => {
-            let ipv4_candidates = ["1.1.1.1", "8.8.8.8"];
-            let ipv6_candidates = ["2606:4700:4700::1111", "2001:4860:4860::8888"];
-            let timeout = std::time::Duration::from_secs(2);
-            let retries = 2usize;
-            let delay = std::time::Duration::from_millis(250);
+            let probe_cfg = cfg.udp_probe_config();
+            let ipv4_candidates_vec = probe_cfg.ipv4_resolvers;
+            let ipv6_candidates_vec = probe_cfg.ipv6_resolvers;
+            let timeout = std::time::Duration::from_millis(probe_cfg.timeout_ms);
+            let retries = probe_cfg.retries;
+            let delay = std::time::Duration::from_millis(probe_cfg.delay_ms);
 
-            match run_udp_probe_candidates(&ipv4_candidates, timeout, retries, delay) {
+            let ipv4_refs: Vec<&str> = ipv4_candidates_vec.iter().map(|s| s.as_str()).collect();
+            match run_udp_probe_candidates(&ipv4_refs, timeout, retries, delay) {
                 Some(true) => report_check(
                     CheckStatus::Ok,
                     "L3",
@@ -1784,7 +1786,8 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool, require_protocol: bool) ->
                 ),
             }
 
-            match run_udp_probe_candidates(&ipv6_candidates, timeout, retries, delay) {
+            let ipv6_refs: Vec<&str> = ipv6_candidates_vec.iter().map(|s| s.as_str()).collect();
+            match run_udp_probe_candidates(&ipv6_refs, timeout, retries, delay) {
                 Some(true) => report_check(
                     CheckStatus::Ok,
                     "L3",
@@ -2145,9 +2148,6 @@ fn tcp_port_reachable(host: &str, port: u16, timeout: std::time::Duration) -> bo
 /// probe (socket bind failure, unsupported platform, etc.). Uses a
 /// plain DNS A query for `example.com` sent to the provided IP
 /// (e.g. "1.1.1.1" or "8.8.8.8").
-
-// Build a minimal DNS query for example.com (no recursion options
-// beyond RD=1). Not a full DNS client but adequate for reachability.
 fn build_dns_query(name: &str) -> Vec<u8> {
     let mut q = Vec::new();
     // ID
@@ -2210,7 +2210,7 @@ fn udp_dns_probe(resolver_ip: &str, timeout: std::time::Duration) -> Option<bool
 
 /// IPv6 variant of the UDP DNS probe. Binds to the IPv6 unspecified
 /// address and dials a bracketed IPv6 resolver address like
-/// "[2606:4700:4700::1111]:53".
+/// `[2606:4700:4700::1111]:53`.
 fn udp_dns_probe_v6(resolver_ip: &str, timeout: std::time::Duration) -> Option<bool> {
     use std::net::{SocketAddr, UdpSocket};
 
@@ -2249,20 +2249,20 @@ fn udp_dns_probe_v6(resolver_ip: &str, timeout: std::time::Duration) -> Option<b
 /// Returns Some(true) if any candidate returned a positive response,
 /// Some(false) if probes ran but none responded, and None if every
 /// attempt failed to run (e.g., socket bind errors across attempts).
-fn run_udp_probe_candidates(
+fn run_udp_probe_candidates_with_probe<F>(
     candidates: &[&str],
     timeout: std::time::Duration,
     retries: usize,
     delay: std::time::Duration,
-) -> Option<bool> {
+    mut probe: F,
+) -> Option<bool>
+where
+    F: FnMut(&str, std::time::Duration) -> Option<bool>,
+{
     let mut any_ran = false;
     for &cand in candidates {
         for attempt in 0..retries {
-            let outcome = if cand.contains(":") {
-                udp_dns_probe_v6(cand, timeout)
-            } else {
-                udp_dns_probe(cand, timeout)
-            };
+            let outcome = probe(cand, timeout);
             match outcome {
                 Some(true) => return Some(true),
                 Some(false) => {
@@ -2282,6 +2282,54 @@ fn run_udp_probe_candidates(
         None
     } else {
         Some(false)
+    }
+}
+
+fn run_udp_probe_candidates(
+    candidates: &[&str],
+    timeout: std::time::Duration,
+    retries: usize,
+    delay: std::time::Duration,
+) -> Option<bool> {
+    run_udp_probe_candidates_with_probe(candidates, timeout, retries, delay, |cand, to| {
+        if cand.contains(":") {
+            udp_dns_probe_v6(cand, to)
+        } else {
+            udp_dns_probe(cand, to)
+        }
+    })
+}
+
+#[cfg(test)]
+mod udp_probe_tests {
+    use super::*;
+
+    #[test]
+    fn build_dns_query_contains_labels() {
+        let q = build_dns_query("example.com");
+        // Should contain label lengths 7 and 3 followed by the ascii bytes
+        assert!(q.windows(2).any(|w| w == [7, b'e']));
+        assert!(q.windows(2).any(|w| w == [3, b'c']));
+    }
+
+    #[test]
+    fn run_udp_probe_candidates_with_probe_logic() {
+        // Simulate first resolver failing twice, second resolver succeeding on first attempt
+        let candidates = ["1.2.3.4", "5.6.7.8"];
+        let mut calls = 0;
+        let probe = |cand: &str, _timeout: std::time::Duration| -> Option<bool> {
+            calls += 1;
+            if cand == "1.2.3.4" {
+                Some(false)
+            } else if cand == "5.6.7.8" {
+                Some(true)
+            } else {
+                None
+            }
+        };
+        let res = run_udp_probe_candidates_with_probe(&candidates, std::time::Duration::from_millis(10), 2, std::time::Duration::from_millis(1), probe);
+        assert_eq!(res, Some(true));
+        assert!(calls >= 3);
     }
 }
 

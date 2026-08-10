@@ -21,6 +21,12 @@ pub struct DeploymentConfig {
     pub hysteria2: Hysteria2Section,
     pub subscription: SubscriptionSection,
 
+    /// UDP probe / diagnostic tuning for `vpn-admin doctor` (probe
+    /// resolvers, timeouts, retries). Optional; sensible defaults are
+    /// supplied if omitted.
+    #[serde(default)]
+    pub udp_probe: Option<UdpProbeSection>,
+
     /// Root of the `/etc/vpn/compat` state tree. Defaults applied by
     /// `default_state_dir` if omitted from the TOML file.
     #[serde(default = "default_state_dir")]
@@ -28,6 +34,25 @@ pub struct DeploymentConfig {
 
     #[serde(default = "default_singbox_binary")]
     pub singbox_binary: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UdpProbeSection {
+    /// IPv4 resolver IPs to try for UDP probes.
+    #[serde(default = "default_ipv4_resolvers")]
+    pub ipv4_resolvers: Vec<String>,
+    /// IPv6 resolver IPs to try for UDP probes.
+    #[serde(default = "default_ipv6_resolvers")]
+    pub ipv6_resolvers: Vec<String>,
+    /// Number of attempts per resolver candidate.
+    #[serde(default = "default_udp_retries")]
+    pub retries: usize,
+    /// Per-attempt timeout in milliseconds.
+    #[serde(default = "default_udp_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Delay between attempts in milliseconds.
+    #[serde(default = "default_udp_delay_ms")]
+    pub delay_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,10 +96,48 @@ fn default_public_port() -> u16 {
     8443
 }
 
+fn default_ipv4_resolvers() -> Vec<String> {
+    vec!["1.1.1.1".into(), "8.8.8.8".into()]
+}
+
+fn default_ipv6_resolvers() -> Vec<String> {
+    vec!["2606:4700:4700::1111".into(), "2001:4860:4860::8888".into()]
+}
+
+fn default_udp_retries() -> usize {
+    2
+}
+
+fn default_udp_timeout_ms() -> u64 {
+    2000
+}
+
+fn default_udp_delay_ms() -> u64 {
+    250
+}
+
+impl Default for UdpProbeSection {
+    fn default() -> Self {
+        UdpProbeSection {
+            ipv4_resolvers: default_ipv4_resolvers(),
+            ipv6_resolvers: default_ipv6_resolvers(),
+            retries: default_udp_retries(),
+            timeout_ms: default_udp_timeout_ms(),
+            delay_ms: default_udp_delay_ms(),
+        }
+    }
+}
+
 impl DeploymentConfig {
     pub fn load(path: &Path) -> Result<Self, CompatError> {
         let text = std::fs::read_to_string(path).map_err(|e| CompatError::Io(e.to_string()))?;
         toml::from_str(&text).map_err(|e| CompatError::Parse(e.to_string()))
+    }
+
+    /// Return the effective UDP probe configuration, falling back to
+    /// defaults if the section is omitted from the TOML.
+    pub fn udp_probe_config(&self) -> UdpProbeSection {
+        self.udp_probe.clone().unwrap_or_default()
     }
 
     pub fn users_file(&self) -> PathBuf {
@@ -130,5 +193,36 @@ listen_port = 9100
             cfg.users_file(),
             PathBuf::from("/etc/vpn/compat/users/users.json")
         );
+    }
+
+    #[test]
+    fn udp_probe_section_parses_and_defaults_apply() {
+        let toml_str = r#"
+public_host = "vpn.example.com"
+subscription_host = "sub.example.com"
+
+[reality]
+listen_port = 443
+handshake_server = "www.microsoft.com"
+
+[hysteria2]
+listen_port = 443
+
+[subscription]
+listen_port = 9100
+
+[udp_probe]
+ipv4_resolvers = ["9.9.9.9"]
+retries = 3
+timeout_ms = 1500
+"#;
+        let cfg: DeploymentConfig = toml::from_str(toml_str).unwrap();
+        let udp = cfg.udp_probe_config();
+        assert_eq!(udp.ipv4_resolvers, vec!["9.9.9.9".to_string()]);
+        assert_eq!(udp.retries, 3usize);
+        assert_eq!(udp.timeout_ms, 1500u64);
+        // unspecified fields take defaults
+        assert!(!udp.ipv6_resolvers.is_empty());
+        assert_eq!(udp.delay_ms, 250u64);
     }
 }
