@@ -89,7 +89,10 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # [1] preflight
 # ---------------------------------------------------------------------
 existing_install_present() {
-  [ -f "$DEPLOYMENT_TOML" ] || [ -x "$SINGBOX_BIN" ]
+  # Only the manifest proves vpn1 completed and owns the listeners. A
+  # foreign sing-box binary or an interrupted partial install must not make
+  # us skip conflict checks and overwrite another service.
+  [ -f /var/lib/vpn1/install-state.json ]
 }
 
 # The subscription HTTPS port is operator-configurable (SUBSCRIPTION_PORT,
@@ -121,6 +124,10 @@ Either re-run without SUBSCRIPTION_PORT to keep $committed, or change public_por
   fi
   SUBSCRIPTION_PORT="${SUBSCRIPTION_PORT:-8443}"
   preflight_validate_port "$SUBSCRIPTION_PORT" "SUBSCRIPTION_PORT" || die "invalid SUBSCRIPTION_PORT — refusing to interpolate it into deployment.toml/nginx config/firewall rules."
+  [ "$SUBSCRIPTION_PORT" != "443" ] \
+    || die "SUBSCRIPTION_PORT=443 collides with the VLESS+REALITY listener. Choose a different HTTPS port."
+  [ "$SUBSCRIPTION_PORT" != "$SUBSCRIPTION_BACKEND_PORT" ] \
+    || die "SUBSCRIPTION_PORT=$SUBSCRIPTION_PORT collides with the local vpn-subscription backend. Choose a different public HTTPS port."
   export SUBSCRIPTION_PORT
 }
 
@@ -358,12 +365,17 @@ host_config_stage() {
 fetch_release_binaries() {
   local target version base_url tmp
   target="$(rust_target_for_arch "$ARCH")" || return 1
-  version="${VPN1_VERSION:-latest}"
-  if [ "$version" = "latest" ]; then
-    base_url="https://github.com/$VPN1_RELEASE_REPO/releases/latest/download"
-  else
-    base_url="https://github.com/$VPN1_RELEASE_REPO/releases/download/$version"
+  # The bootstrapper may intentionally download main/dev source, or fall
+  # back to it when release-tag resolution is unavailable. In either case
+  # VPN1_VERSION is empty and a "latest" binary would silently mix two
+  # different revisions. Prebuilt assets are allowed only for the exact,
+  # immutable tag the bootstrapper resolved.
+  version="${VPN1_VERSION:-}"
+  if [ -z "$version" ]; then
+    log "no exact release tag is pinned — building binaries from this downloaded source tree."
+    return 1
   fi
+  base_url="https://github.com/$VPN1_RELEASE_REPO/releases/download/$version"
   tmp="$(mktemp -d)"
   local asset="vpn1-${target}.tar.gz"
   log "checking for a prebuilt release ($asset)..."
@@ -404,8 +416,19 @@ install_rustup_noninteractive() {
   # This path was missed when the other call sites were fixed, and it is
   # the one that runs whenever no prebuilt release is available — i.e. the
   # default today.
-  curl --proto '=https' --tlsv1.2 -sSf "${CURL_NET_FLAGS[@]}" https://sh.rustup.rs \
-    | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null
+  local rustup_script
+  rustup_script="$(mktemp)"
+  curl --proto '=https' --tlsv1.2 -sSf "${CURL_NET_FLAGS[@]}" \
+    -o "$rustup_script" https://sh.rustup.rs
+  # The downloaded bootstrap starts additional transfers of its own. Bound
+  # the whole child, not only the first curl, so a stalled rustup-init fetch
+  # cannot hang installation indefinitely.
+  if ! timeout 900 sh "$rustup_script" -y --profile minimal \
+      --default-toolchain stable >/dev/null; then
+    rm -f "$rustup_script"
+    die "rustup installation failed or exceeded its 15-minute hard deadline"
+  fi
+  rm -f "$rustup_script"
   # shellcheck disable=SC1091
   . "$HOME/.cargo/env"
 }
@@ -517,6 +540,8 @@ install_systemd_units() {
   log "installing systemd units..."
   install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service
   install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service
+  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.service" /etc/systemd/system/vpn-expiry-reconcile.service
+  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.timer" /etc/systemd/system/vpn-expiry-reconcile.timer
   systemctl daemon-reload
 }
 
@@ -613,16 +638,22 @@ directories_stage() {
 # SUBSCRIPTION_PORT, never 80) aren't added until firewall_stage (stage
 # 13) — so without
 # this, certbot's challenge has no way to receive inbound traffic.
+TEMP_PORT80_ADDED=0
 firewall_open_port_80_temp() {
+  TEMP_PORT80_ADDED=0
   case "$FIREWALL_BACKEND" in
     firewalld)
       command -v firewall-cmd >/dev/null 2>&1 || return 1
       systemctl is-active --quiet firewalld 2>/dev/null || return 1
+      firewall-cmd --query-port=80/tcp >/dev/null 2>&1 && return 0
       firewall-cmd --add-port=80/tcp >/dev/null 2>&1 # runtime-only, not --permanent: gone on next reload/reboot even if cleanup below is skipped
+      TEMP_PORT80_ADDED=1
       ;;
     ufw)
       command -v ufw >/dev/null 2>&1 || return 1
+      ufw status 2>/dev/null | grep -Eq '^80/tcp[[:space:]]+ALLOW' && return 0
       ufw allow 80/tcp >/dev/null 2>&1
+      TEMP_PORT80_ADDED=1
       ;;
     *) return 1 ;;
   esac
@@ -652,27 +683,40 @@ attempt_automatic_certbot() {
   # restarts nginx afterwards on the success path; `nginx_was_stopped`
   # records that we are responsible for it on the failure paths too.
   local nginx_was_stopped=0
+  acme_cleanup() {
+    if [ "$opened_port_80" -eq 1 ]; then
+      firewall_close_port_80_temp
+      opened_port_80=0
+      log "removed the temporary TCP/80 rule vpn1 added for the ACME challenge."
+    fi
+    if [ "$nginx_was_stopped" -eq 1 ]; then
+      systemctl start nginx >/dev/null 2>&1 || warn "could not restore nginx after ACME attempt"
+      nginx_was_stopped=0
+    fi
+  }
+  trap 'acme_cleanup; exit 130' INT
+  trap 'acme_cleanup; exit 143' TERM
   if systemctl is-active --quiet nginx 2>/dev/null; then
     systemctl stop nginx 2>/dev/null || true
     nginx_was_stopped=1
   fi
   if ! preflight_check_port_free tcp 80 >/dev/null 2>&1; then
     warn "port 80/tcp is occupied by something other than nginx; certbot's standalone HTTP-01 challenge cannot run automatically for $host."
-    [ "$nginx_was_stopped" -eq 1 ] && systemctl start nginx 2>/dev/null || true
+    acme_cleanup
+    trap - INT TERM
     return 1
   fi
   if firewall_open_port_80_temp; then
-    opened_port_80=1
-    log "temporarily allowed inbound TCP/80 for the ACME HTTP-01 challenge."
+    opened_port_80="$TEMP_PORT80_ADDED"
+    [ "$opened_port_80" -eq 1 ] \
+      && log "temporarily allowed inbound TCP/80 for the ACME HTTP-01 challenge."
   fi
   log "requesting a Let's Encrypt certificate for $host via certbot (HTTP-01, standalone)..."
   local rc=0
   certbot certonly --standalone -d "$host" --non-interactive --agree-tos \
       -m "admin@$host" --no-eff-email >/dev/null 2>&1 || rc=$?
-  if [ "$opened_port_80" -eq 1 ]; then
-    firewall_close_port_80_temp
-    log "removed the temporary TCP/80 rule vpn1 added for the ACME challenge."
-  fi
+  acme_cleanup
+  trap - INT TERM
   if [ "$rc" -eq 0 ]; then
     log "certificate issued for $host."
     return 0
@@ -694,6 +738,7 @@ ensure_tls_material() {
 require_hysteria_tls() {
   local cert="$STATE_DIR/hysteria/cert.pem"
   local key="$STATE_DIR/hysteria/key.pem"
+  local lineage="/etc/letsencrypt/live/$PUBLIC_HOST"
   if [ ! -s "$cert" ] || [ ! -s "$key" ]; then
     if ensure_tls_material "$PUBLIC_HOST"; then
       install -d -m 02750 -o root -g sing-box "$STATE_DIR/hysteria"
@@ -701,6 +746,18 @@ require_hysteria_tls() {
         "/etc/letsencrypt/live/$PUBLIC_HOST/fullchain.pem" "$cert"
       install -m 0640 -o root -g sing-box \
         "/etc/letsencrypt/live/$PUBLIC_HOST/privkey.pem" "$key"
+    fi
+  elif ! openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1 \
+      && [ -s "$lineage/fullchain.pem" ] && [ -s "$lineage/privkey.pem" ] \
+      && openssl x509 -in "$lineage/fullchain.pem" -noout -checkend 0 >/dev/null 2>&1; then
+    log "refreshing stale Hysteria2 copy from the current certbot lineage..."
+    if [ -f "$STATE_DIR/sing-box/config.json" ] \
+        && systemctl cat sing-box.service >/dev/null 2>&1; then
+      RENEWED_LINEAGE="$lineage" RENEWED_DOMAINS="$PUBLIC_HOST" \
+        "$REPO_ROOT/deploy/almalinux/certbot-deploy-hook.sh"
+    else
+      install -m 0640 -o root -g sing-box "$lineage/fullchain.pem" "$cert"
+      install -m 0640 -o root -g sing-box "$lineage/privkey.pem" "$key"
     fi
   fi
   if [ ! -s "$cert" ] || [ ! -s "$key" ]; then
@@ -780,20 +837,21 @@ install_certbot_renewal_hook() {
   install -m 0755 "$REPO_ROOT/deploy/almalinux/certbot-deploy-hook.sh" \
     /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh
   log "installed certbot renewal deploy hook: /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh"
-  if systemctl list-unit-files certbot-renew.timer >/dev/null 2>&1; then
-    if systemctl enable --now certbot-renew.timer >/dev/null 2>&1; then
-      log "certbot-renew.timer enabled."
-    else
-      warn "could not enable certbot-renew.timer — certificates will not auto-renew; investigate with 'systemctl status certbot-renew.timer'."
+  local renewal_unit="" candidate
+  for candidate in certbot.timer certbot-renew.timer snap.certbot.renew.timer; do
+    if systemctl cat "$candidate" >/dev/null 2>&1; then
+      renewal_unit="$candidate"
+      break
     fi
-  elif systemctl list-unit-files snap.certbot.renew.timer >/dev/null 2>&1; then
-    if systemctl enable --now snap.certbot.renew.timer >/dev/null 2>&1; then
-      log "snap.certbot.renew.timer enabled."
+  done
+  if [ -n "$renewal_unit" ]; then
+    if systemctl enable --now "$renewal_unit" >/dev/null 2>&1; then
+      log "$renewal_unit enabled."
     else
-      warn "could not enable snap.certbot.renew.timer."
+      warn "could not enable $renewal_unit — certificates will not auto-renew."
     fi
   else
-    warn "no certbot renewal timer unit found (certbot-renew.timer / snap.certbot.renew.timer) — certificates may not auto-renew. Verify with 'certbot renew --dry-run' and set up a cron/systemd timer manually if needed."
+    warn "no certbot renewal timer unit found (certbot.timer / certbot-renew.timer / snap.certbot.renew.timer). Verify with 'certbot renew --dry-run'."
   fi
 }
 
@@ -817,7 +875,7 @@ render_deployment_toml() {
   : "${PUBLIC_HOST:?Set PUBLIC_HOST=vpn.example.com before running install.sh}"
   : "${SUBSCRIPTION_HOST:="$PUBLIC_HOST"}"
   : "${SUBSCRIPTION_PORT:=8443}"
-  : "${REALITY_HANDSHAKE_SERVER:="www.microsoft.com"}"
+  : "${REALITY_HANDSHAKE_SERVER:?Set REALITY_HANDSHAKE_SERVER to a TLS 1.3 decoy hostname you control or have explicitly selected. There is no universal safe default; the installer performs a real sing-box protocol acceptance test.}"
   preflight_validate_hostname "$REALITY_HANDSHAKE_SERVER" "REALITY_HANDSHAKE_SERVER" || die "invalid REALITY_HANDSHAKE_SERVER."
   sed -e "s/{{PUBLIC_HOST}}/$PUBLIC_HOST/" \
       -e "s/{{SUBSCRIPTION_HOST}}/$SUBSCRIPTION_HOST/" \
@@ -884,13 +942,11 @@ configure_nginx() {
   fi
   local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
   local port="${SUBSCRIPTION_PORT:-8443}"
+  install -d -m 0755 "$(dirname "$NGINX_CONF")"
   sed -e "s/{{SUBSCRIPTION_HOST}}/$host/" -e "s/{{PUBLIC_HOST}}/${PUBLIC_HOST:-$host}/" \
       -e "s/{{SUBSCRIPTION_PORT}}/$port/" \
       -e "s/{{SUBSCRIPTION_BACKEND_PORT}}/$SUBSCRIPTION_BACKEND_PORT/" \
     "$REPO_ROOT/deploy/almalinux/templates/nginx-vpn-subscription.conf.template" >"$NGINX_CONF.tmp"
-  install -d -m 0755 "$(dirname "$NGINX_CONF")"
-  install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"
-  rm -f "$NGINX_CONF.tmp"
   # SELinux (RHEL family) only lets nginx (httpd_t) bind() to a fixed
   # allow-list of ports labeled http_port_t (80/443/8080/8443/etc. are
   # on it by default) — a custom SUBSCRIPTION_PORT is very likely NOT on
@@ -908,7 +964,7 @@ configure_nginx() {
     if semanage port -l 2>/dev/null | awk '/^http_port_t/' | grep -qw "$port"; then
       : # already labeled http_port_t
     elif semanage port -l 2>/dev/null | grep -w tcp | grep -qw "$port"; then
-      semanage port -m -t http_port_t -p tcp "$port" || warn "could not relabel SELinux port context for ${port}/tcp — nginx may fail to bind it."
+      die "SELinux port ${port}/tcp is already owned by a non-http type. Refusing to relabel another service's port; choose another SUBSCRIPTION_PORT."
     else
       semanage port -a -t http_port_t -p tcp "$port" || warn "could not add SELinux port context for ${port}/tcp — nginx may fail to bind it."
     fi
@@ -924,7 +980,19 @@ configure_nginx() {
   if [ "$OS_FAMILY" = "rhel" ] && command -v setsebool >/dev/null 2>&1; then
     setsebool -P httpd_can_network_connect 1 || warn "could not enable SELinux boolean httpd_can_network_connect — nginx's proxy_pass to the subscription backend may 502."
   fi
-  nginx -t || die "nginx config validation failed (nginx -t) — not reloading nginx with a broken config."
+  # Swap and reload as one recoverable transaction. `nginx -t` cannot
+  # validate this conf.d candidate in isolation, so preserve the live file,
+  # install the candidate, and restore the exact predecessor on either
+  # validation or reload failure.
+  local nginx_backup="${NGINX_CONF}.install-bak"
+  [ ! -e "$nginx_backup" ] || die "stale nginx transaction backup exists at $nginx_backup; inspect/recover it before retrying."
+  local nginx_had_previous=0
+  if [ -f "$NGINX_CONF" ]; then
+    cp -a "$NGINX_CONF" "$nginx_backup"
+    nginx_had_previous=1
+  fi
+  install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"
+  rm -f "$NGINX_CONF.tmp"
   # `systemctl enable --now` is a no-op on an already-active nginx — it
   # does NOT reload newly-written config into the running process. On a
   # repair/upgrade run nginx is very likely already active (e.g. started
@@ -935,8 +1003,21 @@ configure_nginx() {
   # SUBSCRIPTION_PORT change never actually took effect. Always
   # explicitly reload-or-restart after enabling, regardless of prior
   # state.
-  systemctl enable nginx >/dev/null 2>&1
-  systemctl reload-or-restart nginx
+  if nginx -t && systemctl enable nginx >/dev/null 2>&1 \
+      && systemctl reload-or-restart nginx; then
+    rm -f "$nginx_backup"
+  else
+    warn "new nginx vhost failed validation/reload; restoring previous file"
+    if [ "$nginx_had_previous" -eq 1 ]; then
+      mv -f "$nginx_backup" "$NGINX_CONF"
+    else
+      rm -f "$NGINX_CONF"
+    fi
+    if nginx -t; then
+      systemctl reload-or-restart nginx >/dev/null 2>&1 || true
+    fi
+    die "nginx vhost update failed; previous configuration was restored."
+  fi
   systemctl is-active --quiet nginx || die "nginx is not active after configuring the subscription vhost."
   # `is-active` alone is not proof the NEW config actually took effect:
   # on a failed reload (e.g. the SELinux bind denial above, before this
@@ -1041,11 +1122,13 @@ enable_and_start_services() {
   # idempotent no-op, not redundant risk — it's still restarted
   # explicitly rather than relying on that earlier reload alone, so this
   # function's behavior does not depend on stage ordering elsewhere.
-  systemctl enable sing-box.service vpn-subscription.service
+  systemctl enable sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer
   systemctl reload-or-restart sing-box.service \
     || die "sing-box failed to (re)start — check: journalctl -u sing-box --no-pager -n 100"
   systemctl reload-or-restart vpn-subscription.service \
     || die "vpn-subscription failed to (re)start — check: journalctl -u vpn-subscription --no-pager -n 100"
+  systemctl start vpn-expiry-reconcile.timer \
+    || die "credential-expiry reconciliation timer failed to start"
 }
 
 # Each protocol's status is confirmed independently by actually observing
@@ -1126,6 +1209,9 @@ acceptance_stage() {
   ensure_first_user
   if ! "$BIN_DIR/vpn-health-check"; then
     die "post-install health check failed — see output above. Installation did not complete cleanly."
+  fi
+  if ! "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" doctor --protocol --require-protocol; then
+    die "real VLESS+REALITY end-to-end acceptance failed. The selected REALITY_HANDSHAKE_SERVER may exceed sing-box's handshake budget or live credentials/state may be incoherent; installation is not accepted."
   fi
   log "health check passed."
 }

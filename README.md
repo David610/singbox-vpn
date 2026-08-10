@@ -92,11 +92,16 @@ issued automatically either way).
 ### 2. Run the installer
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
+  | sudo REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash
 ```
 
-No git clone, no manual environment variables required for the
-zero-touch path. This downloads the vpn1 source (a prebuilt release if
+`REALITY_HANDSHAKE_SERVER` is explicit because REALITY decoys are an
+external protocol dependency, not a safe universal default. The installer
+runs a real authenticated sing-box round trip and refuses completion if the
+selected endpoint is incompatible; `www.microsoft.com` is known to exceed
+the pinned sing-box/utls 8192-byte handshake budget and must not be used.
+The command downloads the vpn1 source (a prebuilt release if
 one has been published, source otherwise), detects your OS/architecture,
 installs dependencies, auto-detects your server's public IP, issues a
 real TLS certificate for it automatically (via [sslip.io](https://sslip.io)
@@ -111,7 +116,8 @@ you run it without this and a real terminal is attached):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=vpn.example.com bash
+  | sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=vpn.example.com \
+    REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash
 ```
 
 If something else on the VPS already listens on 8443 (the default
@@ -120,14 +126,14 @@ subscription-HTTPS port), relocate it with `SUBSCRIPTION_PORT`:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
   | sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=vpn.example.com \
-    SUBSCRIPTION_PORT=8444 bash
+    SUBSCRIPTION_PORT=8444 REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash
 ```
 
 Pin a specific release instead of the latest:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo bash -s -- --version v1.2.3
+  | sudo REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash -s -- --version v1.2.3
 ```
 
 Running the same command again is safe and expected if it fails partway

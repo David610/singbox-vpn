@@ -504,11 +504,13 @@ mod rate_limit_regression {
 
         // Recovery must be on the order of a second, not minutes. At the old
         // 0.5 tokens/sec this needed ~400 seconds; at 50/sec it is ~4s, so
-        // 200ms of refill is enough to serve a legitimate request again.
+        // 200ms refills roughly ten tokens in the SAME bucket. Checking a
+        // different source would create a fresh full bucket and vacuously
+        // pass even if the exhausted deployment-facing bucket never recovered.
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(
-            limiter.allow(ip(2)),
-            "a legitimate request was still denied after a burst from another source —              one caller can lock out the whole deployment"
+            limiter.allow(ip(1)),
+            "the exhausted deployment-facing bucket did not recover after its documented refill interval"
         );
     }
 

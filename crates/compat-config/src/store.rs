@@ -5,6 +5,7 @@
 
 use crate::model::CompatUser;
 use crate::CompatError;
+#[cfg(unix)]
 use std::io::Write;
 use std::path::Path;
 
@@ -45,6 +46,7 @@ pub fn save_users_atomic(path: &Path, users: &[CompatUser]) -> Result<(), Compat
     // vpn-subscription's read access (docs/FINAL_PRODUCTION_AUDIT.md P0-2).
     crate::ownership::preserve_ownership_before_rename(&tmp_path, path)?;
     std::fs::rename(&tmp_path, path).map_err(|e| CompatError::Io(e.to_string()))?;
+    fsync_parent_dir(path);
     Ok(())
 }
 
@@ -67,13 +69,28 @@ fn write_file_mode_0640(path: &Path, bytes: &[u8]) -> Result<(), CompatError> {
         .map_err(|e| CompatError::Io(e.to_string()))?;
     f.write_all(bytes)
         .map_err(|e| CompatError::Io(e.to_string()))?;
+    f.sync_all().map_err(|e| CompatError::Io(e.to_string()))?;
     Ok(())
 }
 
 #[cfg(not(unix))]
 fn write_file_mode_0640(path: &Path, bytes: &[u8]) -> Result<(), CompatError> {
-    std::fs::write(path, bytes).map_err(|e| CompatError::Io(e.to_string()))
+    let mut file = std::fs::File::create(path).map_err(|e| CompatError::Io(e.to_string()))?;
+    std::io::Write::write_all(&mut file, bytes).map_err(|e| CompatError::Io(e.to_string()))?;
+    file.sync_all().map_err(|e| CompatError::Io(e.to_string()))
 }
+
+#[cfg(unix)]
+fn fsync_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn fsync_parent_dir(_path: &Path) {}
 
 #[cfg(unix)]
 fn set_dir_mode_0750(path: &Path) -> Result<(), CompatError> {

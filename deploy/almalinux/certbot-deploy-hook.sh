@@ -79,6 +79,50 @@ tmp_cert="$cert.renew.tmp"
 tmp_key="$key.renew.tmp"
 install -m 0640 -o root -g sing-box "$RENEWED_LINEAGE/fullchain.pem" "$tmp_cert"
 install -m 0640 -o root -g sing-box "$RENEWED_LINEAGE/privkey.pem" "$tmp_key"
+
+# Validate the pair itself before any live swap. Certificate freshness/SAN
+# alone does not prove the renewed private key corresponds to it.
+cert_pub="$(openssl x509 -in "$tmp_cert" -pubkey -noout \
+  | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+key_pub="$(openssl pkey -in "$tmp_key" -pubout -outform DER 2>/dev/null \
+  | sha256sum | awk '{print $1}')"
+[ -n "$cert_pub" ] && [ "$cert_pub" = "$key_pub" ] \
+  || die "renewed certificate/private key do not match; refusing to install them."
+
+# Serialize with backup/restore/key rotation and retain exact predecessors
+# until both services have accepted the new pair. The EXIT trap covers
+# validation/reload failures and INT/TERM between the two renames.
+exec 201>/run/lock/vpn1.lock
+flock -x 201
+cert_bak="$cert.renew-bak"
+key_bak="$key.renew-bak"
+[ ! -e "$cert_bak" ] && [ ! -e "$key_bak" ] \
+  || die "stale certificate transaction backup exists; recover it before renewal."
+[ -f "$cert" ] && cp -a "$cert" "$cert_bak"
+[ -f "$key" ] && cp -a "$key" "$key_bak"
+swap_started=0
+committed=0
+rollback_renewal() {
+  trap - EXIT INT TERM
+  set +e
+  [ -f "$cert_bak" ] && mv -f "$cert_bak" "$cert"
+  [ -f "$key_bak" ] && mv -f "$key_bak" "$key"
+  rm -f "$tmp_cert" "$tmp_key"
+  "$SINGBOX_BIN" check -c "$STATE_DIR/sing-box/config.json" >/dev/null 2>&1 \
+    && systemctl reload-or-restart sing-box >/dev/null 2>&1
+  die "renewal failed after the live swap; previous Hysteria2 certificate/key were restored."
+}
+on_renewal_exit() {
+  local rc=$?
+  if [ "$rc" -ne 0 ] && [ "$swap_started" -eq 1 ] && [ "$committed" -eq 0 ]; then
+    rollback_renewal
+  fi
+  exit "$rc"
+}
+trap on_renewal_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+swap_started=1
 mv -f "$tmp_cert" "$cert"
 mv -f "$tmp_key" "$key"
 log "installed renewed certificate into $cert / $key"
@@ -93,8 +137,12 @@ if [ -x "$SINGBOX_BIN" ] && [ -f "$STATE_DIR/sing-box/config.json" ]; then
     || die "sing-box is not active after reload following certificate renewal."
   log "sing-box reloaded and verified active with the renewed certificate."
 else
-  warn "sing-box binary or config not found — skipping reload (unexpected on a real vpn1 install)."
+  die "sing-box binary or config not found; refusing to commit renewed live files without validation/reload."
 fi
+
+committed=1
+trap - EXIT INT TERM
+rm -f "$cert_bak" "$key_bak"
 
 # The subscription vhost (nginx) reads /etc/letsencrypt/live directly via
 # its own certbot-managed symlink, so it needs no copy step — only a

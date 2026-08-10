@@ -39,13 +39,13 @@ impl CompatibilityServiceManager {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn with_systemctl_binary(mut self, path: PathBuf) -> Self {
         self.systemctl_binary = path;
         self
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn with_settle(mut self, d: Duration) -> Self {
         self.settle = d;
         self
@@ -121,15 +121,31 @@ impl CompatibilityServiceManager {
     /// `apps/admin/src/main.rs::regenerate_singbox_config`).
     pub fn reload_and_verify(&self) -> Result<(), String> {
         self.reload_or_restart()?;
-        std::thread::sleep(self.settle);
-        if !self.is_active() {
-            return Err(format!("{} is not active after reload", self.service_name));
+        // A single `is-active` immediately after reload can catch the unit
+        // during its brief active window before ExecStart/health failure
+        // makes it exit. Require three consecutive healthy observations and
+        // allow a bounded startup window.
+        let deadline = std::time::Instant::now() + self.settle * 10;
+        let mut consecutive_active = 0u8;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(self.settle);
+            if self.is_active() {
+                consecutive_active += 1;
+                if consecutive_active == 3 {
+                    return Ok(());
+                }
+            } else {
+                consecutive_active = 0;
+            }
         }
-        Ok(())
+        Err(format!(
+            "{} did not remain active after reload",
+            self.service_name
+        ))
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Write;

@@ -14,7 +14,8 @@ stays on `deploy/local/` (see `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md`
 top-level [`README.md`](../README.md#quick-install):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
+  | sudo REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash
 ```
 
 That command downloads this repo, auto-detects your public IP, issues a
@@ -25,6 +26,11 @@ a prebuilt release binary and only falls back to `cargo build` when
 none exists yet). The rest of this document describes what that
 one-liner does internally, and how to run every stage manually if you
 want full control (your own domain, hand-provisioned certs, etc).
+`REALITY_HANDSHAKE_SERVER` has no universal safe default: the example is
+only a starting selection, and installation succeeds only after the real
+sing-box protocol acceptance test returns application data. Do not use
+`www.microsoft.com` with the pinned sing-box build; its current TLS flight
+exceeds the underlying REALITY implementation's record budget.
 
 ## Prerequisites (manual path)
 
@@ -117,6 +123,7 @@ compatibility-stack service needs to restart).
 ```bash
 git clone <this-repo-url> vpn1 && cd vpn1
 sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com \
+  REALITY_HANDSHAKE_SERVER=www.cloudflare.com \
   ./deploy/almalinux/install.sh
 ```
 

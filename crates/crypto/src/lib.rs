@@ -108,6 +108,19 @@ impl KeyPair {
         Ok(())
     }
 
+    #[cfg(not(unix))]
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), CryptoError> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        std::io::Write::write_all(
+            &mut options
+                .open(path)
+                .map_err(|e| CryptoError::MalformedKey(format!("cannot create {path:?}: {e}")))?,
+            hex::encode(self.to_bytes()).as_bytes(),
+        )
+        .map_err(|e| CryptoError::MalformedKey(format!("cannot write {path:?}: {e}")))
+    }
+
     /// Load a private key previously written by `save_to_file`. Rejects
     /// the file outright if group/other has any permission bit set —
     /// a key file that isn't owner-exclusive is a deployment bug, not a
@@ -130,6 +143,18 @@ impl KeyPair {
         let arr: [u8; 32] = bytes
             .try_into()
             .map_err(|_| CryptoError::MalformedKey(format!("{path:?} is not 32 bytes")))?;
+        Ok(Self::from_bytes(arr))
+    }
+
+    #[cfg(not(unix))]
+    pub fn load_from_file(path: &std::path::Path) -> Result<Self, CryptoError> {
+        let hex_str = std::fs::read_to_string(path)
+            .map_err(|e| CryptoError::MalformedKey(format!("cannot read {path:?}: {e}")))?;
+        let bytes = hex::decode(hex_str.trim())
+            .map_err(|e| CryptoError::MalformedKey(format!("bad hex in {path:?}: {e}")))?;
+        let arr: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| CryptoError::MalformedKey(format!("{path:?} is not a 32-byte key")))?;
         Ok(Self::from_bytes(arr))
     }
 }
@@ -174,6 +199,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn key_file_round_trips_and_gets_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("crypto-test-{}", std::process::id()));
@@ -192,6 +218,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn key_file_with_loose_permissions_is_rejected() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("crypto-test-perm-{}", std::process::id()));

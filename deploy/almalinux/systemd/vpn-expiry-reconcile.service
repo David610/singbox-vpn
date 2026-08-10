@@ -1,0 +1,15 @@
+[Unit]
+Description=Reconcile expired vpn1 credentials into live sing-box authorization
+After=sing-box.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/vpn --config /etc/vpn/deployment.toml render-config
+
+# The admin binary must atomically rewrite the sing-box config and ask
+# systemd to reload it. Keep the service short-lived and otherwise tight.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+

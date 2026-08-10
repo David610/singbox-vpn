@@ -47,6 +47,18 @@ impl RelayIdentity {
         Ok(())
     }
 
+    #[cfg(not(unix))]
+    pub fn save_to_dir(&self, dir: &std::path::Path) -> io::Result<()> {
+        use std::io::Write;
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join("relay.cert.der"), self.cert_der.as_ref())?;
+        let mut key_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.join("relay.key.der"))?;
+        key_file.write_all(self.key_der.secret_der())
+    }
+
     /// Load a previously-persisted identity, if `dir` contains one.
     /// Returns `Ok(None)` (not an error) when the directory has no
     /// identity yet, so callers can fall back to `generate` + `save_to_dir`
@@ -77,9 +89,36 @@ impl RelayIdentity {
         }))
     }
 
+    #[cfg(not(unix))]
+    pub fn load_from_dir(dir: &std::path::Path) -> io::Result<Option<Self>> {
+        let cert_path = dir.join("relay.cert.der");
+        let key_path = dir.join("relay.key.der");
+        if !cert_path.exists() || !key_path.exists() {
+            return Ok(None);
+        }
+        let cert_der = CertificateDer::from(std::fs::read(cert_path)?);
+        let cert_sha256 = crate::cert::sha256_of_cert(cert_der.as_ref());
+        let key_der = PrivateKeyDer::Pkcs8(std::fs::read(key_path)?.into());
+        Ok(Some(Self {
+            cert_der,
+            key_der,
+            cert_sha256,
+        }))
+    }
+
     /// Load a persisted identity from `dir` if present, otherwise
     /// generate a fresh one and persist it for next time.
     #[cfg(unix)]
+    pub fn load_or_generate(dir: &std::path::Path, subject_alt_name: &str) -> io::Result<Self> {
+        if let Some(identity) = Self::load_from_dir(dir)? {
+            return Ok(identity);
+        }
+        let identity = Self::generate(subject_alt_name);
+        identity.save_to_dir(dir)?;
+        Ok(identity)
+    }
+
+    #[cfg(not(unix))]
     pub fn load_or_generate(dir: &std::path::Path, subject_alt_name: &str) -> io::Result<Self> {
         if let Some(identity) = Self::load_from_dir(dir)? {
             return Ok(identity);

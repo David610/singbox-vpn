@@ -8,6 +8,17 @@
 use assert_cmd::Command;
 use std::path::Path;
 
+const REALITY_PRIVATE_A: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+const REALITY_PUBLIC_A: &str = "pOCSkrZRwni5dyxWn1-puxPZBrRqtoyd-dwrRAn4ogk";
+const REALITY_PRIVATE_B: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
+const REALITY_PUBLIC_B: &str = "zo060cy2M-x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk";
+const REALITY_PRIVATE_C: &str = "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM";
+const REALITY_PUBLIC_C: &str = "Xf7dO2vUf2-ijuFdlp1bsOpTd01Ii9r53xxuASSz7yI";
+
+fn toml_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "\\\\")
+}
+
 fn write_deployment_toml(dir: &Path) -> std::path::PathBuf {
     let cfg_path = dir.join("deployment.toml");
     let state_dir = dir.join("state");
@@ -28,7 +39,7 @@ listen_port = 443
 [subscription]
 listen_port = 9100
 "#,
-        state = state_dir.display(),
+        state = toml_path(&state_dir),
     );
     std::fs::write(&cfg_path, toml).unwrap();
     cfg_path
@@ -54,8 +65,8 @@ listen_port = 443
 [subscription]
 listen_port = 9100
 "#,
-        state = state_dir.display(),
-        singbox = singbox_binary.display(),
+        state = toml_path(&state_dir),
+        singbox = toml_path(singbox_binary),
     );
     std::fs::write(&cfg_path, toml).unwrap();
     cfg_path
@@ -74,9 +85,14 @@ fn fake_singbox(dir: &Path, fail_check: bool) -> std::path::PathBuf {
         r#"#!/usr/bin/env bash
 case "$1" in
   generate)
-    n=$(date +%s%N)
-    echo "PrivateKey: priv-$n-$$"
-    echo "PublicKey: pub-$n-$$"
+    if [ -e "$0.generated-once" ]; then
+      echo "PrivateKey: {private_c}"
+      echo "PublicKey: {public_c}"
+    else
+      : > "$0.generated-once"
+      echo "PrivateKey: {private_b}"
+      echo "PublicKey: {public_b}"
+    fi
     exit 0
     ;;
   check)
@@ -91,10 +107,47 @@ case "$1" in
     ;;
 esac
 exit 1
-"#
+"#,
+        private_b = REALITY_PRIVATE_B,
+        public_b = REALITY_PUBLIC_B,
+        private_c = REALITY_PRIVATE_C,
+        public_c = REALITY_PUBLIC_C,
     );
     std::fs::write(&path, script).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(not(unix))]
+fn fake_singbox(dir: &Path, fail_check: bool) -> std::path::PathBuf {
+    let path = dir.join("fake-sing-box.cmd");
+    let check_exit = if fail_check { 1 } else { 0 };
+    let script = format!(
+        r#"@echo off
+if "%1"=="generate" (
+  if exist "%~f0.generated-once" (
+    echo PrivateKey: {private_c}
+    echo PublicKey: {public_c}
+  ) else (
+    type nul > "%~f0.generated-once"
+    echo PrivateKey: {private_b}
+    echo PublicKey: {public_b}
+  )
+  exit /b 0
+)
+if "%1"=="check" exit /b {check_exit}
+if "%1"=="version" (
+  echo sing-box test-fake 1.0.0
+  exit /b 0
+)
+exit /b 1
+"#,
+        private_b = REALITY_PRIVATE_B,
+        public_b = REALITY_PUBLIC_B,
+        private_c = REALITY_PRIVATE_C,
+        public_c = REALITY_PUBLIC_C,
+    );
+    std::fs::write(&path, script).unwrap();
     path
 }
 
@@ -127,6 +180,7 @@ fn admin(dir: &Path, cfg_path: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vpn-admin").unwrap();
     cmd.arg("--config").arg(cfg_path);
     cmd.current_dir(dir);
+    cmd.env("VPN1_ALLOW_OFFLINE_MUTATION", "1");
     cmd
 }
 
@@ -135,11 +189,13 @@ fn admin(dir: &Path, cfg_path: &Path) -> Command {
 /// harness. Used so tests that spawn the REAL `subscription` service
 /// binary never collide with each other or with any other test's
 /// hardcoded port when run in parallel (`cargo test`'s default).
+#[cfg(unix)]
 fn free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap().port()
 }
 
+#[cfg(unix)]
 fn write_deployment_toml_with_singbox_and_sub_port(
     dir: &Path,
     singbox_binary: &Path,
@@ -164,13 +220,14 @@ listen_port = 443
 [subscription]
 listen_port = {sub_port}
 "#,
-        state = state_dir.display(),
-        singbox = singbox_binary.display(),
+        state = toml_path(&state_dir),
+        singbox = toml_path(singbox_binary),
     );
     std::fs::write(&cfg_path, toml).unwrap();
     cfg_path
 }
 
+#[cfg(unix)]
 fn wait_for_local_port(port: u16, timeout: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
@@ -184,7 +241,9 @@ fn wait_for_local_port(port: u16, timeout: std::time::Duration) -> bool {
 
 /// Kills the process on drop — a test that panics partway through must
 /// not leave a real `subscription` server bound to a port forever.
+#[cfg(unix)]
 struct KillOnDrop(std::process::Child);
+#[cfg(unix)]
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -199,11 +258,23 @@ impl Drop for KillOnDrop {
 /// for one-shot `.assert()`-style invocations — so the resolved program
 /// path is re-wrapped in a plain `std::process::Command` here to get a
 /// real, killable `Child`).
+#[cfg(unix)]
 fn spawn_subscription_binary(cfg_path: &Path) -> std::process::Child {
-    let program = Command::cargo_bin("subscription")
-        .expect("locate the subscription workspace binary")
-        .get_program()
-        .to_os_string();
+    let exe = if cfg!(windows) {
+        "subscription.exe"
+    } else {
+        "subscription"
+    };
+    let program = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent()?.parent().map(|target| target.join(exe)))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| {
+            Command::cargo_bin("subscription")
+                .expect("locate the subscription workspace binary")
+                .get_program()
+                .into()
+        });
     std::process::Command::new(program)
         .arg("--config")
         .arg(cfg_path)
@@ -230,6 +301,7 @@ fn concurrent_user_creates_do_not_lose_an_update() {
             .arg(&cfg_path)
             .args(["user", "create", "--name", name])
             .env("VPN1_LOCK_PATH", &lock_path)
+            .env("VPN1_ALLOW_OFFLINE_MUTATION", "1")
             .current_dir(dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -402,7 +474,9 @@ fn reality_rotate_rolls_back_key_material_on_validation_failure() {
         .args(["init", "--rotate"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("rotation FAILED"));
+        .stderr(predicates::str::contains(
+            "live state and transaction backups were not changed",
+        ));
 
     assert_eq!(
         pub_before,
@@ -539,16 +613,12 @@ fn doctor_reports_missing_singbox_binary_as_failure() {
         .stdout(predicates::str::contains("[FAIL]"));
 }
 
-/// The REALITY public key is not a secret by protocol design — it is
-/// embedded in every subscription response, share link, and QR code
-/// handed to every client over the public internet. `doctor` must never
-/// `[FAIL]` on it being world-readable; only the PRIVATE key's
-/// confidentiality is a real property to enforce. Reproduces the exact
-/// false-positive: a bare `vpn-admin init` (no `install.sh` follow-up
-/// `chmod`) leaves `public.key` at the process's default umask, which
-/// is commonly world-readable and is not a security problem.
+/// Public key confidentiality is not required, but its exact installed
+/// owner/group/mode is operationally required: vpn-subscription must read
+/// it and unrelated principals need no local access.
 #[test]
-fn doctor_never_fails_on_world_readable_reality_public_key() {
+#[cfg(unix)]
+fn doctor_rejects_wrong_reality_public_key_install_policy() {
     let dir = tempfile::tempdir().unwrap();
     let singbox = fake_singbox(dir.path(), false);
     let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
@@ -564,16 +634,14 @@ fn doctor_never_fails_on_world_readable_reality_public_key() {
         std::fs::set_permissions(&pub_key, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
-    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let output = admin(dir.path(), &cfg_path)
+        .arg("doctor")
+        .assert()
+        .failure();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(
-        !stdout.contains("public key at"),
-        "doctor must never flag the REALITY PUBLIC key's permissions (old buggy message was \
-         \"REALITY public key at <path> is world-readable\") — it is not a secret:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("[OK]") && stdout.contains("REALITY public key present"),
-        "doctor should report the public key present, without a permission judgement:\n{stdout}"
+        stdout.contains("REALITY public key policy invalid"),
+        "doctor must enforce the installed root:vpn-subscription 0640 contract:\n{stdout}"
     );
 }
 
@@ -607,7 +675,7 @@ fn doctor_l4_coherence_passes_after_init_and_render() {
         "L4 render coherence must pass on a freshly-initialized deployment:\n{stdout}"
     );
     assert!(
-        stdout.contains("on-disk sing-box config.json matches"),
+        stdout.contains("on-disk sing-box config.json exactly matches"),
         "L4 on-disk drift check must report no drift right after render-config:\n{stdout}"
     );
     // Never a hard requirement of `doctor` overall unless `--protocol` is
@@ -643,7 +711,7 @@ fn doctor_l4_detects_on_disk_config_drift_from_current_key_files() {
     let output = output.failure();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(
-        stdout.contains("does NOT match") && stdout.contains("[L4"),
+        stdout.contains("does NOT exactly match") && stdout.contains("[L4"),
         "doctor must FAIL the L4 on-disk drift check once the short_id file diverges from \
          the last-rendered config.json:\n{stdout}"
     );
@@ -661,6 +729,7 @@ fn doctor_l4_detects_on_disk_config_drift_from_current_key_files() {
 /// route — the exact two sides of the split-brain this whole mechanism
 /// exists to catch.
 #[test]
+#[cfg(unix)]
 fn doctor_l4_live_check_passes_when_subscription_process_is_freshly_started() {
     let dir = tempfile::tempdir().unwrap();
     let singbox = fake_singbox(dir.path(), false);
@@ -696,6 +765,7 @@ fn doctor_l4_live_check_passes_when_subscription_process_is_freshly_started() {
 /// blind to this; only a live query against the actual running process
 /// can catch it.
 #[test]
+#[cfg(unix)]
 fn doctor_l4_live_check_fails_when_running_subscription_process_is_stale() {
     let dir = tempfile::tempdir().unwrap();
     let singbox = fake_singbox(dir.path(), false);
@@ -747,11 +817,10 @@ fn backup_then_restore_round_trips_users() {
     // `backup`/`restore` require a REALITY private key to exist (a real
     // deployment always has one after `vpn-admin init`); `init` itself
     // needs a real `sing-box` binary this test environment doesn't have,
-    // so write a placeholder key directly, matching what `init` would
-    // have produced on disk.
+    // so write a deterministic valid X25519 pair directly.
     std::fs::create_dir_all(state_dir.join("reality")).unwrap();
-    std::fs::write(state_dir.join("reality/private.key"), "test-private-key").unwrap();
-    std::fs::write(state_dir.join("reality/public.key"), "test-public-key").unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), REALITY_PRIVATE_A).unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), REALITY_PUBLIC_A).unwrap();
     // `init` writes all THREE files; a fixture with only two is not what a
     // real deployment looks like, and `restore` now (correctly) refuses a
     // partial REALITY keyset because restoring one would split-brain the
@@ -789,6 +858,82 @@ fn backup_then_restore_round_trips_users() {
 }
 
 #[test]
+fn backup_refuses_to_clobber_a_preexisting_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let destination = dir.path().join("backup.tar");
+    std::fs::write(&destination, b"operator-owned-sentinel").unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .args(["backup", "--output"])
+        .arg(&destination)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("must not already exist"));
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"operator-owned-sentinel",
+        "a refused backup must never remove or truncate the pre-existing path"
+    );
+}
+
+#[test]
+fn authorization_mutation_is_fail_closed_without_live_singbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let mut command = Command::cargo_bin("vpn-admin").unwrap();
+    command
+        .arg("--config")
+        .arg(&cfg_path)
+        .current_dir(dir.path())
+        .args(["user", "create", "--name", "must-not-commit"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("refusing to commit"));
+    assert!(
+        !dir.path().join("state/users/users.json").exists(),
+        "failed live authorization apply must not publish users.json"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_rejects_cryptographically_mismatched_reality_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let staging = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(staging.path().join("users")).unwrap();
+    std::fs::create_dir_all(staging.path().join("reality")).unwrap();
+    std::fs::write(staging.path().join("users/users.json"), "[]").unwrap();
+    std::fs::write(
+        staging.path().join("reality/private.key"),
+        REALITY_PRIVATE_A,
+    )
+    .unwrap();
+    std::fs::write(staging.path().join("reality/public.key"), REALITY_PUBLIC_B).unwrap();
+    std::fs::write(staging.path().join("reality/short_id.txt"), "deadbeef").unwrap();
+    let archive = dir.path().join("mismatched.tar");
+    assert!(std::process::Command::new("tar")
+        .arg("-cf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(staging.path())
+        .arg(".")
+        .status()
+        .unwrap()
+        .success());
+
+    admin(dir.path(), &cfg_path)
+        .arg("restore")
+        .arg(&archive)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("do not form one X25519 keypair"));
+    assert!(!dir.path().join("state/reality/private.key").exists());
+}
+
+#[test]
+#[cfg(unix)]
 fn restore_rejects_archive_containing_a_symlink() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_deployment_toml(dir.path());
@@ -863,8 +1008,8 @@ fn restore_of_differing_reality_key_restarts_subscription_service_too() {
     let log_path = dir.path().join("systemctl.log");
 
     // A backup captured while key "A" was live.
-    std::fs::write(state_dir.join("reality/private.key"), "test-priv-A").unwrap();
-    std::fs::write(state_dir.join("reality/public.key"), "test-pub-A").unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), REALITY_PRIVATE_A).unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), REALITY_PUBLIC_A).unwrap();
     std::fs::write(state_dir.join("reality/short_id.txt"), "aaaaaaaa").unwrap();
     admin(dir.path(), &cfg_path)
         .args(["user", "create", "--name", "frank"])
@@ -880,8 +1025,8 @@ fn restore_of_differing_reality_key_restarts_subscription_service_too() {
     // The live key material is later rotated to "B" (simulating time
     // passing between the backup and an operator restoring it, e.g. onto
     // a replacement host, or rolling back after a bad rotation).
-    std::fs::write(state_dir.join("reality/private.key"), "test-priv-B").unwrap();
-    std::fs::write(state_dir.join("reality/public.key"), "test-pub-B").unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), REALITY_PRIVATE_B).unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), REALITY_PUBLIC_B).unwrap();
 
     // Now restore the "A" backup over the live "B" key — the exact
     // scenario where subscription's cached public key would go stale.
@@ -905,7 +1050,7 @@ fn restore_of_differing_reality_key_restarts_subscription_service_too() {
 
     assert_eq!(
         std::fs::read_to_string(state_dir.join("reality/public.key")).unwrap(),
-        "test-pub-A",
+        REALITY_PUBLIC_A,
         "restore must actually install the archive's (older) key material"
     );
 
@@ -939,8 +1084,8 @@ fn restore_never_widens_permissions_on_restored_secrets() {
     let cfg_path = write_deployment_toml(dir.path());
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(state_dir.join("reality")).unwrap();
-    std::fs::write(state_dir.join("reality/private.key"), "live-private-key").unwrap();
-    std::fs::write(state_dir.join("reality/public.key"), "live-public-key").unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), REALITY_PRIVATE_B).unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), REALITY_PUBLIC_B).unwrap();
     std::fs::write(state_dir.join("reality/short_id.txt"), "deadbeef").unwrap();
 
     // Build an archive whose members carry hostile modes.
@@ -948,13 +1093,13 @@ fn restore_never_widens_permissions_on_restored_secrets() {
     std::fs::create_dir_all(staging.path().join("reality")).unwrap();
     std::fs::create_dir_all(staging.path().join("users")).unwrap();
     std::fs::write(staging.path().join("users/users.json"), "[]").unwrap();
-    for (name, mode) in [
-        ("reality/private.key", 0o4777u32),
-        ("reality/public.key", 0o666),
-        ("reality/short_id.txt", 0o666),
+    for (name, contents, mode) in [
+        ("reality/private.key", REALITY_PRIVATE_A, 0o4777u32),
+        ("reality/public.key", REALITY_PUBLIC_A, 0o666),
+        ("reality/short_id.txt", "deadbeef", 0o666),
     ] {
         let p = staging.path().join(name);
-        std::fs::write(&p, "restored-value").unwrap();
+        std::fs::write(&p, contents).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
     }
     let archive = dir.path().join("hostile-modes.tar");
@@ -985,11 +1130,9 @@ fn restore_never_widens_permissions_on_restored_secrets() {
         mode & 0o7777
     );
     assert_eq!(
-        mode & 0o077,
-        0,
-        "restored private.key is group/world accessible (mode {:o}) — the archive \
-         dictated the live permission bits of a private key",
-        mode & 0o7777
+        mode & 0o777,
+        0o640,
+        "private key must be root:sing-box readable"
     );
     // And the non-secret halves must not have been widened either.
     let pub_mode = std::fs::metadata(state_dir.join("reality/public.key"))

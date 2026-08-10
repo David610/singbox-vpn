@@ -16,8 +16,11 @@
 //! than failing immediately — a concurrent admin invocation should wait
 //! its turn, not lose its change or race — with `flock`'s well-defined
 //! at-most-one-holder semantics doing the actual mutual exclusion.
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 use std::fs::File;
+#[cfg(unix)]
 use std::path::PathBuf;
 
 /// Overridable for tests (each test uses an isolated temp directory and
@@ -25,6 +28,7 @@ use std::path::PathBuf;
 /// `/run/lock/vpn1.lock`). Production installs never set this — the
 /// installer/systemd units run `vpn-admin` with a normal environment, so
 /// the default applies.
+#[cfg(unix)]
 pub fn lock_path() -> PathBuf {
     std::env::var_os("VPN1_LOCK_PATH")
         .map(PathBuf::from)

@@ -20,41 +20,66 @@ done
 
 systemctl disable --now sing-box.service 2>/dev/null || true
 systemctl disable --now vpn-subscription.service 2>/dev/null || true
-rm -f /etc/systemd/system/sing-box.service /etc/systemd/system/vpn-subscription.service
+systemctl disable --now vpn-expiry-reconcile.timer 2>/dev/null || true
+rm -f /etc/systemd/system/sing-box.service /etc/systemd/system/vpn-subscription.service \
+  /etc/systemd/system/vpn-expiry-reconcile.service /etc/systemd/system/vpn-expiry-reconcile.timer
 systemctl daemon-reload
 
 rm -f /usr/local/bin/vpn-admin /usr/local/bin/vpn /usr/local/bin/vpn-subscription-svc /usr/local/bin/vpn-health-check
 echo "sing-box binary left at /usr/local/bin/sing-box (remove manually if desired)."
 
-if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
-  # Leaving the deploy hook installed breaks EVERY future `certbot renew` on
+# Leaving the deploy hook installed breaks EVERY future `certbot renew` on
 # this host: the hook's own guards still pass (deployment.toml and the
 # sing-box binary survive an uninstall by default), so it runs and then fails
 # trying to reload a unit this script just deleted — and certbot reports the
 # whole renewal as failed, including for unrelated certificates.
 rm -f /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh
 rm -f /var/lib/vpn1/install-state.json
+if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
 rm -f /etc/nginx/conf.d/vpn-subscription.conf
   if nginx -t >/dev/null 2>&1; then systemctl reload nginx 2>/dev/null || true; fi
   echo "removed /etc/nginx/conf.d/vpn-subscription.conf (nginx itself left installed)."
 fi
 
 if [ "$PURGE_FIREWALL" -eq 1 ]; then
-  SUBSCRIPTION_PORT="8443"
-  if [ -f /etc/vpn/deployment.toml ]; then
-    existing_port="$(grep -E '^public_port' /etc/vpn/deployment.toml | sed -E 's/^public_port *= *([0-9]+).*/\1/')"
-    [ -n "$existing_port" ] && SUBSCRIPTION_PORT="$existing_port"
-  fi
-  if command -v firewall-cmd >/dev/null 2>&1; then
-    ZONE="$(firewall-cmd --get-default-zone)"
-    firewall-cmd --zone="$ZONE" --permanent --remove-port=443/tcp || true
-    firewall-cmd --zone="$ZONE" --permanent --remove-port=443/udp || true
-    firewall-cmd --zone="$ZONE" --permanent --remove-port="${SUBSCRIPTION_PORT}/tcp" || true
-    firewall-cmd --reload
-  elif command -v ufw >/dev/null 2>&1; then
-    ufw delete allow 443/tcp || true
-    ufw delete allow 443/udp || true
-    ufw delete allow "${SUBSCRIPTION_PORT}/tcp" || true
+  FIREWALL_OWNERSHIP=/var/lib/vpn1/firewall-owned.env
+  if [ -f "$FIREWALL_OWNERSHIP" ]; then
+    # Root-only installer-owned file; records exactly which rules were absent
+    # before vpn1 added them, plus the install-time backend/zone.
+    firewall_backend=""
+    firewall_zone=""
+    subscription_port=""
+    owned_443_tcp=0
+    owned_443_udp=0
+    owned_subscription_tcp=0
+    # shellcheck disable=SC1090
+    . "$FIREWALL_OWNERSHIP"
+    case "$owned_443_tcp:$owned_443_udp:$owned_subscription_tcp" in
+      0:0:0|0:0:1|0:1:0|0:1:1|1:0:0|1:0:1|1:1:0|1:1:1) ;;
+      *) echo "invalid vpn1 firewall ownership record" >&2; exit 1 ;;
+    esac
+    if [ "$owned_subscription_tcp" -eq 1 ] &&
+       ! [[ "$subscription_port" =~ ^[0-9]+$ ]] ; then
+      echo "invalid subscription port in vpn1 firewall ownership record" >&2
+      exit 1
+    fi
+    if [ "${firewall_backend:-}" = "firewalld" ] && command -v firewall-cmd >/dev/null 2>&1; then
+      [[ "$firewall_zone" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+        echo "invalid firewalld zone in vpn1 firewall ownership record" >&2
+        exit 1
+      }
+      [ "${owned_443_tcp:-0}" -eq 1 ] && firewall-cmd --zone="$firewall_zone" --permanent --remove-port=443/tcp || true
+      [ "${owned_443_udp:-0}" -eq 1 ] && firewall-cmd --zone="$firewall_zone" --permanent --remove-port=443/udp || true
+      [ "${owned_subscription_tcp:-0}" -eq 1 ] && firewall-cmd --zone="$firewall_zone" --permanent --remove-port="${subscription_port}/tcp" || true
+      firewall-cmd --reload
+    elif [ "${firewall_backend:-}" = "ufw" ] && command -v ufw >/dev/null 2>&1; then
+      [ "${owned_443_tcp:-0}" -eq 1 ] && ufw delete allow 443/tcp || true
+      [ "${owned_443_udp:-0}" -eq 1 ] && ufw delete allow 443/udp || true
+      [ "${owned_subscription_tcp:-0}" -eq 1 ] && ufw delete allow "${subscription_port}/tcp" || true
+    fi
+    rm -f "$FIREWALL_OWNERSHIP"
+  else
+    echo "no vpn1 firewall ownership record found; refusing to remove possibly pre-existing operator rules." >&2
   fi
 fi
 

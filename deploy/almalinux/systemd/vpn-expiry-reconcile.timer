@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply vpn1 user expirations to live protocol authorization
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=vpn-expiry-reconcile.service
+
+[Install]
+WantedBy=timers.target

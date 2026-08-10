@@ -4,6 +4,7 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use curve25519_dalek::montgomery::MontgomeryPoint;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
@@ -85,6 +86,49 @@ pub fn verify_token(token: &str, stored_hash_hex: &str) -> bool {
     computed_bytes.ct_eq(stored_bytes).into()
 }
 
+/// Derive the REALITY/X25519 public key from the private key encoding used
+/// by sing-box (`base64.RawURLEncoding`, i.e. URL-safe base64 without
+/// padding). This is deliberately independent of the public-key file: a
+/// comparison that merely renders and re-reads `public.key` cannot detect a
+/// split keypair.
+pub fn derive_reality_public_key(private_key: &str) -> Result<String, String> {
+    let decoded = URL_SAFE_NO_PAD
+        .decode(private_key.trim())
+        .map_err(|e| format!("REALITY private key is not valid base64url without padding: {e}"))?;
+    let private: [u8; 32] = decoded.try_into().map_err(|v: Vec<u8>| {
+        format!(
+            "REALITY private key decodes to {} bytes; X25519 requires exactly 32",
+            v.len()
+        )
+    })?;
+    let public = MontgomeryPoint::mul_base_clamped(private).to_bytes();
+    Ok(URL_SAFE_NO_PAD.encode(public))
+}
+
+/// Validate both the public-key encoding and its cryptographic
+/// correspondence to the private key.
+pub fn validate_reality_keypair(private_key: &str, public_key: &str) -> Result<(), String> {
+    let supplied = URL_SAFE_NO_PAD
+        .decode(public_key.trim())
+        .map_err(|e| format!("REALITY public key is not valid base64url without padding: {e}"))?;
+    if supplied.len() != 32 {
+        return Err(format!(
+            "REALITY public key decodes to {} bytes; X25519 requires exactly 32",
+            supplied.len()
+        ));
+    }
+    let derived = derive_reality_public_key(private_key)?;
+    if derived
+        .as_bytes()
+        .ct_eq(public_key.trim().as_bytes())
+        .into()
+    {
+        Ok(())
+    } else {
+        Err("REALITY public key does not correspond to private.key".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +205,24 @@ mod tests {
     #[test]
     fn verify_token_rejects_mismatched_length_hash() {
         assert!(!verify_token("abc", "not-a-real-hash"));
+    }
+
+    #[test]
+    fn reality_public_key_is_derived_from_the_private_key() {
+        // Deterministic vector independently generated with X25519 from a
+        // 32-byte private scalar containing only 0x01.
+        let private = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+        let public = "pOCSkrZRwni5dyxWn1-puxPZBrRqtoyd-dwrRAn4ogk";
+        assert_eq!(derive_reality_public_key(private).unwrap(), public);
+        assert!(validate_reality_keypair(private, public).is_ok());
+    }
+
+    #[test]
+    fn reality_keypair_validation_rejects_mismatch_and_malformed_keys() {
+        let private = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+        let other_public = "zo060cy2M-x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk";
+        assert!(validate_reality_keypair(private, other_public).is_err());
+        assert!(validate_reality_keypair("not-base64!", other_public).is_err());
+        assert!(validate_reality_keypair(private, "short").is_err());
     }
 }

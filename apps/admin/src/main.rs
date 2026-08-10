@@ -75,12 +75,15 @@ enum Commands {
         /// that a real client can complete a handshake. Off by default
         /// because it spawns a subprocess and does real network I/O;
         /// the always-on L1-L4 checks are pure file/struct comparisons.
-        /// Never a hard requirement to pass `doctor` overall — failures
-        /// here are reported `[WARN]`, since the self-test itself can
-        /// be inconclusive (see its own message) even when the server
-        /// is healthy.
+        /// Unavailable or inconclusive checks are warnings unless
+        /// `--require-protocol` is also supplied.
         #[arg(long)]
         protocol: bool,
+        /// Make an unavailable or inconclusive protocol self-test a hard
+        /// failure. The installer uses this after creating the first user so
+        /// it cannot bless an untested REALITY decoy.
+        #[arg(long, requires = "protocol")]
+        require_protocol: bool,
     },
     /// Back up the minimum state needed to rebuild this deployment
     /// (users, credential metadata, REALITY keys, Hysteria2 TLS
@@ -210,7 +213,10 @@ fn main() -> Result<()> {
         Commands::RenderConfig => cmd_render_config(&cfg),
         Commands::Version => cmd_version(&cfg),
         Commands::Status => cmd_status(&cfg),
-        Commands::Doctor { protocol } => cmd_doctor(&cfg, protocol),
+        Commands::Doctor {
+            protocol,
+            require_protocol,
+        } => cmd_doctor(&cfg, protocol, require_protocol),
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::User(UserCommands::Create {
@@ -374,6 +380,9 @@ fn generate_reality_keypair(cfg: &DeploymentConfig) -> Result<(String, String, S
         .context("could not parse PrivateKey from sing-box output")?;
     let public_key = extract_field(&text, "PublicKey")
         .context("could not parse PublicKey from sing-box output")?;
+    credentials::validate_reality_keypair(&private_key, &public_key)
+        .map_err(|error| anyhow::anyhow!(error))
+        .context("sing-box generated an incoherent REALITY keypair")?;
     let short_id = credentials::generate_short_id();
     Ok((private_key, public_key, short_id))
 }
@@ -393,11 +402,32 @@ fn rotate_backup_path(p: &std::path::Path) -> std::path::PathBuf {
 /// file, including the group a service account depends on, if rotation
 /// fails partway through).
 fn backup_for_rotate(src: &std::path::Path) -> Result<Option<std::path::PathBuf>> {
+    use std::io::Write;
+    let bak = rotate_backup_path(src);
+    if bak.exists() {
+        bail!(
+            "refusing to overwrite stale transaction backup {bak:?}; recover or remove it after \
+             verifying the live file before retrying"
+        );
+    }
     if !src.exists() {
         return Ok(None);
     }
-    let bak = rotate_backup_path(src);
-    std::fs::copy(src, &bak).with_context(|| format!("backing up {src:?} to {bak:?}"))?;
+    let mut source = std::fs::File::open(src)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut backup = options
+        .open(&bak)
+        .with_context(|| format!("creating transaction backup {bak:?}"))?;
+    std::io::copy(&mut source, &mut backup)
+        .with_context(|| format!("backing up {src:?} to {bak:?}"))?;
+    backup.flush()?;
+    backup.sync_all()?;
     #[cfg(unix)]
     {
         let meta = std::fs::metadata(src)?;
@@ -417,9 +447,15 @@ fn backup_for_rotate(src: &std::path::Path) -> Result<Option<std::path::PathBuf>
 fn restore_from_rotate_backup(dst: &std::path::Path) -> Result<()> {
     let bak = rotate_backup_path(dst);
     if bak.exists() {
-        std::fs::copy(&bak, dst)
-            .with_context(|| format!("restoring {dst:?} from backup {bak:?}"))?;
-        let _ = std::fs::remove_file(&bak);
+        #[cfg(not(unix))]
+        if dst.exists() {
+            std::fs::remove_file(dst)?;
+        }
+        std::fs::rename(&bak, dst)
+            .with_context(|| format!("atomically restoring {dst:?} from backup {bak:?}"))?;
+        if let Some(parent) = dst.parent() {
+            fsync_dir(parent);
+        }
     }
     Ok(())
 }
@@ -479,28 +515,92 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
         binary_path: cfg.singbox_binary.clone(),
     };
 
-    // Backups first — nothing below this point may run before every
-    // file that could need restoring has a known-good copy.
-    let priv_bak = backup_for_rotate(&priv_path)?;
-    let pub_bak = backup_for_rotate(&pub_path)?;
-    let sid_bak = backup_for_rotate(&sid_path)?;
+    // Validate the candidate BEFORE creating transaction backups or
+    // touching any live file. A staging/check failure is therefore a pure
+    // no-op and can never restore an unrelated persistent config.json.bak.
+    let tmp_validate = config_target.with_extension("rotate-candidate.json");
+    if let Err(e) = write_config_for_validation(&tmp_validate, &candidate_doc) {
+        let _ = std::fs::remove_file(&tmp_validate);
+        return Err(e).context("failed to stage candidate config; live state was not changed");
+    }
+    let validate_result = backend.validate(&tmp_validate);
+    let _ = std::fs::remove_file(&tmp_validate);
+    validate_result.context(
+        "candidate config failed sing-box check; live state and transaction backups were not changed",
+    )?;
+
+    let singbox_mgr = CompatibilityServiceManager::default();
+    let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
+    if !offline_mutation_allowed()
+        && (!singbox_mgr.is_available()
+            || !singbox_mgr.is_unit_installed()
+            || !sub_mgr.is_available()
+            || !sub_mgr.is_unit_installed())
+    {
+        bail!(
+            "refusing REALITY rotation: both sing-box.service and vpn-subscription.service must \
+             be installed and controllable so the key change can be committed atomically"
+        );
+    }
+
+    // Back up the whole keyset before mutation. If preparing any backup
+    // fails, remove only backups created by this attempt and leave live
+    // state untouched.
+    let mut prepared = Vec::new();
+    let mut existed = Vec::new();
+    for path in [&priv_path, &pub_path, &sid_path] {
+        match backup_for_rotate(path) {
+            Ok(backup) => {
+                existed.push(backup.is_some());
+                if let Some(backup) = backup {
+                    prepared.push(backup);
+                }
+            }
+            Err(error) => {
+                for backup in prepared {
+                    let _ = std::fs::remove_file(backup);
+                }
+                return Err(error).context(
+                    "failed to prepare complete REALITY rotation backup; live state was not changed",
+                );
+            }
+        }
+    }
+
+    let config_applied = std::cell::Cell::new(false);
 
     let rollback = |reason: &str| -> String {
         let mut restore_ok = true;
-        for p in [&priv_path, &pub_path, &sid_path] {
-            if restore_from_rotate_backup(p).is_err() {
+        for (p, did_exist) in [&priv_path, &pub_path, &sid_path]
+            .into_iter()
+            .zip(existed.iter().copied())
+        {
+            let result = if did_exist {
+                restore_from_rotate_backup(p)
+            } else {
+                std::fs::remove_file(p)
+                    .or_else(|error| {
+                        if error.kind() == std::io::ErrorKind::NotFound {
+                            Ok(())
+                        } else {
+                            Err(error)
+                        }
+                    })
+                    .map_err(anyhow::Error::from)
+            };
+            if result.is_err() {
                 restore_ok = false;
             }
         }
         // apply_config_atomically already keeps target_path.bak from
         // its OWN last successful write — restore from that if our
         // candidate config was ever actually applied.
-        let cfg_backup = config_backup_path(&config_target);
-        if cfg_backup.exists() {
-            let _ = std::fs::copy(&cfg_backup, &config_target);
+        if config_applied.get() {
+            let cfg_backup = config_backup_path(&config_target);
+            if !cfg_backup.exists() || std::fs::copy(&cfg_backup, &config_target).is_err() {
+                restore_ok = false;
+            }
         }
-        let singbox_mgr = CompatibilityServiceManager::default();
-        let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
         let singbox_recovered = !singbox_mgr.is_available()
             || !singbox_mgr.is_unit_installed()
             || singbox_mgr.reload_and_verify().is_ok();
@@ -525,20 +625,6 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
         }
     };
 
-    // Validate the candidate BEFORE touching any live file.
-    let tmp_validate = config_target.with_extension("rotate-candidate.json");
-    if let Err(e) = write_config_for_validation(&tmp_validate, &candidate_doc) {
-        let _ = std::fs::remove_file(&tmp_validate);
-        bail!(rollback(&format!("failed to stage candidate config: {e}")));
-    }
-    let validate_result = backend.validate(&tmp_validate);
-    let _ = std::fs::remove_file(&tmp_validate);
-    if let Err(e) = validate_result {
-        bail!(rollback(&format!(
-            "candidate config failed sing-box check: {e}"
-        )));
-    }
-
     // Install new key material — reuses the same rename-with-preserved-
     // ownership helper the atomic config/user-store writers use, so the
     // existing root:sing-box / root:vpn-subscription ownership carries
@@ -557,8 +643,8 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     {
         bail!(rollback(&format!("failed to apply candidate config: {e}")));
     }
+    config_applied.set(true);
 
-    let singbox_mgr = CompatibilityServiceManager::default();
     if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
         if let Err(e) = singbox_mgr.reload_and_verify() {
             bail!(rollback(&format!("sing-box reload failed: {e}")));
@@ -573,7 +659,6 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     // it keeps advertising the OLD public key to every client that asks
     // for a subscription after this point (docs/FINAL_PRODUCTION_AUDIT.md
     // P0-5's core scenario).
-    let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
     if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
         if let Err(e) = sub_mgr.reload_and_verify() {
             bail!(rollback(&format!(
@@ -588,7 +673,6 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     for p in [&priv_path, &pub_path, &sid_path] {
         remove_rotate_backup(p);
     }
-    let _ = (priv_bak, pub_bak, sid_bak); // silence unused-if-all-None warnings; already handled above
 
     println!(
         "REALITY key rotated and applied. Every existing client's subscription/profile is now \
@@ -687,6 +771,9 @@ fn load_reality_params(cfg: &DeploymentConfig) -> Result<RealityServerParams> {
     let public_key_hex = std::fs::read_to_string(cfg.reality_public_key_file())?
         .trim()
         .to_string();
+    credentials::validate_reality_keypair(&private_key_hex, &public_key_hex)
+        .map_err(anyhow::Error::msg)
+        .context("REALITY private.key/public.key coherence check failed")?;
     let short_id = std::fs::read_to_string(cfg.reality_dir().join("short_id.txt"))?
         .trim()
         .to_string();
@@ -731,16 +818,47 @@ fn load_hysteria_params(cfg: &DeploymentConfig) -> Hysteria2ServerParams {
 /// still has the old credentials loaded — see
 /// docs/PRODUCTION_HARDENING_PLAN.md #4/#7.
 ///
-/// If `sing-box` isn't installed on this machine (e.g. local
-/// development), or `systemctl` isn't available (non-systemd
-/// environment, e.g. this function's own tests), this prints a warning
-/// instead of failing — user-store mutations still succeed, but the
-/// caller is told explicitly that nothing was reloaded.
-fn regenerate_singbox_config(cfg: &DeploymentConfig) -> Result<()> {
-    let users = store::load_users(&cfg.users_file())?;
+/// Authorization mutations are fail-closed unless an offline operator
+/// explicitly sets `VPN1_ALLOW_OFFLINE_MUTATION=1`. Plain `render-config`
+/// remains usable during installation before systemd is available.
+fn offline_mutation_allowed() -> bool {
+    std::env::var("VPN1_ALLOW_OFFLINE_MUTATION").as_deref() == Ok("1")
+}
+
+fn applied_config_stamp_path(target: &std::path::Path) -> PathBuf {
+    target.with_extension("applied.sha256")
+}
+
+fn rendered_config_fingerprint(doc: &serde_json::Value) -> Result<String> {
+    let canonical = serde_json::to_string(doc)?;
+    Ok(credentials::hash_token(&canonical))
+}
+
+fn commit_applied_config_stamp(target: &std::path::Path, fingerprint: &str) -> Result<()> {
+    let stamp = applied_config_stamp_path(target);
+    let tmp = stamp.with_extension(format!("tmp.{}", std::process::id()));
+    write_secret_file(&tmp, fingerprint)?;
+    std::fs::rename(&tmp, &stamp)?;
+    if let Some(parent) = stamp.parent() {
+        fsync_dir(parent);
+    }
+    Ok(())
+}
+
+fn render_and_apply_singbox_config(
+    cfg: &DeploymentConfig,
+    users: &[CompatUser],
+    require_live_apply: bool,
+) -> Result<()> {
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
         Err(e) => {
+            if require_live_apply && !offline_mutation_allowed() {
+                return Err(e).context(
+                    "refusing to commit an authorization mutation without a complete, coherent \
+                     REALITY keyset; run `vpn-admin init` first",
+                );
+            }
             println!("warning: skipping sing-box config render/apply: {e}");
             return Ok(());
         }
@@ -751,10 +869,19 @@ fn regenerate_singbox_config(cfg: &DeploymentConfig) -> Result<()> {
         hysteria2_port: cfg.hysteria2.listen_port,
     };
     let now = UnixSeconds::now().0 as i64;
-    let doc = render_singbox_server_config(&users, &reality, &hysteria, ports, now);
+    let doc = render_singbox_server_config(users, &reality, &hysteria, ports, now);
+    let candidate_fingerprint = rendered_config_fingerprint(&doc)?;
 
     let target = cfg.singbox_config_file();
     if !cfg.singbox_binary.exists() {
+        if require_live_apply && !offline_mutation_allowed() {
+            bail!(
+                "refusing to commit an authorization mutation: sing-box binary not found at \
+                 {:?}, so the candidate config cannot be validated or loaded. For an intentional \
+                 offline/dev-only mutation set VPN1_ALLOW_OFFLINE_MUTATION=1 explicitly.",
+                cfg.singbox_binary
+            );
+        }
         println!(
             "warning: {:?} not found; wrote nothing. Install sing-box, then run `vpn-admin render-config`.",
             cfg.singbox_binary
@@ -764,11 +891,31 @@ fn regenerate_singbox_config(cfg: &DeploymentConfig) -> Result<()> {
     let backend = SingBoxBackend {
         binary_path: cfg.singbox_binary.clone(),
     };
+    let mgr = CompatibilityServiceManager::default();
+    let service_available = mgr.is_available() && mgr.is_unit_installed();
+    if require_live_apply && !service_available && !offline_mutation_allowed() {
+        bail!(
+            "refusing to commit an authorization mutation: systemctl/sing-box.service is not \
+             available, so vpn-admin cannot prove the running authorization state changed. \
+             For an intentional offline/dev-only mutation set VPN1_ALLOW_OFFLINE_MUTATION=1."
+        );
+    }
+
+    let target_already_matches = std::fs::read(&target)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|current| current == doc);
+    let applied_stamp_matches = std::fs::read_to_string(applied_config_stamp_path(&target))
+        .is_ok_and(|stamp| stamp.trim() == candidate_fingerprint);
+    if target_already_matches && applied_stamp_matches && service_available && mgr.is_active() {
+        println!("sing-box authorization config is already current; no reload needed.");
+        return Ok(());
+    }
+
     apply_config_atomically(&doc, &target, |p| backend.validate(p))
         .context("applying sing-box config")?;
     println!("sing-box config updated at {target:?} (validated by `sing-box check`).");
 
-    let mgr = CompatibilityServiceManager::default();
     if !mgr.is_available() {
         println!(
             "warning: systemctl not available; config written but sing-box was NOT reloaded. \
@@ -805,12 +952,47 @@ fn regenerate_singbox_config(cfg: &DeploymentConfig) -> Result<()> {
             }
         );
     }
+    commit_applied_config_stamp(&target, &candidate_fingerprint)
+        .context("recording the config version verified live")?;
     println!("sing-box reloaded and verified active.");
     Ok(())
 }
 
+#[cfg(unix)]
+fn apply_restored_file_policy(path: &std::path::Path, group: &str) -> Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640))
+        .with_context(|| format!("setting restored-file mode on {path:?}"))?;
+    // Non-root unit tests cannot change ownership. Production restore is
+    // root-only and must set the exact service-readable owner/group even
+    // when the destination did not exist before restore.
+    if unsafe { libc::geteuid() } == 0 {
+        let name = CString::new(group)?;
+        let record = unsafe { libc::getgrnam(name.as_ptr()) };
+        if record.is_null() {
+            bail!("required service group {group:?} does not exist");
+        }
+        let gid = unsafe { (*record).gr_gid };
+        std::os::unix::fs::chown(path, Some(0), Some(gid))
+            .with_context(|| format!("setting root:{group} ownership on {path:?}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn apply_restored_file_policy(_path: &std::path::Path, _group: &str) -> Result<()> {
+    Ok(())
+}
+
+fn regenerate_singbox_config(cfg: &DeploymentConfig, require_live_apply: bool) -> Result<()> {
+    let users = store::load_users(&cfg.users_file())?;
+    render_and_apply_singbox_config(cfg, &users, require_live_apply)
+}
+
 fn cmd_render_config(cfg: &DeploymentConfig) -> Result<()> {
-    regenerate_singbox_config(cfg)
+    regenerate_singbox_config(cfg, false)
 }
 
 fn subscription_url(cfg: &DeploymentConfig, token: &str) -> String {
@@ -845,6 +1027,7 @@ fn cmd_user_create(
     json: bool,
 ) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
     // 128-bit CSPRNG id (spec: do not reuse the 32-bit REALITY short_id
     // generator as a user id). Collision detection is defense in depth
     // on top of 128 bits of entropy, not a load-bearing check.
@@ -864,7 +1047,7 @@ fn cmd_user_create(
         expires_at,
     };
     users.push(user);
-    save_users_and_apply(cfg, &users)?;
+    apply_users_and_save(cfg, &previous_users, &users)?;
 
     let url = subscription_url(cfg, &token);
     if json {
@@ -917,8 +1100,9 @@ fn find_user_mut<'a>(users: &'a mut [CompatUser], id: &str) -> Result<&'a mut Co
 
 fn cmd_user_set_enabled(cfg: &DeploymentConfig, id: &str, enabled: bool) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
     find_user_mut(&mut users, id)?.enabled = enabled;
-    save_users_and_apply(cfg, &users)?;
+    apply_users_and_save(cfg, &previous_users, &users)?;
     println!("{id}: enabled={enabled}");
     Ok(())
 }
@@ -964,8 +1148,9 @@ fn rotate_and_apply(
     mutate: impl FnOnce(&mut CompatUser),
 ) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
     mutate(find_user_mut(&mut users, id)?);
-    save_users_and_apply(cfg, &users)?;
+    apply_users_and_save(cfg, &previous_users, &users)?;
     println!("{id}: {what} rotated and applied to the running server.");
     Ok(())
 }
@@ -989,8 +1174,8 @@ fn cmd_user_rotate_credentials(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     })
 }
 
-/// Persist a user-store change and push it to the running server as ONE
-/// unit, rolling `users.json` back if the config apply/reload fails.
+/// Push a proposed user-store change to the running server, then publish it
+/// to the subscription service only after live authorization is verified.
 ///
 /// Every user mutation previously did `save_users_atomic(...)?;
 /// regenerate_singbox_config(...)?;` with nothing compensating the first
@@ -1004,45 +1189,44 @@ fn cmd_user_rotate_credentials(cfg: &DeploymentConfig, id: &str) -> Result<()> {
 ///   * `user create`: the record is committed and the raw subscription
 ///     token — printed only AFTER the render — is lost forever.
 ///
-/// Rolling the store back means a failed mutation leaves disk and the
-/// running server agreeing on the PREVIOUS state, which is a state the
-/// operator can reason about and simply retry.
-fn save_users_and_apply(cfg: &DeploymentConfig, users: &[CompatUser]) -> Result<()> {
-    let users_path = cfg.users_file();
-    let had_backup = backup_for_rotate(&users_path)?.is_some();
-    store::save_users_atomic(&users_path, users)?;
-    match regenerate_singbox_config(cfg) {
-        Ok(()) => {
-            if had_backup {
-                remove_rotate_backup(&users_path);
-            }
-            Ok(())
-        }
-        Err(e) => {
-            if had_backup {
-                let _ = restore_from_rotate_backup(&users_path);
+/// If publishing users.json fails, the previous authorization document is
+/// rendered and reloaded. The expiry reconciliation timer also repairs a
+/// crash between these phases from the authoritative users.json state.
+fn apply_users_and_save(
+    cfg: &DeploymentConfig,
+    previous_users: &[CompatUser],
+    users: &[CompatUser],
+) -> Result<()> {
+    // Load the proposed authorization into sing-box before publishing the
+    // new store to vpn-subscription. This makes the transition fail-closed:
+    // a revocation reaches the protocol first, while a newly enabled
+    // credential is not distributed until the protocol accepts it.
+    render_and_apply_singbox_config(cfg, users, true)?;
+
+    if let Err(save_error) = store::save_users_atomic(&cfg.users_file(), users) {
+        let rollback = render_and_apply_singbox_config(cfg, previous_users, true);
+        bail!(
+            "authorization config was loaded, but users.json could not be committed ({save_error}). {}",
+            if rollback.is_ok() {
+                "The previous authorization config was restored and reloaded successfully."
             } else {
-                // There was no user store before this call, so "previous
-                // state" is "no store at all".
-                let _ = std::fs::remove_file(&users_path);
+                "ROLLBACK ALSO FAILED; running authorization may not match users.json. Run \
+                 `vpn-admin render-config` and `vpn-admin doctor --protocol` immediately."
             }
-            Err(e).context(
-                "the user store change was ROLLED BACK because the server config could not be \
-                 applied — disk and the running server are both still on the previous state, and \
-                 the command can simply be retried",
-            )
-        }
+        );
     }
+    Ok(())
 }
 
 fn cmd_user_remove(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
     let before = users.len();
     users.retain(|u| u.id != id);
     if users.len() == before {
         bail!("no such user: {id}");
     }
-    save_users_and_apply(cfg, &users)?;
+    apply_users_and_save(cfg, &previous_users, &users)?;
     println!("{id}: removed");
     Ok(())
 }
@@ -1220,16 +1404,72 @@ fn report_check(status: CheckStatus, layer: &str, message: impl AsRef<str>) {
 }
 
 #[cfg(unix)]
-fn is_not_world_readable(path: &std::path::Path) -> Option<bool> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .ok()
-        .map(|m| m.permissions().mode() & 0o007 == 0)
+fn installed_file_policy(
+    path: &std::path::Path,
+    expected_group: &str,
+) -> Option<Result<(), String>> {
+    use std::ffi::CString;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => return Some(Err(error.to_string())),
+    };
+    let group_name = match CString::new(expected_group) {
+        Ok(name) => name,
+        Err(error) => return Some(Err(error.to_string())),
+    };
+    let group = unsafe { libc::getgrnam(group_name.as_ptr()) };
+    if group.is_null() {
+        return Some(Err(format!(
+            "required group {expected_group:?} does not exist"
+        )));
+    }
+    let expected_gid = unsafe { (*group).gr_gid };
+    let mode = metadata.permissions().mode() & 0o7777;
+    if metadata.uid() != 0 || metadata.gid() != expected_gid || mode != 0o640 {
+        return Some(Err(format!(
+            "expected root:{expected_group} mode 0640, found uid={} gid={} mode={mode:04o}",
+            metadata.uid(),
+            metadata.gid()
+        )));
+    }
+    Some(Ok(()))
 }
 
 #[cfg(not(unix))]
-fn is_not_world_readable(_path: &std::path::Path) -> Option<bool> {
+fn installed_file_policy(
+    _path: &std::path::Path,
+    _expected_group: &str,
+) -> Option<Result<(), String>> {
     None
+}
+
+fn report_installed_file_policy(
+    path: &std::path::Path,
+    expected_group: &str,
+    label: &str,
+    failures: &mut u32,
+) {
+    match installed_file_policy(path, expected_group) {
+        Some(Ok(())) => report_check(
+            CheckStatus::Ok,
+            "L2",
+            format!("{label} ownership/mode is root:{expected_group} 0640"),
+        ),
+        Some(Err(error)) => {
+            report_check(
+                CheckStatus::Fail,
+                "L2",
+                format!("{label} policy invalid: {error}"),
+            );
+            *failures += 1;
+        }
+        None => report_check(
+            CheckStatus::Warn,
+            "L2",
+            format!("{label} ownership/mode check unavailable on this platform"),
+        ),
+    }
 }
 
 /// Diagnostic checks, `[OK]`/`[WARN]`/`[FAIL]` per line (spec §17), each
@@ -1254,7 +1494,7 @@ fn is_not_world_readable(_path: &std::path::Path) -> Option<bool> {
 /// never `[FAIL]` — see `check_l5_l6_protocol_selftest`'s doc comment
 /// for why it cannot always distinguish "broken" from "untestable from
 /// here".
-fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool) -> Result<()> {
+fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool, require_protocol: bool) -> Result<()> {
     let mut failures = 0u32;
 
     if cfg.singbox_binary.exists() {
@@ -1265,6 +1505,7 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool) -> Result<()> {
         );
         let target = cfg.singbox_config_file();
         if target.exists() {
+            report_installed_file_policy(&target, "sing-box", "sing-box config", &mut failures);
             let backend = SingBoxBackend {
                 binary_path: cfg.singbox_binary.clone(),
             };
@@ -1295,64 +1536,86 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool) -> Result<()> {
         failures += 1;
     }
 
-    // Confidentiality only matters for the PRIVATE key — world-readable
-    // there is a real, `[FAIL]`-worthy exposure. The PUBLIC key and
-    // short_id are, by the REALITY protocol's own design, not secret:
-    // both are embedded in every subscription response, share link, and
-    // QR code handed to every client over the public internet. Flagging
-    // the public key's local file permissions as a hard failure was a
-    // false positive — reproduced directly: a bare `vpn-admin init` (no
-    // follow-up `chmod` from `install.sh`) leaves `public.key` at
-    // whatever the process umask produces, commonly world-readable,
-    // which is not a security problem and must not make `doctor` cry
-    // wolf on an otherwise-healthy, correctly-configured deployment.
     if !cfg.reality_private_key_file().exists() {
         report_check(
-            CheckStatus::Warn,
+            CheckStatus::Fail,
             "L2",
             format!(
                 "REALITY private key missing at {:?}",
                 cfg.reality_private_key_file()
             ),
         );
+        failures += 1;
     } else {
-        match is_not_world_readable(&cfg.reality_private_key_file()) {
-            Some(true) => report_check(
-                CheckStatus::Ok,
-                "L2",
-                "REALITY private key present, not world-readable",
-            ),
-            Some(false) => {
+        report_installed_file_policy(
+            &cfg.reality_private_key_file(),
+            "sing-box",
+            "REALITY private key",
+            &mut failures,
+        );
+    }
+    if cfg.reality_public_key_file().exists() {
+        report_installed_file_policy(
+            &cfg.reality_public_key_file(),
+            "vpn-subscription",
+            "REALITY public key",
+            &mut failures,
+        );
+        let short_id_path = cfg.reality_dir().join("short_id.txt");
+        if short_id_path.exists() {
+            report_installed_file_policy(
+                &short_id_path,
+                "vpn-subscription",
+                "REALITY short_id",
+                &mut failures,
+            );
+        }
+        match (
+            std::fs::read_to_string(cfg.reality_private_key_file()),
+            std::fs::read_to_string(cfg.reality_public_key_file()),
+        ) {
+            (Ok(private), Ok(public)) => {
+                match credentials::validate_reality_keypair(private.trim(), public.trim()) {
+                    Ok(()) => report_check(
+                        CheckStatus::Ok,
+                        "L2",
+                        "REALITY public.key cryptographically corresponds to private.key (X25519 derivation)",
+                    ),
+                    Err(e) => {
+                        report_check(CheckStatus::Fail, "L2", format!("REALITY keypair incoherent: {e}"));
+                        failures += 1;
+                    }
+                }
+            }
+            (Err(e), _) | (_, Err(e)) => {
                 report_check(
                     CheckStatus::Fail,
                     "L2",
-                    format!(
-                        "REALITY private key at {:?} is world-readable",
-                        cfg.reality_private_key_file()
-                    ),
+                    format!("cannot read REALITY keypair: {e}"),
                 );
                 failures += 1;
             }
-            None => report_check(
-                CheckStatus::Warn,
-                "L2",
-                "REALITY private key present (permission check unavailable on this platform)",
-            ),
         }
-    }
-    if cfg.reality_public_key_file().exists() {
-        report_check(CheckStatus::Ok, "L2", "REALITY public key present");
     } else {
         report_check(
-            CheckStatus::Warn,
+            CheckStatus::Fail,
             "L2",
             format!(
                 "REALITY public key missing at {:?}",
                 cfg.reality_public_key_file()
             ),
         );
+        failures += 1;
     }
 
+    if cfg.users_file().exists() {
+        report_installed_file_policy(
+            &cfg.users_file(),
+            "vpn-subscription",
+            "user store",
+            &mut failures,
+        );
+    }
     match store::load_users(&cfg.users_file()) {
         Ok(users) => report_check(
             CheckStatus::Ok,
@@ -1365,7 +1628,25 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool) -> Result<()> {
         }
     }
 
-    match cert_expiry_days(&cfg.hysteria_dir().join("cert.pem")) {
+    let hysteria_cert = cfg.hysteria_dir().join("cert.pem");
+    let hysteria_key = cfg.hysteria_dir().join("key.pem");
+    if hysteria_cert.exists() {
+        report_installed_file_policy(
+            &hysteria_cert,
+            "sing-box",
+            "Hysteria2 certificate",
+            &mut failures,
+        );
+    }
+    if hysteria_key.exists() {
+        report_installed_file_policy(
+            &hysteria_key,
+            "sing-box",
+            "Hysteria2 private key",
+            &mut failures,
+        );
+    }
+    match cert_expiry_days(&hysteria_cert) {
         None => report_check(
             CheckStatus::Warn,
             "L2",
@@ -1438,63 +1719,35 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool) -> Result<()> {
         ),
     }
 
-    for (proto_label, port, reachable) in [
-        (
-            "VLESS+REALITY",
-            cfg.reality.listen_port,
-            tcp_port_reachable(
-                "127.0.0.1",
-                cfg.reality.listen_port,
-                std::time::Duration::from_millis(500),
-            ),
-        ),
-        (
-            "Hysteria2",
-            cfg.hysteria2.listen_port,
-            // TCP connect is a real check for the REALITY listener (it's
-            // TCP); Hysteria2 is UDP, so a TCP connect attempt here only
-            // tells us the port is at least reachable at the transport
-            // level for the REALITY case — for Hysteria2 this reduces to
-            // "did the connect attempt fail fast with connection
-            // refused", which is still informative (loopback-refused
-            // means definitely not listening) even though it can't
-            // confirm a UDP listener is up.
-            tcp_port_reachable(
-                "127.0.0.1",
-                cfg.hysteria2.listen_port,
-                std::time::Duration::from_millis(500),
-            ),
-        ),
+    for (proto_label, port, udp) in [
+        ("VLESS+REALITY", cfg.reality.listen_port, false),
+        ("Hysteria2", cfg.hysteria2.listen_port, true),
     ] {
-        if proto_label == "Hysteria2" {
-            // Never report Hysteria2 as reachable/unreachable from a TCP
-            // probe against a UDP port — that would be actively
-            // misleading. Only note it as informational.
-            report_check(
-                CheckStatus::Warn,
-                "L3",
-                format!(
-                    "Hysteria2 (UDP) listener on 127.0.0.1:{port} not checked here — TCP connect \
-                     cannot verify a UDP listener; use `ss -ulnp` or deploy/almalinux/health-check.sh"
-                ),
-            );
-            continue;
-        }
-        if reachable {
-            report_check(
+        match listener_reported_by_ss(port, udp) {
+            Some(true) => report_check(
                 CheckStatus::Ok,
                 "L3",
-                format!("{proto_label} listener reachable on 127.0.0.1:{port}"),
-            );
-        } else {
-            report_check(
+                format!(
+                    "{proto_label} {} listener present on port {port}",
+                    if udp { "UDP" } else { "TCP" }
+                ),
+            ),
+            Some(false) => {
+                report_check(
+                    CheckStatus::Fail,
+                    "L3",
+                    format!(
+                        "{proto_label} {} listener missing on port {port}",
+                        if udp { "UDP" } else { "TCP" }
+                    ),
+                );
+                failures += 1;
+            }
+            None => report_check(
                 CheckStatus::Warn,
                 "L3",
-                format!(
-                    "{proto_label} listener NOT reachable on 127.0.0.1:{port} (may be bound only \
-                     on a public interface, may not be running, or may be blocked locally)"
-                ),
-            );
+                format!("cannot inspect {proto_label} listener: `ss` is unavailable or failed"),
+            ),
         }
     }
 
@@ -1502,7 +1755,7 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool) -> Result<()> {
     check_l4_live_subscription_process_state(cfg, &mut failures);
 
     if protocol {
-        check_l5_l6_protocol_selftest(cfg, &mut failures);
+        check_l5_l6_protocol_selftest(cfg, &mut failures, require_protocol);
     } else {
         report_check(
             CheckStatus::Warn,
@@ -1685,38 +1938,20 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
             return;
         }
     };
-    let on_disk_short_ids: Vec<String> = on_disk["inbounds"][0]["tls"]["reality"]["short_id"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let on_disk_key_fp = key_fingerprint(
-        on_disk["inbounds"][0]["tls"]["reality"]["private_key"]
-            .as_str()
-            .unwrap_or(""),
-    );
-    let fresh_key_fp = key_fingerprint(
-        fresh_server_doc["inbounds"][0]["tls"]["reality"]["private_key"]
-            .as_str()
-            .unwrap_or(""),
-    );
-    if on_disk_short_ids == server_short_ids && on_disk_key_fp == fresh_key_fp {
+    if on_disk == fresh_server_doc {
         report_check(
             CheckStatus::Ok,
             "L4",
-            "on-disk sing-box config.json matches what current REALITY key files + users.json \
-             would render right now (not stale)",
+            "on-disk sing-box config.json exactly matches the complete authorization/key/cert \
+             document current state would render (not stale)",
         );
     } else {
         report_check(
             CheckStatus::Fail,
             "L4",
-            "on-disk sing-box config.json does NOT match what current REALITY key files/users.json \
-             would render right now — sing-box (as of its last reload) may be enforcing different \
-             key material than vpn-subscription is currently advertising to new clients. Run \
+            "on-disk sing-box config.json does NOT exactly match current users/expiry/REALITY/\
+             Hysteria state — sing-box (as of its last reload) may be enforcing stale \
+             authorization or key material. Run \
              `vpn-admin render-config` to resync, then confirm with `systemctl status sing-box`.",
         );
         *failures += 1;
@@ -1833,14 +2068,6 @@ fn check_l4_live_subscription_process_state(cfg: &DeploymentConfig, failures: &m
     }
 }
 
-/// Reuses the generic SHA-256 hex hasher (`credentials::hash_token`
-/// hashes any string, despite its name) so REALITY private-key material
-/// is only ever compared by fingerprint here, never held as a
-/// side-by-side string comparison of the raw secret.
-fn key_fingerprint(secret: &str) -> String {
-    credentials::hash_token(secret)
-}
-
 fn tcp_port_reachable(host: &str, port: u16, timeout: std::time::Duration) -> bool {
     use std::net::ToSocketAddrs;
     let addr = match format!("{host}:{port}").to_socket_addrs() {
@@ -1906,40 +2133,58 @@ fn http_get_local_json(
 /// advertising the same thing — that is what
 /// `check_l4_live_subscription_process_state` (run unconditionally,
 /// every `doctor` invocation) exists to verify separately, by asking
-/// that process directly rather than re-deriving from disk. Uses a
-/// synthetic, freshly-generated, never-printed UUID (never a real
-/// user's) — full per-user VLESS authentication is not what this
-/// exercises; see the FAIL/WARN distinction below for why that's still
-/// enough for a real verdict.
+/// that process directly rather than re-deriving from disk. Uses an
+/// enabled, unexpired user's VLESS UUID and requires application bytes
+/// from the local subscription health endpoint. A successful SOCKS
+/// CONNECT reply alone is not evidence that VLESS authentication was
+/// accepted by the server.
 ///
 /// Gated on `sing-box` being present AND the port actually being
 /// reachable on loopback; anything else is `[WARN] cannot self-test:
 /// <reason>` — a self-test that can't run here says so, it does not
 /// fake a pass.
 ///
-/// FAIL vs. WARN, and why they're different: REALITY's TLS-layer
-/// handshake is validated (via ECDH between the client's ephemeral key
-/// and the server's private key, plus short_id matching — see
-/// `metacubex/utls`'s `reality.go`) BEFORE VLESS-level UUID lookup is
-/// ever reached, so this self-test's client independently re-derives
-/// whether the server's response verifies against the CURRENT public
-/// key/short_id — the synthetic UUID being unregistered has no bearing
-/// on that specific verdict. If our own throwaway client's sing-box
-/// process itself logs `reality verification failed` (its own
-/// client-side rejection of an unverifiable server response — see
-/// `run_reality_client_selftest`), that is definitive, first-hand
-/// evidence of a REALITY key/short_id mismatch: `[FAIL]`, and it counts
-/// toward `doctor`'s overall exit status like any other proven defect.
-/// A bare timeout with no such corroborating rejection proves nothing
-/// either way (could be no outbound path to the REALITY decoy target,
-/// an unrelated transient failure, a firewalled loopback) — that stays
-/// `[WARN]`, an honest "inconclusive," never conflated with a proven
-/// failure.
-fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig, failures: &mut u32) {
+/// A client-side REALITY verification rejection is a hard failure. A
+/// timeout or missing prerequisite is a warning by default because it
+/// can be environmental; `--require-protocol` promotes that uncertainty
+/// to a failure for installation acceptance checks.
+fn report_protocol_unavailable(
+    require_protocol: bool,
+    failures: &mut u32,
+    message: impl AsRef<str>,
+) {
+    if require_protocol {
+        report_check(CheckStatus::Fail, "L5-6", message.as_ref());
+        *failures += 1;
+    } else {
+        report_check(CheckStatus::Warn, "L5-6", message.as_ref());
+    }
+}
+
+fn listener_reported_by_ss(port: u16, udp: bool) -> Option<bool> {
+    let args = if udp { ["-H", "-lun"] } else { ["-H", "-ltn"] };
+    let output = std::process::Command::new("ss").args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let suffix = format!(":{port}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    Some(text.lines().any(|line| {
+        line.split_whitespace().any(|field| {
+            field == suffix || field.ends_with(&suffix) || field.contains(&format!("]{suffix}"))
+        })
+    }))
+}
+
+fn check_l5_l6_protocol_selftest(
+    cfg: &DeploymentConfig,
+    failures: &mut u32,
+    require_protocol: bool,
+) {
     if !cfg.singbox_binary.exists() {
-        report_check(
-            CheckStatus::Warn,
-            "L5-6",
+        report_protocol_unavailable(
+            require_protocol,
+            failures,
             format!(
                 "cannot self-test: sing-box binary not found at {:?}",
                 cfg.singbox_binary
@@ -1950,33 +2195,44 @@ fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig, failures: &mut u32) {
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
         Err(e) => {
-            report_check(CheckStatus::Warn, "L5-6", format!("cannot self-test: {e}"));
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                format!("cannot self-test: {e}"),
+            );
             return;
         }
     };
-    let port = cfg.reality.listen_port;
-    if !tcp_port_reachable("127.0.0.1", port, std::time::Duration::from_millis(500)) {
-        report_check(
-            CheckStatus::Warn,
-            "L5-6",
-            format!(
-                "cannot self-test: 127.0.0.1:{port} is not accepting connections \
-                 (VLESS+REALITY may be bound only on a public interface, or sing-box is not \
-                 running) — this does NOT mean the protocol handshake is broken, only that this \
-                 check cannot reach it from here"
-            ),
+    let users = match store::load_users(&cfg.users_file()) {
+        Ok(users) => users,
+        Err(e) => {
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                format!("cannot self-test: failed to load users: {e}"),
+            );
+            return;
+        }
+    };
+    let now = UnixSeconds::now().0 as i64;
+    let Some(test_user) = users.iter().find(|user| user.is_active(now)) else {
+        report_protocol_unavailable(
+            require_protocol,
+            failures,
+            "cannot self-test: there is no enabled, unexpired VLESS user",
         );
         return;
-    }
+    };
+    let port = cfg.reality.listen_port;
 
-    match run_reality_client_selftest(cfg, &reality, port) {
+    match run_reality_client_selftest(cfg, &reality, test_user, port) {
         Ok(RealitySelfTestOutcome::Pass) => report_check(
             CheckStatus::Ok,
             "L5-6",
             format!(
                 "protocol self-test: a throwaway sing-box client using the CURRENT REALITY \
-                 public_key/short_id completed a full handshake through 127.0.0.1:{port} and \
-                 relayed a real request end-to-end"
+                 public_key/short_id and an active VLESS user completed a full handshake through \
+                 127.0.0.1:{port} and returned application bytes end-to-end"
             ),
         ),
         Ok(RealitySelfTestOutcome::HandshakeRejected) => {
@@ -2009,18 +2265,18 @@ fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig, failures: &mut u32) {
             );
             *failures += 1;
         }
-        Ok(RealitySelfTestOutcome::Inconclusive) => report_check(
-            CheckStatus::Warn,
-            "L5-6",
-            "protocol self-test INCONCLUSIVE: throwaway sing-box client connected to the local \
-             listener but the relay through it did not complete within the timeout, with no \
-             corroborating client-side rejection — could mean this host has no outbound path to \
-             the REALITY decoy target, a transient failure, or (less likely, since a genuine key \
-             mismatch usually surfaces the definitive rejection above) a REALITY problem this \
-             specific run didn't manage to observe. Not proof either way — re-run, and check \
-             `journalctl -u sing-box` for \"processed invalid connection\".",
+        Ok(RealitySelfTestOutcome::Inconclusive) => report_protocol_unavailable(
+            require_protocol,
+            failures,
+            "protocol self-test INCONCLUSIVE: the client did not return an HTTP success response \
+             through the live VLESS+REALITY listener. This can be an authentication, routing, \
+             decoy, listener, or transient failure; inspect both sing-box processes' logs.",
         ),
-        Err(e) => report_check(CheckStatus::Warn, "L5-6", format!("cannot self-test: {e}")),
+        Err(e) => report_protocol_unavailable(
+            require_protocol,
+            failures,
+            format!("cannot self-test: {e}"),
+        ),
     }
 }
 
@@ -2031,6 +2287,7 @@ fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig, failures: &mut u32) {
 fn run_reality_client_selftest(
     cfg: &DeploymentConfig,
     reality: &RealityServerParams,
+    test_user: &CompatUser,
     reality_port: u16,
 ) -> Result<RealitySelfTestOutcome> {
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
@@ -2045,9 +2302,6 @@ fn run_reality_client_selftest(
         listener.local_addr()?.port()
     };
 
-    // Synthetic, never-real, never-printed UUID — see the limitation
-    // documented on `check_l5_l6_protocol_selftest`.
-    let synthetic_uuid = credentials::generate_uuid_v4();
     let client_config = json!({
         "log": { "level": "error" },
         "inbounds": [
@@ -2059,7 +2313,7 @@ fn run_reality_client_selftest(
                 "tag": "reality-selftest",
                 "server": "127.0.0.1",
                 "server_port": reality_port,
-                "uuid": synthetic_uuid,
+                "uuid": test_user.vless_uuid,
                 "flow": "xtls-rprx-vision",
                 "tls": {
                     "enabled": true,
@@ -2137,10 +2391,11 @@ fn run_reality_client_selftest(
     }
 
     let relay_ok = client_bound
-        && socks5_connect_succeeds(
+        && socks5_http_get_succeeds(
             local_port,
-            &reality.handshake_server,
-            reality.handshake_port,
+            "127.0.0.1",
+            cfg.subscription.listen_port,
+            "/healthz",
             std::time::Duration::from_secs(4),
         );
 
@@ -2165,9 +2420,7 @@ fn run_reality_client_selftest(
     // A definitive signal that the handshake does not work — our own
     // throwaway client, built from the CURRENT REALITY public_key/short_id
     // exactly as a real subscription would hand a real client, could not
-    // complete it. This does NOT depend on the synthetic UUID being
-    // registered (REALITY's TLS layer is validated before VLESS-level UUID
-    // lookup is reached), so it is real evidence about REALITY.
+    // complete it.
     //
     // What it is NOT is evidence about the CAUSE. "processed invalid
     // connection" is sing-box's message for any connection that fails to
@@ -2205,16 +2458,16 @@ enum RealitySelfTestOutcome {
     Inconclusive,
 }
 
-/// Minimal, dependency-free SOCKS5 client: connect, no-auth handshake,
-/// `CONNECT` to `(target_host, target_port)`, and report whether the
-/// proxy replied with success (`rep == 0x00`). This is the real signal
-/// that the throwaway sing-box client's outbound — through our live
-/// REALITY listener — actually relayed a connection end-to-end, not
-/// just that TCP to the local proxy port succeeded.
-fn socks5_connect_succeeds(
+/// Minimal, dependency-free SOCKS5 HTTP probe. It does not treat SOCKS
+/// `REP=0` as success: VLESS has no positive authentication ACK, so the
+/// server can reject the UUID after the local proxy accepted CONNECT.
+/// Only an HTTP 200 received through the tunnel proves authentication
+/// and application-data relay by the live server.
+fn socks5_http_get_succeeds(
     local_port: u16,
     target_host: &str,
     target_port: u16,
+    target_path: &str,
     timeout: std::time::Duration,
 ) -> bool {
     use std::io::{Read, Write};
@@ -2246,14 +2499,39 @@ fn socks5_connect_succeeds(
     if stream.write_all(&req).is_err() {
         return false;
     }
-    // Reply header: ver, rep, rsv, atyp — rep==0x00 is success. The
-    // trailing bound-address bytes vary by atyp; we only need `rep` and
-    // the stream is dropped (closed) right after, so they're not read.
+    // Reply header: ver, rep, rsv, atyp. Consume the complete reply before
+    // writing application data.
     let mut head = [0u8; 4];
-    if stream.read_exact(&mut head).is_err() {
+    if stream.read_exact(&mut head).is_err() || head[0] != 0x05 || head[1] != 0x00 {
         return false;
     }
-    head[1] == 0x00
+    let trailing_len = match head[3] {
+        0x01 => 6,
+        0x04 => 18,
+        0x03 => {
+            let mut len = [0u8; 1];
+            if stream.read_exact(&mut len).is_err() {
+                return false;
+            }
+            usize::from(len[0]) + 2
+        }
+        _ => return false,
+    };
+    let mut trailing = vec![0u8; trailing_len];
+    if stream.read_exact(&mut trailing).is_err() {
+        return false;
+    }
+
+    let request =
+        format!("GET {target_path} HTTP/1.0\r\nHost: {target_host}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = Vec::new();
+    if stream.read_to_end(&mut response).is_err() {
+        return false;
+    }
+    response.starts_with(b"HTTP/1.0 200") || response.starts_with(b"HTTP/1.1 200")
 }
 
 /// Stage the minimum state needed to rebuild this deployment into `dir`:
@@ -2312,54 +2590,44 @@ fn cmd_backup(
     let staging = tempdir_here()?;
     stage_backup_contents(cfg, config_path, staging.path())?;
 
-    // Restrictive from the moment the file is CREATED
-    // (docs/FINAL_PRODUCTION_AUDIT.md P1 "backup archives must be
-    // restrictive from the start") — a `chmod` after `tar` finishes
-    // leaves a window, however short, where the archive (REALITY
-    // private key, Hysteria2 TLS key, user credential hashes) exists on
-    // disk with the process's default umask (often 0644, world-
-    // readable). Setting the umask before `tar` creates the file closes
-    // that window; the previous umask is restored right after so it
-    // doesn't leak into any later code path in this process.
-    #[cfg(unix)]
-    let previous_umask = unsafe { libc::umask(0o077) };
-    let status = std::process::Command::new("tar")
-        .arg("-cf")
-        .arg(&dest)
-        .arg("-C")
-        .arg(staging.path())
-        .arg(".")
-        .status();
-    #[cfg(unix)]
-    unsafe {
-        libc::umask(previous_umask);
+    // Own the destination from its first byte. `create_new` refuses both
+    // pre-existing files and symlinks, avoiding predictable-name clobbering
+    // and attacker-owned output. The Rust tar writer writes only through
+    // this already-open descriptor.
+    let mut created = false;
+    let mut create_archive = || -> Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&dest).with_context(|| {
+            format!("securely creating backup {dest:?} (destination must not already exist)")
+        })?;
+        created = true;
+        let mut archive = tar::Builder::new(file);
+        archive.follow_symlinks(false);
+        archive
+            .append_dir_all(".", staging.path())
+            .context("writing backup archive contents")?;
+        let file = archive.into_inner().context("finishing backup archive")?;
+        file.sync_all().context("syncing backup archive")?;
+        Ok(())
+    };
+    if let Err(error) = create_archive() {
+        if created {
+            let _ = std::fs::remove_file(&dest);
+        }
+        return Err(error);
     }
-    let status = status.context("running tar to create backup archive")?;
-    if !status.success() {
-        bail!("tar exited with failure creating {dest:?}");
-    }
-    // Belt-and-suspenders: also explicitly enforce 0600 in case `dest`
-    // already existed with looser permissions from a previous run (tar
-    // does not narrow an existing file's mode on its own).
-    write_secret_file_at(&dest)?;
 
     println!("Backup written to {dest:?}.");
     println!(
         "This archive contains secrets (REALITY private key, Hysteria2 TLS key, user \
          credential hashes) — store it as securely as the live server."
     );
-    Ok(())
-}
-
-#[cfg(unix)]
-fn write_secret_file_at(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_secret_file_at(_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
@@ -2386,39 +2654,98 @@ fn tempdir_here() -> Result<tempfile::TempDir> {
 /// `tar` runs as root during restore, so all of these are really created.
 /// Rejecting by entry type up front is cheaper and more complete than
 /// hardening each read site.
-fn reject_non_regular_entries(dir: &std::path::Path) -> Result<()> {
-    for entry in std::fs::read_dir(dir).with_context(|| format!("reading directory {dir:?}"))? {
-        let entry = entry?;
-        let path = entry.path();
-        let meta = std::fs::symlink_metadata(&path)
-            .with_context(|| format!("reading metadata for {path:?}"))?;
-        let ft = meta.file_type();
-        if ft.is_symlink() {
-            bail!(
-                "backup archive contains a symlink at {path:?} — refusing to restore \
-                 (symlinked entries are not supported for security reasons)"
-            );
+fn normalized_archive_path(path: &std::path::Path) -> Result<PathBuf> {
+    use std::path::Component;
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                bail!("backup archive contains unsafe path {path:?}")
+            }
         }
-        if ft.is_dir() {
-            reject_non_regular_entries(&path)?;
+    }
+    Ok(normalized)
+}
+
+/// Validate each archive header before extracting that entry into the
+/// private staging directory. This rejects traversal, duplicate names,
+/// links/devices/FIFOs, unexpected files, and archive bombs before any
+/// live deployment path is touched.
+fn extract_validated_backup(archive_path: &std::path::Path, dir: &std::path::Path) -> Result<()> {
+    use std::collections::HashSet;
+
+    const MAX_ENTRIES: usize = 32;
+    const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+    const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+    const ALLOWED: &[&str] = &[
+        "users",
+        "users/users.json",
+        "deployment.toml",
+        "reality",
+        "reality/private.key",
+        "reality/public.key",
+        "reality/short_id.txt",
+        "hysteria",
+        "hysteria/cert.pem",
+        "hysteria/key.pem",
+    ];
+
+    let file = std::fs::File::open(archive_path)
+        .with_context(|| format!("opening backup archive {archive_path:?}"))?;
+    let mut archive = tar::Archive::new(file);
+    let mut seen = HashSet::new();
+    let mut total_bytes = 0u64;
+    let mut count = 0usize;
+    for entry in archive
+        .entries()
+        .context("reading backup archive headers")?
+    {
+        let mut entry = entry.context("reading backup archive entry")?;
+        count += 1;
+        if count > MAX_ENTRIES {
+            bail!("backup archive contains more than {MAX_ENTRIES} entries");
+        }
+        let raw_path = entry.path().context("reading backup entry path")?;
+        let path = normalized_archive_path(&raw_path)?;
+        if path.as_os_str().is_empty() {
+            if !entry.header().entry_type().is_dir() {
+                bail!("backup archive root entry is not a directory");
+            }
             continue;
         }
-        if !ft.is_file() {
+        if !seen.insert(path.clone()) {
+            bail!("backup archive contains duplicate entry {path:?}");
+        }
+        if !ALLOWED
+            .iter()
+            .any(|allowed| path == std::path::Path::new(allowed))
+        {
+            bail!("backup archive contains unexpected entry {path:?}");
+        }
+        let entry_type = entry.header().entry_type();
+        if !(entry_type.is_file() || entry_type.is_dir()) {
             bail!(
-                "backup archive contains a non-regular file at {path:?} (FIFO, socket or device \
-                 node) — refusing to restore: reading such an entry can block forever while \
-                 holding the deployment-wide state lock, or consume memory without bound"
+                "backup archive entry {path:?} is not a regular file or directory; links and \
+                 special files (symlink, hard link, FIFO, device) are forbidden"
             );
         }
-        // A regular file that is implausibly large for this archive's
-        // contents is also refused, before anything reads it into memory.
-        const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
-        if meta.len() > MAX_ENTRY_BYTES {
-            bail!(
-                "backup archive entry {path:?} is {} bytes, far larger than any file this \
-                 archive should contain — refusing to restore",
-                meta.len()
-            );
+        let size = entry.size();
+        if size > MAX_ENTRY_BYTES {
+            bail!("backup archive entry {path:?} is too large ({size} bytes)");
+        }
+        total_bytes = total_bytes
+            .checked_add(size)
+            .context("backup archive size overflow")?;
+        if total_bytes > MAX_TOTAL_BYTES {
+            bail!("backup archive expands beyond {MAX_TOTAL_BYTES} bytes");
+        }
+        if !entry
+            .unpack_in(dir)
+            .with_context(|| format!("extracting backup entry {path:?}"))?
+        {
+            bail!("backup entry {path:?} would escape the staging directory");
         }
     }
     Ok(())
@@ -2430,18 +2757,8 @@ fn cmd_restore(
     archive: &std::path::Path,
 ) -> Result<()> {
     let staging = tempdir_here()?;
-    let status = std::process::Command::new("tar")
-        .arg("-xf")
-        .arg(archive)
-        .arg("-C")
-        .arg(staging.path())
-        .status()
-        .context("running tar to extract backup archive")?;
-    if !status.success() {
-        bail!("tar exited with failure extracting {archive:?}");
-    }
-    reject_non_regular_entries(staging.path())
-        .context("scanning extracted backup archive for hostile entry types")?;
+    extract_validated_backup(archive, staging.path())
+        .context("validating and extracting backup archive")?;
 
     // Validate before touching any live state (spec §20: "Validate
     // restored data before replacing active state").
@@ -2473,12 +2790,37 @@ fn cmd_restore(
             );
         }
     }
+    let restored_private = std::fs::read_to_string(&reality_key_path)
+        .context("reading restored REALITY private key")?;
+    let restored_public = std::fs::read_to_string(staging.path().join("reality/public.key"))
+        .context("reading restored REALITY public key")?;
+    credentials::validate_reality_keypair(restored_private.trim(), restored_public.trim())
+        .map_err(|error| anyhow::anyhow!(error))
+        .context(
+            "restored REALITY private/public keys do not form one X25519 keypair — refusing to \
+             install a split keyset",
+        )?;
     let hy_cert = staging.path().join("hysteria/cert.pem");
     let hy_key = staging.path().join("hysteria/key.pem");
     if hy_cert.exists() != hy_key.exists() {
         bail!(
             "archive contains only one half of the Hysteria2 TLS pair — refusing to restore a \
              mismatched certificate/key"
+        );
+    }
+
+    let singbox_mgr = CompatibilityServiceManager::default();
+    let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
+    if !offline_mutation_allowed()
+        && (!singbox_mgr.is_available()
+            || !singbox_mgr.is_unit_installed()
+            || !sub_mgr.is_available()
+            || !sub_mgr.is_unit_installed())
+    {
+        bail!(
+            "refusing restore: both sing-box.service and vpn-subscription.service must be \
+             installed and controllable so restored authorization/key state can be committed \
+             atomically. VPN1_ALLOW_OFFLINE_MUTATION=1 is only for explicit offline recovery."
         );
     }
 
@@ -2503,29 +2845,83 @@ fn cmd_restore(
     // the only mutating command with no rollback at all, while the rotation
     // path right next to it builds precisely this scaffolding.
     let users_path = cfg.users_file();
-    let users_had_backup = backup_for_rotate(&users_path)?.is_some();
+    let users_backup = backup_for_rotate(&users_path)?;
+    let users_had_backup = users_backup.is_some();
+    let mut prepared_backups: Vec<PathBuf> = users_backup.into_iter().collect();
     let mut backed_up: Vec<(PathBuf, bool)> = Vec::new();
     for (_, dest) in &restore_targets {
-        let existed = backup_for_rotate(dest)?.is_some();
-        backed_up.push((dest.clone(), existed));
-    }
-    let rollback = |backed_up: &[(PathBuf, bool)]| {
-        for (dest, existed) in backed_up {
-            if *existed {
-                let _ = restore_from_rotate_backup(dest);
-            } else {
-                let _ = std::fs::remove_file(dest);
+        match backup_for_rotate(dest) {
+            Ok(backup) => {
+                let existed = backup.is_some();
+                prepared_backups.extend(backup);
+                backed_up.push((dest.clone(), existed));
+            }
+            Err(error) => {
+                for backup in prepared_backups {
+                    let _ = std::fs::remove_file(backup);
+                }
+                return Err(error).context(
+                    "failed to prepare the complete restore transaction; live state was not changed",
+                );
             }
         }
-        if users_had_backup {
-            let _ = restore_from_rotate_backup(&users_path);
+    }
+    let rollback = |backed_up: &[(PathBuf, bool)]| -> Result<()> {
+        let mut errors = Vec::new();
+        for (dest, existed) in backed_up {
+            let result = if *existed {
+                restore_from_rotate_backup(dest)
+            } else {
+                std::fs::remove_file(dest)
+                    .or_else(|error| {
+                        if error.kind() == std::io::ErrorKind::NotFound {
+                            Ok(())
+                        } else {
+                            Err(error)
+                        }
+                    })
+                    .map_err(anyhow::Error::from)
+            };
+            if let Err(error) = result {
+                errors.push(format!("restore {dest:?}: {error}"));
+            }
+        }
+        let users_result = if users_had_backup {
+            restore_from_rotate_backup(&users_path)
         } else {
-            let _ = std::fs::remove_file(&users_path);
+            std::fs::remove_file(&users_path)
+                .or_else(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                })
+                .map_err(anyhow::Error::from)
+        };
+        if let Err(error) = users_result {
+            errors.push(format!("restore {users_path:?}: {error}"));
+        }
+        if let Err(error) = regenerate_singbox_config(cfg, true) {
+            errors.push(format!("reload previous sing-box authorization: {error:#}"));
+        }
+        if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
+            if let Err(error) = sub_mgr.reload_and_verify() {
+                errors.push(format!("restart previous subscription state: {error:#}"));
+            }
+        } else if !offline_mutation_allowed() {
+            errors.push("vpn-subscription.service unavailable during rollback".into());
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            bail!(errors.join("; "))
         }
     };
 
     let install_all = || -> Result<()> {
         store::save_users_atomic(&users_path, &restored_users)?;
+        apply_restored_file_policy(&users_path, "vpn-subscription")?;
         for (rel, dest) in &restore_targets {
             let src = staging.path().join(rel);
             if !src.exists() {
@@ -2545,22 +2941,12 @@ fn cmd_restore(
                 .with_context(|| format!("{rel} in the backup archive is not valid UTF-8"))?;
             install_rotated_key_file(dest, &text)
                 .with_context(|| format!("installing restored {rel}"))?;
-            // `install_rotated_key_file` preserves the TARGET's existing
-            // mode, which is right for public.key/short_id.txt/cert.pem
-            // (0640, readable by the vpn-subscription / sing-box groups).
-            // For the two PRIVATE keys, preserving is not enough — restore
-            // must never leave a private key group- or world-accessible,
-            // whatever the destination happened to be beforehand.
-            #[cfg(unix)]
-            if matches!(*rel, "reality/private.key" | "hysteria/key.pem") {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(dest)?.permissions();
-                if perms.mode() & 0o077 != 0 {
-                    perms.set_mode(perms.mode() & !0o077);
-                    std::fs::set_permissions(dest, perms)
-                        .with_context(|| format!("tightening permissions on restored {rel}"))?;
-                }
-            }
+            let group = if matches!(*rel, "reality/public.key" | "reality/short_id.txt") {
+                "vpn-subscription"
+            } else {
+                "sing-box"
+            };
+            apply_restored_file_policy(dest, group)?;
         }
         fsync_dir(&cfg.reality_dir());
         fsync_dir(&cfg.hysteria_dir());
@@ -2568,10 +2954,16 @@ fn cmd_restore(
     };
 
     if let Err(e) = install_all() {
-        rollback(&backed_up);
-        return Err(e).context(
-            "restore FAILED and was rolled back — the deployment is unchanged and still running \
-             its previous key material and user store",
+        let recovery = rollback(&backed_up);
+        bail!(
+            "restore FAILED while installing staged state ({e:#}). {}",
+            match recovery {
+                Ok(()) => "Rollback restored and reloaded the complete previous state.".into(),
+                Err(error) => format!(
+                    "ROLLBACK ALSO FAILED ({error:#}); deployment may be inconsistent and needs \
+                     manual recovery from .rotate-bak files."
+                ),
+            }
         );
     }
 
@@ -2589,25 +2981,19 @@ fn cmd_restore(
     // "Restored N user(s)…" and only then applied the config, so a rejected
     // config produced a success line immediately followed by an error, with
     // the deployment left half-restored.
-    if let Err(e) = regenerate_singbox_config(cfg) {
-        rollback(&backed_up);
-        return Err(e).context(
-            "restore FAILED while applying the restored configuration and was rolled back — the \
-             deployment is unchanged and still running its previous key material and user store",
+    if let Err(e) = regenerate_singbox_config(cfg, true) {
+        let recovery = rollback(&backed_up);
+        bail!(
+            "restore FAILED while applying restored authorization ({e:#}). {}",
+            match recovery {
+                Ok(()) => "Rollback restored and reloaded the complete previous state.".into(),
+                Err(error) => format!(
+                    "ROLLBACK ALSO FAILED ({error:#}); deployment may be inconsistent and needs \
+                     manual recovery from .rotate-bak files."
+                ),
+            }
         );
     }
-    for (dest, existed) in &backed_up {
-        if *existed {
-            remove_rotate_backup(dest);
-        }
-    }
-    if users_had_backup {
-        remove_rotate_backup(&users_path);
-    }
-    println!(
-        "Restored {} user(s) and REALITY/Hysteria2 material from {archive:?}.",
-        restored_users.len()
-    );
 
     // The archive always contains REALITY private/public key + short_id
     // (checked above) and may differ from whatever key material was live
@@ -2620,17 +3006,20 @@ fn cmd_restore(
     // silently advertising a STALE public key while sing-box already
     // speaks the restored one — the exact split-brain P0-5 exists to
     // prevent, just reached via `restore` instead of `init --rotate`.
-    let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
     if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
-        sub_mgr.reload_and_verify().map_err(|e| {
-            anyhow::anyhow!(
-                "restore applied users/config/keys successfully, but restarting \
-                 vpn-subscription to pick up the restored REALITY key failed: {e}. \
-                 The subscription service may now be advertising a STALE REALITY \
-                 public key/short_id — run `systemctl restart vpn-subscription` \
-                 manually, then re-check with `vpn-admin doctor`."
-            )
-        })?;
+        if let Err(e) = sub_mgr.reload_and_verify() {
+            let recovery = rollback(&backed_up);
+            bail!(
+                "restore FAILED while restarting vpn-subscription ({e:#}). {}",
+                match recovery {
+                    Ok(()) => "Rollback restored and reloaded the complete previous state.".into(),
+                    Err(error) => format!(
+                        "ROLLBACK ALSO FAILED ({error:#}); deployment may be inconsistent and \
+                         needs manual recovery from .rotate-bak files."
+                    ),
+                }
+            );
+        }
     } else {
         println!(
             "warning: systemctl/vpn-subscription.service not available — restored REALITY \
@@ -2640,6 +3029,19 @@ fn cmd_restore(
         );
     }
 
+    for (dest, existed) in &backed_up {
+        if *existed {
+            remove_rotate_backup(dest);
+        }
+    }
+    if users_had_backup {
+        remove_rotate_backup(&users_path);
+    }
+
+    println!(
+        "Restored {} user(s) and REALITY/Hysteria2 material from {archive:?}.",
+        restored_users.len()
+    );
     println!("Restore applied and validated against the running server.");
     Ok(())
 }

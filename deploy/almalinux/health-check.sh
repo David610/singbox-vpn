@@ -31,6 +31,8 @@ DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
 # (and made install.sh's equivalent probe abort a healthy install).
 SUBSCRIPTION_BACKEND_PORT="$(awk '/^\[subscription\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*listen_port[[:space:]]*=/{gsub(/[^0-9]/,"",$0); print; exit}' "$DEPLOYMENT_TOML" 2>/dev/null || true)"
 : "${SUBSCRIPTION_BACKEND_PORT:=9100}"
+SUBSCRIPTION_PUBLIC_PORT="$(awk -F'=' '/^[[:space:]]*public_port[[:space:]]*=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$DEPLOYMENT_TOML" 2>/dev/null || true)"
+: "${SUBSCRIPTION_PUBLIC_PORT:=8443}"
 FAIL=0
 
 check() {
@@ -52,9 +54,11 @@ check "REALITY key present" test -s "$STATE_DIR/reality/private.key"
 if command -v firewall-cmd >/dev/null 2>&1; then
   check "firewall TCP/443" bash -c "firewall-cmd --list-ports | grep -qw 443/tcp"
   check "firewall UDP/443" bash -c "firewall-cmd --list-ports | grep -qw 443/udp"
+  check "firewall subscription/${SUBSCRIPTION_PUBLIC_PORT}" bash -c "firewall-cmd --list-ports | grep -qw ${SUBSCRIPTION_PUBLIC_PORT}/tcp"
 elif command -v ufw >/dev/null 2>&1; then
   check "firewall TCP/443" bash -c "ufw status | grep -qE '443/tcp\s+ALLOW'"
   check "firewall UDP/443" bash -c "ufw status | grep -qE '443/udp\s+ALLOW'"
+  check "firewall subscription/${SUBSCRIPTION_PUBLIC_PORT}" bash -c "ufw status | grep -qE '${SUBSCRIPTION_PUBLIC_PORT}/tcp\s+ALLOW'"
 else
   echo "firewall                     UNKNOWN (neither firewalld nor ufw found)"
 fi

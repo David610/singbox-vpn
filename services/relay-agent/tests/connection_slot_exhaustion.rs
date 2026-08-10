@@ -12,13 +12,16 @@
 //! handshake timeout has elapsed. It fails (times out waiting for a slot)
 //! against the unbounded-handshake version.
 
+use common::EndpointId;
 use relay_agent::{RelayLimits, Role};
 use std::time::Duration;
+use transport_api::Endpoint;
 use transport_native::server::RelayIdentity;
 
 #[tokio::test]
 async fn silent_connections_cannot_permanently_exhaust_the_connection_cap() {
     let identity = RelayIdentity::generate("relay-dos-test");
+    let pinned_cert_sha256 = identity.cert_sha256;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -46,29 +49,25 @@ async fn silent_connections_cannot_permanently_exhaust_the_connection_cap() {
     // Give the relay time to notice the silent peers and reclaim the slots.
     tokio::time::sleep(Duration::from_millis(800)).await;
 
-    // A legitimate client must now be able to get a slot and start a TLS
-    // handshake. We don't need it to complete a full session — reaching the
-    // point where the server writes a ServerHello proves the slot was
-    // reclaimed and the accept loop is still serving.
-    let probe = tokio::time::timeout(Duration::from_secs(5), async {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let mut sock = tokio::net::TcpStream::connect(addr).await?;
-        // Minimal TLS 1.3 ClientHello is unnecessary: any bytes make the
-        // server's rustls acceptor respond (with an alert at worst), which
-        // is enough to prove it was serviced rather than starved.
-        sock.write_all(&[0x16, 0x03, 0x01, 0x00, 0x05, 0x01, 0x00, 0x00, 0x01, 0x00])
-            .await?;
-        let mut buf = [0u8; 1];
-        // Ok(0) (clean EOF/alert) and Ok(1) both mean the server engaged.
-        let n = sock.read(&mut buf).await?;
-        Ok::<usize, std::io::Error>(n)
-    })
+    // A legitimate client must complete a real pinned TLS handshake. An
+    // arbitrary-byte probe or EOF can also result from the old
+    // capacity-drop path and therefore cannot prove a slot was reclaimed.
+    let endpoint = Endpoint {
+        id: EndpointId("relay-dos-test".into()),
+        address: addr,
+        provider_tag: "test".into(),
+        pinned_cert_sha256,
+    };
+    let probe = tokio::time::timeout(
+        Duration::from_secs(5),
+        transport_native::direct_tls::connect_stream(&endpoint),
+    )
     .await;
 
     assert!(
-        probe.is_ok(),
-        "relay never serviced a legitimate connection after {max_connections} silent sockets \
-         occupied every slot — the connection cap was permanently exhausted"
+        matches!(probe, Ok(Ok(_))),
+        "relay did not complete a legitimate pinned TLS handshake after {max_connections} silent \
+         sockets occupied every slot: {probe:?}"
     );
 
     drop(squatters);
