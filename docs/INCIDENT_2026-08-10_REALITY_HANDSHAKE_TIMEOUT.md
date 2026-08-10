@@ -188,3 +188,39 @@ sudo vpn-admin doctor --protocol        # confirm coherence + a real handshake b
       credentials; not something this sandbox can perform. Do not mark
       any `docs/DEVICE_ACCEPTANCE_TESTS.md` matrix cell PASS without
       that real run.
+
+## K. Addendum: `install.sh` repair/re-run audit
+
+A second, related gap was found auditing `deploy/almalinux/install.sh`'s
+repair/re-run path (same "does a mutation actually take effect on
+already-running services" question as A above, applied to the
+installer rather than `vpn-admin`): `enable_and_start_services`
+(stage 15) used `systemctl enable --now sing-box.service` /
+`vpn-subscription.service`. `enable --now` only *starts* a unit if it
+is not already running — on a repair/upgrade re-run of `install.sh`
+against an existing deployment, both units are normally already
+active, so this was a silent no-op that never picked up a rebuilt
+`vpn-subscription-svc` binary from `binaries_stage` (stage 4). This is
+the identical class of mistake `configure_nginx` in the same file
+already documents and works around for nginx (explicit
+`systemctl reload-or-restart nginx`, not `enable --now`) — it just
+hadn't been applied to `sing-box.service`/`vpn-subscription.service`.
+Fixed: `enable_and_start_services` now explicitly
+`systemctl reload-or-restart`s both units (hard-failing install if
+either restart fails), so a repair re-run always actually deploys
+whatever binaries/config it just staged, instead of leaving the
+previously-running processes untouched. `sing-box` was already
+explicitly reloaded earlier by `server_config_stage` (stage 11, via
+`vpn-admin render-config`) — the restart here is a cheap, idempotent
+no-op for it, not new risk. Verified with `bash -n` and
+`shellcheck -S warning` (both clean, matching `.github/workflows/ci.yml`'s
+own invocation).
+
+This does not change the confirmed root cause in A — no evidence this
+specific gap caused the incident (nothing in the reported timeline
+involved a repair/upgrade re-run) — but it is the same "mutation didn't
+propagate to a running service" bug class, found by extending the audit
+to the one mutation path (`install.sh` repair/re-run) not covered by
+the parallel subagent investigation, and is fixed for the same reason
+the `restore` fix in A is: leaving it would let the next repair/upgrade
+silently reintroduce a stale-service incident of this same shape.

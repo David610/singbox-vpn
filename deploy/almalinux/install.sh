@@ -971,8 +971,29 @@ validate_before_start() {
 }
 
 enable_and_start_services() {
-  systemctl enable --now sing-box.service
-  systemctl enable --now vpn-subscription.service
+  # `systemctl enable --now` is a no-op on an already-active unit — it
+  # does NOT restart it to pick up a binary that binaries_stage (stage 4)
+  # may have just rebuilt/reinstalled, or REALITY key material that
+  # changed since the unit last started (same class of gotcha already
+  # documented and fixed for nginx above, in configure_nginx). On a
+  # fresh install both units are inactive so `enable --now` starts them
+  # for the first time either way; on a repair/upgrade re-run of this
+  # script both are very likely already active from before, so without
+  # an explicit restart here vpn-subscription in particular would keep
+  # serving whatever binary/REALITY state it loaded at its *previous*
+  # start indefinitely — the exact "server and subscription service
+  # silently disagree" incident class this installer must not
+  # reintroduce on every repair run. sing-box itself is already
+  # explicitly reloaded by server_config_stage (stage 11, via
+  # `vpn-admin render-config`), so restarting it again here is a cheap,
+  # idempotent no-op, not redundant risk — it's still restarted
+  # explicitly rather than relying on that earlier reload alone, so this
+  # function's behavior does not depend on stage ordering elsewhere.
+  systemctl enable sing-box.service vpn-subscription.service
+  systemctl reload-or-restart sing-box.service \
+    || die "sing-box failed to (re)start — check: journalctl -u sing-box --no-pager -n 100"
+  systemctl reload-or-restart vpn-subscription.service \
+    || die "vpn-subscription failed to (re)start — check: journalctl -u vpn-subscription --no-pager -n 100"
 }
 
 # Each protocol's status is confirmed independently by actually observing
