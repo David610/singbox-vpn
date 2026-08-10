@@ -367,7 +367,7 @@ fn server_and_client_configs_agree_on_reality_key_material() {
         private_key_hex: SecretString::new("test-private-key".to_string()),
         public_key_hex: "test-public-key".into(),
         short_ids: vec!["deadbeef".into()],
-        handshake_server: "www.microsoft.com".into(),
+        handshake_server: "www.google.com".into(),
         handshake_port: 443,
     };
     let hysteria = Hysteria2ServerParams {

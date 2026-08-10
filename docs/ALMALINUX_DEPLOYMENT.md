@@ -15,7 +15,7 @@ top-level [`README.md`](../README.md#quick-install):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash
+  | sudo REALITY_HANDSHAKE_SERVER=www.google.com bash
 ```
 
 That command downloads this repo, auto-detects your public IP, issues a
@@ -123,7 +123,7 @@ compatibility-stack service needs to restart).
 ```bash
 git clone <this-repo-url> vpn1 && cd vpn1
 sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com \
-  REALITY_HANDSHAKE_SERVER=www.cloudflare.com \
+  REALITY_HANDSHAKE_SERVER=www.google.com \
   ./deploy/almalinux/install.sh
 ```
 

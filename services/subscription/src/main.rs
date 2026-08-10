@@ -30,6 +30,13 @@ async fn main() -> Result<()> {
         .context("reality short_id missing — run `vpn-admin init` on the server first")?
         .trim()
         .to_string();
+    // Optional: absent on deployments that predate obfuscation support or
+    // that were never rotated to enable it (see `hysteria_obfs_password_file`'s
+    // doc comment) — obfuscation simply stays off, never a startup failure.
+    let hysteria_obfs_password = std::fs::read_to_string(cfg.hysteria_obfs_password_file())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     let endpoints = standard_endpoints(
         &cfg.public_host,
@@ -38,6 +45,7 @@ async fn main() -> Result<()> {
         &public_key,
         &short_id,
         &cfg.reality.handshake_server,
+        hysteria_obfs_password.as_deref(),
     );
 
     let state = std::sync::Arc::new(AppState {

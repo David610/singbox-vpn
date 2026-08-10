@@ -160,6 +160,25 @@ impl DeploymentConfig {
         self.state_dir.join("hysteria")
     }
 
+    /// Deployment-wide Hysteria2 salamander obfuscation password. Shared
+    /// with clients via subscriptions (not a per-user secret, see
+    /// `PublicParameters::Hysteria2`'s doc comment) and stored like the
+    /// REALITY public key: present on disk once `vpn-admin init`/`hysteria-
+    /// obfs-rotate` has run, absent (obfuscation disabled) otherwise so
+    /// pre-existing deployments upgrading are never surprised by a client-
+    /// breaking config change they didn't ask for.
+    ///
+    /// Deliberately lives under `reality_dir()`, not `hysteria_dir()`,
+    /// despite the name: `hysteria_dir()` is `root:sing-box 0750` (sing-box
+    /// only — see `deploy/almalinux/install.sh`'s ownership matrix), which
+    /// `vpn-subscription` cannot even traverse. `reality_dir()` is the
+    /// shared `root:vpn-compat 0750` directory both services already
+    /// traverse — the file itself is still owned `root:vpn-subscription
+    /// 0640`, exactly like `reality/public.key`.
+    pub fn hysteria_obfs_password_file(&self) -> PathBuf {
+        self.reality_dir().join("hysteria_obfs_password.txt")
+    }
+
     pub fn singbox_config_file(&self) -> PathBuf {
         self.state_dir.join("sing-box/config.json")
     }
@@ -177,7 +196,7 @@ subscription_host = "sub.example.com"
 
 [reality]
 listen_port = 443
-handshake_server = "www.microsoft.com"
+handshake_server = "www.google.com"
 
 [hysteria2]
 listen_port = 443
@@ -203,7 +222,7 @@ subscription_host = "sub.example.com"
 
 [reality]
 listen_port = 443
-handshake_server = "www.microsoft.com"
+handshake_server = "www.google.com"
 
 [hysteria2]
 listen_port = 443

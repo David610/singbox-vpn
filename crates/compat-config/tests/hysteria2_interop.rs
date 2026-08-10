@@ -86,6 +86,7 @@ fn test_user(hysteria2_password: &str) -> CompatUser {
 /// `insecure: true` — a client-side `certificate_path` pin to trust
 /// THIS SPECIFIC throwaway cert, which is the standard way to test
 /// against a private CA without weakening the renderer under test.
+#[allow(clippy::too_many_arguments)]
 fn build_configs(
     hysteria_port: u16,
     mixed_port: u16,
@@ -93,6 +94,8 @@ fn build_configs(
     cert_path: &std::path::Path,
     key_path: &std::path::Path,
     sni: &str,
+    server_obfs_password: Option<&str>,
+    client_obfs_password: Option<&str>,
 ) -> (serde_json::Value, serde_json::Value) {
     // REALITY params are required by the renderer signature but
     // irrelevant to this Hysteria2-only test.
@@ -100,13 +103,13 @@ fn build_configs(
         private_key_hex: SecretString::new("unused".to_string()),
         public_key_hex: "unused".into(),
         short_ids: vec!["00000000".into()],
-        handshake_server: "www.microsoft.com".into(),
+        handshake_server: "www.google.com".into(),
         handshake_port: 443,
     };
     let hysteria = Hysteria2ServerParams {
         tls_cert_path: cert_path.display().to_string(),
         tls_key_path: key_path.display().to_string(),
-        obfs_password: None,
+        obfs_password: server_obfs_password.map(|s| SecretString::new(s.to_string())),
         masquerade_dir_path: None,
     };
     let users = vec![test_user(password)];
@@ -136,7 +139,7 @@ fn build_configs(
         server_name: Some(sni.into()),
         label: "Hysteria2".into(),
         public_parameters: compat_config::model::PublicParameters::Hysteria2 {
-            obfs_password: None,
+            obfs_password: client_obfs_password.map(|s| s.to_string()),
         },
     };
     let mut client_cfg = render::render_singbox_client_subscription(
@@ -218,6 +221,8 @@ fn hysteria2_handshake_succeeds_with_matched_password() {
         &cert,
         &key,
         "hysteria2-test.invalid",
+        None,
+        None,
     );
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
     let client_path = write_json(dir.path(), "client.json", &client_cfg);
@@ -276,6 +281,8 @@ fn hysteria2_handshake_fails_with_wrong_password() {
         &cert,
         &key,
         "hysteria2-test.invalid",
+        None,
+        None,
     );
     let (_unused_server_cfg, mismatched_client_cfg) = build_configs(
         hysteria_port,
@@ -284,6 +291,8 @@ fn hysteria2_handshake_fails_with_wrong_password() {
         &cert,
         &key,
         "hysteria2-test.invalid",
+        None,
+        None,
     );
 
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
@@ -302,5 +311,127 @@ fn hysteria2_handshake_fails_with_wrong_password() {
         !socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
         "a mismatched Hysteria2 password must never be able to pass traffic through the \
          tunnel — if this assertion fails, Hysteria2 auth is not actually being enforced"
+    );
+}
+
+/// Real end-to-end Hysteria2 WITH salamander obfuscation enabled on both
+/// sides — the production default for a fresh `vpn-admin init` (see
+/// `apps/admin/src/main.rs::cmd_init`) and the mechanism `vpn-admin
+/// hysteria-obfs-rotate` enables on an existing deployment. Proves the
+/// obfuscation layer this crate's own production renderers wire up
+/// (`server.rs`'s `tls.reality`-sibling `obfs` block, `render.rs`'s
+/// `obfs=salamander` URI param / native `obfs` JSON) actually
+/// interoperates with a real sing-box binary end to end, not just that
+/// the JSON shape looks plausible.
+#[test]
+fn hysteria2_obfuscated_handshake_succeeds_with_matched_obfs_password() {
+    let Some(sb) = common::SingBox::find() else {
+        skip_or_fail("no sing-box binary available (set SING_BOX_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let Some((cert, key)) = generate_self_signed_cert(dir.path(), "hysteria2-test.invalid") else {
+        skip_or_fail("openssl not available to generate a test certificate");
+        return;
+    };
+
+    let hysteria_port = free_port();
+    let mixed_port = free_port();
+    let password = "test-password-not-a-real-secret";
+    let obfs_password = "test-obfs-password-not-a-real-secret";
+    let (server_cfg, client_cfg) = build_configs(
+        hysteria_port,
+        mixed_port,
+        password,
+        &cert,
+        &key,
+        "hysteria2-test.invalid",
+        Some(obfs_password),
+        Some(obfs_password),
+    );
+    let server_path = write_json(dir.path(), "server.json", &server_cfg);
+    let client_path = write_json(dir.path(), "client.json", &client_cfg);
+    let target = spawn_local_http_target();
+    let server_log = dir.path().join("server.log");
+    let client_log = dir.path().join("client.log");
+
+    let _server = common::Guard(sb.run_logged(&server_path, &server_log));
+    std::thread::sleep(Duration::from_millis(500));
+    let _client = common::Guard(sb.run_logged(&client_path, &client_log));
+    assert!(
+        wait_for_port(mixed_port, Duration::from_secs(5)),
+        "client never bound its local SOCKS port. client log:\n{}",
+        common::read_log(&client_log)
+    );
+
+    assert!(
+        socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
+        "obfuscated Hysteria2 handshake/traffic failed through a config produced by this \
+         crate's own production renderers with matched auth AND obfs passwords.\n\
+         --- server log ---\n{}\n--- client log ---\n{}",
+        common::read_log(&server_log),
+        common::read_log(&client_log)
+    );
+}
+
+/// A client whose obfs password doesn't match the server's (e.g. an
+/// operator forgot to re-import after `hysteria-obfs-rotate`, or a
+/// downgrade attack tries connecting un-obfuscated to an obfuscation-
+/// enabled server) must fail closed. Salamander is applied before the
+/// QUIC handshake even begins, so this is stricter than an auth failure:
+/// the server should not even recognize the wire traffic as Hysteria2.
+#[test]
+fn hysteria2_handshake_fails_with_wrong_obfs_password() {
+    let Some(sb) = common::SingBox::find() else {
+        skip_or_fail("no sing-box binary available (set SING_BOX_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let Some((cert, key)) = generate_self_signed_cert(dir.path(), "hysteria2-test.invalid") else {
+        skip_or_fail("openssl not available to generate a test certificate");
+        return;
+    };
+
+    let hysteria_port = free_port();
+    let mixed_port = free_port();
+    let (server_cfg, _matched_client_cfg) = build_configs(
+        hysteria_port,
+        mixed_port,
+        "correct-password",
+        &cert,
+        &key,
+        "hysteria2-test.invalid",
+        Some("server-obfs-password"),
+        Some("server-obfs-password"),
+    );
+    let (_unused_server_cfg, mismatched_client_cfg) = build_configs(
+        hysteria_port,
+        mixed_port,
+        "correct-password",
+        &cert,
+        &key,
+        "hysteria2-test.invalid",
+        Some("server-obfs-password"),
+        Some("a-completely-different-obfs-password"),
+    );
+
+    let server_path = write_json(dir.path(), "server.json", &server_cfg);
+    let client_path = write_json(dir.path(), "client.json", &mismatched_client_cfg);
+    let target = spawn_local_http_target();
+
+    let _server = common::Guard(sb.run(&server_path));
+    std::thread::sleep(Duration::from_millis(500));
+    let _client = common::Guard(sb.run(&client_path));
+    // The client may not even bind its local port cleanly, or may bind it
+    // and simply pass no traffic — either is an acceptable "fails closed"
+    // outcome for a mismatched obfuscation layer, so this test asserts on
+    // traffic never flowing, not on the bind step.
+    std::thread::sleep(Duration::from_secs(2));
+
+    assert!(
+        !socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
+        "a mismatched Hysteria2 obfuscation password must never be able to pass traffic \
+         through the tunnel — if this assertion fails, obfuscation is not actually gating \
+         wire-level access"
     );
 }

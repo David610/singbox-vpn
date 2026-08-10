@@ -93,7 +93,7 @@ issued automatically either way).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash
+  | sudo REALITY_HANDSHAKE_SERVER=www.google.com bash
 ```
 
 `REALITY_HANDSHAKE_SERVER` is explicit because REALITY decoys are an
@@ -101,6 +101,12 @@ external protocol dependency, not a safe universal default. The installer
 runs a real authenticated sing-box round trip and refuses completion if the
 selected endpoint is incompatible; `www.microsoft.com` is known to exceed
 the pinned sing-box/utls 8192-byte handshake budget and must not be used.
+`www.google.com` and `www.cloudflare.com` are the recommended defaults —
+both serve a compact TLS 1.3 certificate flight well inside that budget
+and are both effectively unblockable at internet scale, which also makes
+them good REALITY decoys for censorship-resistance: a censor blocking the
+decoy's SNI would also break a huge amount of unrelated traffic through
+the same CDN/provider.
 The command downloads the vpn1 source (a prebuilt release if
 one has been published, source otherwise), detects your OS/architecture,
 installs dependencies, auto-detects your server's public IP, issues a

@@ -592,6 +592,11 @@ users_groups_stage() {
 #     private.key          root:sing-box    0640  (sing-box only)
 #     public.key           root:vpn-subscription 0640
 #     short_id.txt          root:vpn-subscription 0640
+#     hysteria_obfs_password.txt root:vpn-subscription 0640
+#       (deliberately lives here, not under hysteria/, so
+#       vpn-subscription can read it — see
+#       compat_config::deployment::hysteria_obfs_password_file's doc
+#       comment; hysteria/ itself stays sing-box-only below)
 #   hysteria/               root:sing-box   02750  (sing-box only)
 #   users/                  root:vpn-subscription 02750  (vpn-subscription only)
 #   sing-box/               root:sing-box   02750  (sing-box only)
@@ -904,7 +909,16 @@ init_reality_keys() {
   # id it serves. Relying on a 0644-by-umask default meant the correct mode
   # here was an accident of the writing process's umask.
   chmod 0640 "$STATE_DIR/reality/public.key" "$STATE_DIR/reality/short_id.txt"
-  chmod 0640 "$STATE_DIR/reality/public.key" "$STATE_DIR/reality/short_id.txt"
+  # Hysteria2 obfuscation password: same treatment as public.key/short_id.txt
+  # above (vpn-subscription must be able to read it to serve subscriptions).
+  # Present after a fresh `init` (obfuscation is on by default for new
+  # installs); absent on an `init` re-run against an existing deployment
+  # that predates this feature — that is a valid, expected state, not an
+  # error, so this step is best-effort.
+  if [ -f "$STATE_DIR/reality/hysteria_obfs_password.txt" ]; then
+    chown root:vpn-subscription "$STATE_DIR/reality/hysteria_obfs_password.txt"
+    chmod 0640 "$STATE_DIR/reality/hysteria_obfs_password.txt"
+  fi
 }
 
 reality_keys_stage() {
