@@ -137,6 +137,14 @@ fn build_configs(
     // family a CDN's edge happened to answer on.
     server_cfg["inbounds"][0]["tls"]["reality"]["handshake"]["domain_strategy"] =
         serde_json::json!("ipv4_only");
+    // Diagnostic only, test-scoped: sing-box's own REALITY package logs
+    // its internal auth-verification steps (AuthKey derivation,
+    // ClientVer, ClientTime, ClientShortId, hs.c.conn == conn) via
+    // `logger.Trace`, which needs the "trace" level to surface at all.
+    // Safe to enable unconditionally here — the only values logged are
+    // per-connection ephemeral/derived data from throwaway test
+    // keypairs generated fresh per test run, never a real secret.
+    server_cfg["log"] = serde_json::json!({ "level": "trace", "timestamp": true });
 
     let endpoint = compat_config::model::CompatEndpoint {
         id: "reality-1".into(),
