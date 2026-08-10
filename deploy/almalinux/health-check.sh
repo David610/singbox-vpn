@@ -13,6 +13,14 @@
 #                       about what an actual client would accept)
 #   - external/protocol: explicitly NOT attempted by this script — see the
 #                       final section.
+#
+# What this script does NOT check, and where that lives instead: whether
+# the REALITY key material sing-box is actually enforcing agrees with
+# what vpn-subscription is currently advertising to new clients (`vpn-
+# admin doctor`, tagged [L4]), and whether a real client can actually
+# complete a REALITY handshake (`vpn-admin doctor --protocol`, tagged
+# [L5-6], best-effort). Passing every check in this script is L1-L3 only
+# — it is not proof a real client can connect.
 set -uo pipefail
 
 STATE_DIR="/etc/vpn/compat"
@@ -89,6 +97,18 @@ else
 fi
 
 echo
+echo "== subscription/server key coherence (run 'vpn-admin doctor') =="
+echo "  This script does not compare the REALITY key material sing-box is"
+echo "  actually enforcing against what vpn-subscription would hand a new"
+echo "  client right now — that class of drift (server and subscription"
+echo "  disagreeing about REALITY keys) passed every check above in a"
+echo "  real incident while still failing a real client's handshake."
+echo "  'sudo vpn-admin doctor' adds that check, tagged [L4], from file"
+echo "  contents alone (no network needed); 'sudo vpn-admin doctor"
+echo "  --protocol' goes further and dials this server's own REALITY"
+echo "  listener with a throwaway sing-box client, tagged [L5-6]."
+
+echo
 echo "== external reachability / real protocol test (NOT performed here) =="
 echo "  Everything above runs from localhost against localhost sockets."
 echo "  It proves the services are up and that TLS is configured"
@@ -97,7 +117,8 @@ echo "  prove this VPS is reachable from the public internet (that"
 echo "  depends on upstream routing/provider firewall/NAT, none of which"
 echo "  this script can see from inside the host), and it does NOT prove"
 echo "  a real VLESS+REALITY or Hysteria2 client can complete a full"
-echo "  handshake end-to-end. See deploy/almalinux/acceptance-test.sh"
+echo "  handshake end-to-end. See 'vpn-admin doctor --protocol' for a"
+echo "  best-effort loopback self-test, deploy/almalinux/acceptance-test.sh"
 echo "  for the listener/access-matrix checks, and"
 echo "  docs/DEVICE_ACCEPTANCE_TESTS.md for what real-client verification"
 echo "  requires and whether it has actually been performed."

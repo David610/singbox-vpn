@@ -13,7 +13,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use compat_config::model::{CompatEndpoint, CompatTransport, PublicParameters};
+use compat_config::model::CompatEndpoint;
 use compat_config::{credentials, render, CompatUser};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -182,47 +182,41 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(get_subscription).layer(axum::middleware::from_fn(no_store_headers)),
         )
         .route("/healthz", get(health))
+        .route("/internal/state-fingerprint", get(state_fingerprint))
         .with_state(state)
 }
 
-/// Test/documentation helper: build the two standard endpoint labels
-/// ("<region> - Reality" / "<region> - Hysteria2") from deployment
-/// values. Kept here (not in `compat-config`) because it encodes this
-/// service's presentation choice, not a domain invariant.
-pub fn standard_endpoints(
-    public_host: &str,
-    reality_port: u16,
-    hysteria_port: u16,
-    reality_public_key_hex: &str,
-    reality_short_id: &str,
-    handshake_server: &str,
-) -> Vec<CompatEndpoint> {
-    vec![
-        CompatEndpoint {
-            id: "reality-1".into(),
-            transport: CompatTransport::VlessReality,
-            host: public_host.into(),
-            port: reality_port,
-            server_name: Some(handshake_server.into()),
-            label: "Reality".into(),
-            public_parameters: PublicParameters::Reality {
-                public_key_hex: reality_public_key_hex.into(),
-                short_id: reality_short_id.into(),
-                fingerprint: "chrome".into(),
-            },
-        },
-        CompatEndpoint {
-            id: "hysteria2-1".into(),
-            transport: CompatTransport::Hysteria2,
-            host: public_host.into(),
-            port: hysteria_port,
-            server_name: Some(public_host.into()),
-            label: "Hysteria2".into(),
-            public_parameters: PublicParameters::Hysteria2 {
-                obfs_password: None,
-            },
-        },
-    ]
+/// Re-exported so existing `use subscription::standard_endpoints` call
+/// sites (and this crate's own tests) keep working unchanged. Moved to
+/// `compat_config::render` so `apps/admin`'s `doctor` can build the
+/// EXACT same endpoint set this service builds — a coherence check that
+/// hand-rolled its own equivalent construction on the `vpn-admin` side
+/// would only prove two different implementations agree by
+/// coincidence, not that they're actually the same computation.
+pub use compat_config::render::standard_endpoints;
+
+/// `GET /internal/state-fingerprint` — loopback-only (same trust
+/// boundary as `/healthz`; this whole service never binds a public
+/// interface), reveals a SHA-256 fingerprint of this ALREADY-RUNNING
+/// process's in-memory `state.endpoints`, never the underlying values.
+/// This is the only way to detect the split-brain incident class this
+/// mechanism exists for: `vpn-subscription` reads REALITY public
+/// key/short_id from disk once at startup and caches it for its entire
+/// lifetime (no config-reload path — see `main.rs`), so re-reading the
+/// current files from a *different*, freshly-run process (`vpn-admin
+/// doctor`) can only prove what a fresh restart *would* serve, never
+/// what this specific running process actually *is* serving right now.
+/// `vpn-admin doctor` fetches this and compares it against a fingerprint
+/// of a fresh disk read — a mismatch means this process needs a real
+/// restart, not just that the files changed.
+async fn state_fingerprint(State(state): State<std::sync::Arc<AppState>>) -> Response {
+    let fingerprint = compat_config::render::endpoints_fingerprint(&state.endpoints);
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        serde_json::json!({ "endpoints_fingerprint_sha256": fingerprint }).to_string(),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -365,5 +359,35 @@ mod tests {
 
         let resp = oneshot_with_addr(state, "/sub/goodtoken").await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// The whole point of `/internal/state-fingerprint` is that it
+    /// reflects THIS process's in-memory `state.endpoints` — reconstruct
+    /// the expected fingerprint independently (via the same shared
+    /// `endpoints_fingerprint` function `vpn-admin doctor` uses) and
+    /// confirm the route reports exactly that, never a raw key/short_id
+    /// value.
+    #[tokio::test]
+    async fn state_fingerprint_matches_in_memory_endpoints_and_never_leaks_raw_values() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let expected = compat_config::render::endpoints_fingerprint(&state.endpoints);
+
+        let resp = oneshot_with_addr(state, "/internal/state-fingerprint").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["endpoints_fingerprint_sha256"], expected);
+
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            !s.contains("pub"),
+            "must never leak the raw public key value"
+        );
+        assert!(
+            !s.contains("short"),
+            "must never leak the raw short_id value"
+        );
     }
 }

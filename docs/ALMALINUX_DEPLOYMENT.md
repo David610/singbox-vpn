@@ -351,6 +351,65 @@ sudo semodule -i vpn-compat-local.pp
 **`setenforce 0` is not an acceptable production fix** — it disables
 SELinux confinement for the entire host, not just this service.
 
+## `sudo: vpn-admin: command not found` despite the binary existing
+
+`install.sh` installs `vpn-admin` (and its `vpn` alias, and
+`vpn-health-check`) to `/usr/local/bin`, which is on a normal
+interactive login shell's `PATH`. But `sudo` does **not** use your
+shell's `PATH` — it uses its own `secure_path`, and AlmaLinux/RHEL's
+default `/etc/sudoers` `secure_path` is typically just
+`/sbin:/bin:/usr/sbin:/usr/bin`, which does **not** include
+`/usr/local/bin`. So `vpn-admin ...` (no `sudo`) finds the binary fine,
+but `sudo vpn-admin ...` reports "command not found" — this is a `sudo`
+policy default, not a broken install. Confirm with:
+
+```bash
+which vpn-admin              # e.g. /usr/local/bin/vpn-admin — found
+sudo which vpn-admin         # command not found — confirms this is the secure_path issue
+sudo grep secure_path /etc/sudoers
+```
+
+Two ways to fix it, in order of preference:
+
+1. **Simplest, no config change**: always give `sudo` the full path:
+   ```bash
+   sudo /usr/local/bin/vpn-admin --config /etc/vpn/deployment.toml doctor
+   sudo /usr/local/bin/vpn-health-check
+   ```
+2. **If you want bare `sudo vpn-admin ...` to work**, add
+   `/usr/local/bin` to `secure_path` via `sudo visudo` (never hand-edit
+   `/etc/sudoers` directly — `visudo` validates syntax before saving and
+   prevents a broken file from locking you out of `sudo` entirely):
+   ```bash
+   sudo visudo
+   # find the line starting with `Defaults    secure_path = ...`
+   # and add `:/usr/local/bin` to the end of the existing list, e.g.:
+   #   Defaults    secure_path = /sbin:/bin:/usr/sbin:/usr/bin:/usr/local/bin
+   ```
+
+`install.sh` deliberately does **not** make this change itself —
+editing `sudo`'s security policy from an installer is too invasive for
+a script to decide on the operator's behalf; this is a one-time,
+operator-approved edit.
+
+## Verifying a client can actually connect, not just that the server looks healthy
+
+`vpn-admin doctor` (no flags) only checks L1-L4: process state, config/
+key/cert validity, listeners, and that the subscription service's
+rendered keys agree with what's on disk — it does **not** prove a real
+client can complete a REALITY handshake. Run:
+
+```bash
+sudo vpn-admin doctor --protocol
+```
+
+to also spin up a throwaway `sing-box` client against this server's own
+REALITY listener on loopback and report `[L5-6]`. See the `Doctor`
+command's `--help` text for exactly what this does and does not prove
+— it is best-effort and reports `[WARN]`, never `[FAIL]`, on an
+inconclusive result, so a `[WARN]` there is not itself proof of a
+broken server; a `[FAIL]` anywhere in `[L1]`-`[L4]` is.
+
 ## Known limitations of this deployment doc
 
 This runbook and the scripts it documents are syntax-checked
