@@ -199,8 +199,8 @@ jobs:
           EOF
 
           BIN=./target/release/vpn-admin
-          "$BIN" --config "$RUNNER_TEMP/deployment.toml" init
-          "$BIN" --config "$RUNNER_TEMP/deployment.toml" user create --name ci-test-user
+          VPN1_ALLOW_OFFLINE_MUTATION=1 "$BIN" --config "$RUNNER_TEMP/deployment.toml" init
+          VPN1_ALLOW_OFFLINE_MUTATION=1 "$BIN" --config "$RUNNER_TEMP/deployment.toml" user create --name ci-test-user
           "$BIN" --config "$RUNNER_TEMP/deployment.toml" render-config
 
           echo "running real sing-box check against the generated server config:"

@@ -203,7 +203,7 @@ exit 1
             .with_systemctl_binary(systemctl)
             .with_settle(Duration::from_millis(1));
         let err = mgr.reload_and_verify().unwrap_err();
-        assert!(err.contains("not active"));
+        assert!(err.contains("did not remain active"));
     }
 
     #[test]
