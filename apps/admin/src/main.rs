@@ -13,13 +13,18 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use common::UnixSeconds;
 use compat_config::deployment::DeploymentConfig;
-use compat_config::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
+use compat_config::model::{
+    CompatEndpoint, CompatTransport, CompatUser, Hysteria2ServerParams, PublicParameters,
+    RealityServerParams,
+};
+use compat_config::render::render_singbox_client_subscription;
 use compat_config::secret::SecretString;
 use compat_config::server::{
     apply_config_atomically, config_backup_path, render_singbox_server_config,
     CompatibilityBackend, ServerPorts, SingBoxBackend,
 };
 use compat_config::{credentials, store};
+use serde_json::json;
 use service::CompatibilityServiceManager;
 use std::path::PathBuf;
 
@@ -55,11 +60,31 @@ enum Commands {
     /// Summarize the current deployment: service state, user counts,
     /// config presence. Does not print secrets.
     Status,
-    /// Run diagnostic checks and print `[OK]`/`[WARN]`/`[FAIL]` for each.
-    /// Exits non-zero if any check fails. Checks that need a tool not
-    /// present on this host are reported `[WARN] ... not available`, not
-    /// silently skipped or faked as passing.
-    Doctor,
+    /// Run diagnostic checks and print `[OK]`/`[WARN]`/`[FAIL]` for each,
+    /// each line tagged with the layer it actually covers (L1 process /
+    /// L2 config-key-cert / L3 listeners / L4 subscription-coherence /
+    /// L5-6 protocol handshake) so an operator can see at a glance what
+    /// was, and was not, actually verified — "service active + config
+    /// valid + port open" (L1-L3) is NOT the same claim as "a real
+    /// client can authenticate" (L5-6). Exits non-zero if any check
+    /// fails. Checks that need a tool not present on this host are
+    /// reported `[WARN] ... not available`, not silently skipped or
+    /// faked as passing.
+    Doctor {
+        /// Also run the best-effort L5/L6 protocol self-test: spin up
+        /// the real `sing-box` binary as a throwaway client against this
+        /// server's own VLESS+REALITY listener on loopback, using the
+        /// live REALITY public key/short_id, to prove (not just infer)
+        /// that a real client can complete a handshake. Off by default
+        /// because it spawns a subprocess and does real network I/O;
+        /// the always-on L1-L4 checks are pure file/struct comparisons.
+        /// Never a hard requirement to pass `doctor` overall — failures
+        /// here are reported `[WARN]`, since the self-test itself can
+        /// be inconclusive (see its own message) even when the server
+        /// is healthy.
+        #[arg(long)]
+        protocol: bool,
+    },
     /// Back up the minimum state needed to rebuild this deployment
     /// (users, credential metadata, REALITY keys, Hysteria2 TLS
     /// material) into a single tar archive written mode 0600. Contains
@@ -161,7 +186,7 @@ fn command_mutates_state(cmd: &Commands) -> bool {
         cmd,
         Commands::Version
             | Commands::Status
-            | Commands::Doctor
+            | Commands::Doctor { .. }
             | Commands::User(UserCommands::List)
             | Commands::User(UserCommands::Subscription { .. })
     )
@@ -188,7 +213,7 @@ fn main() -> Result<()> {
         Commands::RenderConfig => cmd_render_config(&cfg),
         Commands::Version => cmd_version(&cfg),
         Commands::Status => cmd_status(&cfg),
-        Commands::Doctor => cmd_doctor(&cfg),
+        Commands::Doctor { protocol } => cmd_doctor(&cfg, protocol),
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::User(UserCommands::Create {
@@ -1066,13 +1091,19 @@ enum CheckStatus {
     Fail,
 }
 
-fn report_check(status: CheckStatus, message: impl AsRef<str>) {
+/// `layer` is one of `"L1"` (process), `"L2"` (config/key/cert),
+/// `"L3"` (listeners/network), `"L4"` (subscription-coherence), or
+/// `"L5-6"` (real protocol handshake) — see the module-level note above
+/// `cmd_doctor` for why this labeling exists: L1-L3 all passing does
+/// NOT mean a real client can connect (that's what the incident this
+/// tagging responds to actually looked like).
+fn report_check(status: CheckStatus, layer: &str, message: impl AsRef<str>) {
     let label = match status {
         CheckStatus::Ok => "[OK]  ",
         CheckStatus::Warn => "[WARN]",
         CheckStatus::Fail => "[FAIL]",
     };
-    println!("{label} {}", message.as_ref());
+    println!("{label} [{layer:<4}] {}", message.as_ref());
 }
 
 #[cfg(unix)]
@@ -1088,16 +1119,35 @@ fn is_not_world_readable(_path: &std::path::Path) -> Option<bool> {
     None
 }
 
-/// Diagnostic checks, `[OK]`/`[WARN]`/`[FAIL]` per line (spec §17).
+/// Diagnostic checks, `[OK]`/`[WARN]`/`[FAIL]` per line (spec §17), each
+/// tagged with the layer it actually covers. This tagging exists
+/// because a real production incident passed every check that existed
+/// here before (process active, config valid, port open, cert valid —
+/// L1-L3) while a real Hiddify client's VLESS+REALITY handshake still
+/// failed: sing-box logged "REALITY: processed invalid connection"
+/// because the subscription service was advertising REALITY key
+/// material that no longer matched what sing-box was enforcing. L1-L3
+/// cannot see that class of bug by construction — they check that
+/// *a* config is valid and *a* process is running, never that the
+/// config a real client receives agrees with the config the server
+/// enforces, and never that a handshake actually completes. L4 (always
+/// run, file/struct comparisons only) and L5-6 (opt-in via
+/// `--protocol`, a real throwaway client handshake) close that gap.
+///
 /// Returns an error (non-zero exit) iff any check is `[FAIL]`. A check
 /// that needs a tool unavailable in the current environment is `[WARN]`,
-/// never silently skipped and never counted as `[OK]`.
-fn cmd_doctor(cfg: &DeploymentConfig) -> Result<()> {
+/// never silently skipped and never counted as `[OK]`. The L5-6
+/// self-test is always `[WARN]` on an inconclusive/skipped outcome,
+/// never `[FAIL]` — see `check_l5_l6_protocol_selftest`'s doc comment
+/// for why it cannot always distinguish "broken" from "untestable from
+/// here".
+fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool) -> Result<()> {
     let mut failures = 0u32;
 
     if cfg.singbox_binary.exists() {
         report_check(
             CheckStatus::Ok,
+            "L2",
             format!("sing-box binary present at {:?}", cfg.singbox_binary),
         );
         let target = cfg.singbox_config_file();
@@ -1106,21 +1156,27 @@ fn cmd_doctor(cfg: &DeploymentConfig) -> Result<()> {
                 binary_path: cfg.singbox_binary.clone(),
             };
             match backend.validate(&target) {
-                Ok(()) => report_check(CheckStatus::Ok, "sing-box config valid"),
+                Ok(()) => report_check(CheckStatus::Ok, "L2", "sing-box config valid"),
                 Err(e) => {
-                    report_check(CheckStatus::Fail, format!("sing-box config invalid: {e}"));
+                    report_check(
+                        CheckStatus::Fail,
+                        "L2",
+                        format!("sing-box config invalid: {e}"),
+                    );
                     failures += 1;
                 }
             }
         } else {
             report_check(
                 CheckStatus::Warn,
+                "L2",
                 "sing-box config not yet rendered (run `vpn-admin render-config`)",
             );
         }
     } else {
         report_check(
             CheckStatus::Fail,
+            "L2",
             format!("sing-box binary missing at {:?}", cfg.singbox_binary),
         );
         failures += 1;
@@ -1131,23 +1187,30 @@ fn cmd_doctor(cfg: &DeploymentConfig) -> Result<()> {
         ("REALITY public key", cfg.reality_public_key_file()),
     ] {
         if !path.exists() {
-            report_check(CheckStatus::Warn, format!("{label} missing at {path:?}"));
+            report_check(
+                CheckStatus::Warn,
+                "L2",
+                format!("{label} missing at {path:?}"),
+            );
             continue;
         }
         match is_not_world_readable(&path) {
             Some(true) => report_check(
                 CheckStatus::Ok,
+                "L2",
                 format!("{label} present, not world-readable"),
             ),
             Some(false) => {
                 report_check(
                     CheckStatus::Fail,
+                    "L2",
                     format!("{label} at {path:?} is world-readable"),
                 );
                 failures += 1;
             }
             None => report_check(
                 CheckStatus::Warn,
+                "L2",
                 format!("{label} present (permission check unavailable on this platform)"),
             ),
         }
@@ -1156,10 +1219,11 @@ fn cmd_doctor(cfg: &DeploymentConfig) -> Result<()> {
     match store::load_users(&cfg.users_file()) {
         Ok(users) => report_check(
             CheckStatus::Ok,
+            "L2",
             format!("user store parses ({} user(s))", users.len()),
         ),
         Err(e) => {
-            report_check(CheckStatus::Fail, format!("user store invalid: {e}"));
+            report_check(CheckStatus::Fail, "L2", format!("user store invalid: {e}"));
             failures += 1;
         }
     }
@@ -1167,25 +1231,30 @@ fn cmd_doctor(cfg: &DeploymentConfig) -> Result<()> {
     match cert_expiry_days(&cfg.hysteria_dir().join("cert.pem")) {
         None => report_check(
             CheckStatus::Warn,
+            "L2",
             "Hysteria2 TLS certificate not present (see docs/ALMALINUX_DEPLOYMENT.md)",
         ),
         Some(Ok(days)) if days < 0 => {
             report_check(
                 CheckStatus::Fail,
+                "L2",
                 format!("Hysteria2 TLS certificate EXPIRED {} day(s) ago", -days),
             );
             failures += 1;
         }
         Some(Ok(days)) if days < 30 => report_check(
             CheckStatus::Warn,
+            "L2",
             format!("Hysteria2 TLS certificate expires in {days} day(s)"),
         ),
         Some(Ok(days)) => report_check(
             CheckStatus::Ok,
+            "L2",
             format!("Hysteria2 TLS certificate valid, expires in {days} day(s)"),
         ),
         Some(Err(e)) => report_check(
             CheckStatus::Warn,
+            "L2",
             format!("could not check Hysteria2 TLS certificate expiry: {e}"),
         ),
     }
@@ -1195,17 +1264,23 @@ fn cmd_doctor(cfg: &DeploymentConfig) -> Result<()> {
         if !mgr.is_available() {
             report_check(
                 CheckStatus::Warn,
+                "L1",
                 format!("systemctl not available — cannot check {name}.service"),
             );
         } else if !mgr.is_unit_installed() {
             report_check(
                 CheckStatus::Warn,
+                "L1",
                 format!("{name}.service not installed on this host"),
             );
         } else if mgr.is_active() {
-            report_check(CheckStatus::Ok, format!("{name}.service active"));
+            report_check(CheckStatus::Ok, "L1", format!("{name}.service active"));
         } else {
-            report_check(CheckStatus::Fail, format!("{name}.service not active"));
+            report_check(
+                CheckStatus::Fail,
+                "L1",
+                format!("{name}.service not active"),
+            );
             failures += 1;
         }
     }
@@ -1214,15 +1289,90 @@ fn cmd_doctor(cfg: &DeploymentConfig) -> Result<()> {
         .arg("--state")
         .output()
     {
-        Ok(o) if o.status.success() => report_check(CheckStatus::Ok, "firewalld running"),
+        Ok(o) if o.status.success() => report_check(CheckStatus::Ok, "L3", "firewalld running"),
         Ok(_) => {
-            report_check(CheckStatus::Fail, "firewalld not running");
+            report_check(CheckStatus::Fail, "L3", "firewalld not running");
             failures += 1;
         }
         Err(_) => report_check(
             CheckStatus::Warn,
+            "L3",
             "firewall-cmd not available — firewall check skipped",
         ),
+    }
+
+    for (proto_label, port, reachable) in [
+        (
+            "VLESS+REALITY",
+            cfg.reality.listen_port,
+            tcp_port_reachable(
+                "127.0.0.1",
+                cfg.reality.listen_port,
+                std::time::Duration::from_millis(500),
+            ),
+        ),
+        (
+            "Hysteria2",
+            cfg.hysteria2.listen_port,
+            // TCP connect is a real check for the REALITY listener (it's
+            // TCP); Hysteria2 is UDP, so a TCP connect attempt here only
+            // tells us the port is at least reachable at the transport
+            // level for the REALITY case — for Hysteria2 this reduces to
+            // "did the connect attempt fail fast with connection
+            // refused", which is still informative (loopback-refused
+            // means definitely not listening) even though it can't
+            // confirm a UDP listener is up.
+            tcp_port_reachable(
+                "127.0.0.1",
+                cfg.hysteria2.listen_port,
+                std::time::Duration::from_millis(500),
+            ),
+        ),
+    ] {
+        if proto_label == "Hysteria2" {
+            // Never report Hysteria2 as reachable/unreachable from a TCP
+            // probe against a UDP port — that would be actively
+            // misleading. Only note it as informational.
+            report_check(
+                CheckStatus::Warn,
+                "L3",
+                format!(
+                    "Hysteria2 (UDP) listener on 127.0.0.1:{port} not checked here — TCP connect \
+                     cannot verify a UDP listener; use `ss -ulnp` or deploy/almalinux/health-check.sh"
+                ),
+            );
+            continue;
+        }
+        if reachable {
+            report_check(
+                CheckStatus::Ok,
+                "L3",
+                format!("{proto_label} listener reachable on 127.0.0.1:{port}"),
+            );
+        } else {
+            report_check(
+                CheckStatus::Warn,
+                "L3",
+                format!(
+                    "{proto_label} listener NOT reachable on 127.0.0.1:{port} (may be bound only \
+                     on a public interface, may not be running, or may be blocked locally)"
+                ),
+            );
+        }
+    }
+
+    check_l4_subscription_coherence(cfg, &mut failures);
+
+    if protocol {
+        check_l5_l6_protocol_selftest(cfg);
+    } else {
+        report_check(
+            CheckStatus::Warn,
+            "L5-6",
+            "protocol handshake self-test not run (pass `--protocol` to actually dial this \
+             server's own REALITY listener with a throwaway sing-box client) — passing every \
+             check above does NOT prove a real client can authenticate",
+        );
     }
 
     println!();
@@ -1231,6 +1381,469 @@ fn cmd_doctor(cfg: &DeploymentConfig) -> Result<()> {
     }
     println!("All checks passed (see [WARN] lines above for anything unverifiable on this host).");
     Ok(())
+}
+
+/// L4, always run, no network/subprocess involved: render the sing-box
+/// server config AND the client subscription the live `vpn-subscription`
+/// service would hand a real user right now, from the SAME in-memory
+/// load of the current REALITY key files + `users.json`, and assert the
+/// client's `public_key`/`short_id` are exactly what the server config
+/// accepts. This alone is a regression guard (it re-exercises the real
+/// render functions on every `doctor` run, not just in unit tests) — it
+/// cannot, by itself, catch a *running* subscription process serving a
+/// stale in-memory key from before its last restart, because both
+/// renders here read the same on-disk files in the same process.
+///
+/// The second half closes exactly that gap without touching the
+/// network: compare the sing-box `config.json` ALREADY on disk (the
+/// config the last `systemctl reload-or-restart sing-box` actually
+/// picked up) against what would be rendered right now from the current
+/// files. If they differ, `vpn-admin render-config` was never re-run
+/// after the REALITY key files or `users.json` changed — sing-box may
+/// be enforcing different key material than the subscription service is
+/// currently advertising to brand-new clients. This is the exact
+/// "server and subscription-service disagree about REALITY key
+/// material" incident class, caught from file contents alone. Private
+/// key material is compared only via a SHA-256 fingerprint, never the
+/// raw value.
+fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
+    let reality = match load_reality_params(cfg) {
+        Ok(r) => r,
+        Err(e) => {
+            report_check(
+                CheckStatus::Warn,
+                "L4",
+                format!("skipping subscription-coherence check: {e}"),
+            );
+            return;
+        }
+    };
+    let users = match store::load_users(&cfg.users_file()) {
+        Ok(u) => u,
+        Err(e) => {
+            report_check(
+                CheckStatus::Warn,
+                "L4",
+                format!("skipping subscription-coherence check: user store unreadable ({e})"),
+            );
+            return;
+        }
+    };
+    let hysteria = load_hysteria_params(cfg);
+    let ports = ServerPorts {
+        vless_reality_port: cfg.reality.listen_port,
+        hysteria2_port: cfg.hysteria2.listen_port,
+    };
+    let now = UnixSeconds::now().0 as i64;
+    let fresh_server_doc = render_singbox_server_config(&users, &reality, &hysteria, ports, now);
+
+    // The exact endpoint construction `services/subscription/src/main.rs`
+    // builds from these same two files, plus a throwaway synthetic user
+    // that exists ONLY to exercise the render function — never a real
+    // user's UUID/password, and never printed.
+    let synthetic_user = CompatUser {
+        id: "doctor-l4-synthetic".into(),
+        name: "doctor-l4-synthetic".into(),
+        enabled: true,
+        vless_uuid: "00000000-0000-4000-8000-000000000000".into(),
+        hysteria2_password: SecretString::new("unused"),
+        subscription_token_hash_hex: String::new(),
+        created_at: 0,
+        expires_at: None,
+    };
+    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
+    let endpoint = CompatEndpoint {
+        id: "reality-1".into(),
+        transport: CompatTransport::VlessReality,
+        host: cfg.public_host.clone(),
+        port: cfg.reality.listen_port,
+        server_name: Some(reality.handshake_server.clone()),
+        label: "Reality".into(),
+        public_parameters: PublicParameters::Reality {
+            public_key_hex: reality.public_key_hex.clone(),
+            short_id: short_id.clone(),
+            fingerprint: "chrome".into(),
+        },
+    };
+    let client_doc = match render_singbox_client_subscription(
+        &synthetic_user,
+        std::slice::from_ref(&endpoint),
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            report_check(
+                CheckStatus::Fail,
+                "L4",
+                format!("failed to render client subscription for coherence check: {e}"),
+            );
+            *failures += 1;
+            return;
+        }
+    };
+
+    let server_short_ids: Vec<String> = fresh_server_doc["inbounds"][0]["tls"]["reality"]
+        ["short_id"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let client_short_id = client_doc["outbounds"][0]["tls"]["reality"]["short_id"]
+        .as_str()
+        .unwrap_or("");
+    let client_pubkey = client_doc["outbounds"][0]["tls"]["reality"]["public_key"]
+        .as_str()
+        .unwrap_or("");
+
+    if server_short_ids.iter().any(|s| s == client_short_id)
+        && client_pubkey == reality.public_key_hex
+    {
+        report_check(
+            CheckStatus::Ok,
+            "L4",
+            "subscription render coherence: the client subscription's public_key/short_id match \
+             what the current server config accepts",
+        );
+    } else {
+        report_check(
+            CheckStatus::Fail,
+            "L4",
+            format!(
+                "subscription render coherence FAILED: the client subscription would advertise \
+                 short_id={client_short_id:?}, but the server config accepts short_id(s)={server_short_ids:?} \
+                 — a real client using this subscription would fail REALITY's handshake (\"processed \
+                 invalid connection\"). This indicates a bug in the render code paths, not a config \
+                 file problem — do not attempt to fix by rotating keys."
+            ),
+        );
+        *failures += 1;
+    }
+
+    let target = cfg.singbox_config_file();
+    if !target.exists() {
+        report_check(
+            CheckStatus::Warn,
+            "L4",
+            "sing-box config.json not yet rendered — on-disk drift check skipped",
+        );
+        return;
+    }
+    let on_disk_bytes = match std::fs::read(&target) {
+        Ok(b) => b,
+        Err(e) => {
+            report_check(
+                CheckStatus::Warn,
+                "L4",
+                format!("could not read on-disk sing-box config.json to check for drift: {e}"),
+            );
+            return;
+        }
+    };
+    let on_disk: serde_json::Value = match serde_json::from_slice(&on_disk_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            report_check(
+                CheckStatus::Warn,
+                "L4",
+                format!("could not parse on-disk sing-box config.json to check for drift: {e}"),
+            );
+            return;
+        }
+    };
+    let on_disk_short_ids: Vec<String> = on_disk["inbounds"][0]["tls"]["reality"]["short_id"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let on_disk_key_fp = key_fingerprint(
+        on_disk["inbounds"][0]["tls"]["reality"]["private_key"]
+            .as_str()
+            .unwrap_or(""),
+    );
+    let fresh_key_fp = key_fingerprint(
+        fresh_server_doc["inbounds"][0]["tls"]["reality"]["private_key"]
+            .as_str()
+            .unwrap_or(""),
+    );
+    if on_disk_short_ids == server_short_ids && on_disk_key_fp == fresh_key_fp {
+        report_check(
+            CheckStatus::Ok,
+            "L4",
+            "on-disk sing-box config.json matches what current REALITY key files + users.json \
+             would render right now (not stale)",
+        );
+    } else {
+        report_check(
+            CheckStatus::Fail,
+            "L4",
+            "on-disk sing-box config.json does NOT match what current REALITY key files/users.json \
+             would render right now — sing-box (as of its last reload) may be enforcing different \
+             key material than vpn-subscription is currently advertising to new clients. Run \
+             `vpn-admin render-config` to resync, then confirm with `systemctl status sing-box`.",
+        );
+        *failures += 1;
+    }
+}
+
+/// Reuses the generic SHA-256 hex hasher (`credentials::hash_token`
+/// hashes any string, despite its name) so REALITY private-key material
+/// is only ever compared by fingerprint here, never held as a
+/// side-by-side string comparison of the raw secret.
+fn key_fingerprint(secret: &str) -> String {
+    credentials::hash_token(secret)
+}
+
+fn tcp_port_reachable(host: &str, port: u16, timeout: std::time::Duration) -> bool {
+    use std::net::ToSocketAddrs;
+    let addr = match format!("{host}:{port}").to_socket_addrs() {
+        Ok(mut it) => match it.next() {
+            Some(a) => a,
+            None => return false,
+        },
+        Err(_) => return false,
+    };
+    std::net::TcpStream::connect_timeout(&addr, timeout).is_ok()
+}
+
+/// Best-effort L5/L6, only run with `doctor --protocol`: spin up the
+/// REAL `sing-box` binary as a throwaway client process pointed at this
+/// server's OWN VLESS+REALITY listener on `127.0.0.1`, using the live
+/// REALITY public_key/short_id — the same key material the live
+/// `vpn-subscription` service would hand a real user right now — but
+/// with a synthetic, freshly-generated, never-printed UUID (never a
+/// real user's), since this only needs to exercise the REALITY TLS
+/// layer, not full per-user VLESS authentication.
+///
+/// Gated on `sing-box` being present AND the port actually being
+/// reachable on loopback; anything else is `[WARN] cannot self-test:
+/// <reason>` — a self-test that can't run here says so, it does not
+/// fake a pass.
+///
+/// Limitation, stated up front rather than glossed over: because the
+/// UUID is synthetic and unregistered, a clean PASS (the throwaway
+/// client's local SOCKS relay through the tunnel completes) is strong
+/// evidence the REALITY key material is coherent and the data plane
+/// relays end-to-end. A FAIL/timeout alone canNOT cleanly distinguish
+/// "REALITY key mismatch" from "synthetic UUID rejected" or "no
+/// outbound internet from this host" — REALITY's anti-probing design
+/// routes all three kinds of invalid/unroutable connection to the
+/// camouflage target indistinguishably from outside the tunnel. Treat a
+/// FAIL here as "investigate further" (check `journalctl -u sing-box`
+/// for the literal string "processed invalid connection"), not as
+/// standalone proof of which layer broke — hence `[WARN]`, never
+/// `[FAIL]`, regardless of outcome.
+fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig) {
+    if !cfg.singbox_binary.exists() {
+        report_check(
+            CheckStatus::Warn,
+            "L5-6",
+            format!(
+                "cannot self-test: sing-box binary not found at {:?}",
+                cfg.singbox_binary
+            ),
+        );
+        return;
+    }
+    let reality = match load_reality_params(cfg) {
+        Ok(r) => r,
+        Err(e) => {
+            report_check(CheckStatus::Warn, "L5-6", format!("cannot self-test: {e}"));
+            return;
+        }
+    };
+    let port = cfg.reality.listen_port;
+    if !tcp_port_reachable("127.0.0.1", port, std::time::Duration::from_millis(500)) {
+        report_check(
+            CheckStatus::Warn,
+            "L5-6",
+            format!(
+                "cannot self-test: 127.0.0.1:{port} is not accepting connections \
+                 (VLESS+REALITY may be bound only on a public interface, or sing-box is not \
+                 running) — this does NOT mean the protocol handshake is broken, only that this \
+                 check cannot reach it from here"
+            ),
+        );
+        return;
+    }
+
+    match run_reality_client_selftest(cfg, &reality, port) {
+        Ok(true) => report_check(
+            CheckStatus::Ok,
+            "L5-6",
+            format!(
+                "protocol self-test: a throwaway sing-box client using the CURRENT REALITY \
+                 public_key/short_id completed a full handshake through 127.0.0.1:{port} and \
+                 relayed a real request end-to-end"
+            ),
+        ),
+        Ok(false) => report_check(
+            CheckStatus::Warn,
+            "L5-6",
+            "protocol self-test: throwaway sing-box client connected to the local listener but \
+             the relay through it did not complete within the timeout — could mean REALITY key \
+             material is stale/mismatched (the exact incident class this check exists for), OR \
+             that the synthetic test UUID was rejected (expected — see limitations above), OR \
+             that this host has no outbound path to the REALITY decoy target. Check `journalctl \
+             -u sing-box` for \"processed invalid connection\" to confirm the first case.",
+        ),
+        Err(e) => report_check(CheckStatus::Warn, "L5-6", format!("cannot self-test: {e}")),
+    }
+}
+
+/// Runs the actual throwaway client + SOCKS probe for
+/// `check_l5_l6_protocol_selftest`. `Ok(true)`/`Ok(false)` are verdicts
+/// about the relay; `Err` means the self-test harness itself failed to
+/// set up (never a verdict about the server).
+fn run_reality_client_selftest(
+    cfg: &DeploymentConfig,
+    reality: &RealityServerParams,
+    reality_port: u16,
+) -> Result<bool> {
+    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
+
+    // Reserve a free loopback port for the throwaway client's local
+    // SOCKS inbound, then release it immediately before sing-box binds
+    // it — a small, unavoidable race in a best-effort self-test, not a
+    // correctness requirement.
+    let local_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .context("reserving a local port for the throwaway client")?;
+        listener.local_addr()?.port()
+    };
+
+    // Synthetic, never-real, never-printed UUID — see the limitation
+    // documented on `check_l5_l6_protocol_selftest`.
+    let synthetic_uuid = credentials::generate_uuid_v4();
+    let client_config = json!({
+        "log": { "level": "error" },
+        "inbounds": [
+            { "type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": local_port }
+        ],
+        "outbounds": [
+            {
+                "type": "vless",
+                "tag": "reality-selftest",
+                "server": "127.0.0.1",
+                "server_port": reality_port,
+                "uuid": synthetic_uuid,
+                "flow": "xtls-rprx-vision",
+                "tls": {
+                    "enabled": true,
+                    "server_name": reality.handshake_server,
+                    "utls": { "enabled": true, "fingerprint": "chrome" },
+                    "reality": {
+                        "enabled": true,
+                        "public_key": reality.public_key_hex,
+                        "short_id": short_id,
+                    }
+                }
+            },
+            { "type": "direct", "tag": "direct" }
+        ],
+        "route": { "final": "reality-selftest" }
+    });
+
+    let tmp = tempfile::NamedTempFile::new().context("creating throwaway client config file")?;
+    std::fs::write(tmp.path(), serde_json::to_vec_pretty(&client_config)?)
+        .context("writing throwaway client config")?;
+
+    let child = std::process::Command::new(&cfg.singbox_binary)
+        .arg("run")
+        .arg("-c")
+        .arg(tmp.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("spawning throwaway sing-box client")?;
+
+    // Always kill the throwaway client before returning on every path
+    // below — never leave an orphaned sing-box process behind from a
+    // diagnostic command.
+    struct KillOnDrop(std::process::Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _guard = KillOnDrop(child);
+
+    // Poll for the client's local SOCKS inbound to come up.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !tcp_port_reachable(
+        "127.0.0.1",
+        local_port,
+        std::time::Duration::from_millis(100),
+    ) {
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+
+    Ok(socks5_connect_succeeds(
+        local_port,
+        &reality.handshake_server,
+        reality.handshake_port,
+        std::time::Duration::from_secs(4),
+    ))
+}
+
+/// Minimal, dependency-free SOCKS5 client: connect, no-auth handshake,
+/// `CONNECT` to `(target_host, target_port)`, and report whether the
+/// proxy replied with success (`rep == 0x00`). This is the real signal
+/// that the throwaway sing-box client's outbound — through our live
+/// REALITY listener — actually relayed a connection end-to-end, not
+/// just that TCP to the local proxy port succeeded.
+fn socks5_connect_succeeds(
+    local_port: u16,
+    target_host: &str,
+    target_port: u16,
+    timeout: std::time::Duration,
+) -> bool {
+    use std::io::{Read, Write};
+    let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", local_port)) else {
+        return false;
+    };
+    if stream.set_read_timeout(Some(timeout)).is_err()
+        || stream.set_write_timeout(Some(timeout)).is_err()
+    {
+        return false;
+    }
+    // Greeting: version 5, 1 method, no-auth (0x00).
+    if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
+        return false;
+    }
+    let mut resp = [0u8; 2];
+    if stream.read_exact(&mut resp).is_err() || resp != [0x05, 0x00] {
+        return false;
+    }
+    // CONNECT request, domain-name address type.
+    let host_bytes = target_host.as_bytes();
+    if host_bytes.is_empty() || host_bytes.len() > 255 {
+        return false;
+    }
+    let mut req = vec![0x05u8, 0x01, 0x00, 0x03, host_bytes.len() as u8];
+    req.extend_from_slice(host_bytes);
+    req.push((target_port >> 8) as u8);
+    req.push((target_port & 0xff) as u8);
+    if stream.write_all(&req).is_err() {
+        return false;
+    }
+    // Reply header: ver, rep, rsv, atyp — rep==0x00 is success. The
+    // trailing bound-address bytes vary by atyp; we only need `rep` and
+    // the stream is dropped (closed) right after, so they're not read.
+    let mut head = [0u8; 4];
+    if stream.read_exact(&mut head).is_err() {
+        return false;
+    }
+    head[1] == 0x00
 }
 
 /// Stage the minimum state needed to rebuild this deployment into `dir`:
@@ -1443,6 +2056,38 @@ fn cmd_restore(
         restored_users.len()
     );
     regenerate_singbox_config(cfg)?;
+
+    // The archive always contains REALITY private/public key + short_id
+    // (checked above) and may differ from whatever key material was live
+    // before this restore ran (e.g. restoring an older backup after a
+    // rotation, or onto a fresh host). `regenerate_singbox_config` only
+    // reloads sing-box — but vpn-subscription caches the REALITY public
+    // key/short_id in memory at startup and has no config-reload path
+    // (see `cmd_reality_rotate`'s doc comment for the same fact), so a
+    // restore that skips this step can leave the subscription service
+    // silently advertising a STALE public key while sing-box already
+    // speaks the restored one — the exact split-brain P0-5 exists to
+    // prevent, just reached via `restore` instead of `init --rotate`.
+    let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
+    if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
+        sub_mgr.reload_and_verify().map_err(|e| {
+            anyhow::anyhow!(
+                "restore applied users/config/keys successfully, but restarting \
+                 vpn-subscription to pick up the restored REALITY key failed: {e}. \
+                 The subscription service may now be advertising a STALE REALITY \
+                 public key/short_id — run `systemctl restart vpn-subscription` \
+                 manually, then re-check with `vpn-admin doctor`."
+            )
+        })?;
+    } else {
+        println!(
+            "warning: systemctl/vpn-subscription.service not available — restored REALITY \
+             key material was NOT picked up by the subscription service (it caches this at \
+             startup, so a manual `systemctl restart vpn-subscription` is required on a real \
+             deployment)."
+        );
+    }
+
     println!("Restore applied and validated against the running server.");
     Ok(())
 }

@@ -98,6 +98,31 @@ exit 1
     path
 }
 
+/// A fake `systemctl` that logs every invocation's verb+unit to
+/// `$SYSTEMCTL_LOG` (one line per call) and always reports units as
+/// installed/active, so `regenerate_singbox_config`'s and
+/// `cmd_reality_rotate`'s/`cmd_restore`'s reload/restart paths run for
+/// real (rather than degrading to a "systemctl not available" warning)
+/// without a real systemd host.
+#[cfg(unix)]
+fn fake_systemctl(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("systemctl");
+    let script = r#"#!/usr/bin/env bash
+echo "$1 $2" >> "$SYSTEMCTL_LOG"
+case "$1" in
+  --version) exit 0 ;;
+  show) echo "loaded"; exit 0 ;;
+  reload-or-restart) exit 0 ;;
+  is-active) exit 0 ;;
+esac
+exit 1
+"#;
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
 fn admin(dir: &Path, cfg_path: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vpn-admin").unwrap();
     cmd.arg("--config").arg(cfg_path);
@@ -433,6 +458,78 @@ fn doctor_reports_missing_singbox_binary_as_failure() {
         .stdout(predicates::str::contains("[FAIL]"));
 }
 
+/// L4 subscription-coherence checks pass once `init` and `render-config`
+/// have together produced a coherent REALITY key file set and a
+/// matching on-disk sing-box config — this is the "everything is fine"
+/// baseline the drift test below deliberately breaks.
+#[test]
+fn doctor_l4_coherence_passes_after_init_and_render() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    // Not asserting overall `.success()` here: an unrelated L2 check
+    // (world-readable key file permissions) is environment-dependent
+    // (umask of the process creating the temp dir), which is not what
+    // this test is about — it only cares about the new L4 lines.
+    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("[L4"),
+        "doctor output must tag L4 checks:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("subscription render coherence") && stdout.contains("[OK]"),
+        "L4 render coherence must pass on a freshly-initialized deployment:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("on-disk sing-box config.json matches"),
+        "L4 on-disk drift check must report no drift right after render-config:\n{stdout}"
+    );
+    // Never a hard requirement of `doctor` overall unless `--protocol` is
+    // passed.
+    assert!(stdout.contains("[L5-6]") && stdout.contains("not run"));
+}
+
+/// The exact incident class this check exists for: the sing-box
+/// config.json actually on disk (what a running sing-box would have
+/// last reloaded) no longer matches what the CURRENT REALITY key files
+/// would render — e.g. because someone hand-edited a key file, or a
+/// `render-config` was skipped after a manual key change. `doctor` must
+/// catch this from file contents alone, as a hard `[FAIL]`, without any
+/// network access.
+#[test]
+fn doctor_l4_detects_on_disk_config_drift_from_current_key_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    // Simulate exactly the incident: the REALITY public key file changes
+    // (as it would after a manual edit, or a partially-applied rotation)
+    // but the previously-rendered sing-box config.json is left stale.
+    let short_id_path = dir.path().join("state/reality/short_id.txt");
+    std::fs::write(&short_id_path, "deadbeef").unwrap();
+
+    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let output = output.failure();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("does NOT match") && stdout.contains("[L4"),
+        "doctor must FAIL the L4 on-disk drift check once the short_id file diverges from \
+         the last-rendered config.json:\n{stdout}"
+    );
+}
+
 #[test]
 fn backup_then_restore_round_trips_users() {
     let dir = tempfile::tempdir().unwrap();
@@ -518,4 +615,94 @@ fn restore_rejects_archive_containing_a_symlink() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("symlink"));
+}
+
+/// Split-brain regression (same class of bug `cmd_reality_rotate` exists
+/// to prevent, reached via `restore` instead): `restore` installs the
+/// archive's REALITY key material directly onto disk and then only
+/// reloads sing-box (`regenerate_singbox_config`) — but vpn-subscription
+/// caches the REALITY public key/short_id in memory at startup and has
+/// no reload path, so restoring an OLDER backup whose key differs from
+/// what's currently live must ALSO restart vpn-subscription, or the
+/// subscription service keeps advertising a stale public key to every
+/// client after the restore "succeeds". Uses a fake `systemctl` (found
+/// via `PATH`) that logs every invocation, so this is observable without
+/// a real systemd host.
+#[cfg(unix)]
+#[test]
+fn restore_of_differing_reality_key_restarts_subscription_service_too() {
+    let dir = tempfile::tempdir().unwrap();
+    // A real sing-box binary (faked) is required here: without one,
+    // `regenerate_singbox_config` skips straight to a "binary not found"
+    // warning and never reaches the reload path at all, which would make
+    // this test vacuously pass for the wrong reason.
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(state_dir.join("reality")).unwrap();
+
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+
+    // A backup captured while key "A" was live.
+    std::fs::write(state_dir.join("reality/private.key"), "test-priv-A").unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), "test-pub-A").unwrap();
+    std::fs::write(state_dir.join("reality/short_id.txt"), "aaaaaaaa").unwrap();
+    admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "frank"])
+        .assert()
+        .success();
+    let backup_path = dir.path().join("backup.tar");
+    admin(dir.path(), &cfg_path)
+        .args(["backup", "--output"])
+        .arg(&backup_path)
+        .assert()
+        .success();
+
+    // The live key material is later rotated to "B" (simulating time
+    // passing between the backup and an operator restoring it, e.g. onto
+    // a replacement host, or rolling back after a bad rotation).
+    std::fs::write(state_dir.join("reality/private.key"), "test-priv-B").unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), "test-pub-B").unwrap();
+
+    // Now restore the "A" backup over the live "B" key — the exact
+    // scenario where subscription's cached public key would go stale.
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+
+    let mut restore_cmd = admin(dir.path(), &cfg_path);
+    restore_cmd
+        .arg("restore")
+        .arg(&backup_path)
+        .env("PATH", augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join("reality/public.key")).unwrap(),
+        "test-pub-A",
+        "restore must actually install the archive's (older) key material"
+    );
+
+    let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        log.lines()
+            .any(|l| l.starts_with("reload-or-restart sing-box")),
+        "restore must reload sing-box so it serves the restored key; log:\n{log}"
+    );
+    assert!(
+        log.lines()
+            .any(|l| l.starts_with("reload-or-restart vpn-subscription")),
+        "restore installed REALITY key material that differs from what was live, so \
+         vpn-subscription (which caches the public key/short_id at startup) must be \
+         restarted too, exactly like `init --rotate` does — otherwise it keeps serving \
+         the old public key after a restore that reports success. systemctl log:\n{log}"
+    );
 }

@@ -44,7 +44,14 @@ Prerequisites:
    error (a failed install must not have printed "Install complete" —
    see `docs/PRODUCTION_HARDENING_PLAN.md` #22).
 3. `sudo vpn-admin doctor` (or `vpn doctor`) on the VPS reporting no
-   `[FAIL]` lines.
+   `[FAIL]` lines. Also run `sudo vpn-admin doctor --protocol` — it adds
+   a best-effort `[L5-6]` check that dials the server's own REALITY
+   listener with a throwaway `sing-box` client. Passing `doctor`
+   without `--protocol` only proves L1-L4 (process/config/listeners/
+   subscription-render-coherence); it does **not** prove a real client
+   can authenticate — that is exactly what this whole matrix exists to
+   verify by hand, and a real device test below should still be run
+   even if both `doctor` variants are fully green.
 4. `sudo vpn-admin user create --name test --qr` to get a subscription
    QR code / URL.
 5. The device under test, on a real network, with the relevant client

@@ -1136,7 +1136,8 @@ Compatible clients
 
 Management
   vpn status
-  vpn doctor
+  vpn doctor                 # process/config/listeners/subscription-coherence (fast)
+  vpn doctor --protocol      # + a real throwaway sing-box handshake self-test (slower)
   vpn user create --name NAME
   vpn user list
   vpn user rotate-token USER
