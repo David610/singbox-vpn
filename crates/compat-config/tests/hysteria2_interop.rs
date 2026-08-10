@@ -1,0 +1,272 @@
+//! Real interoperability tests for Hysteria2 config generation — the
+//! Hysteria2 counterpart to `reality_interop.rs`. Builds the exact server
+//! config (`server::render_singbox_server_config`) and client config
+//! (`render::render_singbox_client_subscription`) this codebase would
+//! actually deploy/serve, drives a REAL `sing-box` binary as both server
+//! and client over loopback (UDP/QUIC), and proves a real password-
+//! authenticated tunnel actually relays traffic to a local (non-public)
+//! HTTP target.
+//!
+//! Skipped (not failed) when no usable `sing-box` binary is available —
+//! see `reality_interop.rs`'s module doc for the same `SING_BOX_BIN`/CI
+//! wiring notes; this file follows the identical convention.
+
+mod common;
+
+use common::{free_port, socks5_http_get_is_200, spawn_local_http_target, wait_for_port};
+use compat_config::model::{Hysteria2ServerParams, RealityServerParams};
+use compat_config::secret::SecretString;
+use compat_config::server::{render_singbox_server_config, ServerPorts};
+use compat_config::{render, CompatUser};
+use std::time::Duration;
+
+/// Generates a throwaway self-signed EC certificate via the `openssl`
+/// CLI (already a hard runtime dependency of this project — see
+/// `deploy/almalinux/install.sh`'s `openssl x509` cert-expiry checks —
+/// so no new Rust dependency is pulled in just for test fixtures).
+/// Skips (does not fail) the calling test if `openssl` isn't on PATH,
+/// same "environment can't run this, don't fake a result" policy as the
+/// `sing-box`-availability gate.
+fn generate_self_signed_cert(
+    dir: &std::path::Path,
+    cn: &str,
+) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    if std::process::Command::new("openssl")
+        .arg("version")
+        .output()
+        .is_err()
+    {
+        return None;
+    }
+    let key = dir.join("hysteria2-test-key.pem");
+    let cert = dir.join("hysteria2-test-cert.pem");
+    // `-addext subjectAltName=...` is required: modern Go (sing-box's
+    // client TLS verification) rejects a certificate that only has a
+    // legacy CN with no SAN ("x509: certificate relies on legacy Common
+    // Name field, use SANs instead") — a bare `-subj "/CN=..."` alone
+    // produces exactly that rejected shape.
+    let status = std::process::Command::new("openssl")
+        .args([
+            "req", "-x509", "-newkey", "ed25519", "-days", "1", "-nodes", "-keyout",
+        ])
+        .arg(&key)
+        .arg("-out")
+        .arg(&cert)
+        .args(["-subj", &format!("/CN={cn}")])
+        .args(["-addext", &format!("subjectAltName=DNS:{cn}")])
+        .status()
+        .expect("run openssl to generate a throwaway test certificate");
+    if !status.success() {
+        return None;
+    }
+    Some((cert, key))
+}
+
+fn test_user(hysteria2_password: &str) -> CompatUser {
+    CompatUser {
+        id: "u1".into(),
+        name: "interop-test".into(),
+        enabled: true,
+        vless_uuid: "841cac4a-efe4-48ac-92b8-d11f4c98c45e".into(),
+        hysteria2_password: SecretString::new(hysteria2_password.to_string()),
+        subscription_token_hash_hex: "unused".into(),
+        created_at: 0,
+        expires_at: None,
+    }
+}
+
+/// Builds the server sing-box config (via the crate's OWN production
+/// renderer) for a single Hysteria2 inbound, plus the client-side
+/// outbound config (via the crate's OWN production subscription
+/// renderer) that a real user would receive from `GET /sub/{token}`.
+/// Test-only scaffolding added ON TOP of the production output (never
+/// replacing it): a local `mixed` inbound so a plain client can drive
+/// the tunnel via SOCKS, a `route` override, and — since the test cert
+/// is self-signed and the production renderer correctly never sets
+/// `insecure: true` — a client-side `certificate_path` pin to trust
+/// THIS SPECIFIC throwaway cert, which is the standard way to test
+/// against a private CA without weakening the renderer under test.
+fn build_configs(
+    hysteria_port: u16,
+    mixed_port: u16,
+    password: &str,
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+    sni: &str,
+) -> (serde_json::Value, serde_json::Value) {
+    // REALITY params are required by the renderer signature but
+    // irrelevant to this Hysteria2-only test.
+    let reality = RealityServerParams {
+        private_key_hex: SecretString::new("unused".to_string()),
+        public_key_hex: "unused".into(),
+        short_ids: vec!["00000000".into()],
+        handshake_server: "www.microsoft.com".into(),
+        handshake_port: 443,
+    };
+    let hysteria = Hysteria2ServerParams {
+        tls_cert_path: cert_path.display().to_string(),
+        tls_key_path: key_path.display().to_string(),
+        obfs_password: None,
+        masquerade_dir_path: None,
+    };
+    let users = vec![test_user(password)];
+    let mut server_cfg = render_singbox_server_config(
+        &users,
+        &reality,
+        &hysteria,
+        ServerPorts {
+            vless_reality_port: free_port(), // unused, just needs to bind somewhere
+            hysteria2_port: hysteria_port,
+        },
+        0,
+    );
+    // Drop the vless-reality inbound entirely — this test only needs
+    // Hysteria2 to start, and REALITY needs real handshake-target
+    // egress this test doesn't want as a dependency.
+    server_cfg["inbounds"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|ib| ib["tag"] == "hysteria2-in");
+
+    let endpoint = compat_config::model::CompatEndpoint {
+        id: "hysteria2-1".into(),
+        transport: compat_config::model::CompatTransport::Hysteria2,
+        host: "127.0.0.1".into(),
+        port: hysteria_port,
+        server_name: Some(sni.into()),
+        label: "Hysteria2".into(),
+        public_parameters: compat_config::model::PublicParameters::Hysteria2 {
+            obfs_password: None,
+        },
+    };
+    let mut client_cfg = render::render_singbox_client_subscription(
+        &test_user(password),
+        std::slice::from_ref(&endpoint),
+    )
+    .expect("render client subscription");
+    client_cfg["inbounds"] = serde_json::json!([{
+        "type": "mixed",
+        "tag": "mixed-in",
+        "listen": "127.0.0.1",
+        "listen_port": mixed_port,
+    }]);
+    // Test-only trust pin — see this function's doc comment.
+    client_cfg["outbounds"][0]["tls"]["certificate_path"] =
+        serde_json::json!(cert_path.display().to_string());
+    client_cfg["route"] = serde_json::json!({ "final": "Hysteria2" });
+
+    (server_cfg, client_cfg)
+}
+
+fn write_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
+    path
+}
+
+/// Real end-to-end Hysteria2: generate a throwaway TLS cert, render
+/// server+client config through the crate's OWN production renderers
+/// with a matching password, run a real sing-box server and client over
+/// UDP/QUIC, and prove traffic actually flows to a local HTTP target.
+#[test]
+fn hysteria2_handshake_succeeds_with_matched_password() {
+    let Some(sb) = common::SingBox::find() else {
+        eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let Some((cert, key)) = generate_self_signed_cert(dir.path(), "hysteria2-test.invalid") else {
+        eprintln!("skipping: openssl not available to generate a test certificate");
+        return;
+    };
+
+    let hysteria_port = free_port();
+    let mixed_port = free_port();
+    let password = "test-password-not-a-real-secret";
+    let (server_cfg, client_cfg) = build_configs(
+        hysteria_port,
+        mixed_port,
+        password,
+        &cert,
+        &key,
+        "hysteria2-test.invalid",
+    );
+    let server_path = write_json(dir.path(), "server.json", &server_cfg);
+    let client_path = write_json(dir.path(), "client.json", &client_cfg);
+    let target = spawn_local_http_target();
+
+    let _server = common::Guard(sb.run(&server_path));
+    // Hysteria2 is UDP/QUIC — `wait_for_port`'s TCP connect can't
+    // observe it coming up, so give sing-box a moment to bind instead.
+    std::thread::sleep(Duration::from_millis(500));
+    let _client = common::Guard(sb.run(&client_path));
+    assert!(
+        wait_for_port(mixed_port, Duration::from_secs(5)),
+        "client never bound its local SOCKS port"
+    );
+
+    assert!(
+        socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
+        "Hysteria2 handshake/traffic failed through a config produced by this crate's own \
+         production renderers with a matched password and pinned test certificate"
+    );
+}
+
+/// The Hysteria2 counterpart to `reality_handshake_fails_with_mismatched_public_key`:
+/// a client configured with the WRONG password (e.g. what a stale
+/// subscription would serve after a `rotate-hysteria` the running
+/// subscription process never picked up) must fail closed — no traffic
+/// should flow.
+#[test]
+fn hysteria2_handshake_fails_with_wrong_password() {
+    let Some(sb) = common::SingBox::find() else {
+        eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let Some((cert, key)) = generate_self_signed_cert(dir.path(), "hysteria2-test.invalid") else {
+        eprintln!("skipping: openssl not available to generate a test certificate");
+        return;
+    };
+
+    let hysteria_port = free_port();
+    let mixed_port = free_port();
+    // Server keeps "correct-password"; only the CLIENT side is rebuilt
+    // with a different password — simulating a stale/mismatched
+    // credential (e.g. a subscription served after `rotate-hysteria`
+    // that the running process never picked up), not a config typo.
+    let (server_cfg, _matched_client_cfg) = build_configs(
+        hysteria_port,
+        mixed_port,
+        "correct-password",
+        &cert,
+        &key,
+        "hysteria2-test.invalid",
+    );
+    let (_unused_server_cfg, mismatched_client_cfg) = build_configs(
+        hysteria_port,
+        mixed_port,
+        "a-completely-different-password",
+        &cert,
+        &key,
+        "hysteria2-test.invalid",
+    );
+
+    let server_path = write_json(dir.path(), "server.json", &server_cfg);
+    let client_path = write_json(dir.path(), "client.json", &mismatched_client_cfg);
+    let target = spawn_local_http_target();
+
+    let _server = common::Guard(sb.run(&server_path));
+    std::thread::sleep(Duration::from_millis(500));
+    let _client = common::Guard(sb.run(&client_path));
+    assert!(
+        wait_for_port(mixed_port, Duration::from_secs(5)),
+        "client never bound its local SOCKS port"
+    );
+
+    assert!(
+        !socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
+        "a mismatched Hysteria2 password must never be able to pass traffic through the \
+         tunnel — if this assertion fails, Hysteria2 auth is not actually being enforced"
+    );
+}

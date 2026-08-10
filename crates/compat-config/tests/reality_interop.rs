@@ -15,62 +15,40 @@
 //! Skipped (not failed) when no usable `sing-box` binary is available, so this
 //! doesn't turn every contributor's machine/CI image into a hard requirement:
 //! set `SING_BOX_BIN=/path/to/sing-box` to point at one explicitly, otherwise
-//! `sing-box` on `PATH` is used if present.
+//! `sing-box` on `PATH` is used if present. CI wires this up with the exact
+//! pinned, checksum-verified binary (see `.github/workflows/ci.yml`'s
+//! `singbox-validate` job) so it is NOT silently skipped in the pipeline that
+//! actually gates merges.
+//!
+//! The proxied "traffic" destination is a local, in-process HTTP target
+//! (`tests/common/mod.rs`), never a public third-party host — the only
+//! external network dependency these tests have is the REALITY protocol's
+//! own decoy/camouflage handshake target (`www.microsoft.com:443`), which
+//! is inherent to the protocol itself (the server must perform a real TLS
+//! handshake against a real external site to remain indistinguishable from
+//! one), not a choice made by this test.
 
+mod common;
+
+use common::{free_port, socks5_http_get_is_200, spawn_local_http_target, wait_for_port};
 use compat_config::model::{Hysteria2ServerParams, RealityServerParams};
 use compat_config::secret::SecretString;
 use compat_config::server::{render_singbox_server_config, ServerPorts};
 use compat_config::{render, CompatUser};
-use std::io::Read;
-use std::net::TcpStream;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::time::Duration;
 
-struct SingBox {
-    path: PathBuf,
-}
-
-impl SingBox {
-    fn find() -> Option<Self> {
-        if let Ok(p) = std::env::var("SING_BOX_BIN") {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Some(Self { path });
-            }
-        }
-        let output = Command::new("sing-box").arg("version").output().ok()?;
-        if output.status.success() {
-            return Some(Self {
-                path: PathBuf::from("sing-box"),
-            });
-        }
-        None
-    }
-
-    fn generate_reality_keypair(&self) -> (String, String) {
-        let output = Command::new(&self.path)
-            .arg("generate")
-            .arg("reality-keypair")
-            .output()
-            .expect("run sing-box generate reality-keypair");
-        assert!(output.status.success(), "reality-keypair generation failed");
-        let text = String::from_utf8_lossy(&output.stdout);
-        let private_key = extract_field(&text, "PrivateKey").expect("PrivateKey in output");
-        let public_key = extract_field(&text, "PublicKey").expect("PublicKey in output");
-        (private_key, public_key)
-    }
-
-    fn run(&self, config_path: &std::path::Path) -> Child {
-        Command::new(&self.path)
-            .arg("run")
-            .arg("-c")
-            .arg(config_path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn sing-box run")
-    }
+fn generate_reality_keypair(sb: &common::SingBox) -> (String, String) {
+    let output = Command::new(&sb.path)
+        .arg("generate")
+        .arg("reality-keypair")
+        .output()
+        .expect("run sing-box generate reality-keypair");
+    assert!(output.status.success(), "reality-keypair generation failed");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let private_key = extract_field(&text, "PrivateKey").expect("PrivateKey in output");
+    let public_key = extract_field(&text, "PublicKey").expect("PublicKey in output");
+    (private_key, public_key)
 }
 
 fn extract_field(text: &str, field: &str) -> Option<String> {
@@ -80,32 +58,6 @@ fn extract_field(text: &str, field: &str) -> Option<String> {
             .or_else(|| line.strip_prefix(&format!("{field} ")))
             .map(|s| s.trim().to_string())
     })
-}
-
-/// Picks a probably-free localhost port by binding to port 0 and releasing it.
-/// Small TOCTOU race is acceptable for a test harness (not production code).
-fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
-}
-
-fn wait_for_port(port: u16, timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-struct Guard(Child);
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
 }
 
 fn test_user() -> CompatUser {
@@ -197,80 +149,26 @@ fn build_configs(
     (server_cfg, client_cfg)
 }
 
-fn write_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> PathBuf {
+fn write_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> std::path::PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
     path
 }
 
-/// Drives an HTTP GET through the given SOCKS5 proxy port via a raw socket
-/// (no `curl`/`reqwest` dependency needed) and returns true if a response
-/// status line came back — proving the tunnel actually carries traffic
-/// end-to-end, not just that the TCP handshake completed.
-fn socks5_http_get_succeeds(socks_port: u16, host: &str) -> bool {
-    use std::io::Write;
-    let mut stream = match TcpStream::connect(("127.0.0.1", socks_port)) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    // SOCKS5 greeting: no auth.
-    stream.write_all(&[0x05, 0x01, 0x00]).unwrap();
-    let mut buf = [0u8; 2];
-    if stream.read_exact(&mut buf).is_err() || buf != [0x05, 0x00] {
-        return false;
-    }
-    // CONNECT host:80 (plain HTTP so we don't need TLS in this harness).
-    let mut req = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
-    req.extend_from_slice(host.as_bytes());
-    req.extend_from_slice(&80u16.to_be_bytes());
-    stream.write_all(&req).unwrap();
-    let mut reply = [0u8; 4];
-    if stream.read_exact(&mut reply).is_err() || reply[1] != 0x00 {
-        return false;
-    }
-    // Drain the rest of the reply (address + port, variable length by type).
-    let addr_len = match reply[3] {
-        0x01 => 4,
-        0x04 => 16,
-        0x03 => {
-            let mut l = [0u8; 1];
-            stream.read_exact(&mut l).unwrap();
-            l[0] as usize
-        }
-        _ => return false,
-    };
-    let mut skip = vec![0u8; addr_len + 2];
-    if stream.read_exact(&mut skip).is_err() {
-        return false;
-    }
-    let request = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-    if stream.write_all(request.as_bytes()).is_err() {
-        return false;
-    }
-    let mut response = String::new();
-    if std::io::Read::read_to_string(&mut stream, &mut response).is_err() {
-        return false;
-    }
-    response.starts_with("HTTP/1.1 ") || response.starts_with("HTTP/1.0 ")
-}
-
 /// TEST 1 + TEST 8 (spec sections 12/13): generate a real REALITY keypair,
 /// render server+client config through the crate's OWN production
 /// renderers, run a real sing-box server and client, and prove traffic
-/// actually flows end-to-end through the tunnel. This is the test that
-/// would have caught the production incident: a syntactically-valid but
-/// cryptographically-mismatched config would fail here, not just look
-/// plausible in a string-contains assertion.
+/// actually flows end-to-end through the tunnel to a local (non-public)
+/// HTTP target. This is the test that would have caught the production
+/// incident: a syntactically-valid but cryptographically-mismatched config
+/// would fail here, not just look plausible in a string-contains assertion.
 #[test]
 fn reality_handshake_succeeds_with_matched_keypair() {
-    let Some(sb) = SingBox::find() else {
+    let Some(sb) = common::SingBox::find() else {
         eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
         return;
     };
-    let (private_key, public_key) = sb.generate_reality_keypair();
+    let (private_key, public_key) = generate_reality_keypair(&sb);
     let short_id = "e54b2158";
 
     let dir = tempfile::tempdir().unwrap();
@@ -285,20 +183,21 @@ fn reality_handshake_succeeds_with_matched_keypair() {
     );
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
     let client_path = write_json(dir.path(), "client.json", &client_cfg);
+    let target = spawn_local_http_target();
 
-    let _server = Guard(sb.run(&server_path));
+    let _server = common::Guard(sb.run(&server_path));
     assert!(
         wait_for_port(reality_port, Duration::from_secs(5)),
         "server never bound its REALITY port"
     );
-    let _client = Guard(sb.run(&client_path));
+    let _client = common::Guard(sb.run(&client_path));
     assert!(
         wait_for_port(mixed_port, Duration::from_secs(5)),
         "client never bound its local SOCKS port"
     );
 
     assert!(
-        socks5_http_get_succeeds(mixed_port, "example.com"),
+        socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
         "REALITY handshake/traffic failed through a config produced by this \
          crate's own production renderers with a matched, real keypair"
     );
@@ -311,12 +210,12 @@ fn reality_handshake_succeeds_with_matched_keypair() {
 /// Must fail closed: no traffic should flow.
 #[test]
 fn reality_handshake_fails_with_mismatched_public_key() {
-    let Some(sb) = SingBox::find() else {
+    let Some(sb) = common::SingBox::find() else {
         eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
         return;
     };
-    let (private_key, _real_public_key) = sb.generate_reality_keypair();
-    let (_unused_private, stale_public_key) = sb.generate_reality_keypair();
+    let (private_key, _real_public_key) = generate_reality_keypair(&sb);
+    let (_unused_private, stale_public_key) = generate_reality_keypair(&sb);
     let short_id = "e54b2158";
 
     let dir = tempfile::tempdir().unwrap();
@@ -331,14 +230,15 @@ fn reality_handshake_fails_with_mismatched_public_key() {
     );
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
     let client_path = write_json(dir.path(), "client.json", &client_cfg);
+    let target = spawn_local_http_target();
 
-    let _server = Guard(sb.run(&server_path));
+    let _server = common::Guard(sb.run(&server_path));
     assert!(wait_for_port(reality_port, Duration::from_secs(5)));
-    let _client = Guard(sb.run(&client_path));
+    let _client = common::Guard(sb.run(&client_path));
     assert!(wait_for_port(mixed_port, Duration::from_secs(5)));
 
     assert!(
-        !socks5_http_get_succeeds(mixed_port, "example.com"),
+        !socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
         "a mismatched REALITY public key must never be able to pass traffic \
          through the tunnel — if this assertion fails, REALITY auth is not \
          actually being enforced"

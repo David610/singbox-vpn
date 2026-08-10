@@ -130,6 +130,87 @@ fn admin(dir: &Path, cfg_path: &Path) -> Command {
     cmd
 }
 
+/// A probably-free localhost port, picked by binding to port 0 and
+/// releasing it immediately. Small TOCTOU race is acceptable for a test
+/// harness. Used so tests that spawn the REAL `subscription` service
+/// binary never collide with each other or with any other test's
+/// hardcoded port when run in parallel (`cargo test`'s default).
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+fn write_deployment_toml_with_singbox_and_sub_port(
+    dir: &Path,
+    singbox_binary: &Path,
+    sub_port: u16,
+) -> std::path::PathBuf {
+    let cfg_path = dir.join("deployment.toml");
+    let state_dir = dir.join("state");
+    let toml = format!(
+        r#"
+public_host = "vpn.example.com"
+subscription_host = "sub.example.com"
+state_dir = "{state}"
+singbox_binary = "{singbox}"
+
+[reality]
+listen_port = 443
+handshake_server = "www.microsoft.com"
+
+[hysteria2]
+listen_port = 443
+
+[subscription]
+listen_port = {sub_port}
+"#,
+        state = state_dir.display(),
+        singbox = singbox_binary.display(),
+    );
+    std::fs::write(&cfg_path, toml).unwrap();
+    cfg_path
+}
+
+fn wait_for_local_port(port: u16, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+/// Kills the process on drop — a test that panics partway through must
+/// not leave a real `subscription` server bound to a port forever.
+struct KillOnDrop(std::process::Child);
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Spawns the REAL, compiled `subscription` service binary (not a mock)
+/// against `cfg_path`, as a genuine long-lived background process.
+/// `assert_cmd::Command::cargo_bin` is used only to resolve the correct
+/// workspace binary path (it deliberately hides `spawn()` — it's built
+/// for one-shot `.assert()`-style invocations — so the resolved program
+/// path is re-wrapped in a plain `std::process::Command` here to get a
+/// real, killable `Child`).
+fn spawn_subscription_binary(cfg_path: &Path) -> std::process::Child {
+    let program = Command::cargo_bin("subscription")
+        .expect("locate the subscription workspace binary")
+        .get_program()
+        .to_os_string();
+    std::process::Command::new(program)
+        .arg("--config")
+        .arg(cfg_path)
+        .spawn()
+        .expect("spawn real subscription binary")
+}
+
 /// docs/FINAL_PRODUCTION_AUDIT.md P0-4: two concurrent `vpn-admin user
 /// create` invocations against the same state dir must both succeed and
 /// both end up persisted — the state lock (apps/admin/src/lock.rs) must
@@ -527,6 +608,95 @@ fn doctor_l4_detects_on_disk_config_drift_from_current_key_files() {
         stdout.contains("does NOT match") && stdout.contains("[L4"),
         "doctor must FAIL the L4 on-disk drift check once the short_id file diverges from \
          the last-rendered config.json:\n{stdout}"
+    );
+}
+
+/// The strongest coherence check `doctor` has: it doesn't just re-read
+/// files (which a stale process would also "pass" against, since it
+/// never touches the process) — it asks the REAL, already-running
+/// `subscription` service binary for its own live-state fingerprint over
+/// HTTP and compares that against a fresh disk read. Spawns the actual
+/// compiled `subscription` binary (not a mock) so this is a genuine
+/// integration test of `apps/admin/src/main.rs`'s
+/// `check_l4_live_subscription_process_state` against
+/// `services/subscription/src/lib.rs`'s `/internal/state-fingerprint`
+/// route — the exact two sides of the split-brain this whole mechanism
+/// exists to catch.
+#[test]
+fn doctor_l4_live_check_passes_when_subscription_process_is_freshly_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let sub_port = free_port();
+    let cfg_path = write_deployment_toml_with_singbox_and_sub_port(dir.path(), &singbox, sub_port);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    let child = spawn_subscription_binary(&cfg_path);
+    let _guard = KillOnDrop(child);
+    assert!(
+        wait_for_local_port(sub_port, std::time::Duration::from_secs(5)),
+        "real subscription binary never bound 127.0.0.1:{sub_port}"
+    );
+
+    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("ALREADY-RUNNING vpn-subscription process's live in-memory state matches"),
+        "doctor's live L4 check must pass against a subscription process that just started from \
+         the current key files:\n{stdout}"
+    );
+}
+
+/// The scenario the whole check exists for: REALITY key material on
+/// disk changes (rotation, restore, a manual edit — doesn't matter which
+/// one), but the ALREADY-RUNNING `subscription` process was never
+/// restarted, so it keeps serving what it cached at its own startup.
+/// Every prior check in `doctor` (which only re-reads files) would be
+/// blind to this; only a live query against the actual running process
+/// can catch it.
+#[test]
+fn doctor_l4_live_check_fails_when_running_subscription_process_is_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let sub_port = free_port();
+    let cfg_path = write_deployment_toml_with_singbox_and_sub_port(dir.path(), &singbox, sub_port);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    let child = spawn_subscription_binary(&cfg_path);
+    let _guard = KillOnDrop(child);
+    assert!(
+        wait_for_local_port(sub_port, std::time::Duration::from_secs(5)),
+        "real subscription binary never bound 127.0.0.1:{sub_port}"
+    );
+
+    // Mutate the REALITY key material on disk WITHOUT restarting the
+    // already-running subscription process above — this is deliberately
+    // NOT going through `vpn-admin init --rotate` (which would try, and
+    // in a real deployment succeed, to restart vpn-subscription via
+    // systemd): the whole point is to reproduce a process that stays up
+    // across a key change, whatever the cause, and prove `doctor` can
+    // still catch it purely by asking the live process.
+    std::fs::write(
+        dir.path().join("state/reality/public.key"),
+        "stale-key-simulated-for-test",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("state/reality/short_id.txt"), "deadbeef").unwrap();
+
+    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let output = output.failure();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("RUNNING vpn-subscription process is serving STALE state"),
+        "doctor's live L4 check must FAIL once the on-disk keys diverge from what the still-\
+         running subscription process was started with:\n{stdout}"
     );
 }
 

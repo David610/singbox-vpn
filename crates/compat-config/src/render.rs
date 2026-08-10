@@ -5,7 +5,7 @@
 //! Never renders server-private material (`RealityServerParams`,
 //! `Hysteria2ServerParams`'s TLS key path) — only `PublicParameters`.
 
-use crate::model::{CompatEndpoint, CompatUser, PublicParameters};
+use crate::model::{CompatEndpoint, CompatTransport, CompatUser, PublicParameters};
 use crate::CompatError;
 use serde_json::json;
 
@@ -165,6 +165,72 @@ pub fn render_singbox_client_subscription(
     }))
 }
 
+/// Build the two standard endpoint labels ("Reality" / "Hysteria2") from
+/// deployment values. Shared by `services/subscription` (the live HTTP
+/// service, builds this once at startup into its cached `AppState`) and
+/// `apps/admin`'s `doctor` (rebuilds it fresh from current disk state on
+/// every run) — both MUST go through this exact function, not a
+/// hand-rolled equivalent, or a coherence check comparing their outputs
+/// would just be comparing two different constructions of the same
+/// intent rather than actually proving agreement.
+pub fn standard_endpoints(
+    public_host: &str,
+    reality_port: u16,
+    hysteria_port: u16,
+    reality_public_key_hex: &str,
+    reality_short_id: &str,
+    handshake_server: &str,
+) -> Vec<CompatEndpoint> {
+    vec![
+        CompatEndpoint {
+            id: "reality-1".into(),
+            transport: CompatTransport::VlessReality,
+            host: public_host.into(),
+            port: reality_port,
+            server_name: Some(handshake_server.into()),
+            label: "Reality".into(),
+            public_parameters: PublicParameters::Reality {
+                public_key_hex: reality_public_key_hex.into(),
+                short_id: reality_short_id.into(),
+                fingerprint: "chrome".into(),
+            },
+        },
+        CompatEndpoint {
+            id: "hysteria2-1".into(),
+            transport: CompatTransport::Hysteria2,
+            host: public_host.into(),
+            port: hysteria_port,
+            server_name: Some(public_host.into()),
+            label: "Hysteria2".into(),
+            public_parameters: PublicParameters::Hysteria2 {
+                obfs_password: None,
+            },
+        },
+    ]
+}
+
+/// SHA-256 hex digest over a canonical serialization of `endpoints` —
+/// specifically the CLIENT-VISIBLE material (public key, short_id, obfs
+/// password, host/port/SNI), never a server-private value (this crate's
+/// `CompatEndpoint`/`PublicParameters` types structurally cannot hold a
+/// private key — see `model.rs`).
+///
+/// Exists so a value computed from files on disk (what a FRESH read
+/// would produce right now) can be compared against a value reported by
+/// an ALREADY-RUNNING `vpn-subscription` process over its own
+/// `/internal/state-fingerprint` endpoint (`services/subscription/src/
+/// lib.rs`) — the only way to actually detect the incident class this
+/// whole mechanism exists for: a running process serving stale
+/// in-memory state it cached at its own startup, which no amount of
+/// re-reading the current files from a *different* process (`vpn-admin`)
+/// can observe. A hash, not the raw values, crosses that boundary: it
+/// proves agreement/disagreement without ever transmitting or logging
+/// the underlying key material itself.
+pub fn endpoints_fingerprint(endpoints: &[CompatEndpoint]) -> String {
+    let json = serde_json::to_string(endpoints).unwrap_or_default();
+    crate::credentials::hash_token(&json)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +336,60 @@ mod tests {
     fn label_with_spaces_is_percent_encoded() {
         let uri = render_vless_reality_uri(&user(), &reality_endpoint()).unwrap();
         assert!(uri.ends_with("Germany%20-%20Reality"));
+    }
+
+    #[test]
+    fn standard_endpoints_produces_reality_and_hysteria2() {
+        let eps = standard_endpoints(
+            "vpn.example.com",
+            443,
+            443,
+            "pubkey",
+            "short1",
+            "www.microsoft.com",
+        );
+        assert_eq!(eps.len(), 2);
+        assert_eq!(eps[0].transport, CompatTransport::VlessReality);
+        assert_eq!(eps[1].transport, CompatTransport::Hysteria2);
+    }
+
+    #[test]
+    fn endpoints_fingerprint_is_deterministic_and_sensitive_to_key_material() {
+        let a = standard_endpoints(
+            "vpn.example.com",
+            443,
+            443,
+            "pubkeyA",
+            "short1",
+            "www.microsoft.com",
+        );
+        let a_again = standard_endpoints(
+            "vpn.example.com",
+            443,
+            443,
+            "pubkeyA",
+            "short1",
+            "www.microsoft.com",
+        );
+        let b = standard_endpoints(
+            "vpn.example.com",
+            443,
+            443,
+            "pubkeyB", // different public key — simulates a stale-vs-current split
+            "short1",
+            "www.microsoft.com",
+        );
+        assert_eq!(
+            endpoints_fingerprint(&a),
+            endpoints_fingerprint(&a_again),
+            "same endpoint state must always fingerprint identically"
+        );
+        assert_ne!(
+            endpoints_fingerprint(&a),
+            endpoints_fingerprint(&b),
+            "a different REALITY public key must change the fingerprint — this is the \
+             property the live subscription/server coherence check in `vpn-admin doctor` \
+             depends on to detect a stale running vpn-subscription process"
+        );
     }
 }

@@ -13,10 +13,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use common::UnixSeconds;
 use compat_config::deployment::DeploymentConfig;
-use compat_config::model::{
-    CompatEndpoint, CompatTransport, CompatUser, Hysteria2ServerParams, PublicParameters,
-    RealityServerParams,
-};
+use compat_config::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
 use compat_config::render::render_singbox_client_subscription;
 use compat_config::secret::SecretString;
 use compat_config::server::{
@@ -1362,9 +1359,10 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool) -> Result<()> {
     }
 
     check_l4_subscription_coherence(cfg, &mut failures);
+    check_l4_live_subscription_process_state(cfg, &mut failures);
 
     if protocol {
-        check_l5_l6_protocol_selftest(cfg);
+        check_l5_l6_protocol_selftest(cfg, &mut failures);
     } else {
         report_check(
             CheckStatus::Warn,
@@ -1437,10 +1435,13 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
     let now = UnixSeconds::now().0 as i64;
     let fresh_server_doc = render_singbox_server_config(&users, &reality, &hysteria, ports, now);
 
-    // The exact endpoint construction `services/subscription/src/main.rs`
-    // builds from these same two files, plus a throwaway synthetic user
-    // that exists ONLY to exercise the render function — never a real
-    // user's UUID/password, and never printed.
+    // The EXACT same function `services/subscription`'s live process
+    // calls to build its own `AppState.endpoints` — not a hand-rolled
+    // equivalent construction on this side, which would only prove two
+    // independent implementations agree by coincidence rather than that
+    // they're actually computing the same thing. Paired with a
+    // throwaway synthetic user that exists ONLY to exercise the render
+    // function — never a real user's UUID/password, and never printed.
     let synthetic_user = CompatUser {
         id: "doctor-l4-synthetic".into(),
         name: "doctor-l4-synthetic".into(),
@@ -1452,23 +1453,15 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         expires_at: None,
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
-    let endpoint = CompatEndpoint {
-        id: "reality-1".into(),
-        transport: CompatTransport::VlessReality,
-        host: cfg.public_host.clone(),
-        port: cfg.reality.listen_port,
-        server_name: Some(reality.handshake_server.clone()),
-        label: "Reality".into(),
-        public_parameters: PublicParameters::Reality {
-            public_key_hex: reality.public_key_hex.clone(),
-            short_id: short_id.clone(),
-            fingerprint: "chrome".into(),
-        },
-    };
-    let client_doc = match render_singbox_client_subscription(
-        &synthetic_user,
-        std::slice::from_ref(&endpoint),
-    ) {
+    let endpoints = compat_config::render::standard_endpoints(
+        &cfg.public_host,
+        cfg.reality.listen_port,
+        cfg.hysteria2.listen_port,
+        &reality.public_key_hex,
+        &short_id,
+        &reality.handshake_server,
+    );
+    let client_doc = match render_singbox_client_subscription(&synthetic_user, &endpoints) {
         Ok(d) => d,
         Err(e) => {
             report_check(
@@ -1590,6 +1583,116 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
     }
 }
 
+/// The check above (`check_l4_subscription_coherence`) can only prove
+/// what a FRESH read of the current files would produce — it cannot see
+/// what the ALREADY-RUNNING `vpn-subscription` PROCESS actually has
+/// cached in memory, because `vpn-subscription` reads its REALITY public
+/// key/short_id from disk exactly once, at its own startup, and has no
+/// config-reload path (`services/subscription/src/main.rs`). A process
+/// that started before the on-disk keys last changed — a restart that
+/// silently failed, a `reload-or-restart` that degraded to `reload`
+/// against a unit that doesn't actually support it, a code path this
+/// audit didn't cover — would pass every check above and still be
+/// serving stale key material to every real client that fetches a
+/// subscription from it right now. This is the exact incident class
+/// that motivated this whole diagnostic layer; a check that can't
+/// observe the live process isn't actually verifying it.
+///
+/// This check closes that gap by asking the running process itself: it
+/// fetches `GET /internal/state-fingerprint` from `vpn-subscription`'s
+/// own loopback listener (`services/subscription/src/lib.rs`,
+/// `state_fingerprint`) — a SHA-256 fingerprint of its actual in-memory
+/// `AppState.endpoints`, never the raw key/short_id — and compares it
+/// against a fingerprint of what a fresh read of the current files would
+/// produce (via the SAME `standard_endpoints`/`endpoints_fingerprint`
+/// functions `vpn-subscription` itself uses). Agreement is a hard
+/// `[FAIL]`-eligible property, not advisory: a mismatch means a real
+/// client fetching a subscription right now gets different REALITY key
+/// material than `sing-box` is enforcing, which is precisely how the
+/// original incident manifested. Unreachable (service not running, not
+/// on loopback here, firewalled) is `[WARN]`, not `[FAIL]` — that is a
+/// "cannot verify" outcome, not a proven mismatch, and this function
+/// must not conflate the two.
+fn check_l4_live_subscription_process_state(cfg: &DeploymentConfig, failures: &mut u32) {
+    let reality = match load_reality_params(cfg) {
+        Ok(r) => r,
+        Err(e) => {
+            report_check(
+                CheckStatus::Warn,
+                "L4",
+                format!("skipping live subscription-process check: {e}"),
+            );
+            return;
+        }
+    };
+    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
+    let expected_endpoints = compat_config::render::standard_endpoints(
+        &cfg.public_host,
+        cfg.reality.listen_port,
+        cfg.hysteria2.listen_port,
+        &reality.public_key_hex,
+        &short_id,
+        &reality.handshake_server,
+    );
+    let expected_fingerprint = compat_config::render::endpoints_fingerprint(&expected_endpoints);
+
+    let response = http_get_local_json(
+        cfg.subscription.listen_port,
+        "/internal/state-fingerprint",
+        std::time::Duration::from_millis(800),
+    );
+    let live_fingerprint = match response {
+        Ok(json) => match json["endpoints_fingerprint_sha256"].as_str() {
+            Some(fp) => fp.to_string(),
+            None => {
+                report_check(
+                    CheckStatus::Warn,
+                    "L4",
+                    "vpn-subscription's /internal/state-fingerprint responded with an unexpected \
+                     shape — cannot verify the running process's live state (this may indicate a \
+                     version skew between vpn-admin and vpn-subscription-svc).",
+                );
+                return;
+            }
+        },
+        Err(e) => {
+            report_check(
+                CheckStatus::Warn,
+                "L4",
+                format!(
+                    "cannot reach the running vpn-subscription process on \
+                     127.0.0.1:{} to verify its LIVE state (not the same as proving it's stale — \
+                     only that this check could not observe it): {e}",
+                    cfg.subscription.listen_port
+                ),
+            );
+            return;
+        }
+    };
+
+    if live_fingerprint == expected_fingerprint {
+        report_check(
+            CheckStatus::Ok,
+            "L4",
+            "the ALREADY-RUNNING vpn-subscription process's live in-memory state matches current \
+             REALITY key files/deployment config (verified via its own /internal/state-fingerprint \
+             endpoint, not just a fresh disk read that a stale process would also pass)",
+        );
+    } else {
+        report_check(
+            CheckStatus::Fail,
+            "L4",
+            "the RUNNING vpn-subscription process is serving STALE state that does not match the \
+             current REALITY key files/deployment config — every real client fetching a \
+             subscription right now receives different key material than sing-box is enforcing. \
+             This is the exact production incident class. Fix: `systemctl restart vpn-subscription` \
+             (a plain reload is not sufficient — this process has no config-reload path), then \
+             re-run `vpn-admin doctor` to confirm the fingerprints now agree.",
+        );
+        *failures += 1;
+    }
+}
+
 /// Reuses the generic SHA-256 hex hasher (`credentials::hash_token`
 /// hashes any string, despite its name) so REALITY private-key material
 /// is only ever compared by fingerprint here, never held as a
@@ -1610,34 +1713,89 @@ fn tcp_port_reachable(host: &str, port: u16, timeout: std::time::Duration) -> bo
     std::net::TcpStream::connect_timeout(&addr, timeout).is_ok()
 }
 
+/// Minimal, dependency-free HTTP/1.0 GET over loopback: connect, send a
+/// bare request with `Connection: close`, read the whole response (the
+/// server closes after writing it, since we asked for that), split the
+/// status line, headers, and body, and parse the body as JSON. Good
+/// enough for talking to `vpn-subscription`'s own loopback-only
+/// `/internal/state-fingerprint` — not a general-purpose HTTP client,
+/// and deliberately not pulling in `reqwest` just for one same-host GET.
+fn http_get_local_json(
+    port: u16,
+    path: &str,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value> {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}")
+            .parse()
+            .context("building loopback address")?,
+        timeout,
+    )
+    .with_context(|| format!("connecting to 127.0.0.1:{port}"))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    let request = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .context("writing HTTP request")?;
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .context("reading HTTP response")?;
+    let text = String::from_utf8_lossy(&response);
+    let mut parts = text.splitn(2, "\r\n\r\n");
+    let head = parts.next().unwrap_or("");
+    let body = parts.next().unwrap_or("");
+    let status_line = head.lines().next().unwrap_or("");
+    if !status_line.contains(" 200 ") {
+        bail!("unexpected HTTP status from {path}: {status_line:?}");
+    }
+    serde_json::from_str(body).with_context(|| format!("parsing JSON body from {path}: {body:?}"))
+}
+
 /// Best-effort L5/L6, only run with `doctor --protocol`: spin up the
 /// REAL `sing-box` binary as a throwaway client process pointed at this
 /// server's OWN VLESS+REALITY listener on `127.0.0.1`, using the live
-/// REALITY public_key/short_id — the same key material the live
-/// `vpn-subscription` service would hand a real user right now — but
-/// with a synthetic, freshly-generated, never-printed UUID (never a
-/// real user's), since this only needs to exercise the REALITY TLS
-/// layer, not full per-user VLESS authentication.
+/// REALITY public_key/short_id read from the CURRENT on-disk key files
+/// — the same source `vpn-subscription` reads at its own startup, but
+/// note this self-test builds its client config directly from those
+/// files itself, so a clean PASS here proves the on-disk key material
+/// is internally coherent with what `sing-box` enforces, but does NOT
+/// by itself prove the ALREADY-RUNNING `vpn-subscription` process is
+/// advertising the same thing — that is what
+/// `check_l4_live_subscription_process_state` (run unconditionally,
+/// every `doctor` invocation) exists to verify separately, by asking
+/// that process directly rather than re-deriving from disk. Uses a
+/// synthetic, freshly-generated, never-printed UUID (never a real
+/// user's) — full per-user VLESS authentication is not what this
+/// exercises; see the FAIL/WARN distinction below for why that's still
+/// enough for a real verdict.
 ///
 /// Gated on `sing-box` being present AND the port actually being
 /// reachable on loopback; anything else is `[WARN] cannot self-test:
 /// <reason>` — a self-test that can't run here says so, it does not
 /// fake a pass.
 ///
-/// Limitation, stated up front rather than glossed over: because the
-/// UUID is synthetic and unregistered, a clean PASS (the throwaway
-/// client's local SOCKS relay through the tunnel completes) is strong
-/// evidence the REALITY key material is coherent and the data plane
-/// relays end-to-end. A FAIL/timeout alone canNOT cleanly distinguish
-/// "REALITY key mismatch" from "synthetic UUID rejected" or "no
-/// outbound internet from this host" — REALITY's anti-probing design
-/// routes all three kinds of invalid/unroutable connection to the
-/// camouflage target indistinguishably from outside the tunnel. Treat a
-/// FAIL here as "investigate further" (check `journalctl -u sing-box`
-/// for the literal string "processed invalid connection"), not as
-/// standalone proof of which layer broke — hence `[WARN]`, never
-/// `[FAIL]`, regardless of outcome.
-fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig) {
+/// FAIL vs. WARN, and why they're different: REALITY's TLS-layer
+/// handshake is validated (via ECDH between the client's ephemeral key
+/// and the server's private key, plus short_id matching — see
+/// `metacubex/utls`'s `reality.go`) BEFORE VLESS-level UUID lookup is
+/// ever reached, so this self-test's client independently re-derives
+/// whether the server's response verifies against the CURRENT public
+/// key/short_id — the synthetic UUID being unregistered has no bearing
+/// on that specific verdict. If our own throwaway client's sing-box
+/// process itself logs `reality verification failed` (its own
+/// client-side rejection of an unverifiable server response — see
+/// `run_reality_client_selftest`), that is definitive, first-hand
+/// evidence of a REALITY key/short_id mismatch: `[FAIL]`, and it counts
+/// toward `doctor`'s overall exit status like any other proven defect.
+/// A bare timeout with no such corroborating rejection proves nothing
+/// either way (could be no outbound path to the REALITY decoy target,
+/// an unrelated transient failure, a firewalled loopback) — that stays
+/// `[WARN]`, an honest "inconclusive," never conflated with a proven
+/// failure.
+fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig, failures: &mut u32) {
     if !cfg.singbox_binary.exists() {
         report_check(
             CheckStatus::Warn,
@@ -1672,7 +1830,7 @@ fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig) {
     }
 
     match run_reality_client_selftest(cfg, &reality, port) {
-        Ok(true) => report_check(
+        Ok(RealitySelfTestOutcome::Pass) => report_check(
             CheckStatus::Ok,
             "L5-6",
             format!(
@@ -1681,29 +1839,47 @@ fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig) {
                  relayed a real request end-to-end"
             ),
         ),
-        Ok(false) => report_check(
+        Ok(RealitySelfTestOutcome::DefiniteAuthFailure) => {
+            report_check(
+                CheckStatus::Fail,
+                "L5-6",
+                format!(
+                    "protocol self-test FAILED: the throwaway sing-box client itself rejected the \
+                     server's handshake response as unverifiable against the CURRENT REALITY \
+                     public_key/short_id through 127.0.0.1:{port} (\"reality verification \
+                     failed\"/\"processed invalid connection\") — this is a real client-side \
+                     rejection, not a timeout, and does not depend on the synthetic test UUID being \
+                     registered. A real Hiddify client using this same key material would fail \
+                     identically. Check `journalctl -u sing-box` and re-verify REALITY key \
+                     coherence with `vpn-admin doctor` (the L4 checks above)."
+                ),
+            );
+            *failures += 1;
+        }
+        Ok(RealitySelfTestOutcome::Inconclusive) => report_check(
             CheckStatus::Warn,
             "L5-6",
-            "protocol self-test: throwaway sing-box client connected to the local listener but \
-             the relay through it did not complete within the timeout — could mean REALITY key \
-             material is stale/mismatched (the exact incident class this check exists for), OR \
-             that the synthetic test UUID was rejected (expected — see limitations above), OR \
-             that this host has no outbound path to the REALITY decoy target. Check `journalctl \
-             -u sing-box` for \"processed invalid connection\" to confirm the first case.",
+            "protocol self-test INCONCLUSIVE: throwaway sing-box client connected to the local \
+             listener but the relay through it did not complete within the timeout, with no \
+             corroborating client-side rejection — could mean this host has no outbound path to \
+             the REALITY decoy target, a transient failure, or (less likely, since a genuine key \
+             mismatch usually surfaces the definitive rejection above) a REALITY problem this \
+             specific run didn't manage to observe. Not proof either way — re-run, and check \
+             `journalctl -u sing-box` for \"processed invalid connection\".",
         ),
         Err(e) => report_check(CheckStatus::Warn, "L5-6", format!("cannot self-test: {e}")),
     }
 }
 
 /// Runs the actual throwaway client + SOCKS probe for
-/// `check_l5_l6_protocol_selftest`. `Ok(true)`/`Ok(false)` are verdicts
-/// about the relay; `Err` means the self-test harness itself failed to
-/// set up (never a verdict about the server).
+/// `check_l5_l6_protocol_selftest`. `Ok(RealitySelfTestOutcome)` is a
+/// verdict about the relay/server; `Err` means the self-test harness
+/// itself failed to set up (never a verdict about the server).
 fn run_reality_client_selftest(
     cfg: &DeploymentConfig,
     reality: &RealityServerParams,
     reality_port: u16,
-) -> Result<bool> {
+) -> Result<RealitySelfTestOutcome> {
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
 
     // Reserve a free loopback port for the throwaway client's local
@@ -1752,15 +1928,34 @@ fn run_reality_client_selftest(
     std::fs::write(tmp.path(), serde_json::to_vec_pretty(&client_config)?)
         .context("writing throwaway client config")?;
 
-    let child = std::process::Command::new(&cfg.singbox_binary)
+    let mut child = std::process::Command::new(&cfg.singbox_binary)
         .arg("run")
         .arg("-c")
         .arg(tmp.path())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .context("spawning throwaway sing-box client")?;
+
+    // Drain stderr on a background thread as it's produced (not after
+    // the fact) — the pipe has a small OS buffer, and this process can
+    // log continuously, so reading only after killing the child risks
+    // blocking on a full pipe the child is also blocked writing to.
+    // sing-box's own `errors.New("REALITY: processed invalid
+    // connection")` (github.com/metacubex/utls, reality.go) and its
+    // client-side counterpart `"reality verification failed"` are plain
+    // static strings with no secret interpolated — safe to capture and
+    // pattern-match on, unlike anything at `debug`/`trace` log level
+    // (never enabled here; `client_config` above sets `"level": "error"`).
+    let stderr_pipe = child.stderr.take().expect("stderr was piped");
+    let stderr_capture = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        let mut pipe = stderr_pipe;
+        let _ = pipe.read_to_string(&mut buf);
+        buf
+    });
 
     // Always kill the throwaway client before returning on every path
     // below — never leave an orphaned sing-box process behind from a
@@ -1772,27 +1967,77 @@ fn run_reality_client_selftest(
             let _ = self.0.wait();
         }
     }
-    let _guard = KillOnDrop(child);
 
     // Poll for the client's local SOCKS inbound to come up.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut client_bound = true;
     while !tcp_port_reachable(
         "127.0.0.1",
         local_port,
         std::time::Duration::from_millis(100),
     ) {
         if std::time::Instant::now() >= deadline {
-            return Ok(false);
+            client_bound = false;
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
 
-    Ok(socks5_connect_succeeds(
-        local_port,
-        &reality.handshake_server,
-        reality.handshake_port,
-        std::time::Duration::from_secs(4),
-    ))
+    let relay_ok = client_bound
+        && socks5_connect_succeeds(
+            local_port,
+            &reality.handshake_server,
+            reality.handshake_port,
+            std::time::Duration::from_secs(4),
+        );
+
+    // Kill+reap now (releases the stderr pipe's write end so the reader
+    // thread's `read_to_string` returns), THEN read what it captured —
+    // ordering matters, joining first would deadlock against a child
+    // that's still alive and still writing. Wrapping in the drop guard
+    // even though we kill explicitly: if anything above this point had
+    // returned early via `?`, the guard is what would have caught it —
+    // kept for that safety net even though this exact path always kills
+    // explicitly too (a second kill/wait on an already-reaped child in
+    // `Drop` is a harmless no-op, ignored the same way as everywhere
+    // else in this function).
+    let mut guard = KillOnDrop(child);
+    let _ = guard.0.kill();
+    let _ = guard.0.wait();
+    let captured_stderr = stderr_capture.join().unwrap_or_default();
+
+    if relay_ok {
+        return Ok(RealitySelfTestOutcome::Pass);
+    }
+    // A definitive signal, not a guess: OUR OWN throwaway client — built
+    // from the CURRENT REALITY public_key/short_id, exactly as a real
+    // subscription would hand a real client — independently determined
+    // the server's handshake response does not verify. This check does
+    // NOT depend on the synthetic UUID being registered (REALITY's TLS
+    // layer is validated before VLESS-level UUID lookup is ever reached
+    // — see docs/COMPATIBILITY_VERSIONS.md), so this is real evidence of
+    // a REALITY key/short_id mismatch, not an artifact of the UUID being
+    // fake. Distinct from a bare timeout, which proves nothing either
+    // way (see the caller's WARN path for that case).
+    if captured_stderr.contains("reality verification failed")
+        || captured_stderr.contains("processed invalid connection")
+    {
+        return Ok(RealitySelfTestOutcome::DefiniteAuthFailure);
+    }
+    Ok(RealitySelfTestOutcome::Inconclusive)
+}
+
+/// See `run_reality_client_selftest`'s doc comment for how these are
+/// distinguished. `Pass`/`DefiniteAuthFailure` are hard verdicts about
+/// the server's REALITY key material; `Inconclusive` means exactly that
+/// — a timeout with no corroborating client-side rejection proves
+/// nothing about which layer, if any, is broken (could be no outbound
+/// path to the REALITY decoy target, an unrelated transient failure,
+/// etc.), so it must never be reported as if it were either verdict.
+enum RealitySelfTestOutcome {
+    Pass,
+    DefiniteAuthFailure,
+    Inconclusive,
 }
 
 /// Minimal, dependency-free SOCKS5 client: connect, no-auth handshake,

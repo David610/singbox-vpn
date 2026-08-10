@@ -170,3 +170,22 @@ jobs:
 
           echo "running real sing-box check against the generated server config:"
           sing-box check -c "$STATE/sing-box/config.json"
+
+      # A test that always skips (no `sing-box` on PATH, no `SING_BOX_BIN`
+      # set) is documentation, not regression protection — this is the one
+      # job in this pipeline that has the pinned, checksum-verified binary
+      # on disk, so it is also the one responsible for actually RUNNING
+      # `crates/compat-config/tests/reality_interop.rs` and `.../
+      # hysteria2_interop.rs` for real, not just building them. If these
+      # ever silently skip here (e.g. `sing-box` isn't on PATH after the
+      # install step above), the workflow log's "skipping: no sing-box
+      # binary available" line makes that visible, but CI staying green is
+      # NOT proof they ran — see the `test result` line's pass count in
+      # the log for confirmation that both suites' tests actually executed
+      # (each prints a pass count, not just "ok").
+      - name: Real VLESS+REALITY and Hysteria2 interoperability tests (real sing-box)
+        env:
+          SING_BOX_BIN: /usr/local/bin/sing-box
+        run: |
+          set -euo pipefail
+          cargo test -p compat-config --test reality_interop --test hysteria2_interop -- --nocapture
