@@ -92,7 +92,13 @@ async fn get_relay_bundle(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
     {
-        let mut limiter = state.rate_limiter.lock().unwrap();
+        // A poisoned lock (some other request's handler panicked while
+        // holding it) does not mean the limiter's buckets are corrupt —
+        // recover the guard instead of panicking every request forever.
+        let mut limiter = state
+            .rate_limiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !limiter.allow(addr.ip()) {
             return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
         }
@@ -270,6 +276,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // `/v1/relay-bundle` needs a real per-connection SocketAddr for its
+    // ConnectInfo/rate-limiter extractor, so route it through
+    // into_make_service_with_connect_info rather than plain oneshot.
+    async fn oneshot_with_addr(state: std::sync::Arc<AppState>, uri: &str) -> axum::response::Response {
+        use tower::Service;
+        let mut app =
+            build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let mut svc = app.call(addr).await.unwrap();
+        svc.call(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    // A panic anywhere else while some *other* request holds the rate
+    // limiter lock poisons the std::sync::Mutex. Requests must keep being
+    // served afterwards, not panic forever — a poisoned lock does not mean
+    // the limiter's data is actually corrupt, just that a thread died
+    // holding it.
+    #[tokio::test]
+    async fn relay_bundle_survives_a_poisoned_rate_limiter_lock() {
+        let (state, _root_pub) = make_state(3, 3);
+        let poison_state = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_state.rate_limiter.lock().unwrap();
+            panic!("simulated panic while holding the rate limiter lock");
+        })
+        .join();
+        assert!(state.rate_limiter.is_poisoned());
+
+        let resp = oneshot_with_addr(state, "/v1/relay-bundle").await;
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[test]

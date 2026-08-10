@@ -88,7 +88,13 @@ async fn get_subscription(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
 ) -> Response {
     {
-        let mut limiter = state.rate_limiter.lock().unwrap();
+        // A poisoned lock (some other request's handler panicked while
+        // holding it) does not mean the limiter's buckets are corrupt —
+        // recover the guard instead of panicking every request forever.
+        let mut limiter = state
+            .rate_limiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !limiter.allow(addr.ip()) {
             return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
         }
@@ -338,6 +344,26 @@ mod tests {
     async fn healthz_responds_ok() {
         let state = make_state(vec![]);
         let resp = oneshot_with_addr(state, "/healthz").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // A panic anywhere else while some *other* request holds the rate
+    // limiter lock (e.g. a future bug in an unrelated handler sharing this
+    // state) poisons the std::sync::Mutex. Requests must keep being served
+    // afterwards, not 500/panic forever — a poisoned lock does not mean the
+    // limiter's data is actually corrupt, just that a thread died holding it.
+    #[tokio::test]
+    async fn subscription_survives_a_poisoned_rate_limiter_lock() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let poison_state = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poison_state.rate_limiter.lock().unwrap();
+            panic!("simulated panic while holding the rate limiter lock");
+        })
+        .join();
+        assert!(state.rate_limiter.is_poisoned());
+
+        let resp = oneshot_with_addr(state, "/sub/goodtoken").await;
         assert_eq!(resp.status(), StatusCode::OK);
     }
 }
