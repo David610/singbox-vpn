@@ -43,7 +43,13 @@ async fn main() -> Result<()> {
     let state = std::sync::Arc::new(AppState {
         users_file: cfg.users_file(),
         endpoints,
-        rate_limiter: Mutex::new(RateLimiter::new(20.0, 0.5)),
+        // Sized for the WHOLE deployment, not for one client: behind nginx
+        // every request appears to come from 127.0.0.1, so this is one
+        // shared bucket (see `RateLimiter`'s doc comment). The previous
+        // 20/0.5 was a sensible per-IP budget and a crippling global one —
+        // 5 r/s of junk kept it permanently empty and locked out every
+        // legitimate user. nginx enforces the per-client rate.
+        rate_limiter: Mutex::new(RateLimiter::new(200.0, 50.0)),
     });
 
     // Loopback only (spec §8/§27) — a reverse proxy terminates public

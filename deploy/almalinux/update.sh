@@ -32,6 +32,25 @@ for f in vpn-admin vpn vpn-subscription-svc; do
   [ -f "$BIN_DIR/$f" ] && cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
 done
 [ -f /etc/vpn/compat/sing-box/config.json ] && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
+# The rollback below restores the OLD binary. `render-config` further down
+# runs the NEW one against the live user store and key material, so those
+# must be recoverable too — otherwise a rollback leaves an old binary
+# reading state a newer one may have rewritten.
+[ -f /etc/vpn/compat/users/users.json ] && cp -a /etc/vpn/compat/users/users.json "$BACKUP_DIR/users.json"
+[ -d /etc/vpn/compat/reality ] && cp -a /etc/vpn/compat/reality "$BACKUP_DIR/reality"
+
+# A prebuilt-release install has no Rust toolchain at all, and even when one
+# exists rustup puts it in ~/.cargo/bin, which a `curl | sudo bash` PATH does
+# not include. install.sh learned this; update.sh did not, so it aborted here
+# on exactly the installs the release path produces.
+if [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.cargo/env"
+fi
+command -v cargo >/dev/null 2>&1 \
+  || die "cargo not found. update.sh builds from source, so it needs a Rust toolchain.
+Install one with: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+then re-run this script."
 
 log "running tests before touching any installed binary..."
 ( cd "$REPO_ROOT" && cargo test --workspace -p admin -p subscription -p compat-config ) \
@@ -70,7 +89,19 @@ if ! /usr/local/bin/vpn-health-check; then
     # config.json contains the REALITY private key, VLESS UUIDs, and
     # Hysteria2 passwords in cleartext; restoring it world-readable would
     # undo the whole point of the rollback.
+    # Restore the user store and key material first, then RE-RENDER rather than
+  # reinstating a point-in-time config.json. update.sh holds the installer
+  # lock, not vpn-admin's state lock, so `vpn user create/remove` can and does
+  # run concurrently during the (minutes-long) build above — reinstating the
+  # snapshot silently resurrected users who had been revoked in the meantime.
+  # users.json is the authoritative store; the old binary can regenerate a
+  # correct config from it.
+  [ -f "$BACKUP_DIR/users.json" ] && cp -a "$BACKUP_DIR/users.json" /etc/vpn/compat/users/users.json
+  [ -d "$BACKUP_DIR/reality" ] && cp -a "$BACKUP_DIR/reality/." /etc/vpn/compat/reality/
+  if ! "$BIN_DIR/vpn-admin" --config /etc/vpn/deployment.toml render-config >/dev/null 2>&1; then
+    warn "re-render during rollback failed; falling back to the config.json snapshot."
     cp -a "$BACKUP_DIR/config.json" /etc/vpn/compat/sing-box/config.json
+  fi
   fi
   systemctl restart vpn-subscription
   systemctl reload-or-restart sing-box

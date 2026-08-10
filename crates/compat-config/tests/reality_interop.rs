@@ -12,25 +12,34 @@
 //! the real (pinned) sing-box binary proves the generated material actually
 //! authenticates — see docs/COMPATIBILITY_VERSIONS.md for the pinned version.
 //!
-//! Skipped (not failed) when no usable `sing-box` binary is available, so this
-//! doesn't turn every contributor's machine/CI image into a hard requirement:
-//! set `SING_BOX_BIN=/path/to/sing-box` to point at one explicitly, otherwise
-//! `sing-box` on `PATH` is used if present. CI wires this up with the exact
-//! pinned, checksum-verified binary (see `.github/workflows/ci.yml`'s
-//! `singbox-validate` job) so it is NOT silently skipped in the pipeline that
-//! actually gates merges.
+//! ## The decoy is local, on purpose
 //!
-//! The proxied "traffic" destination is a local, in-process HTTP target
-//! (`tests/common/mod.rs`), never a public third-party host — the only
-//! external network dependency these tests have is the REALITY protocol's
-//! own decoy/camouflage handshake target (`www.microsoft.com:443`), which
-//! is inherent to the protocol itself (the server must perform a real TLS
-//! handshake against a real external site to remain indistinguishable from
-//! one), not a choice made by this test.
+//! REALITY's server must complete a real TLS 1.3 handshake against a real
+//! "handshake server" (decoy) as an inherent part of the protocol. That
+//! dependency is inherent *in kind*; it is not inherent that the decoy be a
+//! third-party CDN. These tests previously dialed `www.microsoft.com`, which
+//! made a merge-gating test depend on which Akamai edge answered — and that
+//! is exactly how the historical CI flake arose (1 pass in 13 runs). The
+//! mechanism is documented and reproduced in `reality_decoy_budget.rs`.
+//!
+//! So these tests spawn a local TLS 1.3 decoy instead. That keeps the
+//! protocol behaviour genuine (real ClientHello, real ServerHello, real
+//! X25519 key share, real certificate flight, real REALITY hijack) while
+//! removing an uncontrolled external variable from a gating test.
+//!
+//! `SING_BOX_BIN=/path/to/sing-box` selects the binary explicitly; otherwise
+//! `sing-box` on `PATH` is used. When neither is available these tests skip,
+//! so a contributor without the binary is not blocked. That skip is a real
+//! hole in a *pipeline* though, so CI sets `VPN1_REQUIRE_REAL_INTEROP=1`,
+//! which converts every skip in this file into a hard failure — a skipped
+//! test is not a pass.
 
 mod common;
 
-use common::{free_port, socks5_http_get_is_200, spawn_local_http_target, wait_for_port};
+use common::{
+    free_port, socks5_http_get_is_200, spawn_local_http_target, wait_for_log_line, DecoyCertSize,
+    LocalDecoy,
+};
 use compat_config::model::{Hysteria2ServerParams, RealityServerParams};
 use compat_config::secret::SecretString;
 use compat_config::server::{render_singbox_server_config, ServerPorts};
@@ -85,13 +94,15 @@ fn build_configs(
     private_key: &str,
     public_key: &str,
     short_id: &str,
+    decoy: &LocalDecoy,
+    target_port: u16,
 ) -> (serde_json::Value, serde_json::Value) {
     let reality = RealityServerParams {
         private_key_hex: SecretString::new(private_key.to_string()),
         public_key_hex: public_key.to_string(),
         short_ids: vec![short_id.to_string()],
-        handshake_server: "www.microsoft.com".into(),
-        handshake_port: 443,
+        handshake_server: decoy.hostname.to_string(),
+        handshake_port: decoy.port,
     };
     // Hysteria2 params are required by the renderer signature but irrelevant
     // to this REALITY-only test; give it a harmless disabled-masquerade shape.
@@ -119,31 +130,11 @@ fn build_configs(
         .as_array_mut()
         .unwrap()
         .retain(|ib| ib["tag"] == "vless-reality-in");
-    // Force the REALITY decoy/camouflage dial (an inherent part of the
-    // protocol — the server must reach a REAL external TLS 1.3 site) to
-    // resolve IPv4-only. Root-caused a real CI failure: this sandbox has
-    // no IPv6 route at all, so the decoy dial to www.microsoft.com is
-    // unambiguously IPv4 here and the handshake succeeds reliably; a
-    // dual-stack CI runner can resolve/dial the decoy over IPv6 instead,
-    // and Akamai's IPv6 edge for that hostname was observed to
-    // negotiate ServerHello parameters (key-share group) that sing-box's
-    // own REALITY implementation's strict validation
-    // (`hs.hello.serverShare.group == X25519 || X25519MLKEM768` in
-    // `metacubex/utls`'s `reality.go`) rejects outright — producing
-    // "REALITY: processed invalid connection" with NO relation to
-    // whether the REALITY key material itself matches. Pinning the
-    // address family removes that network-path-dependent variable so
-    // this test verifies the crate's renderer output, not which IP
-    // family a CDN's edge happened to answer on.
-    server_cfg["inbounds"][0]["tls"]["reality"]["handshake"]["domain_strategy"] =
-        serde_json::json!("ipv4_only");
-    // Diagnostic only, test-scoped: sing-box's own REALITY package logs
-    // its internal auth-verification steps (AuthKey derivation,
-    // ClientVer, ClientTime, ClientShortId, hs.c.conn == conn) via
-    // `logger.Trace`, which needs the "trace" level to surface at all.
-    // Safe to enable unconditionally here — the only values logged are
-    // per-connection ephemeral/derived data from throwaway test
-    // keypairs generated fresh per test run, never a real secret.
+    // Trace level so a failure shows sing-box's own REALITY auth steps
+    // (AuthKey derivation, ClientShortId, the s2cSaved record walk). This is
+    // what distinguishes "key material is wrong" from "the decoy's TLS flight
+    // was rejected" — a distinction three separate commits got wrong. The
+    // keypairs here are generated fresh per run and thrown away.
     server_cfg["log"] = serde_json::json!({ "level": "trace", "timestamp": true });
 
     let endpoint = compat_config::model::CompatEndpoint {
@@ -151,7 +142,7 @@ fn build_configs(
         transport: compat_config::model::CompatTransport::VlessReality,
         host: "127.0.0.1".into(),
         port: reality_port,
-        server_name: Some("www.microsoft.com".into()),
+        server_name: Some(decoy.hostname.to_string()),
         label: "Reality".into(),
         public_parameters: compat_config::model::PublicParameters::Reality {
             public_key_hex: public_key.to_string(),
@@ -168,30 +159,21 @@ fn build_configs(
         "listen": "127.0.0.1",
         "listen_port": mixed_port,
     }]);
-    // Route everything through the reality endpoint's own outbound tag
-    // (render_singbox_client_subscription names it after the endpoint label).
-    client_cfg["route"] = serde_json::json!({ "final": "Reality" });
-    // render_singbox_client_subscription always adds a `urltest` "auto"
-    // selector (spec §22) that fires its OWN immediate health-check
-    // connection through the Reality outbound at sing-box startup — a
-    // SECOND, uncontrolled REALITY connection racing against this
-    // test's own deliberate one. Confirmed as the actual cause of a CI
-    // flake: sing-box's REALITY server logged 3 separate "processed
-    // invalid connection" failures for what this test only initiates
-    // once, and the client log showed the urltest probe's own
-    // connection to www.gstatic.com failing immediately at startup,
-    // racing the mixed-inbound request that follows a few ms later.
-    // This test verifies the crate's rendered VLESS+REALITY outbound
-    // itself, which doesn't require urltest's automatic-selection
-    // machinery at all — drop it (and the now-unreachable "direct"
-    // outbound `route.final` already bypasses) so the ONLY outbound
-    // connection this client process ever makes is the one this test
-    // deliberately triggers, removing that race entirely rather than
-    // trying to out-time it.
-    client_cfg["outbounds"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|ob| ob["tag"] == "Reality");
+    // Keep the production `urltest` "auto" selector and `route.final: "auto"`
+    // EXACTLY as real subscribers receive them — that selector is the
+    // product's advertised failover mechanism, and a test that deletes it
+    // cannot catch a broken tag list or a `route.final` pointing at a
+    // non-existent outbound. It was previously stripped on the theory that
+    // its startup probe raced this test's own connection; that theory was
+    // disproven (the probe authenticates correctly through the same
+    // outbound). The only change made here is retargeting the probe URL at
+    // the local test target so the test has no external dependency.
+    let probe_url = format!("http://127.0.0.1:{target_port}/");
+    for ob in client_cfg["outbounds"].as_array_mut().unwrap() {
+        if ob["type"] == "urltest" {
+            ob["url"] = serde_json::json!(probe_url);
+        }
+    }
 
     (server_cfg, client_cfg)
 }
@@ -200,6 +182,20 @@ fn write_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> s
     let path = dir.join(name);
     std::fs::write(&path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
     path
+}
+
+/// Shared skip policy. A missing `sing-box` must not block a contributor,
+/// but it must NEVER silently pass in the pipeline that gates merges: an
+/// early `return` is reported by Rust's harness as a pass, so CI sets
+/// `VPN1_REQUIRE_REAL_INTEROP=1` and this turns the skip into a failure.
+fn skip_or_fail(reason: &str) {
+    if std::env::var("VPN1_REQUIRE_REAL_INTEROP").is_ok() {
+        panic!(
+            "VPN1_REQUIRE_REAL_INTEROP is set, so this suite must really run, but: {reason}. \
+             Refusing to report a skip as a pass."
+        );
+    }
+    eprintln!("skipping: {reason}");
 }
 
 /// TEST 1 + TEST 8 (spec sections 12/13): generate a real REALITY keypair,
@@ -212,59 +208,75 @@ fn write_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> s
 #[test]
 fn reality_handshake_succeeds_with_matched_keypair() {
     let Some(sb) = common::SingBox::find() else {
-        eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
+        skip_or_fail("no sing-box binary available (set SING_BOX_BIN)");
         return;
     };
-    if !common::tcp_reachable("www.microsoft.com", 443, Duration::from_secs(5)) {
-        eprintln!(
-            "skipping: this environment cannot reach www.microsoft.com:443, the REALITY decoy \
-             target this test's server dials as an inherent part of the protocol — not a failure \
-             of the code under test, just this environment's egress"
-        );
+    let Some(decoy) = common::spawn_local_tls13_decoy(DecoyCertSize::Small) else {
+        skip_or_fail("could not start the local TLS 1.3 decoy (openssl missing?)");
         return;
-    }
+    };
     let (private_key, public_key) = generate_reality_keypair(&sb);
     let short_id = "e54b2158";
 
     let dir = tempfile::tempdir().unwrap();
     let reality_port = free_port();
     let mixed_port = free_port();
+    let target = spawn_local_http_target();
     let (server_cfg, client_cfg) = build_configs(
         reality_port,
         mixed_port,
         &private_key,
         &public_key,
         short_id,
+        &decoy,
+        target.port,
     );
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
     let client_path = write_json(dir.path(), "client.json", &client_cfg);
-    let target = spawn_local_http_target();
     let server_log = dir.path().join("server.log");
     let client_log = dir.path().join("client.log");
 
     let _server = common::Guard(sb.run_logged(&server_path, &server_log));
+    // Wait on the server's OWN readiness line rather than opening a TCP
+    // connection to the REALITY port. A connect-then-drop probe sends no
+    // ClientHello, so REALITY logs it as "processed invalid connection" —
+    // the harness would otherwise manufacture, on every run, the exact
+    // error string that three commits tried to explain.
     assert!(
-        wait_for_port(reality_port, Duration::from_secs(5)),
-        "server never bound its REALITY port. server log:\n{}",
+        wait_for_log_line(&server_log, "sing-box started", Duration::from_secs(10)),
+        "server never reported startup. server log:\n{}",
         common::read_log(&server_log)
     );
     let _client = common::Guard(sb.run_logged(&client_path, &client_log));
     assert!(
-        wait_for_port(mixed_port, Duration::from_secs(5)),
-        "client never bound its local SOCKS port. client log:\n{}",
+        wait_for_log_line(&client_log, "sing-box started", Duration::from_secs(10)),
+        "client never reported startup. client log:\n{}",
         common::read_log(&client_log)
     );
 
-    // Give the diagnostic dump a chance to reflect the final outcome
-    // (the client keeps writing to its log as the handshake/relay
-    // progresses) before reading it back for the assertion message.
     let relay_ok = socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port);
+    // sing-box logs asynchronously; wait for the trace line rather than
+    // sampling the file once, which races the writer.
+    let saw_auth_ok = wait_for_log_line(
+        &server_log,
+        "hs.c.conn == conn: true",
+        Duration::from_secs(5),
+    );
+    let server_log_text = common::read_log(&server_log);
     assert!(
         relay_ok,
         "REALITY handshake/traffic failed through a config produced by this crate's own \
          production renderers with a matched, real keypair.\n--- server log ---\n{}\n--- client log ---\n{}",
-        common::read_log(&server_log),
+        server_log_text,
         common::read_log(&client_log)
+    );
+    // Positive control on the diagnosis, not just the outcome: prove the
+    // server really completed REALITY's hijack. Without this, a future
+    // change that made traffic flow some other way would still pass.
+    assert!(
+        saw_auth_ok,
+        "traffic flowed but the server never reported a completed REALITY \
+         authentication — this test is no longer proving what it claims.\n{server_log_text}"
     );
 }
 
@@ -276,7 +288,11 @@ fn reality_handshake_succeeds_with_matched_keypair() {
 #[test]
 fn reality_handshake_fails_with_mismatched_public_key() {
     let Some(sb) = common::SingBox::find() else {
-        eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
+        skip_or_fail("no sing-box binary available (set SING_BOX_BIN)");
+        return;
+    };
+    let Some(decoy) = common::spawn_local_tls13_decoy(DecoyCertSize::Small) else {
+        skip_or_fail("could not start the local TLS 1.3 decoy (openssl missing?)");
         return;
     };
     let (private_key, _real_public_key) = generate_reality_keypair(&sb);
@@ -286,27 +302,56 @@ fn reality_handshake_fails_with_mismatched_public_key() {
     let dir = tempfile::tempdir().unwrap();
     let reality_port = free_port();
     let mixed_port = free_port();
+    let target = spawn_local_http_target();
     let (server_cfg, client_cfg) = build_configs(
         reality_port,
         mixed_port,
         &private_key,
         &stale_public_key, // client uses a DIFFERENT keypair's public half
         short_id,
+        &decoy,
+        target.port,
     );
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
     let client_path = write_json(dir.path(), "client.json", &client_cfg);
-    let target = spawn_local_http_target();
+    let server_log = dir.path().join("server.log");
+    let client_log = dir.path().join("client.log");
 
-    let _server = common::Guard(sb.run(&server_path));
-    assert!(wait_for_port(reality_port, Duration::from_secs(5)));
-    let _client = common::Guard(sb.run(&client_path));
-    assert!(wait_for_port(mixed_port, Duration::from_secs(5)));
+    let _server = common::Guard(sb.run_logged(&server_path, &server_log));
+    assert!(wait_for_log_line(
+        &server_log,
+        "sing-box started",
+        Duration::from_secs(10)
+    ));
+    let _client = common::Guard(sb.run_logged(&client_path, &client_log));
+    assert!(wait_for_log_line(
+        &client_log,
+        "sing-box started",
+        Duration::from_secs(10)
+    ));
 
     assert!(
         !socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
         "a mismatched REALITY public key must never be able to pass traffic \
          through the tunnel — if this assertion fails, REALITY auth is not \
          actually being enforced"
+    );
+    // A bare `!is_200` is satisfied by EVERY failure mode, including
+    // "sing-box never started" and "the environment has no network" — so on
+    // its own it is a tautology that passes on a completely broken system.
+    // Assert the REASON: the server must have seen the connection and
+    // rejected it at REALITY authentication specifically.
+    let saw_auth_fail = wait_for_log_line(
+        &server_log,
+        "hs.c.conn == conn: false",
+        Duration::from_secs(5),
+    );
+    let server_log_text = common::read_log(&server_log);
+    assert!(
+        saw_auth_fail,
+        "traffic correctly did not flow, but the server never reported a FAILED \
+         REALITY authentication — so this test did not actually demonstrate that \
+         auth is enforced.\n--- server log ---\n{server_log_text}"
     );
 }
 

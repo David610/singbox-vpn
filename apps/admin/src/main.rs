@@ -252,8 +252,34 @@ fn cmd_init(cfg: &DeploymentConfig, rotate: bool) -> Result<()> {
     std::fs::create_dir_all(cfg.users_file().parent().unwrap())?;
 
     let priv_path = cfg.reality_private_key_file();
+    let pub_path = cfg.reality_public_key_file();
+    let sid_path = cfg.reality_dir().join("short_id.txt");
+    let deployment_exists = cfg.singbox_config_file().exists();
+
     if priv_path.exists() {
         if !rotate {
+            // A PARTIAL keyset is not a healthy "already initialised" state.
+            // Returning Ok here when public.key/short_id.txt are missing left
+            // install.sh's subsequent `chown` of those files failing under
+            // `set -e` on every re-run, with no way out except deleting the
+            // private key (which invalidates every client) — a permanent
+            // installer deadlock. Say so instead of reporting success.
+            if !pub_path.exists() || !sid_path.exists() {
+                bail!(
+                    "REALITY key material at {:?} is incomplete: private.key exists but {}. \
+                     This is a partially-written keyset (an interrupted `init`), not a healthy \
+                     deployment, and the public half cannot be recovered from the private half \
+                     here. Re-run with `--rotate` to generate a fresh, coherent keypair — note \
+                     that this invalidates every existing client's configuration and they must \
+                     re-import their subscription.",
+                    cfg.reality_dir(),
+                    match (pub_path.exists(), sid_path.exists()) {
+                        (false, false) => "public.key and short_id.txt are both missing",
+                        (false, true) => "public.key is missing",
+                        _ => "short_id.txt is missing",
+                    }
+                );
+            }
             println!(
                 "REALITY key already present at {priv_path:?}; refusing to overwrite (pass --rotate to replace it deliberately — this breaks every existing client's connection until they re-import)."
             );
@@ -270,17 +296,50 @@ fn cmd_init(cfg: &DeploymentConfig, rotate: bool) -> Result<()> {
         return cmd_reality_rotate(cfg);
     }
 
-    // First-ever generation: no running server/subscription service
-    // depends on the old key yet (there isn't one), so a plain
-    // generate-and-write is sufficient — install.sh's own explicit
-    // chown immediately after this call establishes the file-level
-    // ownership for this very first write (see docs/FINAL_PRODUCTION_AUDIT.md
-    // P0-1/P0-2 for why every SUBSEQUENT write can't rely on that
-    // one-time step).
+    // Key material is absent. Whether a plain generate-and-write is safe
+    // depends on whether anything is ALREADY RUNNING on the old material —
+    // not on whether the private key file happens to exist.
+    //
+    // A rendered sing-box config means there is a live deployment: sing-box
+    // is enforcing key material from that config and vpn-subscription has
+    // the old public key cached in memory. Writing three files and exiting 0
+    // here (which is what this path used to do) leaves disk, generated
+    // config, and both running processes disagreeing — the exact split-brain
+    // the `--rotate` branch above exists to prevent. Route it through the
+    // same transactional flow.
+    if deployment_exists {
+        println!(
+            "REALITY key material is missing but a rendered sing-box config already exists at \
+             {:?} — treating this as a rotation so the new key is rendered, validated, and \
+             loaded by the running services rather than silently diverging from them.",
+            cfg.singbox_config_file()
+        );
+        return cmd_reality_rotate(cfg);
+    }
+
+    // First-ever generation on a host with no deployment yet: nothing is
+    // running that depends on this material. Still written atomically and
+    // durably, because a crash between these three files is what produces
+    // the unrecoverable partial keyset handled above.
     let (private_key, public_key, short_id) = generate_reality_keypair(cfg)?;
-    write_secret_file(&priv_path, &private_key)?;
-    std::fs::write(cfg.reality_public_key_file(), &public_key)?;
-    std::fs::write(cfg.reality_dir().join("short_id.txt"), &short_id)?;
+    install_rotated_key_file(&priv_path, &private_key)?;
+    install_rotated_key_file(&pub_path, &public_key)?;
+    install_rotated_key_file(&sid_path, &short_id)?;
+    // `install_rotated_key_file` preserves an EXISTING target's mode, but
+    // these are first writes with no target to inherit from, so they land
+    // 0600. The REALITY public key and short_id are not secrets and
+    // `vpn-subscription` must be able to read them via its group (the
+    // installer chowns them to root:vpn-subscription right after this) —
+    // 0600 would leave that service unable to read its own material.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for p in [&pub_path, &sid_path] {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o640))
+                .with_context(|| format!("setting mode 0640 on {p:?}"))?;
+        }
+    }
+    fsync_dir(&cfg.reality_dir());
     println!("Generated REALITY keypair at {:?}", cfg.reality_dir());
 
     println!(
@@ -596,7 +655,22 @@ fn write_secret_file(path: &std::path::Path, contents: &str) -> Result<()> {
         .mode(0o600)
         .open(path)?;
     f.write_all(contents.as_bytes())?;
+    // Durability matters here specifically because `config.json` IS fsynced
+    // (see compat-config's `apply_config_atomically`). Without this, a power
+    // loss just after a rotation can persist a config.json holding the NEW
+    // private key while the key files revert to the OLD one — the more
+    // durable write landing and the less durable one not.
+    f.sync_all()?;
     Ok(())
+}
+
+/// Best-effort fsync of a directory, so a rename into it is durable. A
+/// rename is not implicitly fsynced on Linux; without this the directory
+/// entry can be lost even though the file contents were synced.
+fn fsync_dir(dir: &std::path::Path) {
+    if let Ok(handle) = std::fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
 }
 
 #[cfg(not(unix))]
@@ -790,8 +864,7 @@ fn cmd_user_create(
         expires_at,
     };
     users.push(user);
-    store::save_users_atomic(&cfg.users_file(), &users)?;
-    regenerate_singbox_config(cfg)?;
+    save_users_and_apply(cfg, &users)?;
 
     let url = subscription_url(cfg, &token);
     if json {
@@ -845,8 +918,7 @@ fn find_user_mut<'a>(users: &'a mut [CompatUser], id: &str) -> Result<&'a mut Co
 fn cmd_user_set_enabled(cfg: &DeploymentConfig, id: &str, enabled: bool) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     find_user_mut(&mut users, id)?.enabled = enabled;
-    store::save_users_atomic(&cfg.users_file(), &users)?;
-    regenerate_singbox_config(cfg)?;
+    save_users_and_apply(cfg, &users)?;
     println!("{id}: enabled={enabled}");
     Ok(())
 }
@@ -893,8 +965,7 @@ fn rotate_and_apply(
 ) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     mutate(find_user_mut(&mut users, id)?);
-    store::save_users_atomic(&cfg.users_file(), &users)?;
-    regenerate_singbox_config(cfg)?;
+    save_users_and_apply(cfg, &users)?;
     println!("{id}: {what} rotated and applied to the running server.");
     Ok(())
 }
@@ -918,6 +989,52 @@ fn cmd_user_rotate_credentials(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     })
 }
 
+/// Persist a user-store change and push it to the running server as ONE
+/// unit, rolling `users.json` back if the config apply/reload fails.
+///
+/// Every user mutation previously did `save_users_atomic(...)?;
+/// regenerate_singbox_config(...)?;` with nothing compensating the first
+/// call when the second failed — or when the process died between them.
+/// The consequences were not symmetric or cosmetic:
+///
+///   * `user remove` / `user disable`: the user vanishes from the
+///     authoritative store while the RUNNING server still authorizes them.
+///     Revocation silently does not take effect, and because nothing
+///     reconciles automatically, nothing ever notices.
+///   * `user create`: the record is committed and the raw subscription
+///     token — printed only AFTER the render — is lost forever.
+///
+/// Rolling the store back means a failed mutation leaves disk and the
+/// running server agreeing on the PREVIOUS state, which is a state the
+/// operator can reason about and simply retry.
+fn save_users_and_apply(cfg: &DeploymentConfig, users: &[CompatUser]) -> Result<()> {
+    let users_path = cfg.users_file();
+    let had_backup = backup_for_rotate(&users_path)?.is_some();
+    store::save_users_atomic(&users_path, users)?;
+    match regenerate_singbox_config(cfg) {
+        Ok(()) => {
+            if had_backup {
+                remove_rotate_backup(&users_path);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if had_backup {
+                let _ = restore_from_rotate_backup(&users_path);
+            } else {
+                // There was no user store before this call, so "previous
+                // state" is "no store at all".
+                let _ = std::fs::remove_file(&users_path);
+            }
+            Err(e).context(
+                "the user store change was ROLLED BACK because the server config could not be \
+                 applied — disk and the running server are both still on the previous state, and \
+                 the command can simply be retried",
+            )
+        }
+    }
+}
+
 fn cmd_user_remove(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     let before = users.len();
@@ -925,8 +1042,7 @@ fn cmd_user_remove(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     if users.len() == before {
         bail!("no such user: {id}");
     }
-    store::save_users_atomic(&cfg.users_file(), &users)?;
-    regenerate_singbox_config(cfg)?;
+    save_users_and_apply(cfg, &users)?;
     println!("{id}: removed");
     Ok(())
 }
@@ -1863,19 +1979,32 @@ fn check_l5_l6_protocol_selftest(cfg: &DeploymentConfig, failures: &mut u32) {
                  relayed a real request end-to-end"
             ),
         ),
-        Ok(RealitySelfTestOutcome::DefiniteAuthFailure) => {
+        Ok(RealitySelfTestOutcome::HandshakeRejected) => {
             report_check(
                 CheckStatus::Fail,
                 "L5-6",
                 format!(
-                    "protocol self-test FAILED: the throwaway sing-box client itself rejected the \
-                     server's handshake response as unverifiable against the CURRENT REALITY \
-                     public_key/short_id through 127.0.0.1:{port} (\"reality verification \
-                     failed\"/\"processed invalid connection\") — this is a real client-side \
-                     rejection, not a timeout, and does not depend on the synthetic test UUID being \
-                     registered. A real Hiddify client using this same key material would fail \
-                     identically. Check `journalctl -u sing-box` and re-verify REALITY key \
-                     coherence with `vpn-admin doctor` (the L4 checks above)."
+                    "protocol self-test FAILED: a throwaway sing-box client using the CURRENT \
+                     REALITY public_key/short_id could not complete a handshake through \
+                     127.0.0.1:{port}. A real Hiddify client using this same key material would \
+                     fail identically.\n\
+                     \n\
+                     TWO DIFFERENT CAUSES produce this, and sing-box logs the SAME message \
+                     (\"REALITY: processed invalid connection\") for both — do not assume the \
+                     first one:\n\
+                     \n\
+                     (a) The REALITY key material really is mismatched. The L4 checks above test \
+                     exactly that; if they passed, this is NOT your cause.\n\
+                     \n\
+                     (b) The configured handshake_server (\"{decoy}\") returns a TLS 1.3 flight \
+                     that sing-box's REALITY implementation refuses. It rejects ANY record larger \
+                     than its hard-coded 8192-byte budget (metacubex/utls reality.go: \
+                     `if handshakeLen > int(realitySize) {{ break f }}`), which an oversized \
+                     certificate chain easily exceeds. Authentication SUCCEEDS and the connection \
+                     is still dropped. This is edge- and CDN-dependent, so it can appear without \
+                     any change on your side. Try a different handshake_server and re-run this \
+                     check.",
+                    decoy = reality.handshake_server
                 ),
             );
             *failures += 1;
@@ -2033,34 +2162,46 @@ fn run_reality_client_selftest(
     if relay_ok {
         return Ok(RealitySelfTestOutcome::Pass);
     }
-    // A definitive signal, not a guess: OUR OWN throwaway client — built
-    // from the CURRENT REALITY public_key/short_id, exactly as a real
-    // subscription would hand a real client — independently determined
-    // the server's handshake response does not verify. This check does
-    // NOT depend on the synthetic UUID being registered (REALITY's TLS
-    // layer is validated before VLESS-level UUID lookup is ever reached
-    // — see docs/COMPATIBILITY_VERSIONS.md), so this is real evidence of
-    // a REALITY key/short_id mismatch, not an artifact of the UUID being
-    // fake. Distinct from a bare timeout, which proves nothing either
-    // way (see the caller's WARN path for that case).
+    // A definitive signal that the handshake does not work — our own
+    // throwaway client, built from the CURRENT REALITY public_key/short_id
+    // exactly as a real subscription would hand a real client, could not
+    // complete it. This does NOT depend on the synthetic UUID being
+    // registered (REALITY's TLS layer is validated before VLESS-level UUID
+    // lookup is reached), so it is real evidence about REALITY.
+    //
+    // What it is NOT is evidence about the CAUSE. "processed invalid
+    // connection" is sing-box's message for any connection that fails to
+    // complete REALITY's hijack — including one whose key material is
+    // perfect but whose handshake_server returned an over-budget TLS record
+    // (see `crates/compat-config/tests/reality_decoy_budget.rs`). The
+    // caller reports both possibilities; it must not claim a key mismatch.
+    // Distinct from a bare timeout, which proves nothing either way (see
+    // the caller's WARN path).
     if captured_stderr.contains("reality verification failed")
         || captured_stderr.contains("processed invalid connection")
     {
-        return Ok(RealitySelfTestOutcome::DefiniteAuthFailure);
+        return Ok(RealitySelfTestOutcome::HandshakeRejected);
     }
     Ok(RealitySelfTestOutcome::Inconclusive)
 }
 
 /// See `run_reality_client_selftest`'s doc comment for how these are
-/// distinguished. `Pass`/`DefiniteAuthFailure` are hard verdicts about
-/// the server's REALITY key material; `Inconclusive` means exactly that
+/// distinguished.
+///
+/// `HandshakeRejected` is a hard verdict that the handshake does not work,
+/// but deliberately NOT a verdict about *why*: sing-box emits the same
+/// "processed invalid connection" for a key/short_id mismatch and for a
+/// handshake_server whose TLS records exceed REALITY's 8192-byte budget
+/// (auth succeeds, connection still dropped). Conflating the two is what
+/// sent three separate investigations after the wrong cause. `Inconclusive`
+/// means exactly that
 /// — a timeout with no corroborating client-side rejection proves
 /// nothing about which layer, if any, is broken (could be no outbound
 /// path to the REALITY decoy target, an unrelated transient failure,
 /// etc.), so it must never be reported as if it were either verdict.
 enum RealitySelfTestOutcome {
     Pass,
-    DefiniteAuthFailure,
+    HandshakeRejected,
     Inconclusive,
 }
 
@@ -2226,28 +2367,58 @@ fn tempdir_here() -> Result<tempfile::TempDir> {
     tempfile::tempdir().context("creating temporary staging directory")
 }
 
-// Restore later reads/copies a handful of known relative paths out of
-// the extracted archive (users/users.json, reality/private.key, ...).
-// If any of those paths — or anything else in the extracted tree — is a
-// symlink, following it would read or copy whatever the symlink target
-// happens to be instead of the archive's own content (a hostile or
-// corrupted backup archive can plant such a symlink). Walk the whole
-// extracted tree and refuse to restore from it if any entry is a
-// symlink, before any of that content is read.
-fn reject_symlinks(dir: &std::path::Path) -> Result<()> {
+/// Refuse to restore from an archive containing anything that is not a
+/// plain file or directory.
+///
+/// Restore reads a handful of known relative paths out of the extracted
+/// tree. A hostile or corrupted archive can plant other entry types there,
+/// and each one is a distinct failure:
+///   * **symlink** — reading it yields whatever the target happens to be
+///     instead of the archive's own content.
+///   * **FIFO** — `std::fs::read` on it blocks forever with no writer, and
+///     restore holds the global `/run/lock/vpn1.lock` while it does, so
+///     every subsequent `vpn user …`, rotation and restore deadlocks too.
+///     (Reproduced: the process simply never returns.)
+///   * **character/block device** — `read` on e.g. `/dev/zero` consumes
+///     memory without bound until the OOM killer intervenes, which on a VPS
+///     means it takes sing-box or nginx with it.
+///
+/// `tar` runs as root during restore, so all of these are really created.
+/// Rejecting by entry type up front is cheaper and more complete than
+/// hardening each read site.
+fn reject_non_regular_entries(dir: &std::path::Path) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading directory {dir:?}"))? {
         let entry = entry?;
         let path = entry.path();
         let meta = std::fs::symlink_metadata(&path)
             .with_context(|| format!("reading metadata for {path:?}"))?;
-        if meta.file_type().is_symlink() {
+        let ft = meta.file_type();
+        if ft.is_symlink() {
             bail!(
                 "backup archive contains a symlink at {path:?} — refusing to restore \
                  (symlinked entries are not supported for security reasons)"
             );
         }
-        if meta.is_dir() {
-            reject_symlinks(&path)?;
+        if ft.is_dir() {
+            reject_non_regular_entries(&path)?;
+            continue;
+        }
+        if !ft.is_file() {
+            bail!(
+                "backup archive contains a non-regular file at {path:?} (FIFO, socket or device \
+                 node) — refusing to restore: reading such an entry can block forever while \
+                 holding the deployment-wide state lock, or consume memory without bound"
+            );
+        }
+        // A regular file that is implausibly large for this archive's
+        // contents is also refused, before anything reads it into memory.
+        const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+        if meta.len() > MAX_ENTRY_BYTES {
+            bail!(
+                "backup archive entry {path:?} is {} bytes, far larger than any file this \
+                 archive should contain — refusing to restore",
+                meta.len()
+            );
         }
     }
     Ok(())
@@ -2269,8 +2440,8 @@ fn cmd_restore(
     if !status.success() {
         bail!("tar exited with failure extracting {archive:?}");
     }
-    reject_symlinks(staging.path())
-        .context("scanning extracted backup archive for symlink entries")?;
+    reject_non_regular_entries(staging.path())
+        .context("scanning extracted backup archive for hostile entry types")?;
 
     // Validate before touching any live state (spec §20: "Validate
     // restored data before replacing active state").
@@ -2286,13 +2457,36 @@ fn cmd_restore(
     if !reality_key_path.exists() {
         bail!("archive does not contain reality/private.key — refusing to restore");
     }
+    // The REALITY triple must be restored as a SET. Restoring a new
+    // private.key next to the live host's OLD public.key/short_id produces
+    // a guaranteed split-brain: sing-box enforces the restored private key
+    // while vpn-subscription keeps advertising the old public half, and
+    // every client fails REALITY's handshake. Previously the last four
+    // targets were restored only `if src.exists()`, so an archive with a
+    // private key and nothing else reported success.
+    for required in ["reality/public.key", "reality/short_id.txt"] {
+        if !staging.path().join(required).exists() {
+            bail!(
+                "archive contains reality/private.key but not {required} — refusing to restore \
+                 a partial REALITY keyset, which would leave the server enforcing one key while \
+                 the subscription service advertises another"
+            );
+        }
+    }
+    let hy_cert = staging.path().join("hysteria/cert.pem");
+    let hy_key = staging.path().join("hysteria/key.pem");
+    if hy_cert.exists() != hy_key.exists() {
+        bail!(
+            "archive contains only one half of the Hysteria2 TLS pair — refusing to restore a \
+             mismatched certificate/key"
+        );
+    }
 
     // Only after validation: copy into place.
     std::fs::create_dir_all(cfg.reality_dir())?;
     std::fs::create_dir_all(cfg.hysteria_dir())?;
     std::fs::create_dir_all(cfg.users_file().parent().unwrap())?;
 
-    store::save_users_atomic(&cfg.users_file(), &restored_users)?;
     let restore_targets: [(&str, PathBuf); 5] = [
         ("reality/private.key", cfg.reality_private_key_file()),
         ("reality/public.key", cfg.reality_public_key_file()),
@@ -2303,11 +2497,82 @@ fn cmd_restore(
         ("hysteria/cert.pem", cfg.hysteria_dir().join("cert.pem")),
         ("hysteria/key.pem", cfg.hysteria_dir().join("key.pem")),
     ];
-    for (rel, dest) in restore_targets {
-        let src = staging.path().join(rel);
-        if src.exists() {
-            std::fs::copy(&src, dest)?;
+
+    // Back EVERYTHING up before touching any of it, so a failure part-way
+    // through can put the deployment back exactly as it was. `restore` was
+    // the only mutating command with no rollback at all, while the rotation
+    // path right next to it builds precisely this scaffolding.
+    let users_path = cfg.users_file();
+    let users_had_backup = backup_for_rotate(&users_path)?.is_some();
+    let mut backed_up: Vec<(PathBuf, bool)> = Vec::new();
+    for (_, dest) in &restore_targets {
+        let existed = backup_for_rotate(dest)?.is_some();
+        backed_up.push((dest.clone(), existed));
+    }
+    let rollback = |backed_up: &[(PathBuf, bool)]| {
+        for (dest, existed) in backed_up {
+            if *existed {
+                let _ = restore_from_rotate_backup(dest);
+            } else {
+                let _ = std::fs::remove_file(dest);
+            }
         }
+        if users_had_backup {
+            let _ = restore_from_rotate_backup(&users_path);
+        } else {
+            let _ = std::fs::remove_file(&users_path);
+        }
+    };
+
+    let install_all = || -> Result<()> {
+        store::save_users_atomic(&users_path, &restored_users)?;
+        for (rel, dest) in &restore_targets {
+            let src = staging.path().join(rel);
+            if !src.exists() {
+                continue;
+            }
+            // Read-and-write rather than `fs::copy`. `fs::copy` propagates
+            // the SOURCE file's permission bits to the destination, and the
+            // source here is attacker-influenced archive metadata — a mode
+            // of 04777 in a tar header became the live mode of
+            // reality/private.key. It also creates the destination
+            // root-owned when it doesn't already exist, which leaves
+            // sing-box (running as Group=sing-box) unable to read its own
+            // private key on a rebuilt host.
+            let contents = std::fs::read(&src)
+                .with_context(|| format!("reading {rel} from the backup archive"))?;
+            let text = String::from_utf8(contents)
+                .with_context(|| format!("{rel} in the backup archive is not valid UTF-8"))?;
+            install_rotated_key_file(dest, &text)
+                .with_context(|| format!("installing restored {rel}"))?;
+            // `install_rotated_key_file` preserves the TARGET's existing
+            // mode, which is right for public.key/short_id.txt/cert.pem
+            // (0640, readable by the vpn-subscription / sing-box groups).
+            // For the two PRIVATE keys, preserving is not enough — restore
+            // must never leave a private key group- or world-accessible,
+            // whatever the destination happened to be beforehand.
+            #[cfg(unix)]
+            if matches!(*rel, "reality/private.key" | "hysteria/key.pem") {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(dest)?.permissions();
+                if perms.mode() & 0o077 != 0 {
+                    perms.set_mode(perms.mode() & !0o077);
+                    std::fs::set_permissions(dest, perms)
+                        .with_context(|| format!("tightening permissions on restored {rel}"))?;
+                }
+            }
+        }
+        fsync_dir(&cfg.reality_dir());
+        fsync_dir(&cfg.hysteria_dir());
+        Ok(())
+    };
+
+    if let Err(e) = install_all() {
+        rollback(&backed_up);
+        return Err(e).context(
+            "restore FAILED and was rolled back — the deployment is unchanged and still running \
+             its previous key material and user store",
+        );
     }
 
     let restored_deployment_toml = staging.path().join("deployment.toml");
@@ -2320,11 +2585,29 @@ fn cmd_restore(
         );
     }
 
+    // Deliberately NOT announcing success yet: the previous ordering printed
+    // "Restored N user(s)…" and only then applied the config, so a rejected
+    // config produced a success line immediately followed by an error, with
+    // the deployment left half-restored.
+    if let Err(e) = regenerate_singbox_config(cfg) {
+        rollback(&backed_up);
+        return Err(e).context(
+            "restore FAILED while applying the restored configuration and was rolled back — the \
+             deployment is unchanged and still running its previous key material and user store",
+        );
+    }
+    for (dest, existed) in &backed_up {
+        if *existed {
+            remove_rotate_backup(dest);
+        }
+    }
+    if users_had_backup {
+        remove_rotate_backup(&users_path);
+    }
     println!(
         "Restored {} user(s) and REALITY/Hysteria2 material from {archive:?}.",
         restored_users.len()
     );
-    regenerate_singbox_config(cfg)?;
 
     // The archive always contains REALITY private/public key + short_id
     // (checked above) and may differ from whatever key material was live

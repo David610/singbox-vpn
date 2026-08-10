@@ -177,6 +177,21 @@ fn write_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> s
     path
 }
 
+/// Shared skip policy — see `reality_interop.rs`. A missing `sing-box` or
+/// `openssl` must not block a contributor, but an early `return` is reported
+/// by Rust's harness as a PASS, so the pipeline that gates merges sets
+/// `VPN1_REQUIRE_REAL_INTEROP=1` and this turns every skip into a failure.
+/// A skipped test is not a pass.
+fn skip_or_fail(reason: &str) {
+    if std::env::var("VPN1_REQUIRE_REAL_INTEROP").is_ok() {
+        panic!(
+            "VPN1_REQUIRE_REAL_INTEROP is set, so this suite must really run, but: {reason}. \
+             Refusing to report a skip as a pass."
+        );
+    }
+    eprintln!("skipping: {reason}");
+}
+
 /// Real end-to-end Hysteria2: generate a throwaway TLS cert, render
 /// server+client config through the crate's OWN production renderers
 /// with a matching password, run a real sing-box server and client over
@@ -184,12 +199,12 @@ fn write_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> s
 #[test]
 fn hysteria2_handshake_succeeds_with_matched_password() {
     let Some(sb) = common::SingBox::find() else {
-        eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
+        skip_or_fail("no sing-box binary available (set SING_BOX_BIN)");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
     let Some((cert, key)) = generate_self_signed_cert(dir.path(), "hysteria2-test.invalid") else {
-        eprintln!("skipping: openssl not available to generate a test certificate");
+        skip_or_fail("openssl not available to generate a test certificate");
         return;
     };
 
@@ -239,12 +254,12 @@ fn hysteria2_handshake_succeeds_with_matched_password() {
 #[test]
 fn hysteria2_handshake_fails_with_wrong_password() {
     let Some(sb) = common::SingBox::find() else {
-        eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
+        skip_or_fail("no sing-box binary available (set SING_BOX_BIN)");
         return;
     };
     let dir = tempfile::tempdir().unwrap();
     let Some((cert, key)) = generate_self_signed_cert(dir.path(), "hysteria2-test.invalid") else {
-        eprintln!("skipping: openssl not available to generate a test certificate");
+        skip_or_fail("openssl not available to generate a test certificate");
         return;
     };
 

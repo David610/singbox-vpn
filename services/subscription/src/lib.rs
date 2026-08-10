@@ -26,10 +26,29 @@ pub struct AppState {
     pub rate_limiter: Mutex<RateLimiter>,
 }
 
-/// Same per-source-IP token-bucket approach as `services/rendezvous`
-/// (see `docs/RENDEZVOUS_DESIGN.md`) — adequate for a single VPS, an
-/// edge/CDN limiter is the documented follow-up for a larger deployment.
+/// Deployment-wide backstop token bucket.
+///
+/// This is deliberately NOT per-source-IP. In the shipped deployment this
+/// service is bound to loopback behind nginx, which does not forward
+/// `X-Forwarded-For` (deliberately — see the vhost template), so every
+/// request arrives from `127.0.0.1`. A per-IP limiter therefore collapses
+/// to a single shared bucket, and a per-IP *rate* becomes a global one: at
+/// the previous 20-token/0.5-per-second setting, one client sending 5 r/s
+/// — comfortably inside what nginx's own per-IP `limit_req` permits, so
+/// nginx never intervenes — held the shared bucket permanently empty and
+/// locked every other user out of subscription delivery indefinitely.
+///
+/// Per-client fairness is nginx's job (`limit_req zone=...` keyed on
+/// `$binary_remote_addr`, which does see real client addresses). This
+/// limiter's only remaining job is to stop a runaway or a
+/// bypassed-the-proxy caller from saturating the backend, so it is sized
+/// for the whole deployment and it logs when it engages — a silent global
+/// denial is exactly what made the previous behaviour so hard to see.
 pub struct RateLimiter {
+    /// Retained only so a deployment that binds this service directly to a
+    /// public interface (not the shipped configuration) still gets some
+    /// per-peer separation. Entries are evicted once refilled to capacity
+    /// so this cannot grow without bound.
     buckets: HashMap<IpAddr, (f64, Instant)>,
     capacity: f64,
     refill_per_sec: f64,
@@ -50,11 +69,59 @@ impl RateLimiter {
         let elapsed = now.duration_since(*last).as_secs_f64();
         *tokens = (*tokens + elapsed * self.refill_per_sec).min(self.capacity);
         *last = now;
-        if *tokens >= 1.0 {
+        let allowed = if *tokens >= 1.0 {
             *tokens -= 1.0;
             true
         } else {
             false
+        };
+        self.evict_full_buckets(now);
+        allowed
+    }
+
+    /// Number of live per-peer buckets. Test/diagnostic accessor.
+    pub fn bucket_count(&self) -> usize {
+        self.buckets.len()
+    }
+
+    /// Bound the bucket map.
+    ///
+    /// It is keyed by peer address, and nothing removed entries: an attacker
+    /// with an IPv6 /64 can mint a fresh source address per request and grow
+    /// it without limit. Two passes, cheapest first: drop buckets that have
+    /// fully refilled and gone idle (the common, honest case), then — if
+    /// still over the cap — keep only the most recently seen addresses.
+    ///
+    /// Evicting a bucket resets that peer to full capacity, which is
+    /// fail-open. That is the right trade for a deployment-wide backstop
+    /// whose per-client fairness is enforced upstream by nginx: unbounded
+    /// memory growth on a long-running service is the worse failure.
+    ///
+    /// High/low water marks matter: evicting down to the same threshold that
+    /// triggers eviction would run this pass on every single request once the
+    /// map is full, turning an O(1) limiter into an O(n log n) one. Trimming
+    /// to half means it runs once per `MAX_BUCKETS/2` inserts instead.
+    fn evict_full_buckets(&mut self, now: Instant) {
+        const MAX_BUCKETS: usize = 8192;
+        const TRIM_TO: usize = MAX_BUCKETS / 2;
+        if self.buckets.len() <= MAX_BUCKETS {
+            return;
+        }
+        let idle_for = (self.capacity / self.refill_per_sec.max(f64::MIN_POSITIVE)).max(1.0);
+        let capacity = self.capacity;
+        self.buckets.retain(|_, (tokens, last)| {
+            *tokens < capacity || now.duration_since(*last).as_secs_f64() < idle_for
+        });
+        if self.buckets.len() > TRIM_TO {
+            let mut seen: Vec<(IpAddr, Instant)> = self
+                .buckets
+                .iter()
+                .map(|(ip, (_, last))| (*ip, *last))
+                .collect();
+            seen.sort_by(|a, b| b.1.cmp(&a.1));
+            let keep: std::collections::HashSet<IpAddr> =
+                seen.into_iter().take(TRIM_TO).map(|(ip, _)| ip).collect();
+            self.buckets.retain(|ip, _| keep.contains(ip));
         }
     }
 }
@@ -96,6 +163,16 @@ async fn get_subscription(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !limiter.allow(addr.ip()) {
+            // Log it: this limiter is a deployment-wide backstop, so it
+            // firing means the whole service is shedding load, not that one
+            // noisy client is being trimmed. Silence here previously made a
+            // total subscription outage indistinguishable from normal
+            // operation. No token or user id is logged.
+            tracing::warn!(
+                peer = %addr.ip(),
+                "subscription backend rate limit engaged — requests are being shed \
+                 service-wide; per-client fairness is enforced by nginx"
+            );
             return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
         }
     }
@@ -388,6 +465,68 @@ mod tests {
         assert!(
             !s.contains("short"),
             "must never leak the raw short_id value"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_regression {
+    use super::RateLimiter;
+    use std::net::IpAddr;
+
+    fn ip(n: u8) -> IpAddr {
+        IpAddr::from([127, 0, 0, n])
+    }
+
+    /// Regression guard for the deployment-wide lockout.
+    ///
+    /// In the shipped configuration this service sits behind nginx, which
+    /// does not forward the client address, so EVERY request arrives from
+    /// 127.0.0.1 and the "per-IP" bucket is really one global bucket. With
+    /// the old 20-token / 0.5-per-second budget, a single caller sending
+    /// ~5 r/s — well inside nginx's own per-IP allowance, so nginx never
+    /// intervened — kept that bucket empty and denied subscription delivery
+    /// to every user of the deployment, indefinitely.
+    ///
+    /// The bucket must be sized so that a burst of that shape drains and
+    /// recovers within a second, not within minutes.
+    #[test]
+    fn a_single_source_burst_does_not_lock_out_the_deployment() {
+        let mut limiter = RateLimiter::new(200.0, 50.0);
+        // Attacker burns a full burst from one source.
+        let mut denied = 0;
+        for _ in 0..400 {
+            if !limiter.allow(ip(1)) {
+                denied += 1;
+            }
+        }
+        assert!(denied > 0, "test is not actually exhausting the bucket");
+
+        // Recovery must be on the order of a second, not minutes. At the old
+        // 0.5 tokens/sec this needed ~400 seconds; at 50/sec it is ~4s, so
+        // 200ms of refill is enough to serve a legitimate request again.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            limiter.allow(ip(2)),
+            "a legitimate request was still denied after a burst from another source —              one caller can lock out the whole deployment"
+        );
+    }
+
+    /// The bucket map is keyed by peer address, so it must not grow without
+    /// bound when addresses are cheap to mint (an IPv6 /64 gives an attacker
+    /// effectively unlimited distinct sources).
+    #[test]
+    fn bucket_map_does_not_grow_without_bound() {
+        let mut limiter = RateLimiter::new(200.0, 50.0);
+        for i in 0..20_000u32 {
+            let octets = i.to_be_bytes();
+            limiter.allow(IpAddr::from([10, octets[1], octets[2], octets[3]]));
+        }
+        assert!(
+            limiter.bucket_count() <= 8192,
+            "rate-limiter bucket map retained every distinct source address \
+             ({} entries) — unbounded memory growth",
+            limiter.bucket_count()
         );
     }
 }

@@ -25,6 +25,12 @@ set -Eeuo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STATE_DIR="/etc/vpn/compat"
 DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
+# The backend port is configurable ([subscription] listen_port) and the
+# deployment.toml template explicitly invites hand-editing, but this probe
+# hardcoded 9100 — so changing the port made a HEALTHY deployment fail here
+# (and made install.sh's equivalent probe abort a healthy install).
+SUBSCRIPTION_BACKEND_PORT="$(awk '/^\[subscription\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*listen_port[[:space:]]*=/{gsub(/[^0-9]/,"",$0); print; exit}' "$DEPLOYMENT_TOML" 2>/dev/null || true)"
+: "${SUBSCRIPTION_BACKEND_PORT:=9100}"
 BIN_DIR="/usr/local/bin"
 SINGBOX_VERSION="1.13.14"
 # Pinned expected SHA256 for the exact release assets fetched by
@@ -96,7 +102,18 @@ existing_install_present() {
 # deployment, not repair it, exactly like PUBLIC_HOST above.
 resolve_subscription_port() {
   if [ -n "${SUBSCRIPTION_PORT:-}" ] && [ -f "$DEPLOYMENT_TOML" ]; then
-    : # already resolved earlier in this run; do not re-derive.
+    # The committed port always wins on a re-run — `render_deployment_toml`
+    # refuses to rewrite an existing deployment.toml, so honouring the env
+    # override here pointed nginx, the firewall and the SELinux label at one
+    # port while the subscription service and every generated subscription
+    # URL still used the committed one. Refuse rather than split-brain.
+    local committed
+    committed="$(awk -F'=' '/^[[:space:]]*public_port[[:space:]]*=/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "$DEPLOYMENT_TOML" 2>/dev/null || true)"
+    if [ -n "$committed" ] && [ "$committed" != "$SUBSCRIPTION_PORT" ]; then
+      die "SUBSCRIPTION_PORT=$SUBSCRIPTION_PORT was supplied, but this deployment is already committed to port $committed in $DEPLOYMENT_TOML.
+Changing the port is not a re-run: it needs deployment.toml updated AND vpn-subscription restarted (it caches the port at startup) AND the old firewall rule removed.
+Either re-run without SUBSCRIPTION_PORT to keep $committed, or change public_port in $DEPLOYMENT_TOML first."
+    fi
   elif [ -f "$DEPLOYMENT_TOML" ]; then
     local existing_port
     existing_port="$(grep -E '^public_port' "$DEPLOYMENT_TOML" | sed -E 's/^public_port *= *([0-9]+).*/\1/')"
@@ -155,7 +172,17 @@ acquire_installer_lock() {
   # deadlock the instant it did so.
   mkdir -p /run/lock
   exec 200>/run/lock/vpn1-installer.lock
-  flock -x 200
+  # Bounded, and say so BEFORE blocking: an unbounded `flock` produced a
+  # completely silent hang at stage 1 with no output at all. The lock fd is
+  # inherited by children (dnf/cargo/certbot/curl), so an orphaned child
+  # that outlives a `kill -9`'d installer keeps holding it — hence the
+  # pointer to `fuser` in the failure message.
+  if ! flock -x -w 600 200; then
+    die "another install.sh/update.sh appears to be running and did not finish within 10 minutes.
+If none is running, an orphaned child process may still be holding the lock:
+  fuser -v /run/lock/vpn1-installer.lock
+and kill whatever it reports before retrying."
+  fi
   log "acquired installer lock (/run/lock/vpn1-installer.lock) — no other install.sh/update.sh can run concurrently."
 }
 
@@ -371,7 +398,14 @@ fetch_release_binaries() {
 
 install_rustup_noninteractive() {
   log "cargo not found; installing a Rust toolchain via rustup (no prebuilt release was available)..."
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null
+  # Same stalled-transfer protection as every other download here: a
+  # connection that is established and then goes quiet is not a failed
+  # transfer, so `--max-time`/`--speed-limit` are what actually bound it.
+  # This path was missed when the other call sites were fixed, and it is
+  # the one that runs whenever no prebuilt release is available — i.e. the
+  # default today.
+  curl --proto '=https' --tlsv1.2 -sSf "${CURL_NET_FLAGS[@]}" https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null
   # shellcheck disable=SC1091
   . "$HOME/.cargo/env"
 }
@@ -610,8 +644,21 @@ firewall_close_port_80_temp() {
 attempt_automatic_certbot() {
   local host="$1" opened_port_80=0
   command -v certbot >/dev/null 2>&1 || { warn "certbot not installed; cannot auto-provision a certificate for $host."; return 1; }
+  # Stop nginx FIRST, then check. On the Debian family `apt-get install
+  # nginx` starts nginx immediately with a default :80 vhost, so checking
+  # before stopping made this return 1 on every fresh Ubuntu/Debian install
+  # — the certificate stage then aborted the whole installer, and nginx was
+  # left running so a re-run failed identically. `certificates_stage`
+  # restarts nginx afterwards on the success path; `nginx_was_stopped`
+  # records that we are responsible for it on the failure paths too.
+  local nginx_was_stopped=0
+  if systemctl is-active --quiet nginx 2>/dev/null; then
+    systemctl stop nginx 2>/dev/null || true
+    nginx_was_stopped=1
+  fi
   if ! preflight_check_port_free tcp 80 >/dev/null 2>&1; then
-    warn "port 80/tcp is occupied; certbot's standalone HTTP-01 challenge cannot run automatically for $host."
+    warn "port 80/tcp is occupied by something other than nginx; certbot's standalone HTTP-01 challenge cannot run automatically for $host."
+    [ "$nginx_was_stopped" -eq 1 ] && systemctl start nginx 2>/dev/null || true
     return 1
   fi
   if firewall_open_port_80_temp; then
@@ -619,7 +666,6 @@ attempt_automatic_certbot() {
     log "temporarily allowed inbound TCP/80 for the ACME HTTP-01 challenge."
   fi
   log "requesting a Let's Encrypt certificate for $host via certbot (HTTP-01, standalone)..."
-  systemctl stop nginx 2>/dev/null || true
   local rc=0
   certbot certonly --standalone -d "$host" --non-interactive --agree-tos \
       -m "admin@$host" --no-eff-email >/dev/null 2>&1 || rc=$?
@@ -795,6 +841,11 @@ init_reality_keys() {
   chown root:sing-box "$STATE_DIR/reality/private.key"
   chmod 0640 "$STATE_DIR/reality/private.key"
   chown root:vpn-subscription "$STATE_DIR/reality/public.key" "$STATE_DIR/reality/short_id.txt"
+  # Explicit, not inherited from whatever umask created them: these must be
+  # group-readable or vpn-subscription cannot read the public key and short
+  # id it serves. Relying on a 0644-by-umask default meant the correct mode
+  # here was an accident of the writing process's umask.
+  chmod 0640 "$STATE_DIR/reality/public.key" "$STATE_DIR/reality/short_id.txt"
   chmod 0640 "$STATE_DIR/reality/public.key" "$STATE_DIR/reality/short_id.txt"
 }
 
@@ -835,6 +886,7 @@ configure_nginx() {
   local port="${SUBSCRIPTION_PORT:-8443}"
   sed -e "s/{{SUBSCRIPTION_HOST}}/$host/" -e "s/{{PUBLIC_HOST}}/${PUBLIC_HOST:-$host}/" \
       -e "s/{{SUBSCRIPTION_PORT}}/$port/" \
+      -e "s/{{SUBSCRIPTION_BACKEND_PORT}}/$SUBSCRIPTION_BACKEND_PORT/" \
     "$REPO_ROOT/deploy/almalinux/templates/nginx-vpn-subscription.conf.template" >"$NGINX_CONF.tmp"
   install -d -m 0755 "$(dirname "$NGINX_CONF")"
   install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"
@@ -1022,7 +1074,7 @@ confirm_subscription_backend() {
   systemctl is-active --quiet vpn-subscription || die "vpn-subscription is not active after start."
   local tries=0
   while [ "$tries" -lt 10 ]; do
-    curl -fsS -o /dev/null http://127.0.0.1:9100/healthz 2>/dev/null && { SUBSCRIPTION_BACKEND_OK=1; break; }
+    curl -fsS --connect-timeout 5 --max-time 10 -o /dev/null http://127.0.0.1:${SUBSCRIPTION_BACKEND_PORT}/healthz 2>/dev/null && { SUBSCRIPTION_BACKEND_OK=1; break; }
     tries=$((tries + 1))
     sleep 0.5
   done

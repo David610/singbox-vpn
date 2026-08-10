@@ -33,6 +33,26 @@ die() { echo "[certbot-deploy-hook] ERROR: $*" >&2; exit 1; }
 
 public_host="$(grep -E '^public_host' "$DEPLOYMENT_TOML" | sed -E 's/^public_host *= *"([^"]*)".*/\1/')"
 renewed_host="$(basename "$RENEWED_LINEAGE")"
+subscription_host="$(grep -E '^[[:space:]]*subscription_host' "$DEPLOYMENT_TOML" 2>/dev/null | head -n1 | sed -e 's/.*=//' -e 's/[" ]//g' || true)"
+
+# nginx serves the SUBSCRIPTION host's certificate, which is a different
+# Let's Encrypt lineage whenever subscription_host != public_host (a
+# supported, documented configuration). Renewal of that lineage used to hit
+# the guard below and exit before ever reaching the nginx reload, so nginx
+# kept serving the expired certificate out of its worker processes
+# indefinitely — while health-check.sh, which inspects the FILE on disk,
+# reported the certificate as freshly renewed.
+if [ -n "$subscription_host" ] && [ "$renewed_host" = "$subscription_host" ]; then
+  if nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx || warn "nginx reload failed after $renewed_host certificate renewal."
+    log "reloaded nginx for renewed subscription certificate ($renewed_host)."
+  else
+    warn "nginx config test failed; NOT reloading after $renewed_host certificate renewal."
+  fi
+  # Fall through: when both hosts are the same lineage the sing-box branch
+  # below must still run.
+fi
+
 if [ "$renewed_host" != "$public_host" ]; then
   log "renewed certificate is for '$renewed_host', vpn1's PUBLIC_HOST is '$public_host' — not this deployment's cert, skipping."
   exit 0
