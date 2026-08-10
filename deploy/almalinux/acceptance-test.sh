@@ -156,6 +156,12 @@ section "subscription reverse proxy"
 # docs/FINAL_PRODUCTION_AUDIT.md P0-13, `curl -k` is not proof production
 # TLS works, it's proof TLS verification was turned off).
 DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
+# The backend port is configurable ([subscription] listen_port) and the
+# deployment.toml template explicitly invites hand-editing, but this probe
+# hardcoded 9100 — so changing the port made a HEALTHY deployment fail here
+# (and made install.sh's equivalent probe abort a healthy install).
+SUBSCRIPTION_BACKEND_PORT="$(awk '/^\[subscription\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*listen_port[[:space:]]*=/{gsub(/[^0-9]/,"",$0); print; exit}' "$DEPLOYMENT_TOML" 2>/dev/null || true)"
+: "${SUBSCRIPTION_BACKEND_PORT:=9100}"
 SUBSCRIPTION_HOST=""
 SUBSCRIPTION_PORT="8443"
 if [ -f "$DEPLOYMENT_TOML" ]; then
@@ -170,7 +176,7 @@ else
 fi
 
 section "health endpoint"
-if curl -fsS -o /dev/null http://127.0.0.1:9100/healthz; then
+if curl -fsS --connect-timeout 5 --max-time 10 -o /dev/null http://127.0.0.1:${SUBSCRIPTION_BACKEND_PORT}/healthz; then
   pass "subscription /healthz (loopback)"
 else
   fail_required "subscription /healthz (loopback)"

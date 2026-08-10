@@ -5,12 +5,29 @@ on:
     branches: ["**"]
   pull_request:
 
+# Every branch push with an open PR fires this workflow twice (`push` +
+# `pull_request`). Without a concurrency group, superseded runs are never
+# cancelled: pushing three commits in a row leaves six full pipelines
+# racing, which both wastes runner minutes and multiplies exposure to any
+# flaky job. Keyed by ref so `main` and each branch queue independently.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: nothing in this workflow writes to the repository, so
+# the default (potentially write-capable) GITHUB_TOKEN scope is more than
+# any job here needs. `release.yml` grants `contents: write` narrowly to
+# the one job that publishes.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   fmt:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -20,25 +37,28 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace
-      - run: cargo test --workspace
+      - run: cargo build --locked --workspace
+      - run: cargo test --locked --workspace
 
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -47,14 +67,25 @@ jobs:
       # If an advisory genuinely cannot be fixed yet, add a narrowly
       # scoped `--ignore RUSTSEC-XXXX-YYYY` here with a comment citing
       # the advisory and why — never a blanket suppression.
+      # No `--locked` here: `cargo audit` reads the committed `Cargo.lock`
+      # directly and rejects the flag. The other cargo jobs pass it so they
+      # cannot silently audit-adjacent-build a different dependency set
+      # than the one this job scanned.
       - run: cargo audit
 
   docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # `cargo doc` exits 0 on broken intra-doc links and other rustdoc
+    # warnings, so without this the job proves only that rustdoc did not
+    # crash. `clippy` above is already `-D warnings`; this is the same
+    # standard applied to documentation.
+    env:
+      RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo doc --workspace --no-deps
+      - run: cargo doc --locked --workspace --no-deps
 
   shell:
     # Shell-script hygiene gate (docs/FINAL_PRODUCTION_AUDIT.md P2): every
@@ -62,6 +93,7 @@ jobs:
     # the severity level we can realistically keep clean. Blocking — no
     # `|| true`.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: bash -n (syntax check every shipped script)
@@ -79,12 +111,14 @@ jobs:
 
   secret-logging-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: bash deploy/lib/check-no-secret-logging.sh
 
   license-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - run: test -s LICENSE
@@ -99,6 +133,7 @@ jobs:
     # binary — not just the injected-closure unit tests. Blocking: no
     # `|| true` anywhere in this job.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       SINGBOX_VERSION: "1.13.14"
       # Kept in lockstep with deploy/almalinux/install.sh's
@@ -133,7 +168,7 @@ jobs:
           sing-box version
 
       - name: Build vpn-admin
-        run: cargo build --release -p admin
+        run: cargo build --locked --release -p admin
 
       - name: Render + validate a real server config with the real binary
         run: |
@@ -171,21 +206,41 @@ jobs:
           echo "running real sing-box check against the generated server config:"
           sing-box check -c "$STATE/sing-box/config.json"
 
-      # A test that always skips (no `sing-box` on PATH, no `SING_BOX_BIN`
-      # set) is documentation, not regression protection — this is the one
-      # job in this pipeline that has the pinned, checksum-verified binary
-      # on disk, so it is also the one responsible for actually RUNNING
-      # `crates/compat-config/tests/reality_interop.rs` and `.../
-      # hysteria2_interop.rs` for real, not just building them. If these
-      # ever silently skip here (e.g. `sing-box` isn't on PATH after the
-      # install step above), the workflow log's "skipping: no sing-box
-      # binary available" line makes that visible, but CI staying green is
-      # NOT proof they ran — see the `test result` line's pass count in
-      # the log for confirmation that both suites' tests actually executed
-      # (each prints a pass count, not just "ok").
+      # A test that always skips is documentation, not regression
+      # protection. This is the one job with the pinned, checksum-verified
+      # binary on disk, so it is the one responsible for actually RUNNING
+      # the interop suites for real.
+      #
+      # Two mechanical guarantees, because "CI stayed green" is NOT proof
+      # the tests ran (it previously wasn't: the `test` job above runs the
+      # same binaries with no sing-box and reports `ok` for every one of
+      # them):
+      #   1. VPN1_REQUIRE_REAL_INTEROP=1 turns every in-test skip into a
+      #      hard panic, so a missing binary/openssl fails the job.
+      #   2. The expected pass counts are asserted below, so a test that is
+      #      deleted, renamed, or silently stops running fails the job too.
       - name: Real VLESS+REALITY and Hysteria2 interoperability tests (real sing-box)
         env:
           SING_BOX_BIN: /usr/local/bin/sing-box
+          VPN1_REQUIRE_REAL_INTEROP: "1"
         run: |
           set -euo pipefail
-          cargo test -p compat-config --test reality_interop --test hysteria2_interop -- --nocapture
+          cargo test --locked -p compat-config \
+            --test reality_interop --test reality_decoy_budget --test hysteria2_interop \
+            -- --nocapture 2>&1 | tee interop.log
+
+          # Assert the exact number of tests that actually executed.
+          # Update this count deliberately when adding a test — never by
+          # pasting whatever the log happened to print.
+          #   3 reality_interop + 1 reality_decoy_budget + 2 hysteria2_interop
+          expected=6
+          total_ok="$(grep -c "^test .* \.\.\. ok$" interop.log || true)"
+          if [ "$total_ok" != "$expected" ]; then
+            echo "::error::expected $expected real interop tests to run and pass, saw $total_ok"
+            exit 1
+          fi
+          if grep -q "^skipping:" interop.log; then
+            echo "::error::an interop test skipped despite VPN1_REQUIRE_REAL_INTEROP=1"
+            exit 1
+          fi
+          echo "all $total_ok real-binary interop tests executed and passed"

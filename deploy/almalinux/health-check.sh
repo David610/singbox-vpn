@@ -25,6 +25,12 @@ set -uo pipefail
 
 STATE_DIR="/etc/vpn/compat"
 DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
+# The backend port is configurable ([subscription] listen_port) and the
+# deployment.toml template explicitly invites hand-editing, but this probe
+# hardcoded 9100 — so changing the port made a HEALTHY deployment fail here
+# (and made install.sh's equivalent probe abort a healthy install).
+SUBSCRIPTION_BACKEND_PORT="$(awk '/^\[subscription\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*listen_port[[:space:]]*=/{gsub(/[^0-9]/,"",$0); print; exit}' "$DEPLOYMENT_TOML" 2>/dev/null || true)"
+: "${SUBSCRIPTION_BACKEND_PORT:=9100}"
 FAIL=0
 
 check() {
@@ -52,7 +58,7 @@ elif command -v ufw >/dev/null 2>&1; then
 else
   echo "firewall                     UNKNOWN (neither firewalld nor ufw found)"
 fi
-check "subscription loopback reachable" curl -fsS -o /dev/null http://127.0.0.1:9100/healthz
+check "subscription loopback reachable" curl -fsS --connect-timeout 5 --max-time 10 -o /dev/null http://127.0.0.1:${SUBSCRIPTION_BACKEND_PORT}/healthz
 
 if command -v ss >/dev/null 2>&1; then
   check "VLESS+REALITY listening (443/tcp)" bash -c "ss -tlnp 2>/dev/null | grep -q ':443 '"
@@ -85,7 +91,7 @@ if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
     # exercises whether a client's TLS stack would accept the
     # certificate — `curl -k` never did.
     check "nginx subscription vhost reachable+trusted (${SUBSCRIPTION_PORT}, hostname=$SUBSCRIPTION_HOST)" \
-      curl -fsS --resolve "${SUBSCRIPTION_HOST}:${SUBSCRIPTION_PORT}:127.0.0.1" -o /dev/null \
+      curl -fsS --connect-timeout 5 --max-time 15 --resolve "${SUBSCRIPTION_HOST}:${SUBSCRIPTION_PORT}:127.0.0.1" -o /dev/null \
         "https://${SUBSCRIPTION_HOST}:${SUBSCRIPTION_PORT}/healthz"
     if [ -f "/etc/letsencrypt/live/$SUBSCRIPTION_HOST/fullchain.pem" ]; then
       check "subscription TLS cert not expiring within 14 days" \

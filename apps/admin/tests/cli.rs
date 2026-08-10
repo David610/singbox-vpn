@@ -752,6 +752,11 @@ fn backup_then_restore_round_trips_users() {
     std::fs::create_dir_all(state_dir.join("reality")).unwrap();
     std::fs::write(state_dir.join("reality/private.key"), "test-private-key").unwrap();
     std::fs::write(state_dir.join("reality/public.key"), "test-public-key").unwrap();
+    // `init` writes all THREE files; a fixture with only two is not what a
+    // real deployment looks like, and `restore` now (correctly) refuses a
+    // partial REALITY keyset because restoring one would split-brain the
+    // server against the subscription service.
+    std::fs::write(state_dir.join("reality/short_id.txt"), "deadbeef").unwrap();
 
     admin(dir.path(), &cfg_path)
         .args(["user", "create", "--name", "erin"])
@@ -791,6 +796,11 @@ fn restore_rejects_archive_containing_a_symlink() {
     std::fs::create_dir_all(state_dir.join("reality")).unwrap();
     std::fs::write(state_dir.join("reality/private.key"), "test-private-key").unwrap();
     std::fs::write(state_dir.join("reality/public.key"), "test-public-key").unwrap();
+    // `init` writes all THREE files; a fixture with only two is not what a
+    // real deployment looks like, and `restore` now (correctly) refuses a
+    // partial REALITY keyset because restoring one would split-brain the
+    // server against the subscription service.
+    std::fs::write(state_dir.join("reality/short_id.txt"), "deadbeef").unwrap();
 
     // Hand-craft a malicious archive: a valid users.json plus a
     // `reality/private.key` that is a *symlink* to a file outside the
@@ -912,5 +922,187 @@ fn restore_of_differing_reality_key_restarts_subscription_service_too() {
          vpn-subscription (which caches the public key/short_id at startup) must be \
          restarted too, exactly like `init --rotate` does — otherwise it keeps serving \
          the old public key after a restore that reports success. systemctl log:\n{log}"
+    );
+}
+
+/// A hostile archive must not be able to dictate the permission bits of the
+/// live REALITY private key. `std::fs::copy` propagates the SOURCE file's
+/// mode to the destination, and restore runs as root with tar restoring
+/// archive modes verbatim — so a mode of 04777 in a tar header became the
+/// mode of `/etc/vpn/compat/reality/private.key`, setuid bit and all, with
+/// restore exiting 0 and printing success.
+#[test]
+#[cfg(unix)]
+fn restore_never_widens_permissions_on_restored_secrets() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(state_dir.join("reality")).unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), "live-private-key").unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), "live-public-key").unwrap();
+    std::fs::write(state_dir.join("reality/short_id.txt"), "deadbeef").unwrap();
+
+    // Build an archive whose members carry hostile modes.
+    let staging = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(staging.path().join("reality")).unwrap();
+    std::fs::create_dir_all(staging.path().join("users")).unwrap();
+    std::fs::write(staging.path().join("users/users.json"), "[]").unwrap();
+    for (name, mode) in [
+        ("reality/private.key", 0o4777u32),
+        ("reality/public.key", 0o666),
+        ("reality/short_id.txt", 0o666),
+    ] {
+        let p = staging.path().join(name);
+        std::fs::write(&p, "restored-value").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let archive = dir.path().join("hostile-modes.tar");
+    assert!(std::process::Command::new("tar")
+        .arg("-cf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(staging.path())
+        .arg(".")
+        .status()
+        .unwrap()
+        .success());
+
+    admin(dir.path(), &cfg_path)
+        .arg("restore")
+        .arg(&archive)
+        .assert()
+        .success();
+
+    let mode = std::fs::metadata(state_dir.join("reality/private.key"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(
+        mode & 0o7000,
+        0,
+        "restored private.key kept a setuid/setgid bit from the archive (mode {:o})",
+        mode & 0o7777
+    );
+    assert_eq!(
+        mode & 0o077,
+        0,
+        "restored private.key is group/world accessible (mode {:o}) — the archive \
+         dictated the live permission bits of a private key",
+        mode & 0o7777
+    );
+    // And the non-secret halves must not have been widened either.
+    let pub_mode = std::fs::metadata(state_dir.join("reality/public.key"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(
+        pub_mode & 0o7000,
+        0,
+        "restored public.key kept a setuid/setgid bit from the archive (mode {:o})",
+        pub_mode & 0o7777
+    );
+}
+
+/// An archive carrying a new REALITY private key but not the matching
+/// public half must be refused outright. Restoring it installs the new
+/// private key beside the host's OLD public key, so sing-box enforces one
+/// key while the subscription service advertises another and every client
+/// fails the handshake — the exact incident class this project exists to
+/// prevent, previously reached via a command that printed "Restore applied
+/// and validated" and exited 0.
+#[test]
+fn restore_rejects_a_partial_reality_keyset() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(state_dir.join("reality")).unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), "live-private-key").unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), "live-public-key").unwrap();
+    std::fs::write(state_dir.join("reality/short_id.txt"), "deadbeef").unwrap();
+
+    let staging = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(staging.path().join("reality")).unwrap();
+    std::fs::create_dir_all(staging.path().join("users")).unwrap();
+    std::fs::write(staging.path().join("users/users.json"), "[]").unwrap();
+    std::fs::write(
+        staging.path().join("reality/private.key"),
+        "archive-private-key",
+    )
+    .unwrap();
+    let archive = dir.path().join("partial.tar");
+    assert!(std::process::Command::new("tar")
+        .arg("-cf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(staging.path())
+        .arg(".")
+        .status()
+        .unwrap()
+        .success());
+
+    admin(dir.path(), &cfg_path)
+        .arg("restore")
+        .arg(&archive)
+        .assert()
+        .failure();
+
+    // And it must not have touched live state on its way to refusing.
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join("reality/private.key")).unwrap(),
+        "live-private-key"
+    );
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join("reality/public.key")).unwrap(),
+        "live-public-key"
+    );
+}
+
+/// A FIFO in the archive previously blocked `std::fs::read` forever — while
+/// holding the deployment-wide state lock, so every subsequent admin command
+/// deadlocked too. It must be refused by entry type, and promptly.
+#[test]
+#[cfg(unix)]
+fn restore_rejects_a_fifo_entry_without_hanging() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(state_dir.join("reality")).unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), "live-private-key").unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), "live-public-key").unwrap();
+    std::fs::write(state_dir.join("reality/short_id.txt"), "deadbeef").unwrap();
+
+    let staging = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(staging.path().join("users")).unwrap();
+    let fifo = staging.path().join("users/users.json");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
+    if !status.success() {
+        eprintln!("skipping: mkfifo unavailable");
+        return;
+    }
+    let archive = dir.path().join("fifo.tar");
+    assert!(std::process::Command::new("tar")
+        .arg("-cf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(staging.path())
+        .arg(".")
+        .status()
+        .unwrap()
+        .success());
+
+    let started = std::time::Instant::now();
+    admin(dir.path(), &cfg_path)
+        .arg("restore")
+        .arg(&archive)
+        .timeout(std::time::Duration::from_secs(20))
+        .assert()
+        .failure();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "restore did not fail promptly on a FIFO entry"
     );
 }

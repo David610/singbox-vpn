@@ -40,14 +40,28 @@ impl Default for Score {
 
 impl Score {
     pub fn record_success(&mut self) {
-        self.total_attempts += 1;
+        // `saturating_add`, not `+=`: `total_attempts` is a u32 and
+        // `consecutive_failures` a u16, and there is no
+        // `overflow-checks` in the release profile — so a long-lived
+        // daemon wrapped silently in release and panicked in debug.
+        // Wrapping `consecutive_failures` to 0 also skipped re-arming
+        // quarantine for the next two failures.
+        self.total_attempts = self.total_attempts.saturating_add(1);
         self.consecutive_failures = 0;
+        // A success is direct evidence the candidate works NOW, which is
+        // strictly better evidence than the failures that quarantined it.
+        // Leaving `quarantined_until` set meant a candidate could serve
+        // traffic successfully and still be excluded from selection for up
+        // to five more minutes — and when every candidate was quarantined,
+        // `select_next` returned None and the client was hard-down for that
+        // whole window even though the network had already recovered.
+        self.quarantined_until = None;
         self.ewma_success = EWMA_ALPHA * 1.0 + (1.0 - EWMA_ALPHA) * self.ewma_success;
     }
 
     pub fn record_failure(&mut self, category: FailureCategory, rng: &mut impl Rng) {
-        self.total_attempts += 1;
-        self.consecutive_failures += 1;
+        self.total_attempts = self.total_attempts.saturating_add(1);
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         self.last_failure_category = Some(category);
         self.ewma_success = EWMA_ALPHA * 0.0 + (1.0 - EWMA_ALPHA) * self.ewma_success;
         if self.consecutive_failures >= QUARANTINE_THRESHOLD {
@@ -256,5 +270,56 @@ mod tests {
         // Not deterministic (bad is never fully excluded), but should be
         // strongly favored.
         assert!(good_count > 900, "good_count={good_count}");
+    }
+}
+
+#[cfg(test)]
+mod quarantine_recovery_tests {
+    use super::*;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    fn quarantined_score() -> Score {
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut score = Score::default();
+        for _ in 0..QUARANTINE_THRESHOLD {
+            score.record_failure(FailureCategory::TcpTimeout, &mut rng);
+        }
+        assert!(score.is_quarantined(Instant::now()));
+        score
+    }
+
+    /// A candidate that demonstrably works must not stay excluded.
+    /// Previously `record_success` cleared `consecutive_failures` and the
+    /// EWMA but left `quarantined_until` set, so a candidate could succeed
+    /// and remain unselectable for up to five minutes.
+    #[test]
+    fn success_lifts_quarantine() {
+        let mut score = quarantined_score();
+        score.record_success();
+        assert!(
+            !score.is_quarantined(Instant::now()),
+            "a successful connection must lift quarantine"
+        );
+    }
+
+    /// Counter arithmetic must saturate rather than wrap. In release builds
+    /// there are no overflow checks, and wrapping `consecutive_failures`
+    /// back to 0 silently skips re-arming quarantine.
+    #[test]
+    fn failure_counters_saturate_instead_of_wrapping() {
+        let mut rng = StdRng::seed_from_u64(11);
+        let mut score = Score {
+            total_attempts: u32::MAX,
+            consecutive_failures: u16::MAX,
+            ..Score::default()
+        };
+        score.record_failure(FailureCategory::TcpTimeout, &mut rng);
+        assert_eq!(score.total_attempts, u32::MAX);
+        assert_eq!(score.consecutive_failures, u16::MAX);
+        assert!(
+            score.is_quarantined(Instant::now()),
+            "a saturated failure counter must still keep the candidate quarantined"
+        );
     }
 }

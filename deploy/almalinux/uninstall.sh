@@ -27,7 +27,14 @@ rm -f /usr/local/bin/vpn-admin /usr/local/bin/vpn /usr/local/bin/vpn-subscriptio
 echo "sing-box binary left at /usr/local/bin/sing-box (remove manually if desired)."
 
 if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
-  rm -f /etc/nginx/conf.d/vpn-subscription.conf
+  # Leaving the deploy hook installed breaks EVERY future `certbot renew` on
+# this host: the hook's own guards still pass (deployment.toml and the
+# sing-box binary survive an uninstall by default), so it runs and then fails
+# trying to reload a unit this script just deleted — and certbot reports the
+# whole renewal as failed, including for unrelated certificates.
+rm -f /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh
+rm -f /var/lib/vpn1/install-state.json
+rm -f /etc/nginx/conf.d/vpn-subscription.conf
   if nginx -t >/dev/null 2>&1; then systemctl reload nginx 2>/dev/null || true; fi
   echo "removed /etc/nginx/conf.d/vpn-subscription.conf (nginx itself left installed)."
 fi

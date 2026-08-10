@@ -68,15 +68,12 @@ pub fn socks5_http_get_is_200(socks_port: u16, host: &str, port: u16) -> bool {
         Ok(s) => s,
         Err(_) => return false,
     };
-    // REALITY's handshake involves the server dialing a REAL external
-    // decoy target (e.g. www.microsoft.com) as part of the protocol
-    // itself — under CI network conditions (higher/variable latency
-    // than a local sandbox) that real dial-out plus TLS handshake can
-    // take noticeably longer than on a fast local link. 10s was
-    // observed to be too tight in GitHub Actions (the matched-keypair
-    // test failed there while passing consistently locally); 30s gives
-    // real headroom without masking an actual protocol failure, which
-    // still fails long before this ever becomes the limiting factor.
+    // The REALITY server dials its decoy as part of every handshake, so
+    // this covers a TCP connect plus two TLS handshakes. The decoy is now
+    // local (see `spawn_local_tls13_decoy`), so this is generous rather
+    // than load-bearing — a genuine protocol failure fails in milliseconds,
+    // well before the timeout is reached, and this bound exists only so a
+    // wedged process fails the test instead of hanging it.
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(30)))
         .unwrap();
@@ -130,27 +127,156 @@ pub fn socks5_http_get_is_200(socks_port: u16, host: &str, port: u16) -> bool {
     response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
 }
 
-/// REALITY's own protocol design requires the server to dial a REAL
-/// external decoy/camouflage target as part of every handshake — that
-/// is not a choice this test suite makes, see `reality_interop.rs`'s
-/// module doc. Some CI network environments restrict or fail outbound
-/// egress to specific hosts (observed: a REALITY test that dials
-/// `www.microsoft.com` failed in ~0.1s on a GitHub Actions runner,
-/// too fast to be a timeout — consistent with the connection being
-/// refused/reset immediately rather than merely slow). A test that
-/// hard-requires reachability to one specific external host it does
-/// not control is exactly the kind of nondeterminism
-/// interoperability tests must avoid (this project's own review
-/// standard) — so this preflight exists to SKIP (not fail) when that
-/// specific dependency isn't available here, the same "environment
-/// can't run this" policy already used for `SING_BOX_BIN`/`openssl`
-/// availability elsewhere in these suites.
-pub fn tcp_reachable(host: &str, port: u16, timeout: std::time::Duration) -> bool {
-    use std::net::ToSocketAddrs;
-    let Ok(mut addrs) = format!("{host}:{port}").to_socket_addrs() else {
-        return false;
+/// A local TLS 1.3 server usable as a REALITY decoy ("handshake server").
+///
+/// REALITY's server genuinely must complete a TLS handshake against a real
+/// TLS 1.3 endpoint — that is inherent to the protocol. What is NOT inherent
+/// is that the endpoint be a third-party CDN: dialing `www.microsoft.com`
+/// made a merge-gating test depend on which Akamai edge answered, and it is
+/// precisely how the historical CI flake arose (see
+/// `reality_decoy_budget.rs`). A locally-controlled decoy keeps the protocol
+/// behaviour real and makes the outcome deterministic.
+///
+/// To be usable by sing-box's REALITY implementation the decoy must:
+///   * negotiate TLS **1.3** (`hs.hello.supportedVersion != VersionTLS13` aborts);
+///   * offer an **X25519** (or X25519MLKEM768) key share — OpenSSL's default;
+///   * emit the middlebox-compat **ChangeCipherSpec of exactly 6 bytes** —
+///     OpenSSL does this by default;
+///   * keep every TLS record at or under metacubex/utls's hard-coded
+///     `realitySize` budget of **8192 bytes**.
+///
+/// The SNI must be a hostname, not an IP literal (uTLS omits SNI for IPs, and
+/// the REALITY server matches `config.ServerNames[clientHello.serverName]`),
+/// so `localhost` is used as the decoy hostname throughout.
+pub struct LocalDecoy {
+    pub port: u16,
+    pub hostname: &'static str,
+    _dir: tempfile::TempDir,
+    child: std::process::Child,
+}
+
+impl Drop for LocalDecoy {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// How large a certificate the decoy should present. This is the single
+/// variable that decides whether sing-box's REALITY server accepts the
+/// decoy's flight or aborts with "processed invalid connection".
+pub enum DecoyCertSize {
+    /// A minimal single self-signed cert — every record stays well under
+    /// the 8192-byte budget.
+    Small,
+    /// Inflated with hundreds of SANs so the Certificate record exceeds
+    /// 8192 bytes, reproducing the historical CI failure deterministically.
+    OverBudget,
+}
+
+pub fn spawn_local_tls13_decoy(size: DecoyCertSize) -> Option<LocalDecoy> {
+    let openssl_present = std::process::Command::new("openssl")
+        .arg("version")
+        .output()
+        .ok()
+        .is_some_and(|o| o.status.success());
+    if !openssl_present {
+        return None;
+    }
+    let dir = tempfile::tempdir().ok()?;
+    let cert = dir.path().join("decoy-cert.pem");
+    let key = dir.path().join("decoy-key.pem");
+
+    let mut req = std::process::Command::new("openssl");
+    req.arg("req")
+        .arg("-x509")
+        .arg("-newkey")
+        .arg("rsa:2048")
+        .arg("-days")
+        .arg("1")
+        .arg("-nodes")
+        .arg("-keyout")
+        .arg(&key)
+        .arg("-out")
+        .arg(&cert)
+        .arg("-subj")
+        .arg("/CN=localhost");
+    if let DecoyCertSize::OverBudget = size {
+        // Each SAN adds ~20 bytes to the leaf certificate; enough of them
+        // push the Certificate record past REALITY's 8192-byte budget.
+        //
+        // The count is deliberately well past the threshold rather than
+        // just over it: DER encoding of the serial and signature varies by
+        // a few bytes per generation, and a margin that put the record near
+        // 8192 produced a test that passed only ~75% of the time (observed:
+        // one run framed the Certificate at 7938 and the tunnel worked).
+        // Fixed-width labels keep the size stable across runs too.
+        let sans: Vec<String> = (0..800)
+            .map(|i| format!("DNS:pad{i:04}.localhost"))
+            .collect();
+        req.arg("-addext")
+            .arg(format!("subjectAltName=DNS:localhost,{}", sans.join(",")));
+    } else {
+        req.arg("-addext").arg("subjectAltName=DNS:localhost");
+    }
+    let out = req.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+
+    let port = free_port();
+    let child = std::process::Command::new("openssl")
+        .arg("s_server")
+        .arg("-accept")
+        .arg(port.to_string())
+        .arg("-cert")
+        .arg(&cert)
+        .arg("-key")
+        .arg(&key)
+        .arg("-tls1_3")
+        .arg("-quiet")
+        .arg("-naccept")
+        .arg("50")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let decoy = LocalDecoy {
+        port,
+        hostname: "localhost",
+        _dir: dir,
+        child,
     };
-    addrs.any(|addr| std::net::TcpStream::connect_timeout(&addr, timeout).is_ok())
+    if !wait_for_port(port, std::time::Duration::from_secs(5)) {
+        return None;
+    }
+    Some(decoy)
+}
+
+/// Waits until `needle` appears in the log file at `path`.
+///
+/// Used instead of probing the REALITY port with a bare TCP connect. A
+/// connect-then-drop probe sends no ClientHello, so the REALITY server
+/// correctly logs it as `REALITY: processed invalid connection` — meaning
+/// the harness manufactured, on every single run, the exact error string
+/// that three separate commits then tried to explain. Waiting on the
+/// server's own readiness line removes that phantom connection entirely.
+pub fn wait_for_log_line(
+    path: &std::path::Path,
+    needle: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if contents.contains(needle) {
+                return true;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
 }
 
 pub fn free_port() -> u16 {
@@ -198,14 +324,6 @@ impl SingBox {
             .arg("run")
             .arg("-c")
             .arg(config_path)
-            // `reality_interop.rs` pins the REALITY decoy dial to
-            // IPv4-only via the (still-functional but deprecated as of
-            // sing-box 1.12) `domain_strategy` dialer option, which
-            // this sing-box version hard-refuses to honor without this
-            // env var — see `run_logged`'s doc comment for why that
-            // pin exists. Harmless no-op for any config that doesn't
-            // use the deprecated field.
-            .env("ENABLE_DEPRECATED_LEGACY_DOMAIN_STRATEGY_OPTIONS", "true")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -216,16 +334,12 @@ impl SingBox {
     /// discarding them, so a CI failure can be diagnosed from the actual
     /// sing-box log instead of a bare "assertion failed" with no
     /// context — real handshake failures print exactly what stage
-    /// failed (REALITY handshake, decoy dial, etc.). This diagnostic
-    /// capture is exactly what identified the real cause of a CI
-    /// failure: the REALITY decoy dial to www.microsoft.com resolving
-    /// over IPv6 on a dual-stack runner (unlike this crate's own
-    /// sandbox, which has no IPv6 route) and getting a ServerHello from
-    /// a different Akamai edge that sing-box's own strict REALITY
-    /// ServerHello validation rejected — nothing to do with REALITY key
-    /// material. `reality_interop.rs`'s `build_configs` now pins the
-    /// decoy dial to IPv4-only (`domain_strategy: ipv4_only`) to remove
-    /// that network-path-dependent variable, which needs this env var.
+    /// failed (REALITY handshake, decoy dial, etc.).
+    ///
+    /// The trace-level server log this captures is what finally identified
+    /// the real cause of the recurring CI failure — and it was none of the
+    /// three things previously committed as "the root cause". See
+    /// `reality_decoy_budget.rs` for the mechanism and the reproducer.
     pub fn run_logged(
         &self,
         config_path: &std::path::Path,
@@ -237,7 +351,6 @@ impl SingBox {
             .arg("run")
             .arg("-c")
             .arg(config_path)
-            .env("ENABLE_DEPRECATED_LEGACY_DOMAIN_STRATEGY_OPTIONS", "true")
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::from(log_file_err))
             .spawn()

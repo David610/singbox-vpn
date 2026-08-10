@@ -35,6 +35,20 @@ fn classify_connect_io_error(e: &io::Error) -> FailureCategory {
         io::ErrorKind::ConnectionRefused => FailureCategory::EndpointUnreachable,
         io::ErrorKind::TimedOut => FailureCategory::TcpTimeout,
         io::ErrorKind::ConnectionReset => FailureCategory::TcpReset,
+        // LOCAL conditions — the client has no usable network path at all
+        // (Wi-Fi off, airplane mode, no route, no address yet). These say
+        // nothing about the endpoint or the transport, and attributing them
+        // to the remote is actively harmful: `GeneralRouteFailure`
+        // `is_remote_signal()`s, so a few seconds of local downtime used to
+        // tank every endpoint's score, quarantine every candidate, and feed
+        // the shutdown guard. `LocalNetworkFailure` is excluded from scoring
+        // by design (docs/FAILURE_CLASSIFICATION.md invariant #4) — but
+        // nothing in production ever constructed it, so that invariant was
+        // being enforced only on a variant that could not occur.
+        io::ErrorKind::NetworkUnreachable
+        | io::ErrorKind::HostUnreachable
+        | io::ErrorKind::NetworkDown
+        | io::ErrorKind::AddrNotAvailable => FailureCategory::LocalNetworkFailure,
         _ => FailureCategory::GeneralRouteFailure,
     }
 }
@@ -144,5 +158,52 @@ impl Session for DirectTlsSession {
     fn split(self: Box<Self>) -> (BoxedReader, BoxedWriter) {
         let (r, w) = tokio::io::split(self.stream);
         (Box::new(r), Box::new(w))
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    /// Regression guard: these are LOCAL failures. If they are reported as
+    /// remote signals, an ordinary Wi-Fi drop poisons every endpoint's score
+    /// and quarantines transports that are perfectly healthy.
+    #[test]
+    fn local_network_conditions_are_not_blamed_on_the_endpoint() {
+        for kind in [
+            io::ErrorKind::NetworkUnreachable,
+            io::ErrorKind::HostUnreachable,
+            io::ErrorKind::NetworkDown,
+            io::ErrorKind::AddrNotAvailable,
+        ] {
+            let category = classify_connect_io_error(&io::Error::new(kind, "local"));
+            assert_eq!(
+                category,
+                FailureCategory::LocalNetworkFailure,
+                "{kind:?} must classify as a local failure"
+            );
+            assert!(
+                !category.is_remote_signal(),
+                "{kind:?} must not be treated as evidence about the remote endpoint"
+            );
+        }
+    }
+
+    /// ...while genuinely remote conditions must still be attributed to the
+    /// endpoint, or the policy engine stops learning anything at all.
+    #[test]
+    fn remote_conditions_are_still_remote_signals() {
+        for (kind, expected) in [
+            (
+                io::ErrorKind::ConnectionRefused,
+                FailureCategory::EndpointUnreachable,
+            ),
+            (io::ErrorKind::TimedOut, FailureCategory::TcpTimeout),
+            (io::ErrorKind::ConnectionReset, FailureCategory::TcpReset),
+        ] {
+            let category = classify_connect_io_error(&io::Error::new(kind, "remote"));
+            assert_eq!(category, expected);
+            assert!(category.is_remote_signal(), "{kind:?} is a remote signal");
+        }
     }
 }
