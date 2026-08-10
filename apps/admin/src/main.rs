@@ -2157,7 +2157,7 @@ fn build_dns_query(name: &str) -> Vec<u8> {
         q.extend_from_slice(label.as_bytes());
     }
     q.push(0x00); // end of QNAME
-    // QTYPE and QCLASS IN
+                  // QTYPE and QCLASS IN
     q.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
     q
 }
@@ -2286,7 +2286,6 @@ fn run_udp_probe_candidates(
         }
     })
 }
-
 
 /// Minimal, dependency-free HTTP/1.0 GET over loopback: connect, send a
 /// bare request with `Connection: close`, read the whole response (the
