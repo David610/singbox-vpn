@@ -198,6 +198,14 @@ impl SingBox {
             .arg("run")
             .arg("-c")
             .arg(config_path)
+            // `reality_interop.rs` pins the REALITY decoy dial to
+            // IPv4-only via the (still-functional but deprecated as of
+            // sing-box 1.12) `domain_strategy` dialer option, which
+            // this sing-box version hard-refuses to honor without this
+            // env var — see `run_logged`'s doc comment for why that
+            // pin exists. Harmless no-op for any config that doesn't
+            // use the deprecated field.
+            .env("ENABLE_DEPRECATED_LEGACY_DOMAIN_STRATEGY_OPTIONS", "true")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -208,7 +216,16 @@ impl SingBox {
     /// discarding them, so a CI failure can be diagnosed from the actual
     /// sing-box log instead of a bare "assertion failed" with no
     /// context — real handshake failures print exactly what stage
-    /// failed (REALITY handshake, decoy dial, etc.).
+    /// failed (REALITY handshake, decoy dial, etc.). This diagnostic
+    /// capture is exactly what identified the real cause of a CI
+    /// failure: the REALITY decoy dial to www.microsoft.com resolving
+    /// over IPv6 on a dual-stack runner (unlike this crate's own
+    /// sandbox, which has no IPv6 route) and getting a ServerHello from
+    /// a different Akamai edge that sing-box's own strict REALITY
+    /// ServerHello validation rejected — nothing to do with REALITY key
+    /// material. `reality_interop.rs`'s `build_configs` now pins the
+    /// decoy dial to IPv4-only (`domain_strategy: ipv4_only`) to remove
+    /// that network-path-dependent variable, which needs this env var.
     pub fn run_logged(
         &self,
         config_path: &std::path::Path,
@@ -220,6 +237,7 @@ impl SingBox {
             .arg("run")
             .arg("-c")
             .arg(config_path)
+            .env("ENABLE_DEPRECATED_LEGACY_DOMAIN_STRATEGY_OPTIONS", "true")
             .stdout(std::process::Stdio::from(log_file))
             .stderr(std::process::Stdio::from(log_file_err))
             .spawn()

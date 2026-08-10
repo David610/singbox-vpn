@@ -119,6 +119,24 @@ fn build_configs(
         .as_array_mut()
         .unwrap()
         .retain(|ib| ib["tag"] == "vless-reality-in");
+    // Force the REALITY decoy/camouflage dial (an inherent part of the
+    // protocol — the server must reach a REAL external TLS 1.3 site) to
+    // resolve IPv4-only. Root-caused a real CI failure: this sandbox has
+    // no IPv6 route at all, so the decoy dial to www.microsoft.com is
+    // unambiguously IPv4 here and the handshake succeeds reliably; a
+    // dual-stack CI runner can resolve/dial the decoy over IPv6 instead,
+    // and Akamai's IPv6 edge for that hostname was observed to
+    // negotiate ServerHello parameters (key-share group) that sing-box's
+    // own REALITY implementation's strict validation
+    // (`hs.hello.serverShare.group == X25519 || X25519MLKEM768` in
+    // `metacubex/utls`'s `reality.go`) rejects outright — producing
+    // "REALITY: processed invalid connection" with NO relation to
+    // whether the REALITY key material itself matches. Pinning the
+    // address family removes that network-path-dependent variable so
+    // this test verifies the crate's renderer output, not which IP
+    // family a CDN's edge happened to answer on.
+    server_cfg["inbounds"][0]["tls"]["reality"]["handshake"]["domain_strategy"] =
+        serde_json::json!("ipv4_only");
 
     let endpoint = compat_config::model::CompatEndpoint {
         id: "reality-1".into(),
