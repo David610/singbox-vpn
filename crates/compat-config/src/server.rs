@@ -308,7 +308,7 @@ mod tests {
             private_key_hex: SecretString::new("SUPER-SECRET-PRIVATE-KEY"),
             public_key_hex: "pub123".into(),
             short_ids: vec!["0a1b2c3d".into()],
-            handshake_server: "www.microsoft.com".into(),
+            handshake_server: "www.google.com".into(),
             handshake_port: 443,
         }
     }

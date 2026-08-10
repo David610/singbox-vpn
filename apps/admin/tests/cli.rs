@@ -31,7 +31,7 @@ singbox_binary = "{state}/nonexistent-sing-box"
 
 [reality]
 listen_port = 443
-handshake_server = "www.microsoft.com"
+handshake_server = "www.google.com"
 
 [hysteria2]
 listen_port = 443
@@ -57,7 +57,7 @@ singbox_binary = "{singbox}"
 
 [reality]
 listen_port = 443
-handshake_server = "www.microsoft.com"
+handshake_server = "www.google.com"
 
 [hysteria2]
 listen_port = 443
@@ -212,7 +212,7 @@ singbox_binary = "{singbox}"
 
 [reality]
 listen_port = 443
-handshake_server = "www.microsoft.com"
+handshake_server = "www.google.com"
 
 [hysteria2]
 listen_port = 443

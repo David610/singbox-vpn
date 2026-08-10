@@ -329,7 +329,8 @@ mod tests {
                 443,
                 "pub",
                 "short",
-                "www.microsoft.com",
+                "www.google.com",
+                None,
             ),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })

@@ -44,6 +44,19 @@ pub fn generate_hysteria2_password() -> String {
     hex::encode(bytes)
 }
 
+/// A Hysteria2 salamander obfuscation password: shared (not per-user)
+/// deployment-wide secret, 24 random bytes hex-encoded (192 bits) — same
+/// entropy/encoding as `generate_hysteria2_password`, generated the same
+/// way since both are passed as sing-box `password` fields. This is not a
+/// substitute for the per-user Hysteria2 auth password: obfuscation hides
+/// the protocol's wire signature from DPI/traffic classifiers, auth still
+/// gates access.
+pub fn generate_hysteria2_obfs_password() -> String {
+    let mut bytes = [0u8; 24];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 /// A REALITY short_id: 0-8 hex digits per the sing-box spec; we always use
 /// the full 8 (32 bits) and avoid low-entropy/obviously-patterned values
 /// by construction (CSPRNG, never a fixed default).

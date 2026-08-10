@@ -189,7 +189,7 @@ jobs:
 
           [reality]
           listen_port = 443
-          handshake_server = "www.microsoft.com"
+          handshake_server = "www.google.com"
 
           [hysteria2]
           listen_port = 443
@@ -232,8 +232,9 @@ jobs:
           # Assert the exact number of tests that actually executed.
           # Update this count deliberately when adding a test — never by
           # pasting whatever the log happened to print.
-          #   3 reality_interop + 1 reality_decoy_budget + 2 hysteria2_interop
-          expected=6
+          #   3 reality_interop + 1 reality_decoy_budget + 4 hysteria2_interop
+          #   (2 original + 2 added for salamander obfuscation coverage)
+          expected=8
           total_ok="$(grep -c "^test .* \.\.\. ok$" interop.log || true)"
           if [ "$total_ok" != "$expected" ]; then
             echo "::error::expected $expected real interop tests to run and pass, saw $total_ok"

@@ -180,6 +180,7 @@ pub fn standard_endpoints(
     reality_public_key_hex: &str,
     reality_short_id: &str,
     handshake_server: &str,
+    hysteria_obfs_password: Option<&str>,
 ) -> Vec<CompatEndpoint> {
     vec![
         CompatEndpoint {
@@ -203,7 +204,7 @@ pub fn standard_endpoints(
             server_name: Some(public_host.into()),
             label: "Hysteria2".into(),
             public_parameters: PublicParameters::Hysteria2 {
-                obfs_password: None,
+                obfs_password: hysteria_obfs_password.map(|s| s.to_string()),
             },
         },
     ]
@@ -256,7 +257,7 @@ mod tests {
             transport: CompatTransport::VlessReality,
             host: "vpn.example.com".into(),
             port: 443,
-            server_name: Some("www.microsoft.com".into()),
+            server_name: Some("www.google.com".into()),
             label: "Germany - Reality".into(),
             public_parameters: PublicParameters::Reality {
                 public_key_hex: "abc123".into(),
@@ -346,11 +347,52 @@ mod tests {
             443,
             "pubkey",
             "short1",
-            "www.microsoft.com",
+            "www.google.com",
+            None,
         );
         assert_eq!(eps.len(), 2);
         assert_eq!(eps[0].transport, CompatTransport::VlessReality);
         assert_eq!(eps[1].transport, CompatTransport::Hysteria2);
+        let PublicParameters::Hysteria2 { obfs_password } = &eps[1].public_parameters else {
+            panic!("expected Hysteria2 parameters");
+        };
+        assert_eq!(
+            obfs_password, &None,
+            "no obfs password passed in must mean obfuscation stays disabled, not silently on"
+        );
+    }
+
+    #[test]
+    fn standard_endpoints_threads_hysteria2_obfs_password_into_uri_and_native_json() {
+        let eps = standard_endpoints(
+            "vpn.example.com",
+            443,
+            443,
+            "pubkey",
+            "short1",
+            "www.google.com",
+            Some("obfs-secret"),
+        );
+        let PublicParameters::Hysteria2 { obfs_password } = &eps[1].public_parameters else {
+            panic!("expected Hysteria2 parameters");
+        };
+        assert_eq!(obfs_password.as_deref(), Some("obfs-secret"));
+
+        let uri = render_hysteria2_uri(&user(), &eps[1]).unwrap();
+        assert!(
+            uri.contains("obfs=salamander&obfs-password=obfs-secret"),
+            "share-link URI must carry the obfuscation params: {uri}"
+        );
+
+        let native = render_singbox_client_subscription(&user(), &eps).unwrap();
+        let hy2_outbound = native["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["type"] == "hysteria2")
+            .expect("hysteria2 outbound present");
+        assert_eq!(hy2_outbound["obfs"]["type"], "salamander");
+        assert_eq!(hy2_outbound["obfs"]["password"], "obfs-secret");
     }
 
     #[test]
@@ -361,7 +403,8 @@ mod tests {
             443,
             "pubkeyA",
             "short1",
-            "www.microsoft.com",
+            "www.google.com",
+            None,
         );
         let a_again = standard_endpoints(
             "vpn.example.com",
@@ -369,7 +412,8 @@ mod tests {
             443,
             "pubkeyA",
             "short1",
-            "www.microsoft.com",
+            "www.google.com",
+            None,
         );
         let b = standard_endpoints(
             "vpn.example.com",
@@ -377,7 +421,8 @@ mod tests {
             443,
             "pubkeyB", // different public key — simulates a stale-vs-current split
             "short1",
-            "www.microsoft.com",
+            "www.google.com",
+            None,
         );
         assert_eq!(
             endpoints_fingerprint(&a),
