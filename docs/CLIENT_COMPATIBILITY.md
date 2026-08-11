@@ -48,9 +48,16 @@ steps — and update the table above with the date and outcome once run.
 - Rendered Hysteria2 URI contains the user's password, `sni=`, and
   optional `obfs=salamander` parameters when configured.
 - Rendered sing-box client subscription JSON contains both a `vless`
-  and a `hysteria2` outbound plus a `urltest` selector, matches the
-  field names in the current sing-box docs, and never contains
-  `private_key`.
+  and a `hysteria2` outbound, a `urltest` group (tag `auto`), and a
+  manual `selector` group (tag `select`) whose `default` is the
+  REALITY endpoint's tag — `route.final` points at `select`, so a
+  freshly-imported profile deterministically starts on REALITY rather
+  than whatever `urltest`'s Google-latency race happened to prefer.
+  `auto` remains selectable for anyone who wants sing-box's own
+  automatic switching instead — see
+  `docs/TELEGRAM_RESILIENCE_PLAN.md` §A for why `urltest` alone isn't
+  a safe default on a censored network. Matches the field names in the
+  current sing-box docs, and never contains `private_key`.
 - Rendered sing-box *server* config excludes disabled/expired users
   entirely (revocation takes effect) and the REALITY private key value
   appears exactly once (only where sing-box itself needs it).

@@ -21,9 +21,15 @@ publicly documented iOS onboarding flow.
 7. Tap **Connect**. iOS will show a system prompt: *"Hiddify" Would
    Like to Add VPN Configurations* — tap **Allow**, then authenticate
    (Face ID/Touch ID/passcode) if prompted.
-8. You are connected. Hiddify automatically tests and selects between
-   REALITY and Hysteria2 (sing-box's own `urltest` selector) — this is
-   not something you need to choose manually.
+8. You are connected. By default the subscription starts you on
+   **REALITY** (deterministic, not a race) — REALITY is the
+   conservative recommended transport on restrictive networks. You can
+   manually switch to **Hysteria2** or to **auto** (sing-box's own
+   `urltest`, which picks whichever transport currently wins a fast
+   Google connectivity check — not a Telegram-specific test) from
+   Hiddify's proxy-group/server list. See
+   `docs/TELEGRAM_TROUBLESHOOTING.md` for testing each transport
+   independently.
 
 ## If it doesn't connect
 

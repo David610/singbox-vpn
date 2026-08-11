@@ -178,9 +178,16 @@ exit 1
     fn reload_and_verify_succeeds_when_service_comes_up_healthy() {
         let dir = tempfile::tempdir().unwrap();
         let systemctl = fake_systemctl(dir.path(), 0, 0);
+        // `reload_and_verify` requires 3 consecutive successful
+        // `is-active` subprocess spawns within `settle * 10`. A 1ms
+        // settle (10ms total budget) was observed flaky on a loaded CI
+        // runner — 3 real `fork`/`exec`/bash-script/`exit` round trips
+        // don't reliably fit in 10ms under contention. 20ms (200ms
+        // total) keeps this fast for a unit test while giving real
+        // subprocess spawns enough headroom.
         let mgr = CompatibilityServiceManager::new("sing-box")
             .with_systemctl_binary(systemctl)
-            .with_settle(Duration::from_millis(1));
+            .with_settle(Duration::from_millis(20));
         assert!(mgr.is_available());
         assert!(mgr.reload_and_verify().is_ok());
     }

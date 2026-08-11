@@ -811,6 +811,167 @@ fn doctor_l4_live_check_fails_when_running_subscription_process_is_stale() {
     );
 }
 
+/// `public_host` in the default test fixture (`vpn.example.com`) does
+/// not resolve — this is deterministic in both a networked and a fully
+/// offline sandbox (either NXDOMAIN or "no network"), and either way it
+/// must surface as an explicit `[FAIL]`, not be silently skipped.
+#[test]
+fn doctor_fails_on_unresolvable_public_hostname() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let output = admin(dir.path(), &cfg_path)
+        .arg("doctor")
+        .assert()
+        .failure();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("does not resolve"),
+        "doctor must fail closed on an unresolvable public hostname:\n{stdout}"
+    );
+}
+
+/// A raw IPv4 literal as `public_host` resolves to exactly that one
+/// IPv4 address and nothing else — `to_socket_addrs` parses a literal
+/// address directly, without consulting DNS or `/etc/hosts`, so this is
+/// deterministic across sandboxes/CI runners unlike `"localhost"` (which
+/// resolves to IPv4-only on some hosts but IPv4+`::1` on others,
+/// depending on that host's own `/etc/hosts` — this test used
+/// `"localhost"` originally and was flaky in CI for exactly that
+/// reason). The IPv6-policy check must report an address with no AAAA
+/// as an explicit `[INFO]` (no AAAA record => no leak risk, but
+/// IPv6-only clients cannot reach this host), not silently omit any
+/// mention of IPv6 at all.
+#[test]
+fn doctor_reports_ipv4_only_hostname_as_info_not_a_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let cfg_path = dir.path().join("deployment.toml");
+    let toml = format!(
+        r#"
+public_host = "127.0.0.1"
+subscription_host = "sub.example.com"
+state_dir = "{state}"
+singbox_binary = "{state}/nonexistent-sing-box"
+
+[reality]
+listen_port = 443
+handshake_server = "www.google.com"
+
+[hysteria2]
+listen_port = 443
+
+[subscription]
+listen_port = 9100
+"#,
+        state = toml_path(&state_dir),
+    );
+    std::fs::write(&cfg_path, toml).unwrap();
+
+    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("no AAAA/IPv6 record"),
+        "an A-only hostname must be called out explicitly, not left ambiguous:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[INFO]"),
+        "a missing AAAA record is informational, not a failure on its own:\n{stdout}"
+    );
+}
+
+/// The `auto`/`urltest` scope-limitation reminder must always be present
+/// in `doctor` output — this is the exact disclaimer the Telegram-
+/// resilience investigation asked for so operators never mistake a
+/// passing `doctor` run for proof that Telegram (or any specific app)
+/// works.
+#[test]
+fn doctor_always_prints_urltest_scope_disclaimer() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("not Telegram-specific behavior"),
+        "doctor must always remind operators that urltest/auto is not a Telegram test:\n{stdout}"
+    );
+}
+
+#[test]
+fn doctor_telegram_prints_disclaimer_and_never_claims_russian_verification() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    let output = admin(dir.path(), &cfg_path)
+        .args(["doctor", "--telegram"])
+        .assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("Telegram-oriented summary"));
+    assert!(
+        stdout.contains("does NOT verify") && stdout.contains("Russian DPI compatibility"),
+        "doctor --telegram must never claim to verify Russian censorship compatibility:\n{stdout}"
+    );
+    assert!(stdout.contains("docs/TELEGRAM_TROUBLESHOOTING.md"));
+}
+
+#[test]
+fn doctor_report_redacts_secrets_and_includes_expected_sections() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    let output = admin(dir.path(), &cfg_path)
+        .args(["doctor", "--report"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("[system]"));
+    assert!(stdout.contains("[services]"));
+    assert!(stdout.contains("[listeners]"));
+    assert!(stdout.contains("[hostname resolution]"));
+    assert!(stdout.contains("[transport configuration]"));
+    assert!(stdout.contains("[selected configuration]"));
+    // Never leak the REALITY private key generated by `init` above.
+    assert!(!stdout.contains(REALITY_PRIVATE_A));
+    assert!(!stdout.contains("private_key"));
+}
+
+#[test]
+fn doctor_report_output_writes_mode_0600_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+
+    let report_path = dir.path().join("report.txt");
+    admin(dir.path(), &cfg_path)
+        .args(["doctor", "--report", "--report-output"])
+        .arg(&report_path)
+        .assert()
+        .success();
+    assert!(report_path.exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&report_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "report file must not be group/other readable");
+    }
+}
+
 #[test]
 fn backup_then_restore_round_trips_users() {
     let dir = tempfile::tempdir().unwrap();

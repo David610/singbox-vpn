@@ -88,6 +88,68 @@ Notes:
 Paste the filled-in block above as a new dated entry directly below this
 line once a real test is run, and update the corresponding matrix cell.
 
+## Telegram-specific matrix
+
+Per `docs/TELEGRAM_RESILIENCE_PLAN.md`: "Telegram works" is not one
+test. A cell in this matrix only becomes PASS/FAIL after it is actually
+exercised on a real device on a real network — never inferred from the
+general matrix above, from `vpn doctor`/`vpn doctor --telegram`, or from
+YouTube/Instagram working. See `docs/TELEGRAM_TROUBLESHOOTING.md` for
+exact per-row steps (disabling Telegram's own proxy first, switching
+transports manually, etc).
+
+| Test                          | Reality | Hysteria2 | Auto |
+| ------------------------------ | ------- | --------- | ---- |
+| App startup / connects at all  | not yet tested | not yet tested | not yet tested |
+| Text messages send/receive     | not yet tested | not yet tested | not yet tested |
+| Image download                 | not yet tested | not yet tested | not yet tested |
+| Video/media download           | not yet tested | not yet tested | not yet tested |
+| Media upload                   | not yet tested | not yet tested | not yet tested |
+| Channels (large/high-traffic)  | not yet tested | not yet tested | not yet tested |
+| Notifications / background reconnect | not yet tested | not yet tested | not yet tested |
+| Voice call                     | not yet tested | not yet tested | not yet tested |
+| Video call                     | not yet tested | not yet tested | not yet tested |
+| Wi-Fi -> cellular handover      | not yet tested | not yet tested | not yet tested |
+| Cellular -> Wi-Fi handover      | not yet tested | not yet tested | not yet tested |
+| IPv4-only network               | not yet tested | not yet tested | not yet tested |
+| IPv6-preferring network          | not yet tested | not yet tested | not yet tested |
+
+Row-filling template (paste as a new dated entry, one per transport
+actually tested):
+
+```
+Date:
+Location (country/network — do NOT record exact GPS/address, only
+  enough to know "Russian residential" vs "Russian mobile" vs "not
+  Russia" etc):
+ISP / mobile carrier:
+Wi-Fi or mobile data:
+Client + version:
+Device model / OS version:
+Hiddify version / sing-box core version (Hiddify -> Settings -> About):
+Transport under test: Reality / Hysteria2 / Auto
+Telegram internal proxy: confirmed DISABLED before testing (yes/no)
+
+App startup:                    PASS/FAIL
+Text messages:                  PASS/FAIL
+Image download:                 PASS/FAIL
+Video/media download:           PASS/FAIL
+Media upload:                   PASS/FAIL
+Channels:                       PASS/FAIL
+Notifications/background:       PASS/FAIL
+Voice call:                     PASS/FAIL
+Video call:                     PASS/FAIL
+
+Notes (exact failure mode, timestamps, anything unusual):
+```
+
+**This matrix cannot be filled in from outside Russia.** Development
+performed on this repository has no way to reproduce Russian
+residential/mobile ISP DPI behavior — see
+`docs/TELEGRAM_RESILIENCE_PLAN.md` §"Remaining limitations". Every row
+above stays "not yet tested" until a real family member/friend on a
+real Russian network runs it and reports back.
+
 ## Entries
 
 _No entries yet — this document defines the procedure, not a result. Do
