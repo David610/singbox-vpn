@@ -726,13 +726,15 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     }
     config_applied.set(true);
 
-    if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
+    let singbox_reloaded_live = if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
         if let Err(e) = singbox_mgr.reload_and_verify() {
             bail!(rollback(&format!("sing-box reload failed: {e}")));
         }
+        true
     } else {
         println!("warning: systemctl/sing-box.service not available — config written but sing-box was NOT reloaded.");
-    }
+        false
+    };
 
     // The subscription service reads the REALITY public key/short_id
     // ONCE at startup (services/subscription/src/main.rs) and has no
@@ -740,25 +742,37 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     // it keeps advertising the OLD public key to every client that asks
     // for a subscription after this point (docs/FINAL_PRODUCTION_AUDIT.md
     // P0-5's core scenario).
-    if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
+    let sub_restarted_live = if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
         if let Err(e) = sub_mgr.reload_and_verify() {
             bail!(rollback(&format!(
                 "subscription service restart failed: {e}"
             )));
         }
+        true
     } else {
         println!("warning: systemctl/vpn-subscription.service not available — new public key written but subscription service was NOT restarted.");
-    }
+        false
+    };
 
     // Commit: only now is it safe to discard the rollback material.
     for p in [&priv_path, &pub_path, &sid_path] {
         remove_rotate_backup(p);
     }
 
-    println!(
-        "REALITY key rotated and applied. Every existing client's subscription/profile is now \
-         invalid until re-imported — the public key changed."
-    );
+    if singbox_reloaded_live && sub_restarted_live {
+        println!(
+            "REALITY key rotated and applied. Every existing client's REALITY profile is now \
+             invalid (server public key changed) until re-imported. Subscription URLs are \
+             unaffected and still fetch/refresh normally; Hysteria2 profiles are unaffected."
+        );
+    } else {
+        println!(
+            "REALITY key rotated on disk, but NOT fully reloaded live (see warning(s) above). \
+             The RUNNING server may still accept the OLD public key until sing-box is actually \
+             reloaded and vpn-subscription actually restarted — do not treat existing clients \
+             as invalidated yet."
+        );
+    }
     Ok(())
 }
 
@@ -922,33 +936,47 @@ fn cmd_hysteria_obfs_rotate(cfg: &DeploymentConfig) -> Result<()> {
     }
     config_applied.set(true);
 
-    if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
+    let singbox_reloaded_live = if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
         if let Err(e) = singbox_mgr.reload_and_verify() {
             bail!(rollback(&format!("sing-box reload failed: {e}")));
         }
+        true
     } else {
         println!("warning: systemctl/sing-box.service not available — config written but sing-box was NOT reloaded.");
-    }
+        false
+    };
 
     // Same reasoning as `cmd_reality_rotate`: vpn-subscription reads the
     // obfs password ONCE at startup into `AppState.endpoints` and has no
     // config-reload path.
-    if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
+    let sub_restarted_live = if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
         if let Err(e) = sub_mgr.reload_and_verify() {
             bail!(rollback(&format!(
                 "subscription service restart failed: {e}"
             )));
         }
+        true
     } else {
         println!("warning: systemctl/vpn-subscription.service not available — new obfuscation password written but subscription service was NOT restarted.");
-    }
+        false
+    };
 
     remove_rotate_backup(&obfs_path);
 
-    println!(
-        "Hysteria2 obfuscation password enabled/rotated and applied. Every existing client's \
-         Hysteria2 profile is now invalid until re-imported — the obfuscation password changed."
-    );
+    if singbox_reloaded_live && sub_restarted_live {
+        println!(
+            "Hysteria2 obfuscation password enabled/rotated and applied. Every existing \
+             client's Hysteria2 profile is now invalid until re-imported — the obfuscation \
+             password changed."
+        );
+    } else {
+        println!(
+            "Hysteria2 obfuscation password rotated on disk, but NOT fully reloaded live (see \
+             warning(s) above). The RUNNING server may still accept the OLD obfuscation \
+             password until sing-box is actually reloaded and vpn-subscription actually \
+             restarted — do not treat existing Hysteria2 clients as invalidated yet."
+        );
+    }
     Ok(())
 }
 
@@ -1126,11 +1154,21 @@ fn commit_applied_config_stamp(target: &std::path::Path, fingerprint: &str) -> R
     Ok(())
 }
 
+/// Returns whether the change was actually pushed to a LIVE, reloaded
+/// sing-box process — `Ok(false)` covers every degraded path (missing
+/// binary, missing keys, systemctl/unit unavailable) where the config
+/// was at most written to disk, never proven live. Callers that print a
+/// blast-radius claim ("already-imported profile rejected on next
+/// handshake") must gate that claim on this being `true` — it is only
+/// true in production; the various early-return warning paths below
+/// are reachable in real deployments only when an operator explicitly
+/// bypasses the live-apply requirement (`VPN1_ALLOW_OFFLINE_MUTATION=1`,
+/// documented as dev/offline-only), or in local/CI dev.
 fn render_and_apply_singbox_config(
     cfg: &DeploymentConfig,
     users: &[CompatUser],
     require_live_apply: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
         Err(e) => {
@@ -1141,7 +1179,7 @@ fn render_and_apply_singbox_config(
                 );
             }
             println!("warning: skipping sing-box config render/apply: {e}");
-            return Ok(());
+            return Ok(false);
         }
     };
     let hysteria = load_hysteria_params(cfg);
@@ -1167,7 +1205,7 @@ fn render_and_apply_singbox_config(
             "warning: {:?} not found; wrote nothing. Install sing-box, then run `vpn-admin render-config`.",
             cfg.singbox_binary
         );
-        return Ok(());
+        return Ok(false);
     }
     let backend = SingBoxBackend {
         binary_path: cfg.singbox_binary.clone(),
@@ -1190,7 +1228,7 @@ fn render_and_apply_singbox_config(
         .is_ok_and(|stamp| stamp.trim() == candidate_fingerprint);
     if target_already_matches && applied_stamp_matches && service_available && mgr.is_active() {
         println!("sing-box authorization config is already current; no reload needed.");
-        return Ok(());
+        return Ok(true);
     }
 
     apply_config_atomically(&doc, &target, |p| backend.validate(p))
@@ -1203,7 +1241,7 @@ fn render_and_apply_singbox_config(
              On a real deployment this means the change has not taken effect yet — run \
              `systemctl reload-or-restart sing-box` manually."
         );
-        return Ok(());
+        return Ok(false);
     }
     if !mgr.is_unit_installed() {
         println!(
@@ -1212,7 +1250,7 @@ fn render_and_apply_singbox_config(
              change has not taken effect yet — run `deploy/almalinux/install.sh` (or \
              `systemctl reload-or-restart sing-box` if the unit already exists) manually."
         );
-        return Ok(());
+        return Ok(false);
     }
 
     if let Err(reload_err) = mgr.reload_and_verify() {
@@ -1236,7 +1274,7 @@ fn render_and_apply_singbox_config(
     commit_applied_config_stamp(&target, &candidate_fingerprint)
         .context("recording the config version verified live")?;
     println!("sing-box reloaded and verified active.");
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(unix)]
@@ -1269,7 +1307,8 @@ fn apply_restored_file_policy(_path: &std::path::Path, _group: &str) -> Result<(
 
 fn regenerate_singbox_config(cfg: &DeploymentConfig, require_live_apply: bool) -> Result<()> {
     let users = store::load_users(&cfg.users_file())?;
-    render_and_apply_singbox_config(cfg, &users, require_live_apply)
+    render_and_apply_singbox_config(cfg, &users, require_live_apply)?;
+    Ok(())
 }
 
 fn cmd_render_config(cfg: &DeploymentConfig) -> Result<()> {
@@ -1408,8 +1447,26 @@ fn cmd_user_set_enabled(cfg: &DeploymentConfig, id: &str, enabled: bool) -> Resu
     let mut users = store::load_users(&cfg.users_file())?;
     let previous_users = users.clone();
     find_user_mut(&mut users, id)?.enabled = enabled;
-    apply_users_and_save(cfg, &previous_users, &users)?;
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
     println!("{id}: enabled={enabled}");
+    if !enabled {
+        if went_live {
+            println!(
+                "This user is dropped from the rendered sing-box authorization config \
+                 immediately: their REALITY and Hysteria2 credentials are both rejected on the \
+                 next handshake attempt, and their subscription URL now 404s. This is the \
+                 widest-blast-radius revocation short of `user remove` — unlike token/credential \
+                 rotation, it stops an already-imported profile from connecting at all, with no \
+                 re-import window."
+            );
+        } else {
+            println!(
+                "WARNING: the new config was written but NOT reloaded live (see the warning \
+                 above) — this user's credentials are still accepted by the RUNNING server \
+                 until that reload actually happens. Do not treat this as revoked yet."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1425,11 +1482,14 @@ fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<(
     println!("New Hiddify subscription URL for {id}:");
     println!("  {url}");
     println!();
-    println!("The previous subscription URL for this user no longer works — anyone still on");
-    println!("it (including the user's own already-imported profile) must re-import this one.");
-    println!("Note: this does not rotate the Hysteria2 Salamander obfuscation password, so any");
-    println!("already-imported Hysteria2 profile keeps working once re-imported with this URL;");
-    println!("only `vpn-admin hysteria-obfs-rotate` changes that shared secret.");
+    println!("The previous subscription URL now 404s — it can no longer be used to FETCH or");
+    println!("REFRESH this user's config. This does NOT change the VLESS UUID or Hysteria2");
+    println!("password: an already-imported REALITY/Hysteria2 profile keeps connecting exactly");
+    println!("as before, since those transport credentials are unchanged. Re-importing this new");
+    println!("URL is only needed so the client can refresh in the future (some clients also drop");
+    println!("saved servers on a failed refresh — re-import here avoids depending on that).");
+    println!("Only `vpn-admin hysteria-obfs-rotate` changes the Hysteria2 obfuscation secret");
+    println!("itself, which DOES require re-importing to keep the Hysteria2 profile working.");
     if qr {
         println!();
         println!("Scan this QR code in Hiddify (Add profile -> Scan QR code):");
@@ -1445,7 +1505,8 @@ fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     println!(
         "Note: the subscription token is never stored in recoverable form, \
          so this mints a fresh one (like `rotate-token`) — the previous \
-         subscription URL for this user stops working."
+         subscription URL for this user stops working for fetch/refresh \
+         (any already-imported profile keeps connecting; see below)."
     );
     println!();
     cmd_user_rotate_token(cfg, id, true)
@@ -1453,38 +1514,76 @@ fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
 
 /// Common rotate-and-apply flow: mutate the user in-place via `mutate`,
 /// save, render+validate+apply+reload (with rollback on failure — see
-/// `regenerate_singbox_config`), and only then report success.
+/// `regenerate_singbox_config`), and only then report success. `blast_radius`
+/// is printed so an operator never has to guess which transport(s) an
+/// already-imported client profile loses on this specific command —
+/// see the per-command callers below for the exact scope of each.
 fn rotate_and_apply(
     cfg: &DeploymentConfig,
     id: &str,
     what: &str,
+    blast_radius: &str,
     mutate: impl FnOnce(&mut CompatUser),
 ) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     let previous_users = users.clone();
     mutate(find_user_mut(&mut users, id)?);
-    apply_users_and_save(cfg, &previous_users, &users)?;
-    println!("{id}: {what} rotated and applied to the running server.");
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
+    if went_live {
+        println!("{id}: {what} rotated and applied to the running server.");
+        println!("{blast_radius}");
+    } else {
+        println!("{id}: {what} rotated on disk, but NOT reloaded live (see the warning above).");
+        println!(
+            "WARNING: the running server still accepts the OLD {what} until a real reload \
+             happens — none of the blast-radius claims below have taken effect yet:"
+        );
+        println!("{blast_radius}");
+    }
     Ok(())
 }
 
 fn cmd_user_rotate_vless(cfg: &DeploymentConfig, id: &str) -> Result<()> {
-    rotate_and_apply(cfg, id, "VLESS UUID", |u| {
-        u.vless_uuid = credentials::generate_uuid_v4();
-    })
+    rotate_and_apply(
+        cfg,
+        id,
+        "VLESS UUID",
+        "Already-imported REALITY profiles for this user are rejected on the next handshake \
+         (server no longer recognizes the old UUID) until re-imported. Hysteria2 and the \
+         subscription URL are unaffected.",
+        |u| {
+            u.vless_uuid = credentials::generate_uuid_v4();
+        },
+    )
 }
 
 fn cmd_user_rotate_hysteria(cfg: &DeploymentConfig, id: &str) -> Result<()> {
-    rotate_and_apply(cfg, id, "Hysteria2 password", |u| {
-        u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
-    })
+    rotate_and_apply(
+        cfg,
+        id,
+        "Hysteria2 password",
+        "Already-imported Hysteria2 profiles for this user are rejected on the next handshake \
+         (server no longer recognizes the old password) until re-imported. REALITY and the \
+         subscription URL are unaffected.",
+        |u| {
+            u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
+        },
+    )
 }
 
 fn cmd_user_rotate_credentials(cfg: &DeploymentConfig, id: &str) -> Result<()> {
-    rotate_and_apply(cfg, id, "VLESS UUID + Hysteria2 password", |u| {
-        u.vless_uuid = credentials::generate_uuid_v4();
-        u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
-    })
+    rotate_and_apply(
+        cfg,
+        id,
+        "VLESS UUID + Hysteria2 password",
+        "Already-imported REALITY AND Hysteria2 profiles for this user are BOTH rejected on \
+         the next handshake until re-imported. The subscription URL is unaffected and will \
+         serve the new credentials once re-fetched.",
+        |u| {
+            u.vless_uuid = credentials::generate_uuid_v4();
+            u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
+        },
+    )
 }
 
 /// Push a proposed user-store change to the running server, then publish it
@@ -1505,16 +1604,20 @@ fn cmd_user_rotate_credentials(cfg: &DeploymentConfig, id: &str) -> Result<()> {
 /// If publishing users.json fails, the previous authorization document is
 /// rendered and reloaded. The expiry reconciliation timer also repairs a
 /// crash between these phases from the authoritative users.json state.
+/// Returns whether the change reached a LIVE, reloaded sing-box process
+/// (see `render_and_apply_singbox_config`'s doc comment) — callers that
+/// print a blast-radius claim about credentials being rejected must
+/// gate that claim on this.
 fn apply_users_and_save(
     cfg: &DeploymentConfig,
     previous_users: &[CompatUser],
     users: &[CompatUser],
-) -> Result<()> {
+) -> Result<bool> {
     // Load the proposed authorization into sing-box before publishing the
     // new store to vpn-subscription. This makes the transition fail-closed:
     // a revocation reaches the protocol first, while a newly enabled
     // credential is not distributed until the protocol accepts it.
-    render_and_apply_singbox_config(cfg, users, true)?;
+    let went_live = render_and_apply_singbox_config(cfg, users, true)?;
 
     if let Err(save_error) = store::save_users_atomic(&cfg.users_file(), users) {
         let rollback = render_and_apply_singbox_config(cfg, previous_users, true);
@@ -1528,7 +1631,7 @@ fn apply_users_and_save(
             }
         );
     }
-    Ok(())
+    Ok(went_live)
 }
 
 fn cmd_user_remove(cfg: &DeploymentConfig, id: &str) -> Result<()> {
@@ -1539,8 +1642,21 @@ fn cmd_user_remove(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     if users.len() == before {
         bail!("no such user: {id}");
     }
-    apply_users_and_save(cfg, &previous_users, &users)?;
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
     println!("{id}: removed");
+    if went_live {
+        println!(
+            "Same blast radius as `user disable`: REALITY and Hysteria2 credentials are both \
+             rejected immediately, and the subscription URL 404s. Unlike disable, this is not \
+             reversible with `user enable` — the account must be recreated from scratch."
+        );
+    } else {
+        println!(
+            "WARNING: the new config was written but NOT reloaded live (see the warning \
+             above) — this user's credentials are still accepted by the RUNNING server until \
+             that reload actually happens."
+        );
+    }
     Ok(())
 }
 
@@ -1700,6 +1816,45 @@ enum CheckStatus {
     Info,
     Warn,
     Fail,
+}
+
+/// Explicit, exhaustive outcome of the L5-6 real-protocol self-test —
+/// deliberately NOT a `bool`, and deliberately never inferred from the
+/// L1-L4 failure counter. A prior version of this coverage logic used
+/// `failures == 0` to mean "passed," which silently conflated
+/// `Inconclusive` (a real dial happened, but the result cannot be
+/// interpreted as pass or fail) with `Passed`, and separately used a
+/// single shared counter that could make L1-L4's status look tainted by
+/// an L5-6 failure or vice versa. This type exists so the coverage line
+/// can only ever report exactly one of these four states — there is no
+/// fifth, implicit "kind of passed" state to fall into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProtocolCheckResult {
+    /// `--protocol` was not passed, OR it was passed but a pre-flight
+    /// check bailed before a single packet was sent (missing binary,
+    /// missing keys, no active user, harness setup failure). No real
+    /// dial was attempted either way.
+    NotRun,
+    /// A real handshake was dialed and completed successfully end-to-end.
+    Passed,
+    /// A real handshake was dialed and definitively failed (REALITY
+    /// rejected it).
+    Failed,
+    /// A real handshake was dialed but the result cannot be read as
+    /// pass or fail (e.g. no HTTP success response through the tunnel).
+    /// This is NOT the same as `Passed` and NOT the same as `Failed`.
+    Inconclusive,
+}
+
+impl ProtocolCheckResult {
+    fn label(self) -> &'static str {
+        match self {
+            ProtocolCheckResult::NotRun => "NOT RUN",
+            ProtocolCheckResult::Passed => "PASSED",
+            ProtocolCheckResult::Failed => "FAILED",
+            ProtocolCheckResult::Inconclusive => "INCONCLUSIVE",
+        }
+    }
 }
 
 /// `layer` is one of `"L1"` (process), `"L2"` (config/key/cert),
@@ -2171,8 +2326,19 @@ fn cmd_doctor(
          docs/TELEGRAM_RESILIENCE_PLAN.md and docs/TELEGRAM_TROUBLESHOOTING.md.",
     );
 
-    if protocol {
-        check_l5_l6_protocol_selftest(cfg, &mut failures, require_protocol);
+    // L1-L4's outcome is captured as a snapshot BEFORE the L5-6 check
+    // runs, so the coverage line below can report each layer's status
+    // independently — L1-4 must never look tainted by an L5-6 failure,
+    // and L5-6 must never be inferred from the L1-4 count (or from
+    // whether `--protocol` was merely passed on the command line: it
+    // can bail out before dialing a single packet on missing binary/
+    // keys/active user, in which case no real handshake was attempted
+    // even though the flag was set). `check_l5_l6_protocol_selftest`'s
+    // `ProtocolCheckResult` return value is the one source of truth for
+    // what actually happened at L5-6.
+    let l1_l4_failures = failures;
+    let protocol_result = if protocol {
+        check_l5_l6_protocol_selftest(cfg, &mut failures, require_protocol)
     } else {
         report_check(
             CheckStatus::Warn,
@@ -2181,14 +2347,15 @@ fn cmd_doctor(
              server's own REALITY listener with a throwaway sing-box client) — passing every \
              check above does NOT prove a real client can authenticate",
         );
-    }
+        ProtocolCheckResult::NotRun
+    };
 
     if telegram {
-        print_telegram_diagnostics_summary(cfg);
+        print_telegram_diagnostics_summary(cfg, l1_l4_failures, protocol_result);
     }
 
     if client {
-        print_client_acceptance_checklist(cfg);
+        print_client_acceptance_checklist(cfg, l1_l4_failures, protocol_result);
     }
 
     println!();
@@ -2211,9 +2378,15 @@ fn cmd_doctor(
 /// test — see docs/TELEGRAM_TROUBLESHOOTING.md and
 /// docs/DEVICE_ACCEPTANCE_TESTS.md for the real, per-function test
 /// matrix that only a real device on a real network can actually run.
-fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig) {
+fn print_telegram_diagnostics_summary(
+    cfg: &DeploymentConfig,
+    l1_l4_failures: u32,
+    protocol_result: ProtocolCheckResult,
+) {
     println!();
     println!("--- Telegram-oriented summary (server-side only) ---");
+    print_doctor_coverage_line(l1_l4_failures, protocol_result);
+    println!();
     println!(
         "Public endpoints: {}:{} (VLESS+REALITY tcp), {}:{} (Hysteria2 udp)",
         cfg.public_host, cfg.reality.listen_port, cfg.public_host, cfg.hysteria2.listen_port
@@ -2268,10 +2441,22 @@ fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig) {
 /// grant the iOS "Allow VPN Configurations" permission — those are
 /// entirely client-side settings/permissions this repository does not
 /// control.
-fn print_client_acceptance_checklist(cfg: &DeploymentConfig) {
+fn print_client_acceptance_checklist(
+    cfg: &DeploymentConfig,
+    l1_l4_failures: u32,
+    protocol_result: ProtocolCheckResult,
+) {
     println!();
     println!("--- Client acceptance checklist (fill in by hand on the device) ---");
     println!();
+    if l1_l4_failures > 0 {
+        println!(
+            "WARNING: {l1_l4_failures} check(s) earlier in this report FAILED. Server-side \
+             health is NOT proven — fix those failures before trusting this checklist to \
+             isolate a client-side cause."
+        );
+        println!();
+    }
     println!("IMPORTANT: \"Connected\" in Hiddify's own UI does NOT by itself prove system");
     println!("traffic is routed through the VPN. Hiddify's in-app connected state and iOS's");
     println!("system VPN/TUN state are two different things — verify BOTH, in this order.");
@@ -2300,12 +2485,159 @@ fn print_client_acceptance_checklist(cfg: &DeploymentConfig) {
     println!("       IP check for Hysteria2 alone.");
     println!("10.[ ] Tested on Wi-Fi.");
     println!("11.[ ] Tested on mobile/cellular data.");
+    println!(
+        "12.[ ] From the SAME network as the phone, `curl -v https://{}:{}` (or",
+        cfg.public_host, cfg.reality.listen_port
+    );
+    println!("       Test-NetConnection) succeeds — tests whether that network path can even");
+    println!("       reach this server at all, independent of Hiddify.");
     println!();
-    println!("If step 8 or 9 shows an unchanged IP: go back to steps 1-4 (client mode/permission)");
-    println!("before suspecting anything server-side — the checks earlier in this report already");
-    println!("prove the server's REALITY/Hysteria2 listeners and subscription are healthy.");
+    println!(
+        "If step 8 or 9 shows an unchanged IP: go back to steps 1-4 (client mode/permission)."
+    );
+    print_doctor_coverage_line(l1_l4_failures, protocol_result);
+    println!(
+        "A PASS above only proves this server's own listener/key/auth path works FROM THIS \
+         SERVER'S OWN vantage point — it never proves reachability from the phone's specific \
+         network, iOS's NetworkExtension state, or Hiddify's TUN/routing behavior. Do not treat \
+         a passing doctor run as \"confirmed client-side\"; step 12 above is what actually tests \
+         the network path."
+    );
+    println!();
+    println!(
+        "If 1-12 are all satisfied and it STILL doesn't work: check your Hiddify build/version"
+    );
+    println!(
+        "before assuming a behavioral bug. As of 2026-08, hiddify/hiddify-app#2317 (OPEN) \
+         documents problems in Hiddify's own iOS release pipeline (App Store build reporting"
+    );
+    println!(
+        "\"4.0.0 dev\", CI/signing/config inconsistencies, later tagged releases not producing \
+         normal iOS artifacts). This does NOT establish that #2317 CAUSES the \"connected but no"
+    );
+    println!(
+        "VPN tunnel\" symptom this checklist exists for — it only means the exact installed iOS \
+         client build is an important variable to record when reporting a problem: note the"
+    );
+    println!(
+        "exact version/build shown in Hiddify's About screen. Older reports of this exact \
+         symptom on iOS (hiddify/hiddify-app#1812, #1485, #290) are CLOSED (stale-bot, no linked"
+    );
+    println!(
+        "fix) as of 2026-08-11 — historical evidence this class of bug has happened before, not \
+         a currently tracked, causally-established bug. Nothing in this server's subscription"
+    );
+    println!(
+        "can detect or fix any of this. Try: update Hiddify, delete+reinstall it, remove ALL its \
+         VPN profiles from Settings before reconnecting, reboot, retry — then report fresh to"
+    );
+    println!("Hiddify's tracker (with your exact app version/build) if still broken.");
     println!();
     println!("Full walkthrough and troubleshooting priority order: docs/clients/HIDDIFY_IOS.md");
+}
+
+/// Explicit diagnostic-coverage line, shared by the Telegram and client
+/// summaries. L1-4's status and L5-6's status are tracked completely
+/// independently — `l1_l4_failures == 0` says nothing about L5-6, and
+/// `protocol_result` says nothing about L1-4. Each of the following
+/// combinations must print distinctly, with no state inferred from the
+/// other layer or collapsed into a fifth implicit "kind of passed"
+/// state:
+///
+///   Coverage: L1-4: PASSED       L5-6: NOT RUN
+///   Coverage: L1-4: PASSED       L5-6: PASSED
+///   Coverage: L1-4: PASSED       L5-6: INCONCLUSIVE
+///   Coverage: L1-4: PASSED       L5-6: FAILED
+///   Coverage: L1-4: FAILED (n)   L5-6: PASSED
+///   Coverage: L1-4: FAILED (n)   L5-6: NOT RUN
+///   Coverage: L1-4: FAILED (n)   L5-6: INCONCLUSIVE
+///   Coverage: L1-4: FAILED (n)   L5-6: FAILED
+///
+/// All 8 (2×4) combinations get their own match arm in
+/// `build_doctor_coverage_report` with no wildcard — see that
+/// function's own comment for why the wildcard-free match itself, not
+/// a test, is what actually guards against a future 5th
+/// `ProtocolCheckResult` variant being silently swallowed.
+///
+/// "Server proven healthy end-to-end" requires BOTH `l1_l4_failures ==
+/// 0` AND `protocol_result == Passed` — every other combination gets an
+/// explicit, distinct caveat, including `Inconclusive` (a real dial
+/// happened, but the result cannot be read as pass or fail — this is
+/// NOT "passed" and NOT "not run").
+fn print_doctor_coverage_line(l1_l4_failures: u32, protocol_result: ProtocolCheckResult) {
+    println!();
+    println!(
+        "{}",
+        build_doctor_coverage_report(l1_l4_failures, protocol_result)
+    );
+}
+
+/// Pure string-building half of [`print_doctor_coverage_line`], split
+/// out so the exhaustive combination matrix in its doc comment is
+/// directly unit-testable without capturing stdout. Never call this
+/// from anywhere that isn't `print_doctor_coverage_line` or a test —
+/// the leading-blank-line/println wrapping is that function's job.
+fn build_doctor_coverage_report(
+    l1_l4_failures: u32,
+    protocol_result: ProtocolCheckResult,
+) -> String {
+    let l1_l4_label = if l1_l4_failures == 0 {
+        "PASSED".to_string()
+    } else {
+        format!("FAILED ({l1_l4_failures})")
+    };
+    let header = format!(
+        "Coverage: L1-4 (process/config/listeners/subscription): {l1_l4_label}   L5-6 (real \
+         protocol handshake): {}",
+        protocol_result.label()
+    );
+    // Deliberately no `_`/wildcard arm on `protocol_result`: if a fifth
+    // `ProtocolCheckResult` variant is ever added, this match fails to
+    // COMPILE rather than silently falling into a collapsed message —
+    // that's the actual guard against a future regression here (a
+    // wildcard arm would defeat it even with 100% test coverage of
+    // today's four variants).
+    let detail = match (l1_l4_failures == 0, protocol_result) {
+        (true, ProtocolCheckResult::Passed) => {
+            "All checks that ran, including the real protocol handshake, passed. This proves \
+             the server's own listener/key/auth path — nothing about external reachability, \
+             the client device, or the network in between (see below)."
+        }
+        (true, ProtocolCheckResult::NotRun) => {
+            "No failures among checks that ran, but the real-handshake check (L5-6) did not \
+             run — this is NOT the same as \"server proven healthy end-to-end.\" Re-run with \
+             `--protocol --require-protocol` before treating the server as cleared."
+        }
+        (true, ProtocolCheckResult::Inconclusive) => {
+            "L1-4 passed, but the real-handshake check (L5-6) DIALED and got an INCONCLUSIVE \
+             result — not a pass, not a definitive failure. Do not treat this as \"server \
+             healthy\"; inspect both sing-box processes' logs before concluding anything."
+        }
+        (true, ProtocolCheckResult::Failed) => {
+            "L1-4 passed, but the real-handshake check (L5-6) FAILED — a real client using this \
+             server's own current key material could not complete a handshake. This is a \
+             server-side finding, not proof the problem is client-side."
+        }
+        (false, ProtocolCheckResult::Passed) => {
+            "L1-4 check(s) FAILED even though L5-6's real handshake passed — these are \
+             independent signals; a passing handshake does NOT clear the L1-4 failures above. \
+             Fix those before treating the server as healthy."
+        }
+        (false, ProtocolCheckResult::NotRun) => {
+            "L1-4 check(s) FAILED, and the real-handshake check (L5-6) did not run either — \
+             server-side health is NOT established on either axis. Fix the L1-4 failures first."
+        }
+        (false, ProtocolCheckResult::Inconclusive) => {
+            "L1-4 check(s) FAILED, and the real-handshake check (L5-6) DIALED but got an \
+             INCONCLUSIVE result — server-side health is NOT established on either axis. Fix \
+             the L1-4 failures first, then re-run the protocol self-test."
+        }
+        (false, ProtocolCheckResult::Failed) => {
+            "L1-4 check(s) FAILED, and the real-handshake check (L5-6) also FAILED — server-side \
+             health is NOT established on either axis. Fix the L1-4 failures first."
+        }
+    };
+    format!("{header}\n{detail}")
 }
 
 /// `vpn doctor --report`: a sanitized diagnostic bundle suitable for
@@ -3301,11 +3633,21 @@ fn listener_reported_by_ss(port: u16, udp: bool) -> Option<bool> {
     }))
 }
 
+/// Returns the exact outcome of the L5-6 real-protocol self-test as a
+/// `ProtocolCheckResult` — never a `bool`, and never something the
+/// caller has to re-derive from `failures`. `NotRun` means every
+/// pre-flight check bailed before a single packet was sent (missing
+/// binary, missing keys, no active user, or a harness setup failure) —
+/// the caller must not treat that the same as a completed,
+/// interpretable self-test. This is what `cmd_doctor` uses to decide
+/// exactly what the coverage line can honestly say about L5-6,
+/// regardless of whether `--protocol` was merely passed on the command
+/// line and regardless of the unrelated L1-4 failure count.
 fn check_l5_l6_protocol_selftest(
     cfg: &DeploymentConfig,
     failures: &mut u32,
     require_protocol: bool,
-) {
+) -> ProtocolCheckResult {
     if !cfg.singbox_binary.exists() {
         report_protocol_unavailable(
             require_protocol,
@@ -3315,7 +3657,7 @@ fn check_l5_l6_protocol_selftest(
                 cfg.singbox_binary
             ),
         );
-        return;
+        return ProtocolCheckResult::NotRun;
     }
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
@@ -3325,7 +3667,7 @@ fn check_l5_l6_protocol_selftest(
                 failures,
                 format!("cannot self-test: {e}"),
             );
-            return;
+            return ProtocolCheckResult::NotRun;
         }
     };
     let users = match store::load_users(&cfg.users_file()) {
@@ -3336,7 +3678,7 @@ fn check_l5_l6_protocol_selftest(
                 failures,
                 format!("cannot self-test: failed to load users: {e}"),
             );
-            return;
+            return ProtocolCheckResult::NotRun;
         }
     };
     let now = UnixSeconds::now().0 as i64;
@@ -3346,20 +3688,23 @@ fn check_l5_l6_protocol_selftest(
             failures,
             "cannot self-test: there is no enabled, unexpired VLESS user",
         );
-        return;
+        return ProtocolCheckResult::NotRun;
     };
     let port = cfg.reality.listen_port;
 
     match run_reality_client_selftest(cfg, &reality, test_user, port) {
-        Ok(RealitySelfTestOutcome::Pass) => report_check(
-            CheckStatus::Ok,
-            "L5-6",
-            format!(
-                "protocol self-test: a throwaway sing-box client using the CURRENT REALITY \
-                 public_key/short_id and an active VLESS user completed a full handshake through \
-                 127.0.0.1:{port} and returned application bytes end-to-end"
-            ),
-        ),
+        Ok(RealitySelfTestOutcome::Pass) => {
+            report_check(
+                CheckStatus::Ok,
+                "L5-6",
+                format!(
+                    "protocol self-test: a throwaway sing-box client using the CURRENT REALITY \
+                     public_key/short_id and an active VLESS user completed a full handshake \
+                     through 127.0.0.1:{port} and returned application bytes end-to-end"
+                ),
+            );
+            ProtocolCheckResult::Passed
+        }
         Ok(RealitySelfTestOutcome::HandshakeRejected) => {
             report_check(
                 CheckStatus::Fail,
@@ -3389,19 +3734,27 @@ fn check_l5_l6_protocol_selftest(
                 ),
             );
             *failures += 1;
+            ProtocolCheckResult::Failed
         }
-        Ok(RealitySelfTestOutcome::Inconclusive) => report_protocol_unavailable(
-            require_protocol,
-            failures,
-            "protocol self-test INCONCLUSIVE: the client did not return an HTTP success response \
-             through the live VLESS+REALITY listener. This can be an authentication, routing, \
-             decoy, listener, or transient failure; inspect both sing-box processes' logs.",
-        ),
-        Err(e) => report_protocol_unavailable(
-            require_protocol,
-            failures,
-            format!("cannot self-test: {e}"),
-        ),
+        Ok(RealitySelfTestOutcome::Inconclusive) => {
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                "protocol self-test INCONCLUSIVE: the client did not return an HTTP success \
+                 response through the live VLESS+REALITY listener. This can be an \
+                 authentication, routing, decoy, listener, or transient failure; inspect both \
+                 sing-box processes' logs.",
+            );
+            ProtocolCheckResult::Inconclusive
+        }
+        Err(e) => {
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                format!("cannot self-test: {e}"),
+            );
+            ProtocolCheckResult::NotRun
+        }
     }
 }
 
@@ -4358,5 +4711,159 @@ mod udp_probe_tests {
         assert!(redacted.starts_with("пользователь "));
         assert!(redacted.ends_with(" подключился успешно"));
         assert!(redacted.contains("<redacted>"));
+    }
+}
+
+/// Regression tests for the doctor coverage-state bug found in review:
+/// L1-4's outcome and L5-6's outcome must never be inferred from each
+/// other, and L5-6 must be a real four-state result (NotRun / Passed /
+/// Failed / Inconclusive), never a `bool` collapsed from "the flag was
+/// passed." Every combination in `build_doctor_coverage_report`'s doc
+/// comment is covered here directly (no stdout capture needed — see
+/// that function's own doc comment for why it's split out this way).
+#[cfg(test)]
+mod doctor_coverage_tests {
+    use super::*;
+
+    #[test]
+    fn l1_l4_passed_l5_l6_not_run() {
+        let report = build_doctor_coverage_report(0, ProtocolCheckResult::NotRun);
+        assert!(report.contains("L1-4"));
+        assert!(report.contains("PASSED"));
+        assert!(report.contains("L5-6"));
+        assert!(report.contains("NOT RUN"));
+        assert!(
+            !report.contains("All checks that ran, including the real protocol handshake, passed"),
+            "L1-4 passing alone must never be read as full server health:\n{report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_passed_l5_l6_passed_is_the_only_full_health_claim() {
+        let report = build_doctor_coverage_report(0, ProtocolCheckResult::Passed);
+        assert!(report.contains("PASSED"));
+        assert!(
+            report.contains("All checks that ran, including the real protocol handshake, passed"),
+            "only this exact combination may claim full coverage passed:\n{report}"
+        );
+    }
+
+    /// The specific scenario the review flagged: `--protocol` passed
+    /// without `--require-protocol`, and the self-test result is
+    /// `Inconclusive` (a real dial happened, HTTP success wasn't
+    /// returned). This must NOT print "L5-6 ... PASSED" — it is a
+    /// distinct third state, not folded into pass or not-run.
+    #[test]
+    fn l1_l4_passed_l5_l6_inconclusive_is_never_reported_as_passed_or_not_run() {
+        let report = build_doctor_coverage_report(0, ProtocolCheckResult::Inconclusive);
+        assert!(
+            report.contains("INCONCLUSIVE"),
+            "must explicitly say INCONCLUSIVE:\n{report}"
+        );
+        assert!(
+            !report.contains("L5-6 (real protocol handshake): PASSED"),
+            "an inconclusive self-test must never be reported as PASSED:\n{report}"
+        );
+        assert!(
+            !report.contains("L5-6 (real protocol handshake): NOT RUN"),
+            "an inconclusive self-test actually dialed — it must never be reported as NOT RUN:\n\
+             {report}"
+        );
+        assert!(
+            report.contains("not a definitive failure") || report.contains("DIALED"),
+            "must make clear a real dial happened but the result is ambiguous:\n{report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_passed_l5_l6_failed() {
+        let report = build_doctor_coverage_report(0, ProtocolCheckResult::Failed);
+        assert!(report.contains("L5-6 (real protocol handshake): FAILED"));
+        assert!(
+            report.contains("not proof the problem is client-side"),
+            "an L5-6 failure must not be framed as proving the client is at fault:\n{report}"
+        );
+    }
+
+    /// The other half of the review finding: L1-4's failure count must
+    /// not taint or be inferred from an L5-6 result that happens to
+    /// pass. Both must be visible, independently, in the same report.
+    #[test]
+    fn l1_l4_failed_l5_l6_passed_does_not_imply_l1_l4_ok() {
+        let report = build_doctor_coverage_report(3, ProtocolCheckResult::Passed);
+        assert!(
+            report.contains("FAILED (3)"),
+            "L1-4's failure count must still be visible even when L5-6 passed:\n{report}"
+        );
+        assert!(
+            report.contains("L5-6 (real protocol handshake): PASSED"),
+            "L5-6's own passing result must still be visible independently:\n{report}"
+        );
+        assert!(
+            report.contains("does NOT clear the L1-4 failures"),
+            "a passing handshake must not be read as clearing unrelated L1-4 failures:\n{report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_failed_l5_l6_not_run() {
+        let report = build_doctor_coverage_report(2, ProtocolCheckResult::NotRun);
+        assert!(report.contains("FAILED (2)"));
+        assert!(report.contains("L5-6 (real protocol handshake): NOT RUN"));
+        assert!(report.contains("NOT established"));
+        assert!(
+            report.contains("did not run either"),
+            "the L1-4-failed + L5-6-not-run combination has its own distinct message, not the \
+             generic L1-4-only one:\n{report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_failed_l5_l6_inconclusive_still_reports_both_independently() {
+        let report = build_doctor_coverage_report(1, ProtocolCheckResult::Inconclusive);
+        assert!(report.contains("FAILED (1)"));
+        assert!(report.contains("L5-6 (real protocol handshake): INCONCLUSIVE"));
+        assert!(
+            report.contains("INCONCLUSIVE result"),
+            "the L1-4-failed + L5-6-inconclusive combination has its own distinct message:\n\
+             {report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_failed_l5_l6_failed_both_shown() {
+        let report = build_doctor_coverage_report(4, ProtocolCheckResult::Failed);
+        assert!(report.contains("FAILED (4)"));
+        assert!(report.contains("L5-6 (real protocol handshake): FAILED"));
+        assert!(
+            report.contains("also FAILED"),
+            "the L1-4-failed + L5-6-failed combination has its own distinct message stating \
+             BOTH failed, not just L1-4:\n{report}"
+        );
+    }
+
+    /// `ProtocolCheckResult::label()` must stay a strict 4-state match —
+    /// this test's own `match` has no `_` arm, so it fails to COMPILE if
+    /// a variant is ever added without updating `label()`. Note this
+    /// guards `label()` specifically, not `build_doctor_coverage_report`
+    /// — that function has its own separate exhaustive (also
+    /// wildcard-free) match and is protected by the compiler directly,
+    /// not by this test.
+    #[test]
+    fn protocol_check_result_label_is_exhaustively_defined() {
+        for result in [
+            ProtocolCheckResult::NotRun,
+            ProtocolCheckResult::Passed,
+            ProtocolCheckResult::Failed,
+            ProtocolCheckResult::Inconclusive,
+        ] {
+            let label = match result {
+                ProtocolCheckResult::NotRun => "NOT RUN",
+                ProtocolCheckResult::Passed => "PASSED",
+                ProtocolCheckResult::Failed => "FAILED",
+                ProtocolCheckResult::Inconclusive => "INCONCLUSIVE",
+            };
+            assert_eq!(result.label(), label);
+        }
     }
 }

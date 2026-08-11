@@ -468,3 +468,137 @@ This requires no new code, no new trust boundary, and no schema change
 — it is available today, and is the recommended interim answer to "what
 do we do if this VPS gets blocked" until Option A above is built
 properly.
+
+### 2026-08 addendum: fresh research on the open questions above
+
+A follow-up investigation (iPhone/Telegram/Russia resilience pass,
+2026-08-11) re-researched the specific open questions this section left
+unanswered, using current primary sources. Findings, each graded:
+
+- **sing-box still has no ordered-failover primitive** (CONFIRMED
+  against `sagernet/sing-box` source at HEAD as of 2026-08-11).
+  `selector` is manual-only (no health check at all);
+  `urltest` is a latency race with a sticky `tolerance` window — it
+  prefers whichever outbound is *currently selected* unless a candidate
+  beats it by more than `tolerance` (default 50ms), and only falls back
+  to list-order when NO outbound has any latency history yet (which can
+  hand a dead node to a client that never got a successful probe). List
+  order does not otherwise express priority. Feature requests for a
+  true "try A, else B, else C" priority group
+  (github.com/SagerNet/sing-box/issues/2130 and /4065) are both open
+  and unimplemented. This confirms Option A's own framing above: a
+  `selector` (manual override, default = REALITY on the
+  first/preferred node) containing all four labeled endpoints, plus one
+  `urltest` "auto" group racing all four, is the most correct
+  structure achievable with stock sing-box today — true deterministic
+  ordered failover is not.
+- **Hysteria2 Salamander fingerprinting in Russia specifically: UNKNOWN
+  / SPECULATIVE, not LIKELY** — this addendum previously over-graded
+  this claim; corrected below (2026-08-11 re-check §2026-08-11b).
+- **AWS as Node B's provider: still UNKNOWN whether the specific IP is
+  reachable from Russia** — this addendum's original framing stands;
+  run `docs/AWS_REACHABILITY_TEST.md` before deploying it to real
+  users.
+- **Telegram's status in Russia**: treat any specific 2026 block
+  date/percentage as UNVERIFIED secondary aggregation, not a primary
+  measurement this repo confirmed directly. Qualitatively, multiple
+  independent 2026 sources (Zona Media, Meduza, Amnesty International)
+  describe a rolling throttle/block campaign since Feb 2026 — this does
+  not change this plan's priorities either way: getting a VPN tunnel
+  out of Russia reliably (REALITY primary, Hysteria2 secondary) remains
+  the dominant lever regardless of exactly how Telegram itself is being
+  targeted.
+
+### 2026-08-11b addendum: re-check of the above, with stricter evidence discipline
+
+A second-pass fact-check (triggered by review of the first addendum,
+same day) re-verified the Gecko/Salamander claims against primary
+sources with much stricter grading — a claim only counts as evidence
+if it cites an actual observed event (a measurement, a dated user
+report, a named ISP), not a generic engineering discussion. Corrections:
+
+- **Salamander-in-Russia fingerprinting claim downgraded to UNKNOWN.**
+  The only source behind the original "may already be fingerprintable
+  in Russia" claim was `throneproj/Throne#1563`, a feature-request
+  thread that *asserts* "DPI systems in Russia/China/Iran detect and
+  block Salamander's XOR-obfuscated QUIC traffic" with **zero
+  supporting measurement, date, or ISP name** — it is an unsupported
+  claim embedded in a design discussion, not evidence of an actual
+  Russia-specific event. No OONI report, no net4people/bbs issue, and
+  no Russian-media report of an actual observed Salamander-specific
+  block was found. **Do not describe Salamander as "likely
+  fingerprintable in Russia" without a real incident report** — as of
+  2026-08-11 that claim is UNKNOWN, not LIKELY.
+- **Generic UDP/QUIC blocking in Russia is CONFIRMED, separately from
+  Salamander specifically.** Russia's TSPU DPI system has documented,
+  multi-sourced QUIC/UDP-443 filtering behavior (a 2026 FOCI/PETS
+  measurement paper on "Russia's Early Introduction of QUIC SNI
+  Censorship"; Zona Media's April 2026 reporting that Roskomnadzor
+  "almost completely blocked unidentified UDP traffic" over summer
+  2026). This means Hysteria2 (any obfuscation) is exposed to a real,
+  confirmed UDP-blocking risk in Russia — but that risk is about UDP
+  being targeted generically, not about Salamander's obfuscation
+  specifically being classified and singled out. REALITY (TCP) staying
+  the primary/default transport is well-supported by this distinction
+  on its own, independent of the Salamander question.
+- **VLESS+REALITY: upgrade to PROBABLE (partial degradation), with real
+  citations.** Unlike the Salamander claim, informal-but-real,
+  dated, Russia-specific user reports exist: `net4people/bbs#490`
+  (June 2025, TLS connections >~15-20KB to foreign IPs freezing after
+  ~15-20KB on mobile networks) and `net4people/bbs#546` (Nov 2025,
+  named ISPs — MTS/MGTS Moscow, RTK Izhevsk, JustLan — throttling/
+  resetting VLESS+Reality+Vision connections, with some users reporting
+  that dropping `flow: xtls-rprx-vision` or using non-TLS-mimicking
+  variants helped). This is community-sourced, not an academic
+  measurement study, but it is genuinely Russia-specific and describes
+  actual observed behavior, not a theoretical concern. **Not currently
+  acted on** (no flow/config change made this pass — one or two
+  informal reports are not enough to change ~10 users' default
+  transport), but worth tracking: if this becomes a widely-reported
+  problem, `flow: xtls-rprx-vision` may be worth making
+  operator-toggleable per net4people/bbs#546's informal finding.
+  Grade: PROBABLE for "REALITY sometimes throttled/probed on specific
+  Russian ISPs"; SPECULATIVE/unsupported for any claim that REALITY is
+  broadly or reliably blocked.
+- **Gecko obfuscation: status changed from "not implemented" to
+  "implemented but not stable," which is a materially different fact
+  even though the action (do not adopt yet) is unchanged.** Checked at
+  every layer, 2026-08-11:
+  - `apernet/hysteria` (upstream protocol reference): Gecko shipped in
+    v2.9.2, marked **experimental** in its own changelog.
+  - `SagerNet/sing-box`: Gecko was merged, but only into
+    **`1.14.0-alpha.26`**, part of the still-unreleased 1.14.0 line.
+    Current stable is **1.13.18**; current pre-release is
+    **1.14.0-beta.14** — no stable 1.14.0 has shipped as of 2026-08-11.
+  - Hiddify's own bundled/forked core (`hiddify/hiddify-sing-box`,
+    latest release `1.13.0.h5`, Feb 2026) is based on upstream
+    sing-box ~1.13.0 — several minor versions before Gecko even landed
+    in an alpha. Hiddify's iOS client cannot use Gecko regardless of
+    what the server runs.
+  - vpn1's pinned production sing-box (1.13.14 / 1.13.18 on Node A)
+    also predates Gecko.
+  - **Conclusion unchanged from the first addendum: do not adopt
+    Gecko.** Both the server side (no stable sing-box release supports
+    it) and the client side (Hiddify's bundled core doesn't either)
+    are missing it simultaneously — this is not a "waiting on one
+    open issue" situation, it's "waiting on a stable release + a
+    client core bump," a materially higher bar. Track sing-box's
+    1.14.0 stable release and Hiddify's core-fork version bump
+    together before revisiting.
+  - **Separately and more urgently for iOS specifically**: as of
+    2026-08-11, `hiddify/hiddify-app#2317` is a currently OPEN issue
+    describing Hiddify's iOS release CI as broken — the live App Store
+    build was shipping as an unsigned "dev" flavor because signed iOS
+    release jobs were failing Apple auth. This is unrelated to Gecko
+    but is a more concrete, currently-tracked, iOS-specific risk factor
+    worth flagging to users experiencing any iOS connectivity problem
+    (see `docs/clients/HIDDIFY_IOS.md`).
+
+None of the above changes this document's existing "Not changed" list.
+No transport, obfuscation mode, or MTU value was altered by either
+addendum — together they sharpen the evidence behind decisions already
+made above and flag concrete items (Gecko's real blocker being a
+version-pair, not one open issue; Salamander's Russia-specific
+fingerprinting being unproven; REALITY's informal-but-real throttling
+reports; Hiddify's current iOS release-pipeline problem) to revisit
+with further verification before acting on them.
