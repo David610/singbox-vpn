@@ -96,40 +96,73 @@ server keys or suspecting the VPS until you've exhausted steps 1-6.
 7. **Test Hysteria2 separately** — disconnect, select Hysteria2
    explicitly, reconnect, recheck the public IP.
 8. **Inspect server logs** only after 1-7: `journalctl -u sing-box -u
-   vpn-subscription` on the VPS, and `vpn-admin doctor --protocol` to
-   prove a real client can complete a REALITY handshake against this
-   server.
-9. **Only then** investigate server/network-side causes (firewall,
-   DPI/blocking on your specific network, DNS). `vpn-admin doctor
-   --protocol --require-protocol` reports whether this server's own
-   listeners, keys, and subscription coherence currently pass — read its
-   actual output, since a step-8 failure means the fault is confirmed
-   client-side, but a step-8 fault does NOT by itself prove step 1-7
-   already ruled out everything (see "known Hiddify bug" below).
-10. **If steps 1-9 are all satisfied and it still doesn't work**: this
-    matches a currently open, unresolved class of bug in Hiddify's own
-    iOS app, not something this server's subscription can detect or
-    work around. Hiddify's app-level "Connected" state and iOS's actual
-    `NEPacketTunnelProvider` tunnel state are two separate systems that
-    have shipped out of sync — see Hiddify's own issue tracker, e.g.
-    hiddify/hiddify-app#1812 ("Unable to add VPN to iPhone" — consent
-    accepted, no profile created), #1485 ("vpn enable ... not working"),
-    #290 ("VPN configuration not registering in iOS Settings"), and
-    #1478 (UI stuck on "Connection" instead of "Connected"). None of
-    these are fixed by anything in this server's subscription content.
-    Try, in order: updating Hiddify to its latest App Store version,
-    deleting and reinstalling the app (this also clears any stale
-    NetworkExtension state iOS may be holding), removing ALL VPN
-    profiles for Hiddify from Settings → General → VPN & Device
-    Management before reconnecting, and retrying on a fresh iOS reboot.
-    If it still fails, this is a Hiddify/iOS defect to report upstream,
-    not evidence of a misconfigured server.
+   vpn-subscription` on the VPS, and `vpn-admin doctor --protocol
+   --require-protocol` to prove a real throwaway sing-box client can
+   complete a REALITY handshake against this server FROM THE SERVER'S
+   OWN NETWORK LOCATION.
+9. **Read what a step-8 PASS and FAIL each actually prove — and what
+   neither one proves.**
+   - **FAIL**: server-side health is not established. Stop and fix the
+     server first (`vpn-admin doctor --protocol --require-protocol`
+     output tells you exactly which layer failed) — do not go further
+     down this list while the server itself is unproven.
+   - **PASS**: only proves this server's own REALITY listener, key
+     material, and authentication path work, dialed from the VPS's own
+     network. **A PASS here does NOT prove**, and must never be read as
+     "confirming," any of the following, all of which remain untested:
+     external reachability from the specific network the phone is on
+     (especially Russian ISPs — DPI/throttling can sit entirely between
+     the phone and this server, invisible to a same-host self-test),
+     the iPhone's NetworkExtension/VPN-permission state, Hiddify's own
+     TUN/routing behavior, or DNS/IPv6 behavior on the phone. A step-8
+     PASS narrows the search — it does not by itself finish it. Keep
+     going through steps 10-11 before concluding anything.
+10. **Check whether the specific network the phone is on can even
+    reach this server at all**, independent of Hiddify: from the same
+    Wi-Fi/cellular network, try `curl -v --connect-timeout 5
+    https://<this server's host>:443` (expect a TLS handshake to start;
+    REALITY will present as a normal HTTPS connection to whatever
+    `handshake_server` this deployment uses) or a plain
+    `Test-NetConnection <host> -Port 443` on Windows / `nc -vz <host>
+    443` elsewhere. If this fails from the phone's network but the
+    server's own self-test (step 8) passed, the fault is network-path
+    blocking (ISP/DPI/firewall) between that specific network and this
+    server — not the server, and not necessarily Hiddify either.
+11. **If steps 1-10 are all satisfied and it still doesn't work**:
+    check Hiddify's own current release health before assuming a
+    behavioral bug. As of this writing (2026-08), Hiddify's iOS release
+    pipeline has a **currently open, confirmed** problem:
+    hiddify/hiddify-app#2317 — the live App Store build was reporting
+    itself as a "4.0.0 dev" build, CI jobs for signed iOS releases were
+    failing (Apple auth errors), and iOS was pulled from the release
+    build matrix, meaning the latest tagged release (v4.1.1) shipped
+    with no new iOS binary at all. If your Hiddify app's own
+    About/version screen shows a "dev" build tag, this is likely why,
+    and it is entirely outside this server's control — check
+    hiddify/hiddify-app#2317 for current status before troubleshooting
+    further, and consider whether a rebuild/reinstall from a properly
+    signed release becomes available.
+    Separately: several OLDER Hiddify iOS reports of "connected in-app
+    but no OS tunnel" exist in Hiddify's issue history (e.g.
+    hiddify/hiddify-app#1812, #1485, #290) — but as of 2026-08-11 these
+    are all **closed** (mostly auto-closed by a stale-bot with no
+    linked fix), not currently open or tracked. Treat them as
+    historical evidence that this failure class has happened before in
+    Hiddify's iOS app, not as proof of a presently open bug. (A fourth
+    issue previously cited here, #1478, was miscited — it is a
+    **Windows** issue about a "Proxy Only"/"VPN mode" status label, not
+    an iOS issue, and has been removed from this list.) If your
+    Hiddify app is on a current, non-dev build and none of steps 1-10
+    explain the symptom, this is worth reporting fresh to Hiddify's
+    issue tracker with your exact app version and iOS version, since no
+    currently-open upstream report matches it precisely.
 
 Do not treat "Hiddify's server list shows REALITY/Hysteria2 as
-connected but the IP never changes" as proof of any single cause — it
-is consistent with steps 1, 2, or 10 above, all of which are
-client/OS-side and outside what this server's subscription can see or
-control. This project has not yet reproduced the failure on a real
+connected but the IP never changes" as proof of any single cause. Do
+not treat a passing `vpn-admin doctor --protocol --require-protocol`
+as proof the problem is client-side — it only proves the server's own
+listener/key/auth path works from the server's own vantage point (see
+step 9). This project has not yet reproduced the failure on a real
 device end-to-end; treat any specific-cause claim beyond this list as
 unverified until it is.
 
@@ -150,26 +183,33 @@ The subscription URL is your personal credential. Don't share it —
 anyone who fetches it gets your VLESS UUID and Hysteria2 password and
 can import their own profile from them.
 
-Two different things can happen to your credentials, and they are NOT
-the same:
+Every admin action that touches your credentials has a DIFFERENT blast
+radius. Do not assume any one of these behaves like another:
 
-- **`vpn-admin user rotate-token`** (or `user qr`) invalidates the
-  *subscription URL itself* — it 404s from that moment on, so it can no
-  longer be used to fetch or refresh a config. It does **not** change
-  your VLESS UUID or Hysteria2 password, so an **already-imported**
-  REALITY/Hysteria2 profile — yours or anyone else's who had the old
-  URL — keeps connecting exactly as before. Rotating a leaked token
-  stops *future* fetches with it; it does not retroactively cut off a
-  connection someone already imported. If you believe your transport
-  credentials themselves are compromised, use `user disable` (or
-  contact your administrator to recreate your account).
-- **`vpn-admin hysteria-obfs-rotate`** is a separate, deployment-wide
-  action that changes the shared Hysteria2 Salamander obfuscation
-  password for every user. It does not rotate your personal
-  subscription token, but it does mean your already-imported Hysteria2
-  profile stops authenticating until you re-import — your subscription
-  URL and REALITY connection are unaffected.
+| Admin command | Subscription URL | Already-imported REALITY | Already-imported Hysteria2 | Reversible? |
+|---|---|---|---|---|
+| `user rotate-token` / `user qr` | Old URL 404s immediately; fetch/refresh only | Unaffected — keeps connecting | Unaffected — keeps connecting | New URL replaces old one |
+| `user rotate-vless` | Unaffected, still fetches | **Rejected on next handshake** | Unaffected | Re-import the subscription to pick up the new UUID |
+| `user rotate-hysteria` | Unaffected, still fetches | Unaffected | **Rejected on next handshake** | Re-import the subscription to pick up the new password |
+| `user rotate-credentials` | Unaffected, still fetches | **Rejected on next handshake** | **Rejected on next handshake** | Re-import the subscription (both changed) |
+| `hysteria-obfs-rotate` (deployment-wide, all users) | Unaffected | Unaffected | **Rejected for every user** on next handshake | Every user must re-import |
+| `init --rotate` (REALITY server key, deployment-wide, all users) | Unaffected | **Rejected for every user** on next handshake | Unaffected | Every user must re-import |
+| `user disable` | 404s immediately | **Rejected immediately** | **Rejected immediately** | Yes — `user enable` restores everything |
+| `user remove` | 404s immediately | **Rejected immediately** | **Rejected immediately** | **No** — account must be recreated from scratch |
 
-`vpn-admin user disable` is the only action that stops an
-already-imported profile from connecting at all (the server refuses the
-UUID/password on the next handshake).
+Practical reading of this table:
+
+- Rotating the subscription token alone (leaked-URL scenario, nothing
+  else compromised) does **not** cut off a connection someone already
+  established from the old URL — it only stops them fetching a fresh
+  copy. If you need to actually cut off a specific device, that's
+  `user disable`, or `user rotate-credentials` if you want the account
+  to keep working for everyone else who re-imports.
+- `hysteria-obfs-rotate` and `init --rotate` are deployment-wide: they
+  affect every user's Hysteria2 or REALITY profile respectively, not
+  just one account. Only run these for a real deployment-wide reason
+  (suspected shared-secret/key compromise), not to punish one user.
+- `user disable`/`user remove` are the only commands that stop an
+  already-imported profile from connecting **immediately**, because
+  they drop the user from the server's own authorization list, not
+  just from the subscription/token layer.

@@ -649,6 +649,176 @@ fn rotate_token_does_not_claim_already_imported_profile_stops_connecting() {
     );
 }
 
+/// Regression coverage for the credential-blast-radius audit this
+/// investigation required: `disable`/`remove`/`rotate-vless`/
+/// `rotate-hysteria`/`rotate-credentials` each have a DIFFERENT scope
+/// than subscription-token rotation (which affects neither transport),
+/// and the CLI output must say so precisely rather than leaving the
+/// operator to guess or (worse) assume the "safe" rotate-token blast
+/// radius applies universally.
+#[test]
+fn each_credential_mutation_states_its_own_blast_radius() {
+    let dir = tempfile::tempdir().unwrap();
+    // A real (faked) sing-box binary AND a working systemctl are both
+    // required: without them `render_and_apply_singbox_config` degrades
+    // to a "written but not reloaded" warning path and the un-live-yet
+    // wording (correctly) takes over instead of the claims under test
+    // here — see `apply_users_and_save`'s doc comment. Using the live
+    // path is what actually exercises the claims these assertions check.
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| -> assert_cmd::assert::Assert {
+        admin(dir.path(), &cfg_path)
+            .args(args)
+            .env("PATH", &augmented_path)
+            .env("SYSTEMCTL_LOG", &log_path)
+            .assert()
+    };
+    run(&["init"]).success();
+    let create = |name: &str| -> String {
+        let output = run(&["user", "create", "--name", name]).success();
+        let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+        stdout
+            .lines()
+            .skip_while(|l| *l != "User ID:")
+            .nth(1)
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+
+    // rotate-vless: REALITY only, Hysteria2 + subscription unaffected.
+    let id = create("frank");
+    let output = run(&["user", "rotate-vless", &id]).success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("REALITY profiles") && stdout.contains("Hysteria2 and the"),
+        "rotate-vless must scope its blast-radius claim to REALITY only:\n{stdout}"
+    );
+
+    // rotate-hysteria: Hysteria2 only, REALITY + subscription unaffected.
+    let id = create("grace");
+    let output = run(&["user", "rotate-hysteria", &id]).success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("Hysteria2 profiles") && stdout.contains("REALITY and the"),
+        "rotate-hysteria must scope its blast-radius claim to Hysteria2 only:\n{stdout}"
+    );
+
+    // rotate-credentials: both transports, subscription unaffected.
+    let id = create("heidi");
+    let output = run(&["user", "rotate-credentials", &id]).success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("REALITY AND Hysteria2") && stdout.contains("BOTH rejected"),
+        "rotate-credentials must state BOTH transports are affected:\n{stdout}"
+    );
+
+    // disable: both transports AND subscription, immediately, no re-import window.
+    let id = create("ivan");
+    let output = run(&["user", "disable", &id]).success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("REALITY and Hysteria2 credentials are both rejected")
+            && stdout.contains("subscription URL now 404s"),
+        "disable must state the widest blast radius (both transports + subscription):\n{stdout}"
+    );
+
+    // remove: same blast radius as disable, but irreversible.
+    let id = create("judy");
+    let output = run(&["user", "remove", &id]).success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("Same blast radius as `user disable`") && stdout.contains("not reversible"),
+        "remove must state it shares disable's blast radius but is irreversible:\n{stdout}"
+    );
+}
+
+/// Companion to the test above: when sing-box/systemctl are NOT
+/// available (the common local/CI/dev case), the blast-radius claim
+/// must NOT be printed as fact — this is the exact overclaim an
+/// adversarial review of this investigation found and required fixing.
+#[test]
+fn credential_mutation_does_not_claim_blast_radius_when_not_reloaded_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path()); // no real sing-box binary
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "karl"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let id = stdout
+        .lines()
+        .skip_while(|l| *l != "User ID:")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "rotate-vless", &id])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("NOT fully reloaded live") || stdout.contains("NOT reloaded live"),
+        "when sing-box/systemctl are unavailable, rotate-vless must say the change was not \
+         proven live, not claim credentials were rejected:\n{stdout}"
+    );
+}
+
+/// REALITY server-key rotation (`init --rotate`) must scope its claim to
+/// REALITY specifically — it must NOT say the whole "subscription" is
+/// invalid, since the subscription URL itself keeps fetching/refreshing
+/// fine and Hysteria2 profiles are unaffected.
+#[test]
+fn reality_rotate_scopes_blast_radius_to_reality_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("init")
+        .assert()
+        .success();
+
+    let output = admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args(["init", "--rotate"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("REALITY profile is now")
+            && stdout.contains("Subscription URLs are")
+            && stdout.contains("Hysteria2 profiles are unaffected"),
+        "REALITY rotation must scope its blast-radius claim to REALITY only, not the whole \
+         subscription:\n{stdout}"
+    );
+}
+
 #[test]
 fn doctor_reports_missing_singbox_binary_as_failure() {
     let dir = tempfile::tempdir().unwrap();
@@ -1034,9 +1204,43 @@ fn doctor_client_and_telegram_never_claim_server_is_healthy_when_checks_failed()
         .failure();
     let telegram_stdout = String::from_utf8(telegram_output.get_output().stdout.clone()).unwrap();
     assert!(
-        telegram_stdout.contains("FAILED") && telegram_stdout.contains("NOT proven"),
+        telegram_stdout.contains("FAILED") && telegram_stdout.contains("NOT established"),
         "doctor --telegram must explicitly warn that server-side health is unproven after a \
          failure:\n{telegram_stdout}"
+    );
+}
+
+/// Regression test for the PR #14 review finding: `failures == 0` alone
+/// was being treated as "server proven healthy," even when the
+/// strongest check (`--protocol`, a real handshake) never ran at all.
+/// Coverage (what ran) and outcome (whether it passed) are different
+/// axes and must both be visible.
+#[test]
+fn doctor_coverage_line_distinguishes_not_run_from_failed_from_passed() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    // No --protocol: L5-6 must be reported as NOT RUN, not silently
+    // folded into "no failures == healthy."
+    let output = admin(dir.path(), &cfg_path)
+        .args(["doctor", "--client"])
+        .assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("L5-6") && stdout.contains("NOT RUN"),
+        "doctor --client must explicitly report the protocol handshake check as NOT RUN when \
+         --protocol was not passed, not silently equate that with a healthy server:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("server proven healthy"),
+        "doctor --client must never claim the server is fully proven healthy when L5-6 did not \
+         run:\n{stdout}"
     );
 }
 

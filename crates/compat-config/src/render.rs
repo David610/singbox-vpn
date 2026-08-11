@@ -22,6 +22,28 @@ fn percent_encode_label(label: &str) -> String {
     out
 }
 
+/// This endpoint's effective VLESS UUID: its own per-node override
+/// (`CompatEndpoint::credentials`, set only by a multi-node merge) if
+/// present, else the rendering `CompatUser`'s. Single-node deployments
+/// always take the `user` branch — `credentials` is `None` there.
+fn effective_vless_uuid<'a>(user: &'a CompatUser, endpoint: &'a CompatEndpoint) -> &'a str {
+    endpoint
+        .credentials
+        .as_ref()
+        .and_then(|c| c.vless_uuid.as_deref())
+        .unwrap_or(&user.vless_uuid)
+}
+
+/// Same as [`effective_vless_uuid`], for the Hysteria2 password.
+fn effective_hysteria2_password<'a>(user: &'a CompatUser, endpoint: &'a CompatEndpoint) -> &'a str {
+    endpoint
+        .credentials
+        .as_ref()
+        .and_then(|c| c.hysteria2_password.as_ref())
+        .map(|s| s.expose())
+        .unwrap_or_else(|| user.hysteria2_password.expose())
+}
+
 /// `vless://uuid@host:port?...&security=reality...#label`
 pub fn render_vless_reality_uri(
     user: &CompatUser,
@@ -38,7 +60,7 @@ pub fn render_vless_reality_uri(
     let sni = endpoint.server_name.as_deref().unwrap_or(&endpoint.host);
     Ok(format!(
         "vless://{uuid}@{host}:{port}?encryption=none&security=reality&sni={sni}&fp={fp}&pbk={pbk}&sid={sid}&type=tcp&flow=xtls-rprx-vision#{label}",
-        uuid = user.vless_uuid,
+        uuid = effective_vless_uuid(user, endpoint),
         host = endpoint.host,
         port = endpoint.port,
         sni = sni,
@@ -60,7 +82,7 @@ pub fn render_hysteria2_uri(
     let sni = endpoint.server_name.as_deref().unwrap_or(&endpoint.host);
     let mut uri = format!(
         "hysteria2://{password}@{host}:{port}?sni={sni}&insecure=0",
-        password = user.hysteria2_password.expose(),
+        password = effective_hysteria2_password(user, endpoint),
         host = endpoint.host,
         port = endpoint.port,
         sni = sni,
@@ -140,7 +162,7 @@ pub fn render_singbox_client_subscription(
                 "tag": tag,
                 "server": ep.host,
                 "server_port": ep.port,
-                "uuid": user.vless_uuid,
+                "uuid": effective_vless_uuid(user, ep),
                 "flow": "xtls-rprx-vision",
                 "tls": {
                     "enabled": true,
@@ -159,7 +181,7 @@ pub fn render_singbox_client_subscription(
                     "tag": tag,
                     "server": ep.host,
                     "server_port": ep.port,
-                    "password": user.hysteria2_password.expose(),
+                    "password": effective_hysteria2_password(user, ep),
                     "tls": {
                         "enabled": true,
                         "server_name": ep.server_name.clone().unwrap_or_else(|| ep.host.clone()),
@@ -240,6 +262,7 @@ pub fn standard_endpoints(
                 short_id: reality_short_id.into(),
                 fingerprint: "chrome".into(),
             },
+            credentials: None,
         },
         CompatEndpoint {
             id: "hysteria2-1".into(),
@@ -251,8 +274,76 @@ pub fn standard_endpoints(
             public_parameters: PublicParameters::Hysteria2 {
                 obfs_password: hysteria_obfs_password.map(|s| s.to_string()),
             },
+            credentials: None,
         },
     ]
+}
+
+/// Multi-node variant of [`standard_endpoints`]: builds the same
+/// Reality+Hysteria2 pair for EACH node in `nodes`, labeled
+/// `"<node_label> - Reality"` / `"<node_label> - Hysteria2"` so a
+/// merged subscription lists all endpoints with clear, at-a-glance
+/// origin (important for a nontechnical relative manually switching
+/// nodes — see `docs/TELEGRAM_RESILIENCE_PLAN.md` §K). Each node's
+/// `NodeCredentials` are baked into that node's two endpoints via
+/// `CompatEndpoint::credentials`, so nodes never need to share one
+/// `CompatUser` identity — a leaked/rotated credential on one node
+/// cannot affect another (independent per-node blast radius, as
+/// required for real multi-node isolation).
+///
+/// **Library-level scaffolding only, not yet operator-usable.** As of
+/// this writing nothing in `apps/admin` or `services/subscription`
+/// constructs a `NodeSpec` list or calls this function — there is no
+/// CLI command or HTTP path that produces a live multi-node
+/// subscription yet. This function and its tests prove the *rendering*
+/// logic is correct and credential-isolated; wiring an actual second
+/// node's config into a `NodeSpec` (deployment config, CLI command,
+/// and/or a merge step in `services/subscription`) is separate,
+/// not-yet-done work — see `docs/TELEGRAM_RESILIENCE_PLAN.md` §K
+/// "What is genuinely missing."
+pub struct NodeSpec<'a> {
+    pub node_label: &'a str,
+    pub public_host: &'a str,
+    pub reality_port: u16,
+    pub hysteria_port: u16,
+    pub reality_public_key_hex: &'a str,
+    pub reality_short_id: &'a str,
+    pub handshake_server: &'a str,
+    pub hysteria_obfs_password: Option<&'a str>,
+    pub credentials: crate::model::EndpointCredentials,
+}
+
+pub fn multi_node_endpoints(nodes: &[NodeSpec<'_>]) -> Vec<CompatEndpoint> {
+    let mut out = Vec::with_capacity(nodes.len() * 2);
+    for (i, node) in nodes.iter().enumerate() {
+        out.push(CompatEndpoint {
+            id: format!("reality-{i}"),
+            transport: CompatTransport::VlessReality,
+            host: node.public_host.into(),
+            port: node.reality_port,
+            server_name: Some(node.handshake_server.into()),
+            label: format!("{} - Reality", node.node_label),
+            public_parameters: PublicParameters::Reality {
+                public_key_hex: node.reality_public_key_hex.into(),
+                short_id: node.reality_short_id.into(),
+                fingerprint: "chrome".into(),
+            },
+            credentials: Some(node.credentials.clone()),
+        });
+        out.push(CompatEndpoint {
+            id: format!("hysteria2-{i}"),
+            transport: CompatTransport::Hysteria2,
+            host: node.public_host.into(),
+            port: node.hysteria_port,
+            server_name: Some(node.public_host.into()),
+            label: format!("{} - Hysteria2", node.node_label),
+            public_parameters: PublicParameters::Hysteria2 {
+                obfs_password: node.hysteria_obfs_password.map(|s| s.to_string()),
+            },
+            credentials: Some(node.credentials.clone()),
+        });
+    }
+    out
 }
 
 /// SHA-256 hex digest over a canonical serialization of `endpoints` —
@@ -309,6 +400,7 @@ mod tests {
                 short_id: "0a1b2c3d".into(),
                 fingerprint: "chrome".into(),
             },
+            credentials: None,
         }
     }
 
@@ -323,6 +415,7 @@ mod tests {
             public_parameters: PublicParameters::Hysteria2 {
                 obfs_password: None,
             },
+            credentials: None,
         }
     }
 
@@ -532,6 +625,214 @@ mod tests {
             "a different REALITY public key must change the fingerprint — this is the \
              property the live subscription/server coherence check in `vpn-admin doctor` \
              depends on to detect a stale running vpn-subscription process"
+        );
+    }
+
+    fn node_a_credentials() -> crate::model::EndpointCredentials {
+        crate::model::EndpointCredentials {
+            vless_uuid: Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into()),
+            hysteria2_password: Some(SecretString::new("node-a-hy2-pass")),
+        }
+    }
+
+    fn node_b_credentials() -> crate::model::EndpointCredentials {
+        crate::model::EndpointCredentials {
+            vless_uuid: Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into()),
+            hysteria2_password: Some(SecretString::new("node-b-hy2-pass")),
+        }
+    }
+
+    fn two_node_endpoints() -> Vec<CompatEndpoint> {
+        multi_node_endpoints(&[
+            NodeSpec {
+                node_label: "Node A",
+                public_host: "node-a.example.com",
+                reality_port: 443,
+                hysteria_port: 443,
+                reality_public_key_hex: "pubkey-a",
+                reality_short_id: "shorta",
+                handshake_server: "www.google.com",
+                hysteria_obfs_password: Some("obfs-a"),
+                credentials: node_a_credentials(),
+            },
+            NodeSpec {
+                node_label: "Node B",
+                public_host: "node-b.example.com",
+                reality_port: 443,
+                hysteria_port: 443,
+                reality_public_key_hex: "pubkey-b",
+                reality_short_id: "shortb",
+                handshake_server: "www.bing.com",
+                hysteria_obfs_password: Some("obfs-b"),
+                credentials: node_b_credentials(),
+            },
+        ])
+    }
+
+    #[test]
+    fn multi_node_endpoints_produces_four_distinctly_labeled_endpoints() {
+        let eps = two_node_endpoints();
+        assert_eq!(eps.len(), 4);
+        let labels: Vec<&str> = eps.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Node A - Reality",
+                "Node A - Hysteria2",
+                "Node B - Reality",
+                "Node B - Hysteria2",
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_node_subscription_uses_each_nodes_own_credentials_not_the_shared_user() {
+        let eps = two_node_endpoints();
+        // The rendering `CompatUser`'s own credentials must never leak into
+        // a multi-node endpoint's rendered output — each node's
+        // `EndpointCredentials` override must win.
+        let shared_user = user();
+        let doc = render_singbox_client_subscription(&shared_user, &eps).unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+
+        let vless: Vec<&serde_json::Value> =
+            outbounds.iter().filter(|o| o["type"] == "vless").collect();
+        assert_eq!(vless.len(), 2);
+        assert_eq!(vless[0]["uuid"], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        assert_eq!(vless[1]["uuid"], "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        assert_ne!(vless[0]["uuid"], shared_user.vless_uuid);
+
+        let hy2: Vec<&serde_json::Value> = outbounds
+            .iter()
+            .filter(|o| o["type"] == "hysteria2")
+            .collect();
+        assert_eq!(hy2.len(), 2);
+        assert_eq!(hy2[0]["password"], "node-a-hy2-pass");
+        assert_eq!(hy2[1]["password"], "node-b-hy2-pass");
+        assert_ne!(hy2[0]["password"], "hy2pass"); // shared_user's own password
+
+        // URI rendering must use the same per-node override, not the
+        // shared user, so a Hiddify URI-list import is credential-isolated
+        // the same way the native JSON is.
+        let reality_a_uri = render_vless_reality_uri(&shared_user, &eps[0]).unwrap();
+        assert!(reality_a_uri.contains("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"));
+        let hy2_b_uri = render_hysteria2_uri(&shared_user, &eps[3]).unwrap();
+        assert!(hy2_b_uri.contains("node-b-hy2-pass"));
+    }
+
+    #[test]
+    fn removing_node_b_endpoints_does_not_change_node_a_rendered_output() {
+        let eps = two_node_endpoints();
+        let shared_user = user();
+        let with_both = render_singbox_client_subscription(&shared_user, &eps).unwrap();
+
+        let node_a_only: Vec<CompatEndpoint> = eps
+            .iter()
+            .filter(|e| e.label.starts_with("Node A"))
+            .cloned()
+            .collect();
+        let with_a_only = render_singbox_client_subscription(&shared_user, &node_a_only).unwrap();
+
+        let find_vless = |doc: &serde_json::Value, tag: &str| -> serde_json::Value {
+            doc["outbounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["tag"] == tag)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            find_vless(&with_both, "Node A - Reality"),
+            find_vless(&with_a_only, "Node A - Reality"),
+            "Node A's rendered outbound must be identical whether or not Node B is present"
+        );
+    }
+
+    #[test]
+    fn removing_node_a_endpoints_does_not_change_node_b_rendered_output() {
+        let eps = two_node_endpoints();
+        let shared_user = user();
+        let with_both = render_singbox_client_subscription(&shared_user, &eps).unwrap();
+
+        let node_b_only: Vec<CompatEndpoint> = eps
+            .iter()
+            .filter(|e| e.label.starts_with("Node B"))
+            .cloned()
+            .collect();
+        let with_b_only = render_singbox_client_subscription(&shared_user, &node_b_only).unwrap();
+
+        let find_hy2 = |doc: &serde_json::Value, tag: &str| -> serde_json::Value {
+            doc["outbounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["tag"] == tag)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            find_hy2(&with_both, "Node B - Hysteria2"),
+            find_hy2(&with_b_only, "Node B - Hysteria2"),
+            "Node B's rendered outbound must be identical whether or not Node A is present"
+        );
+    }
+
+    #[test]
+    fn multi_node_selector_defaults_to_first_nodes_reality_and_lists_all_four_plus_auto() {
+        let eps = two_node_endpoints();
+        let doc = render_singbox_client_subscription(&user(), &eps).unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let selector = outbounds.iter().find(|o| o["type"] == "selector").unwrap();
+        assert_eq!(selector["default"], "Node A - Reality");
+        let options: Vec<&str> = selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            options,
+            vec![
+                "Node A - Reality",
+                "Node A - Hysteria2",
+                "Node B - Reality",
+                "Node B - Hysteria2",
+                "auto",
+            ]
+        );
+        let urltest = outbounds.iter().find(|o| o["type"] == "urltest").unwrap();
+        let urltest_options: Vec<&str> = urltest["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            urltest_options.len(),
+            4,
+            "auto group must race all four endpoints"
+        );
+    }
+
+    #[test]
+    fn multi_node_endpoints_never_serialize_credentials_field_when_absent() {
+        // Single-node deployments (standard_endpoints) must keep producing
+        // byte-identical serialized output to before this field existed —
+        // `skip_serializing_if` must actually omit it, not serialize `null`.
+        let eps = standard_endpoints(
+            "vpn.example.com",
+            443,
+            443,
+            "pubkey",
+            "short1",
+            "www.google.com",
+            None,
+        );
+        let json = serde_json::to_string(&eps).unwrap();
+        assert!(
+            !json.contains("credentials"),
+            "single-node endpoints must not serialize a `credentials` key at all: {json}"
         );
     }
 }

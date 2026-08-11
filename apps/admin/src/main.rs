@@ -726,13 +726,15 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     }
     config_applied.set(true);
 
-    if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
+    let singbox_reloaded_live = if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
         if let Err(e) = singbox_mgr.reload_and_verify() {
             bail!(rollback(&format!("sing-box reload failed: {e}")));
         }
+        true
     } else {
         println!("warning: systemctl/sing-box.service not available — config written but sing-box was NOT reloaded.");
-    }
+        false
+    };
 
     // The subscription service reads the REALITY public key/short_id
     // ONCE at startup (services/subscription/src/main.rs) and has no
@@ -740,25 +742,37 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     // it keeps advertising the OLD public key to every client that asks
     // for a subscription after this point (docs/FINAL_PRODUCTION_AUDIT.md
     // P0-5's core scenario).
-    if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
+    let sub_restarted_live = if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
         if let Err(e) = sub_mgr.reload_and_verify() {
             bail!(rollback(&format!(
                 "subscription service restart failed: {e}"
             )));
         }
+        true
     } else {
         println!("warning: systemctl/vpn-subscription.service not available — new public key written but subscription service was NOT restarted.");
-    }
+        false
+    };
 
     // Commit: only now is it safe to discard the rollback material.
     for p in [&priv_path, &pub_path, &sid_path] {
         remove_rotate_backup(p);
     }
 
-    println!(
-        "REALITY key rotated and applied. Every existing client's subscription/profile is now \
-         invalid until re-imported — the public key changed."
-    );
+    if singbox_reloaded_live && sub_restarted_live {
+        println!(
+            "REALITY key rotated and applied. Every existing client's REALITY profile is now \
+             invalid (server public key changed) until re-imported. Subscription URLs are \
+             unaffected and still fetch/refresh normally; Hysteria2 profiles are unaffected."
+        );
+    } else {
+        println!(
+            "REALITY key rotated on disk, but NOT fully reloaded live (see warning(s) above). \
+             The RUNNING server may still accept the OLD public key until sing-box is actually \
+             reloaded and vpn-subscription actually restarted — do not treat existing clients \
+             as invalidated yet."
+        );
+    }
     Ok(())
 }
 
@@ -922,33 +936,47 @@ fn cmd_hysteria_obfs_rotate(cfg: &DeploymentConfig) -> Result<()> {
     }
     config_applied.set(true);
 
-    if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
+    let singbox_reloaded_live = if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
         if let Err(e) = singbox_mgr.reload_and_verify() {
             bail!(rollback(&format!("sing-box reload failed: {e}")));
         }
+        true
     } else {
         println!("warning: systemctl/sing-box.service not available — config written but sing-box was NOT reloaded.");
-    }
+        false
+    };
 
     // Same reasoning as `cmd_reality_rotate`: vpn-subscription reads the
     // obfs password ONCE at startup into `AppState.endpoints` and has no
     // config-reload path.
-    if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
+    let sub_restarted_live = if sub_mgr.is_available() && sub_mgr.is_unit_installed() {
         if let Err(e) = sub_mgr.reload_and_verify() {
             bail!(rollback(&format!(
                 "subscription service restart failed: {e}"
             )));
         }
+        true
     } else {
         println!("warning: systemctl/vpn-subscription.service not available — new obfuscation password written but subscription service was NOT restarted.");
-    }
+        false
+    };
 
     remove_rotate_backup(&obfs_path);
 
-    println!(
-        "Hysteria2 obfuscation password enabled/rotated and applied. Every existing client's \
-         Hysteria2 profile is now invalid until re-imported — the obfuscation password changed."
-    );
+    if singbox_reloaded_live && sub_restarted_live {
+        println!(
+            "Hysteria2 obfuscation password enabled/rotated and applied. Every existing \
+             client's Hysteria2 profile is now invalid until re-imported — the obfuscation \
+             password changed."
+        );
+    } else {
+        println!(
+            "Hysteria2 obfuscation password rotated on disk, but NOT fully reloaded live (see \
+             warning(s) above). The RUNNING server may still accept the OLD obfuscation \
+             password until sing-box is actually reloaded and vpn-subscription actually \
+             restarted — do not treat existing Hysteria2 clients as invalidated yet."
+        );
+    }
     Ok(())
 }
 
@@ -1126,11 +1154,21 @@ fn commit_applied_config_stamp(target: &std::path::Path, fingerprint: &str) -> R
     Ok(())
 }
 
+/// Returns whether the change was actually pushed to a LIVE, reloaded
+/// sing-box process — `Ok(false)` covers every degraded path (missing
+/// binary, missing keys, systemctl/unit unavailable) where the config
+/// was at most written to disk, never proven live. Callers that print a
+/// blast-radius claim ("already-imported profile rejected on next
+/// handshake") must gate that claim on this being `true` — it is only
+/// true in production; the various early-return warning paths below
+/// are reachable in real deployments only when an operator explicitly
+/// bypasses the live-apply requirement (`VPN1_ALLOW_OFFLINE_MUTATION=1`,
+/// documented as dev/offline-only), or in local/CI dev.
 fn render_and_apply_singbox_config(
     cfg: &DeploymentConfig,
     users: &[CompatUser],
     require_live_apply: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
         Err(e) => {
@@ -1141,7 +1179,7 @@ fn render_and_apply_singbox_config(
                 );
             }
             println!("warning: skipping sing-box config render/apply: {e}");
-            return Ok(());
+            return Ok(false);
         }
     };
     let hysteria = load_hysteria_params(cfg);
@@ -1167,7 +1205,7 @@ fn render_and_apply_singbox_config(
             "warning: {:?} not found; wrote nothing. Install sing-box, then run `vpn-admin render-config`.",
             cfg.singbox_binary
         );
-        return Ok(());
+        return Ok(false);
     }
     let backend = SingBoxBackend {
         binary_path: cfg.singbox_binary.clone(),
@@ -1190,7 +1228,7 @@ fn render_and_apply_singbox_config(
         .is_ok_and(|stamp| stamp.trim() == candidate_fingerprint);
     if target_already_matches && applied_stamp_matches && service_available && mgr.is_active() {
         println!("sing-box authorization config is already current; no reload needed.");
-        return Ok(());
+        return Ok(true);
     }
 
     apply_config_atomically(&doc, &target, |p| backend.validate(p))
@@ -1203,7 +1241,7 @@ fn render_and_apply_singbox_config(
              On a real deployment this means the change has not taken effect yet — run \
              `systemctl reload-or-restart sing-box` manually."
         );
-        return Ok(());
+        return Ok(false);
     }
     if !mgr.is_unit_installed() {
         println!(
@@ -1212,7 +1250,7 @@ fn render_and_apply_singbox_config(
              change has not taken effect yet — run `deploy/almalinux/install.sh` (or \
              `systemctl reload-or-restart sing-box` if the unit already exists) manually."
         );
-        return Ok(());
+        return Ok(false);
     }
 
     if let Err(reload_err) = mgr.reload_and_verify() {
@@ -1236,7 +1274,7 @@ fn render_and_apply_singbox_config(
     commit_applied_config_stamp(&target, &candidate_fingerprint)
         .context("recording the config version verified live")?;
     println!("sing-box reloaded and verified active.");
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(unix)]
@@ -1269,7 +1307,8 @@ fn apply_restored_file_policy(_path: &std::path::Path, _group: &str) -> Result<(
 
 fn regenerate_singbox_config(cfg: &DeploymentConfig, require_live_apply: bool) -> Result<()> {
     let users = store::load_users(&cfg.users_file())?;
-    render_and_apply_singbox_config(cfg, &users, require_live_apply)
+    render_and_apply_singbox_config(cfg, &users, require_live_apply)?;
+    Ok(())
 }
 
 fn cmd_render_config(cfg: &DeploymentConfig) -> Result<()> {
@@ -1408,8 +1447,26 @@ fn cmd_user_set_enabled(cfg: &DeploymentConfig, id: &str, enabled: bool) -> Resu
     let mut users = store::load_users(&cfg.users_file())?;
     let previous_users = users.clone();
     find_user_mut(&mut users, id)?.enabled = enabled;
-    apply_users_and_save(cfg, &previous_users, &users)?;
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
     println!("{id}: enabled={enabled}");
+    if !enabled {
+        if went_live {
+            println!(
+                "This user is dropped from the rendered sing-box authorization config \
+                 immediately: their REALITY and Hysteria2 credentials are both rejected on the \
+                 next handshake attempt, and their subscription URL now 404s. This is the \
+                 widest-blast-radius revocation short of `user remove` — unlike token/credential \
+                 rotation, it stops an already-imported profile from connecting at all, with no \
+                 re-import window."
+            );
+        } else {
+            println!(
+                "WARNING: the new config was written but NOT reloaded live (see the warning \
+                 above) — this user's credentials are still accepted by the RUNNING server \
+                 until that reload actually happens. Do not treat this as revoked yet."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1457,38 +1514,76 @@ fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
 
 /// Common rotate-and-apply flow: mutate the user in-place via `mutate`,
 /// save, render+validate+apply+reload (with rollback on failure — see
-/// `regenerate_singbox_config`), and only then report success.
+/// `regenerate_singbox_config`), and only then report success. `blast_radius`
+/// is printed so an operator never has to guess which transport(s) an
+/// already-imported client profile loses on this specific command —
+/// see the per-command callers below for the exact scope of each.
 fn rotate_and_apply(
     cfg: &DeploymentConfig,
     id: &str,
     what: &str,
+    blast_radius: &str,
     mutate: impl FnOnce(&mut CompatUser),
 ) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     let previous_users = users.clone();
     mutate(find_user_mut(&mut users, id)?);
-    apply_users_and_save(cfg, &previous_users, &users)?;
-    println!("{id}: {what} rotated and applied to the running server.");
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
+    if went_live {
+        println!("{id}: {what} rotated and applied to the running server.");
+        println!("{blast_radius}");
+    } else {
+        println!("{id}: {what} rotated on disk, but NOT reloaded live (see the warning above).");
+        println!(
+            "WARNING: the running server still accepts the OLD {what} until a real reload \
+             happens — none of the blast-radius claims below have taken effect yet:"
+        );
+        println!("{blast_radius}");
+    }
     Ok(())
 }
 
 fn cmd_user_rotate_vless(cfg: &DeploymentConfig, id: &str) -> Result<()> {
-    rotate_and_apply(cfg, id, "VLESS UUID", |u| {
-        u.vless_uuid = credentials::generate_uuid_v4();
-    })
+    rotate_and_apply(
+        cfg,
+        id,
+        "VLESS UUID",
+        "Already-imported REALITY profiles for this user are rejected on the next handshake \
+         (server no longer recognizes the old UUID) until re-imported. Hysteria2 and the \
+         subscription URL are unaffected.",
+        |u| {
+            u.vless_uuid = credentials::generate_uuid_v4();
+        },
+    )
 }
 
 fn cmd_user_rotate_hysteria(cfg: &DeploymentConfig, id: &str) -> Result<()> {
-    rotate_and_apply(cfg, id, "Hysteria2 password", |u| {
-        u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
-    })
+    rotate_and_apply(
+        cfg,
+        id,
+        "Hysteria2 password",
+        "Already-imported Hysteria2 profiles for this user are rejected on the next handshake \
+         (server no longer recognizes the old password) until re-imported. REALITY and the \
+         subscription URL are unaffected.",
+        |u| {
+            u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
+        },
+    )
 }
 
 fn cmd_user_rotate_credentials(cfg: &DeploymentConfig, id: &str) -> Result<()> {
-    rotate_and_apply(cfg, id, "VLESS UUID + Hysteria2 password", |u| {
-        u.vless_uuid = credentials::generate_uuid_v4();
-        u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
-    })
+    rotate_and_apply(
+        cfg,
+        id,
+        "VLESS UUID + Hysteria2 password",
+        "Already-imported REALITY AND Hysteria2 profiles for this user are BOTH rejected on \
+         the next handshake until re-imported. The subscription URL is unaffected and will \
+         serve the new credentials once re-fetched.",
+        |u| {
+            u.vless_uuid = credentials::generate_uuid_v4();
+            u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
+        },
+    )
 }
 
 /// Push a proposed user-store change to the running server, then publish it
@@ -1509,16 +1604,20 @@ fn cmd_user_rotate_credentials(cfg: &DeploymentConfig, id: &str) -> Result<()> {
 /// If publishing users.json fails, the previous authorization document is
 /// rendered and reloaded. The expiry reconciliation timer also repairs a
 /// crash between these phases from the authoritative users.json state.
+/// Returns whether the change reached a LIVE, reloaded sing-box process
+/// (see `render_and_apply_singbox_config`'s doc comment) — callers that
+/// print a blast-radius claim about credentials being rejected must
+/// gate that claim on this.
 fn apply_users_and_save(
     cfg: &DeploymentConfig,
     previous_users: &[CompatUser],
     users: &[CompatUser],
-) -> Result<()> {
+) -> Result<bool> {
     // Load the proposed authorization into sing-box before publishing the
     // new store to vpn-subscription. This makes the transition fail-closed:
     // a revocation reaches the protocol first, while a newly enabled
     // credential is not distributed until the protocol accepts it.
-    render_and_apply_singbox_config(cfg, users, true)?;
+    let went_live = render_and_apply_singbox_config(cfg, users, true)?;
 
     if let Err(save_error) = store::save_users_atomic(&cfg.users_file(), users) {
         let rollback = render_and_apply_singbox_config(cfg, previous_users, true);
@@ -1532,7 +1631,7 @@ fn apply_users_and_save(
             }
         );
     }
-    Ok(())
+    Ok(went_live)
 }
 
 fn cmd_user_remove(cfg: &DeploymentConfig, id: &str) -> Result<()> {
@@ -1543,8 +1642,21 @@ fn cmd_user_remove(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     if users.len() == before {
         bail!("no such user: {id}");
     }
-    apply_users_and_save(cfg, &previous_users, &users)?;
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
     println!("{id}: removed");
+    if went_live {
+        println!(
+            "Same blast radius as `user disable`: REALITY and Hysteria2 credentials are both \
+             rejected immediately, and the subscription URL 404s. Unlike disable, this is not \
+             reversible with `user enable` — the account must be recreated from scratch."
+        );
+    } else {
+        println!(
+            "WARNING: the new config was written but NOT reloaded live (see the warning \
+             above) — this user's credentials are still accepted by the RUNNING server until \
+             that reload actually happens."
+        );
+    }
     Ok(())
 }
 
@@ -2175,8 +2287,16 @@ fn cmd_doctor(
          docs/TELEGRAM_RESILIENCE_PLAN.md and docs/TELEGRAM_TROUBLESHOOTING.md.",
     );
 
-    if protocol {
-        check_l5_l6_protocol_selftest(cfg, &mut failures, require_protocol);
+    // `protocol_actually_ran` — NOT the same as the `protocol` CLI flag.
+    // `--protocol` without `--require-protocol` can still bail out before
+    // dialing a single packet (missing binary/keys/active user), in which
+    // case it only ever produces a [WARN], never increments `failures`,
+    // and no real handshake was attempted. Conflating "the flag was
+    // passed" with "the check actually ran" was a real overclaim this
+    // investigation found — see `check_l5_l6_protocol_selftest`'s return
+    // value, which is the one source of truth for whether a dial happened.
+    let protocol_actually_ran = if protocol {
+        check_l5_l6_protocol_selftest(cfg, &mut failures, require_protocol)
     } else {
         report_check(
             CheckStatus::Warn,
@@ -2185,14 +2305,15 @@ fn cmd_doctor(
              server's own REALITY listener with a throwaway sing-box client) — passing every \
              check above does NOT prove a real client can authenticate",
         );
-    }
+        false
+    };
 
     if telegram {
-        print_telegram_diagnostics_summary(cfg, failures);
+        print_telegram_diagnostics_summary(cfg, failures, protocol_actually_ran);
     }
 
     if client {
-        print_client_acceptance_checklist(cfg, failures);
+        print_client_acceptance_checklist(cfg, failures, protocol_actually_ran);
     }
 
     println!();
@@ -2215,16 +2336,11 @@ fn cmd_doctor(
 /// test — see docs/TELEGRAM_TROUBLESHOOTING.md and
 /// docs/DEVICE_ACCEPTANCE_TESTS.md for the real, per-function test
 /// matrix that only a real device on a real network can actually run.
-fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig, failures: u32) {
+fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig, failures: u32, protocol_ran: bool) {
     println!();
     println!("--- Telegram-oriented summary (server-side only) ---");
-    if failures > 0 {
-        println!(
-            "WARNING: {failures} check(s) above FAILED. Server-side health is NOT proven — fix \
-             those failures first. Nothing below claims the server is healthy."
-        );
-        println!();
-    }
+    print_doctor_coverage_line(failures, protocol_ran);
+    println!();
     println!(
         "Public endpoints: {}:{} (VLESS+REALITY tcp), {}:{} (Hysteria2 udp)",
         cfg.public_host, cfg.reality.listen_port, cfg.public_host, cfg.hysteria2.listen_port
@@ -2279,7 +2395,7 @@ fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig, failures: u32) {
 /// grant the iOS "Allow VPN Configurations" permission — those are
 /// entirely client-side settings/permissions this repository does not
 /// control.
-fn print_client_acceptance_checklist(cfg: &DeploymentConfig, failures: u32) {
+fn print_client_acceptance_checklist(cfg: &DeploymentConfig, failures: u32, protocol_ran: bool) {
     println!();
     println!("--- Client acceptance checklist (fill in by hand on the device) ---");
     println!();
@@ -2319,32 +2435,93 @@ fn print_client_acceptance_checklist(cfg: &DeploymentConfig, failures: u32) {
     println!("       IP check for Hysteria2 alone.");
     println!("10.[ ] Tested on Wi-Fi.");
     println!("11.[ ] Tested on mobile/cellular data.");
-    println!();
-    println!("If 1-9 are all satisfied and it STILL doesn't work: this matches a currently open,");
     println!(
-        "unresolved bug class in Hiddify's own iOS app (its in-app \"Connected\" state and iOS's"
+        "12.[ ] From the SAME network as the phone, `curl -v https://{}:{}` (or",
+        cfg.public_host, cfg.reality.listen_port
     );
-    println!("actual NEPacketTunnelProvider tunnel state can go out of sync) — see");
-    println!("hiddify/hiddify-app issues #1812, #1485, #290, #1478. Nothing in this server's");
-    println!(
-        "subscription can detect or fix that. Try: update Hiddify, delete+reinstall it, remove"
-    );
-    println!("ALL its VPN profiles from Settings before reconnecting, reboot, retry.");
+    println!("       Test-NetConnection) succeeds — tests whether that network path can even");
+    println!("       reach this server at all, independent of Hiddify.");
     println!();
-    println!("If step 8 or 9 shows an unchanged IP: go back to steps 1-4 (client mode/permission)");
-    if failures == 0 {
-        println!(
-            "before suspecting anything server-side — the checks earlier in this report already"
-        );
-        println!("prove the server's REALITY/Hysteria2 listeners and subscription are healthy.");
-    } else {
-        println!(
-            "AND re-run `vpn-admin doctor --protocol --require-protocol` first — {failures} \
-             check(s) above failed, so server-side health is not yet established either."
-        );
-    }
+    println!(
+        "If step 8 or 9 shows an unchanged IP: go back to steps 1-4 (client mode/permission)."
+    );
+    print_doctor_coverage_line(failures, protocol_ran);
+    println!(
+        "A PASS above only proves this server's own listener/key/auth path works FROM THIS \
+         SERVER'S OWN vantage point — it never proves reachability from the phone's specific \
+         network, iOS's NetworkExtension state, or Hiddify's TUN/routing behavior. Do not treat \
+         a passing doctor run as \"confirmed client-side\"; step 12 above is what actually tests \
+         the network path."
+    );
+    println!();
+    println!(
+        "If 1-12 are all satisfied and it STILL doesn't work: check Hiddify's own current \
+         release health before assuming a behavioral bug. As of 2026-08, hiddify/hiddify-app has"
+    );
+    println!(
+        "a currently OPEN issue (#2317) where the live App Store iOS build shipped as an \
+         unsigned \"dev\" flavor because its release CI was failing — check your app's About/"
+    );
+    println!("version screen for a \"dev\" tag, and hiddify/hiddify-app#2317 for current status,");
+    println!(
+        "before troubleshooting further. Older reports of this exact symptom on iOS \
+         (hiddify/hiddify-app#1812, #1485, #290) are CLOSED (stale-bot, no linked fix) as of"
+    );
+    println!(
+        "2026-08-11 — historical evidence this has happened before, not a currently tracked \
+         bug. Nothing in this server's subscription can detect or fix any of this. Try: update"
+    );
+    println!(
+        "Hiddify, delete+reinstall it, remove ALL its VPN profiles from Settings before \
+         reconnecting, reboot, retry — then report fresh to Hiddify's tracker if still broken."
+    );
     println!();
     println!("Full walkthrough and troubleshooting priority order: docs/clients/HIDDIFY_IOS.md");
+}
+
+/// Explicit diagnostic-coverage line, shared by the Telegram and client
+/// summaries. `failures == 0` alone is NOT "server proven healthy" — it
+/// only means every check that actually RAN passed. `--protocol` gates
+/// the strongest check (a real handshake against this server's own
+/// listener); skip it and L5-6 is simply unproven, not assumed-fine.
+fn print_doctor_coverage_line(failures: u32, protocol_ran: bool) {
+    println!();
+    println!(
+        "Coverage: L1-L4 (process/config/listeners/subscription) {}; L5-6 (real protocol \
+         handshake) {}.",
+        if failures == 0 {
+            "RAN, PASSED"
+        } else {
+            "RAN, FAILURES ABOVE"
+        },
+        if protocol_ran {
+            if failures == 0 {
+                "RAN, PASSED"
+            } else {
+                "RAN — see failures above"
+            }
+        } else {
+            "NOT RUN (pass --protocol --require-protocol to actually run it)"
+        }
+    );
+    if failures > 0 {
+        println!(
+            "{failures} check(s) FAILED — server-side health is NOT established. Fix those \
+             first."
+        );
+    } else if !protocol_ran {
+        println!(
+            "No failures among checks that ran, but the real-handshake check (L5-6) did not \
+             run — this is NOT the same as \"server proven healthy end-to-end.\" Re-run with \
+             `--protocol --require-protocol` before treating the server as cleared."
+        );
+    } else {
+        println!(
+            "All checks that ran, including the real protocol handshake, passed. This proves \
+             the server's own listener/key/auth path — nothing about external reachability, \
+             the client device, or the network in between (see below)."
+        );
+    }
 }
 
 /// `vpn doctor --report`: a sanitized diagnostic bundle suitable for
@@ -3340,11 +3517,20 @@ fn listener_reported_by_ss(port: u16, udp: bool) -> Option<bool> {
     }))
 }
 
+/// Returns whether a real handshake was actually DIALED against this
+/// server's own listener — distinct from `require_protocol`/`failures`,
+/// which only say whether the CLI demanded it and whether it passed.
+/// `false` means every pre-flight check bailed before a single packet
+/// was sent (missing binary, missing keys, no active user) — the
+/// caller must not treat that the same as a completed, interpretable
+/// self-test. This is what `cmd_doctor` uses to decide whether the
+/// coverage line can honestly say L5-6 "RAN," regardless of whether
+/// `--protocol` was merely passed on the command line.
 fn check_l5_l6_protocol_selftest(
     cfg: &DeploymentConfig,
     failures: &mut u32,
     require_protocol: bool,
-) {
+) -> bool {
     if !cfg.singbox_binary.exists() {
         report_protocol_unavailable(
             require_protocol,
@@ -3354,7 +3540,7 @@ fn check_l5_l6_protocol_selftest(
                 cfg.singbox_binary
             ),
         );
-        return;
+        return false;
     }
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
@@ -3364,7 +3550,7 @@ fn check_l5_l6_protocol_selftest(
                 failures,
                 format!("cannot self-test: {e}"),
             );
-            return;
+            return false;
         }
     };
     let users = match store::load_users(&cfg.users_file()) {
@@ -3375,7 +3561,7 @@ fn check_l5_l6_protocol_selftest(
                 failures,
                 format!("cannot self-test: failed to load users: {e}"),
             );
-            return;
+            return false;
         }
     };
     let now = UnixSeconds::now().0 as i64;
@@ -3385,20 +3571,23 @@ fn check_l5_l6_protocol_selftest(
             failures,
             "cannot self-test: there is no enabled, unexpired VLESS user",
         );
-        return;
+        return false;
     };
     let port = cfg.reality.listen_port;
 
     match run_reality_client_selftest(cfg, &reality, test_user, port) {
-        Ok(RealitySelfTestOutcome::Pass) => report_check(
-            CheckStatus::Ok,
-            "L5-6",
-            format!(
-                "protocol self-test: a throwaway sing-box client using the CURRENT REALITY \
-                 public_key/short_id and an active VLESS user completed a full handshake through \
-                 127.0.0.1:{port} and returned application bytes end-to-end"
-            ),
-        ),
+        Ok(RealitySelfTestOutcome::Pass) => {
+            report_check(
+                CheckStatus::Ok,
+                "L5-6",
+                format!(
+                    "protocol self-test: a throwaway sing-box client using the CURRENT REALITY \
+                     public_key/short_id and an active VLESS user completed a full handshake \
+                     through 127.0.0.1:{port} and returned application bytes end-to-end"
+                ),
+            );
+            true
+        }
         Ok(RealitySelfTestOutcome::HandshakeRejected) => {
             report_check(
                 CheckStatus::Fail,
@@ -3428,19 +3617,27 @@ fn check_l5_l6_protocol_selftest(
                 ),
             );
             *failures += 1;
+            true
         }
-        Ok(RealitySelfTestOutcome::Inconclusive) => report_protocol_unavailable(
-            require_protocol,
-            failures,
-            "protocol self-test INCONCLUSIVE: the client did not return an HTTP success response \
-             through the live VLESS+REALITY listener. This can be an authentication, routing, \
-             decoy, listener, or transient failure; inspect both sing-box processes' logs.",
-        ),
-        Err(e) => report_protocol_unavailable(
-            require_protocol,
-            failures,
-            format!("cannot self-test: {e}"),
-        ),
+        Ok(RealitySelfTestOutcome::Inconclusive) => {
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                "protocol self-test INCONCLUSIVE: the client did not return an HTTP success \
+                 response through the live VLESS+REALITY listener. This can be an \
+                 authentication, routing, decoy, listener, or transient failure; inspect both \
+                 sing-box processes' logs.",
+            );
+            true
+        }
+        Err(e) => {
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                format!("cannot self-test: {e}"),
+            );
+            false
+        }
     }
 }
 

@@ -158,6 +158,7 @@ fn oversized_decoy_certificate_breaks_the_tunnel_even_though_reality_auth_succee
             short_id: short_id.to_string(),
             fingerprint: "chrome".into(),
         },
+        credentials: None,
     };
     let mut client_cfg =
         render::render_singbox_client_subscription(&test_user(), std::slice::from_ref(&endpoint))
