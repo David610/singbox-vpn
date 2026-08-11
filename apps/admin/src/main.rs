@@ -23,6 +23,7 @@ use compat_config::server::{
 use compat_config::{credentials, store};
 use serde_json::json;
 use service::CompatibilityServiceManager;
+use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -84,6 +85,27 @@ enum Commands {
         /// it cannot bless an untested REALITY decoy.
         #[arg(long, requires = "protocol")]
         require_protocol: bool,
+        /// Run the standard checks, then print an additional
+        /// Telegram-oriented summary (transport/obfuscation state,
+        /// server-side network sanity) ending in an explicit disclaimer.
+        /// This NEVER claims to test Telegram itself, Russian DPI
+        /// compatibility, or client-side (Hiddify/TUN) behavior — it is
+        /// server-side diagnostics only, framed for the specific
+        /// troubleshooting flow in docs/TELEGRAM_TROUBLESHOOTING.md.
+        #[arg(long)]
+        telegram: bool,
+        /// Print a sanitized diagnostic bundle (versions, service
+        /// state, listeners, hostname resolution, transport/obfuscation
+        /// status, certificate expiry, firewall summary, a redacted
+        /// tail of recent sing-box/vpn-subscription log lines) suitable
+        /// for sharing when asking for help. Secrets (private keys,
+        /// VLESS UUIDs, Hysteria2/obfuscation passwords, subscription
+        /// tokens) are redacted — see `redact_secrets`. Writes to
+        /// stdout, or to `--report-output PATH` (mode 0600) if given.
+        #[arg(long)]
+        report: bool,
+        #[arg(long, requires = "report")]
+        report_output: Option<PathBuf>,
     },
     /// Back up the minimum state needed to rebuild this deployment
     /// (users, credential metadata, REALITY keys, Hysteria2 TLS
@@ -228,7 +250,17 @@ fn main() -> Result<()> {
         Commands::Doctor {
             protocol,
             require_protocol,
-        } => cmd_doctor(&cfg, protocol, require_protocol),
+            telegram,
+            report,
+            report_output,
+        } => cmd_doctor(
+            &cfg,
+            protocol,
+            require_protocol,
+            telegram,
+            report,
+            report_output.as_deref(),
+        ),
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
@@ -1619,6 +1651,7 @@ fn cert_expiry_days(path: &std::path::Path) -> Option<Result<i64, String>> {
 
 enum CheckStatus {
     Ok,
+    Info,
     Warn,
     Fail,
 }
@@ -1632,6 +1665,7 @@ enum CheckStatus {
 fn report_check(status: CheckStatus, layer: &str, message: impl AsRef<str>) {
     let label = match status {
         CheckStatus::Ok => "[OK]  ",
+        CheckStatus::Info => "[INFO]",
         CheckStatus::Warn => "[WARN]",
         CheckStatus::Fail => "[FAIL]",
     };
@@ -1729,7 +1763,18 @@ fn report_installed_file_policy(
 /// never `[FAIL]` — see `check_l5_l6_protocol_selftest`'s doc comment
 /// for why it cannot always distinguish "broken" from "untestable from
 /// here".
-fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool, require_protocol: bool) -> Result<()> {
+fn cmd_doctor(
+    cfg: &DeploymentConfig,
+    protocol: bool,
+    require_protocol: bool,
+    telegram: bool,
+    report: bool,
+    report_output: Option<&std::path::Path>,
+) -> Result<()> {
+    if report {
+        return cmd_doctor_report(cfg, report_output);
+    }
+
     let mut failures = 0u32;
 
     if cfg.singbox_binary.exists() {
@@ -2068,6 +2113,16 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool, require_protocol: bool) ->
 
     check_l4_subscription_coherence(cfg, &mut failures);
     check_l4_live_subscription_process_state(cfg, &mut failures);
+    check_public_hostname_and_ipv6_policy(cfg, &mut failures);
+    check_singbox_binary_version_consistency(cfg);
+    report_check(
+        CheckStatus::Info,
+        "L4",
+        "Automatic transport selection (`auto` / urltest) tests generic HTTPS connectivity to \
+         Google, not Telegram-specific behavior. The subscription's default (`select`) is the \
+         REALITY endpoint, chosen deterministically, not by that race — see \
+         docs/TELEGRAM_RESILIENCE_PLAN.md and docs/TELEGRAM_TROUBLESHOOTING.md.",
+    );
 
     if protocol {
         check_l5_l6_protocol_selftest(cfg, &mut failures, require_protocol);
@@ -2081,12 +2136,301 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool, require_protocol: bool) ->
         );
     }
 
+    if telegram {
+        print_telegram_diagnostics_summary(cfg);
+    }
+
     println!();
     if failures > 0 {
         bail!("{failures} check(s) failed");
     }
     println!("All checks passed (see [WARN] lines above for anything unverifiable on this host).");
     Ok(())
+}
+
+/// `vpn doctor --telegram`: after the standard checks above, print a
+/// Telegram-oriented summary of exactly what those checks did and did
+/// not verify, ending in an explicit, mandatory disclaimer. This
+/// function performs NO additional network probing of its own — the
+/// standard L1-L4 (and, if `--protocol` was passed, L5-6) checks above
+/// already cover every server-side signal available from this host;
+/// this only reframes that same evidence for the specific "Telegram is
+/// unreliable" investigation and is explicit about what it cannot see.
+/// Per the investigation's own finding, "Telegram works" is not one
+/// test — see docs/TELEGRAM_TROUBLESHOOTING.md and
+/// docs/DEVICE_ACCEPTANCE_TESTS.md for the real, per-function test
+/// matrix that only a real device on a real network can actually run.
+fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig) {
+    println!();
+    println!("--- Telegram-oriented summary (server-side only) ---");
+    println!(
+        "Public endpoints: {}:{} (VLESS+REALITY tcp), {}:{} (Hysteria2 udp)",
+        cfg.public_host, cfg.reality.listen_port, cfg.public_host, cfg.hysteria2.listen_port
+    );
+    println!(
+        "Hysteria2 Salamander obfuscation: {}",
+        if cfg.hysteria_obfs_password_file().exists() {
+            "enabled"
+        } else {
+            "DISABLED — Hysteria2's bare handshake is more exposed to DPI/traffic-classifier \
+             fingerprinting; consider `vpn-admin hysteria-obfs-rotate`"
+        }
+    );
+    println!(
+        "Subscription default transport: REALITY (deterministic `select` outbound) — Hysteria2 \
+         and `auto` remain manually selectable in the client."
+    );
+    println!();
+    println!("Server-side diagnostics above passed/failed as shown. This does NOT verify:");
+    println!("  - Russian DPI compatibility");
+    println!("  - Hiddify TUN routing on the client device");
+    println!("  - Telegram's own in-app proxy settings (Settings -> Data and Storage -> Proxy)");
+    println!("  - Russian mobile ISP behavior");
+    println!("  - IPv6 leakage on the client's own network path");
+    println!("  - Which Telegram function (text / media / calls / notifications) actually fails");
+    println!();
+    println!("Run the client acceptance checklist next: docs/TELEGRAM_TROUBLESHOOTING.md and");
+    println!("docs/DEVICE_ACCEPTANCE_TESTS.md.");
+}
+
+/// `vpn doctor --report`: a sanitized diagnostic bundle suitable for
+/// sharing when asking for help (e.g. pasting into a chat with another
+/// operator). Every value included here is either non-secret by
+/// construction (versions, service state, listener presence, hostname
+/// resolution counts, certificate expiry, config flags) or has been run
+/// through `redact_secrets` (the log tail, which could otherwise
+/// contain leaked key material from sing-box's own debug output).
+/// Deliberately does NOT reuse `cmd_doctor`'s check functions directly —
+/// those print human-readable `[OK]`/`[WARN]`/`[FAIL]` prose for an
+/// interactive operator; this produces a compact, stable-shaped bundle
+/// meant to be pasted elsewhere.
+fn cmd_doctor_report(cfg: &DeploymentConfig, output: Option<&std::path::Path>) -> Result<()> {
+    let mut out = String::new();
+    use std::fmt::Write as _;
+
+    let _ = writeln!(out, "vpn1 diagnostic report (sanitized)");
+    let _ = writeln!(out, "generated: {}", UnixSeconds::now().0);
+    let _ = writeln!(out, "vpn1 version: {}", env!("CARGO_PKG_VERSION"));
+
+    let _ = writeln!(out, "\n[system]");
+    match std::process::Command::new("uname").arg("-a").output() {
+        Ok(o) if o.status.success() => {
+            let _ = writeln!(out, "uname: {}", String::from_utf8_lossy(&o.stdout).trim());
+        }
+        _ => {
+            let _ = writeln!(out, "uname: unavailable");
+        }
+    }
+
+    let _ = writeln!(out, "\n[sing-box]");
+    match std::process::Command::new(&cfg.singbox_binary)
+        .arg("version")
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let first_line = text.lines().next().unwrap_or("").trim();
+            let _ = writeln!(out, "version: {first_line}");
+        }
+        _ => {
+            let _ = writeln!(out, "version: unavailable at {:?}", cfg.singbox_binary);
+        }
+    }
+
+    let _ = writeln!(out, "\n[services]");
+    for name in ["sing-box", "vpn-subscription"] {
+        let mgr = CompatibilityServiceManager::new(name);
+        let _ = writeln!(out, "{name}: {}", service_state_label(&mgr));
+    }
+
+    let _ = writeln!(out, "\n[listeners]");
+    for (label, port, udp) in [
+        ("VLESS+REALITY", cfg.reality.listen_port, false),
+        ("Hysteria2", cfg.hysteria2.listen_port, true),
+    ] {
+        let state = match listener_reported_by_ss(port, udp) {
+            Some(true) => "present",
+            Some(false) => "MISSING",
+            None => "unknown (`ss` unavailable)",
+        };
+        let _ = writeln!(
+            out,
+            "{label} {}/{port}: {state}",
+            if udp { "udp" } else { "tcp" }
+        );
+    }
+
+    let _ = writeln!(out, "\n[hostname resolution]");
+    match (cfg.public_host.as_str(), 0u16).to_socket_addrs() {
+        Ok(iter) => {
+            let addrs: Vec<_> = iter.collect();
+            let v4 = addrs.iter().filter(|a| a.is_ipv4()).count();
+            let v6 = addrs.iter().filter(|a| a.is_ipv6()).count();
+            let _ = writeln!(out, "public_host resolves: {v4} A, {v6} AAAA");
+        }
+        Err(e) => {
+            let _ = writeln!(out, "public_host does not resolve: {e}");
+        }
+    }
+
+    let _ = writeln!(out, "\n[transport configuration]");
+    let _ = writeln!(
+        out,
+        "hysteria2 salamander obfuscation: {}",
+        if cfg.hysteria_obfs_password_file().exists() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    let _ = writeln!(
+        out,
+        "subscription default transport: reality (deterministic selector)"
+    );
+    match cert_expiry_days(&cfg.hysteria_dir().join("cert.pem")) {
+        Some(Ok(days)) => {
+            let _ = writeln!(out, "hysteria2 tls cert: expires in {days} day(s)");
+        }
+        Some(Err(e)) => {
+            let _ = writeln!(out, "hysteria2 tls cert: could not check ({e})");
+        }
+        None => {
+            let _ = writeln!(out, "hysteria2 tls cert: not present");
+        }
+    }
+
+    let _ = writeln!(out, "\n[firewall]");
+    match std::process::Command::new("firewall-cmd")
+        .arg("--state")
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let _ = writeln!(out, "firewalld: running");
+        }
+        Ok(_) => {
+            let _ = writeln!(out, "firewalld: NOT running");
+        }
+        Err(_) => {
+            let _ = writeln!(out, "firewalld: firewall-cmd unavailable");
+        }
+    }
+
+    let _ = writeln!(out, "\n[selected configuration]");
+    let _ = writeln!(
+        out,
+        "reality.handshake_server: {}",
+        cfg.reality.handshake_server
+    );
+    let _ = writeln!(out, "reality.listen_port: {}", cfg.reality.listen_port);
+    let _ = writeln!(out, "hysteria2.listen_port: {}", cfg.hysteria2.listen_port);
+    let _ = writeln!(out, "state_dir: {}", cfg.state_dir.display());
+    let _ = writeln!(out, "singbox_binary: {}", cfg.singbox_binary.display());
+
+    let _ = writeln!(out, "\n[recent log tail (redacted)]");
+    match std::process::Command::new("journalctl")
+        .args([
+            "-u",
+            "sing-box",
+            "-u",
+            "vpn-subscription",
+            "-n",
+            "80",
+            "--no-pager",
+            "--no-hostname",
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let raw = String::from_utf8_lossy(&o.stdout);
+            let _ = writeln!(out, "{}", redact_secrets(&raw));
+        }
+        _ => {
+            let _ = writeln!(out, "journalctl unavailable or not permitted");
+        }
+    }
+
+    match output {
+        Some(path) => {
+            std::fs::write(path, &out).with_context(|| format!("writing report to {path:?}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                    .with_context(|| format!("setting mode 0600 on {path:?}"))?;
+            }
+            println!("Wrote sanitized diagnostic report to {path:?}");
+        }
+        None => print!("{out}"),
+    }
+    Ok(())
+}
+
+/// Redacts substrings that look like secrets (VLESS UUIDs, hex-encoded
+/// keys/hashes, base64url-ish tokens/passwords, `Bearer `-prefixed
+/// tokens) from free-form text such as a log tail, without a regex
+/// dependency. Deliberately over-inclusive: a false-positive redaction
+/// (hiding something that wasn't actually secret) is the safe failure
+/// mode for a report meant to be pasted somewhere else; a missed
+/// redaction is not. Splits on any byte that cannot appear inside a
+/// UUID/hex/base64url token, so surrounding punctuation/whitespace is
+/// preserved verbatim.
+fn redact_secrets(text: &str) -> String {
+    fn is_token_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+    }
+    fn looks_like_uuid(tok: &str) -> bool {
+        let parts: Vec<&str> = tok.split('-').collect();
+        parts.len() == 5
+            && [8, 4, 4, 4, 12]
+                .iter()
+                .zip(parts.iter())
+                .all(|(len, p)| p.len() == *len && p.bytes().all(|b| b.is_ascii_hexdigit()))
+    }
+    fn looks_like_secret_token(tok: &str) -> bool {
+        if tok.len() < 24 {
+            return false;
+        }
+        if tok.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return true; // hex key/hash/password material
+        }
+        // base64url-ish random token (REALITY keys, subscription
+        // tokens, Hysteria2/obfuscation passwords are generated in
+        // this shape elsewhere in this crate — see credentials.rs).
+        tok.bytes().all(is_token_byte)
+            && tok.bytes().any(|b| b.is_ascii_alphabetic())
+            && tok
+                .bytes()
+                .any(|b| b.is_ascii_digit() || b == b'-' || b == b'_')
+    }
+
+    // Token runs are ASCII-only by construction (`is_token_byte`), so
+    // scanning by byte offset for token boundaries is safe as long as
+    // every non-token span is re-emitted through the original `&str`
+    // slice rather than reconstructed byte-by-byte — that keeps
+    // multi-byte UTF-8 text (non-English log content) intact instead of
+    // corrupting it one raw byte at a time.
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut plain_start = 0;
+    while i < bytes.len() {
+        if is_token_byte(bytes[i]) {
+            let start = i;
+            while i < bytes.len() && is_token_byte(bytes[i]) {
+                i += 1;
+            }
+            let tok = &text[start..i];
+            if looks_like_uuid(tok) || looks_like_secret_token(tok) {
+                out.push_str(&text[plain_start..start]);
+                out.push_str("<redacted>");
+                plain_start = i;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&text[plain_start..]);
+    out
 }
 
 /// L4, always run, no network/subprocess involved: render the sing-box
@@ -2112,6 +2456,204 @@ fn cmd_doctor(cfg: &DeploymentConfig, protocol: bool, require_protocol: bool) ->
 /// material" incident class, caught from file contents alone. Private
 /// key material is compared only via a SHA-256 fingerprint, never the
 /// raw value.
+/// IPv6 policy check (spec: "either IPv6 works through the VPN
+/// correctly, or the system clearly prevents IPv6 leakage — never leave
+/// a partially working IPv6 path"). Resolves `public_host` and reports
+/// which address families it has DNS records for, then — only if an
+/// AAAA record exists — probes whether this host actually has working
+/// IPv6 egress. A mismatch (AAAA advertised, IPv6 egress unverifiable)
+/// is exactly the ambiguous state the spec asks to surface explicitly,
+/// so it is `[WARN]`, not `[FAIL]` (this check cannot see the client's
+/// own network, only the server's) and not silently `[OK]`.
+fn check_public_hostname_and_ipv6_policy(cfg: &DeploymentConfig, failures: &mut u32) {
+    use std::net::IpAddr;
+
+    let resolved = match (cfg.public_host.as_str(), 0u16).to_socket_addrs() {
+        Ok(iter) => iter.map(|a| a.ip()).collect::<Vec<IpAddr>>(),
+        Err(e) => {
+            report_check(
+                CheckStatus::Fail,
+                "L2",
+                format!(
+                    "public hostname {:?} does not resolve: {e}",
+                    cfg.public_host
+                ),
+            );
+            *failures += 1;
+            return;
+        }
+    };
+    if resolved.is_empty() {
+        report_check(
+            CheckStatus::Fail,
+            "L2",
+            format!(
+                "public hostname {:?} resolved zero addresses",
+                cfg.public_host
+            ),
+        );
+        *failures += 1;
+        return;
+    }
+    let has_v4 = resolved.iter().any(|a| a.is_ipv4());
+    let has_v6 = resolved.iter().any(|a| a.is_ipv6());
+    report_check(
+        CheckStatus::Ok,
+        "L2",
+        format!(
+            "public hostname {:?} resolves ({} A/IPv4, {} AAAA/IPv6 address(es))",
+            cfg.public_host,
+            resolved.iter().filter(|a| a.is_ipv4()).count(),
+            resolved.iter().filter(|a| a.is_ipv6()).count(),
+        ),
+    );
+    if !has_v4 {
+        report_check(
+            CheckStatus::Warn,
+            "L2",
+            "public hostname has no A/IPv4 record — clients on IPv4-only networks cannot connect",
+        );
+    }
+    if !has_v6 {
+        report_check(
+            CheckStatus::Info,
+            "L2",
+            "public hostname has no AAAA/IPv6 record — IPv6-capable clients will connect over \
+             IPv4 only, which avoids IPv6-leak risk but means an IPv6-only client network cannot \
+             reach this deployment at all",
+        );
+        return;
+    }
+
+    // AAAA exists: verify this VPS itself actually has usable IPv6
+    // egress before claiming IPv6 "works". sing-box's listeners bind
+    // `::` (dual-stack) regardless (see crates/compat-config/src/
+    // server.rs), so an AAAA record with no real server-side IPv6
+    // connectivity would silently strand IPv6-preferring clients.
+    let probe_cfg = cfg.udp_probe_config();
+    let ipv6_refs: Vec<&str> = probe_cfg
+        .ipv6_resolvers
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    let timeout = std::time::Duration::from_millis(probe_cfg.timeout_ms);
+    match run_udp_probe_candidates(
+        &ipv6_refs,
+        timeout,
+        probe_cfg.retries,
+        std::time::Duration::from_millis(probe_cfg.delay_ms),
+    ) {
+        Some(true) => report_check(
+            CheckStatus::Ok,
+            "L2",
+            "public hostname has an AAAA record and this VPS has working IPv6 UDP egress",
+        ),
+        Some(false) => report_check(
+            CheckStatus::Warn,
+            "L2",
+            "public hostname has an AAAA record but this VPS's IPv6 egress appears blocked — \
+             IPv6-preferring clients may fail to connect at all while IPv4 clients work fine. \
+             Either fix VPS IPv6 routing or remove the AAAA record so clients fall back to IPv4.",
+        ),
+        None => report_check(
+            CheckStatus::Warn,
+            "L2",
+            "public hostname has an AAAA record but server IPv6 connectivity could not be \
+             verified from this host (probe unavailable) — this does NOT confirm IPv6 works, \
+             only that it could not be checked here",
+        ),
+    }
+}
+
+/// Version-consistency check (spec item I). A real incident class: an
+/// operator upgrades via one install path (e.g. a package manager
+/// putting a binary at `/usr/bin/sing-box`) while systemd/vpn-admin
+/// keep running an older binary at a different, still-present path
+/// (e.g. `/usr/local/bin/sing-box`) — every other check in `doctor`
+/// only ever inspects the ONE binary at `cfg.singbox_binary`, so it
+/// cannot see this class of drift by construction. This check is
+/// read-only: it never changes which binary is active.
+fn check_singbox_binary_version_consistency(cfg: &DeploymentConfig) {
+    let candidates: Vec<std::path::PathBuf> = vec![
+        cfg.singbox_binary.clone(),
+        std::path::PathBuf::from("/usr/local/bin/sing-box"),
+        std::path::PathBuf::from("/usr/bin/sing-box"),
+    ];
+    let found = probe_singbox_binary_versions(&candidates, |path| {
+        std::process::Command::new(path).arg("version").output()
+    });
+    if let Some((status, message)) = singbox_version_consistency_report(&found, &cfg.singbox_binary)
+    {
+        report_check(status, "L2", message);
+    }
+}
+
+/// Runs `<path> version` for every existing, deduplicated candidate
+/// path and captures its first output line. `run` is injected so the
+/// pure decision logic below (`singbox_version_consistency_report`) can
+/// be unit-tested without spawning real processes or touching the real
+/// filesystem at fixed system paths like `/usr/bin/sing-box`.
+fn probe_singbox_binary_versions(
+    candidates: &[std::path::PathBuf],
+    run: impl Fn(&std::path::Path) -> std::io::Result<std::process::Output>,
+) -> Vec<(std::path::PathBuf, String)> {
+    let mut deduped = candidates.to_vec();
+    deduped.sort();
+    deduped.dedup();
+
+    let mut found = Vec::new();
+    for path in deduped {
+        if !path.exists() {
+            continue;
+        }
+        match run(&path) {
+            Ok(o) if o.status.success() => {
+                let text = String::from_utf8_lossy(&o.stdout);
+                let first_line = text.lines().next().unwrap_or("").trim().to_string();
+                found.push((path, first_line));
+            }
+            _ => found.push((path, "(version unavailable)".to_string())),
+        }
+    }
+    found
+}
+
+/// Pure decision logic: given the set of sing-box binaries actually
+/// found on this host and what each reported for `version`, decide
+/// whether to say anything at all (a single binary is the common case
+/// and produces no extra noise), and if so whether it's a clean `[OK]`
+/// (multiple binaries, same version — e.g. a symlink situation) or a
+/// `[WARN]` (multiple binaries, differing versions — the drift class
+/// this check exists to catch).
+fn singbox_version_consistency_report(
+    found: &[(std::path::PathBuf, String)],
+    configured_binary: &std::path::Path,
+) -> Option<(CheckStatus, String)> {
+    if found.len() <= 1 {
+        return None;
+    }
+    let versions: std::collections::HashSet<&str> = found.iter().map(|(_, v)| v.as_str()).collect();
+    if versions.len() == 1 {
+        return Some((
+            CheckStatus::Ok,
+            format!(
+                "{} sing-box binaries found on this host, all report the same version",
+                found.len()
+            ),
+        ));
+    }
+    let mut lines =
+        vec!["multiple sing-box installations detected with DIFFERING versions:".to_string()];
+    for (path, version) in found {
+        lines.push(format!("  {} -> {version}", path.display()));
+    }
+    lines.push(format!(
+        "  systemd/vpn-admin currently uses: {}",
+        configured_binary.display()
+    ));
+    Some((CheckStatus::Warn, lines.join("\n")))
+}
+
 fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
@@ -3570,5 +4112,136 @@ mod udp_probe_tests {
         );
         assert_eq!(res, Some(true));
         assert!(calls >= 3);
+    }
+
+    #[test]
+    fn singbox_version_consistency_silent_on_single_binary() {
+        let found = vec![(
+            std::path::PathBuf::from("/a/sing-box"),
+            "1.13.14".to_string(),
+        )];
+        assert!(
+            singbox_version_consistency_report(&found, std::path::Path::new("/a/sing-box"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn singbox_version_consistency_ok_when_versions_match() {
+        let found = vec![
+            (
+                std::path::PathBuf::from("/a/sing-box"),
+                "sing-box 1.13.14".to_string(),
+            ),
+            (
+                std::path::PathBuf::from("/b/sing-box"),
+                "sing-box 1.13.14".to_string(),
+            ),
+        ];
+        let (status, _msg) =
+            singbox_version_consistency_report(&found, std::path::Path::new("/a/sing-box"))
+                .expect("should report something for multiple binaries");
+        assert!(matches!(status, CheckStatus::Ok));
+    }
+
+    #[test]
+    fn singbox_version_consistency_warns_and_names_configured_binary_when_versions_differ() {
+        let found = vec![
+            (
+                std::path::PathBuf::from("/usr/local/bin/sing-box"),
+                "sing-box 1.13.14".to_string(),
+            ),
+            (
+                std::path::PathBuf::from("/usr/bin/sing-box"),
+                "sing-box 1.12.0".to_string(),
+            ),
+        ];
+        let (status, msg) = singbox_version_consistency_report(
+            &found,
+            std::path::Path::new("/usr/local/bin/sing-box"),
+        )
+        .expect("differing versions must be reported");
+        assert!(matches!(status, CheckStatus::Warn));
+        assert!(msg.contains("1.13.14"));
+        assert!(msg.contains("1.12.0"));
+        assert!(msg.contains("/usr/local/bin/sing-box"));
+        assert!(
+            msg.contains("systemd/vpn-admin currently uses: /usr/local/bin/sing-box"),
+            "must name which binary is actually active: {msg}"
+        );
+    }
+
+    #[test]
+    fn probe_singbox_binary_versions_skips_nonexistent_paths_and_dedupes() {
+        let existing = std::env::current_exe().unwrap(); // guaranteed to exist
+        let candidates = vec![
+            existing.clone(),
+            existing.clone(),
+            std::path::PathBuf::from("/definitely/does/not/exist/sing-box"),
+        ];
+        let found = probe_singbox_binary_versions(&candidates, |_path| {
+            Ok(std::process::Output {
+                status: std::process::ExitStatus::default(),
+                stdout: b"sing-box 1.13.14\n".to_vec(),
+                stderr: Vec::new(),
+            })
+        });
+        assert_eq!(
+            found.len(),
+            1,
+            "duplicate + nonexistent paths must be filtered: {found:?}"
+        );
+        assert_eq!(found[0].0, existing);
+        assert_eq!(found[0].1, "sing-box 1.13.14");
+    }
+
+    #[test]
+    fn redact_secrets_hides_a_vless_uuid() {
+        let text = "user 11111111-2222-4333-8444-555555555555 connected";
+        let redacted = redact_secrets(text);
+        assert!(!redacted.contains("11111111-2222-4333-8444-555555555555"));
+        assert!(redacted.contains("<redacted>"));
+        assert!(redacted.starts_with("user "));
+        assert!(redacted.ends_with(" connected"));
+    }
+
+    #[test]
+    fn redact_secrets_hides_a_long_hex_key_or_hash() {
+        let text = "reality private_key=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef end";
+        let redacted = redact_secrets(text);
+        assert!(!redacted.contains("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
+        assert!(redacted.contains("<redacted>"));
+    }
+
+    #[test]
+    fn redact_secrets_hides_a_base64url_style_token() {
+        // Shaped like the subscription/Hysteria2/obfuscation tokens this
+        // crate actually generates (see compat-config's credentials.rs):
+        // mixed letters/digits, base64url alphabet, well past 24 chars.
+        let text = "subscription token=aB3dEf6hIj9kLm2nOp5qRs8tUv1wXy4zAb7cD end";
+        let redacted = redact_secrets(text);
+        assert!(!redacted.contains("aB3dEf6hIj9kLm2nOp5qRs8tUv1wXy4zAb7cD"));
+        assert!(redacted.contains("<redacted>"));
+    }
+
+    #[test]
+    fn redact_secrets_leaves_ordinary_log_text_and_short_words_untouched() {
+        let text = "2026-08-10T12:00:00Z sing-box[1234]: TLS handshake: REALITY: processed invalid connection";
+        let redacted = redact_secrets(text);
+        assert_eq!(
+            redacted, text,
+            "no false-positive redaction on ordinary log prose"
+        );
+    }
+
+    #[test]
+    fn redact_secrets_preserves_non_ascii_text_around_a_redacted_token() {
+        // Regression guard: redaction must not corrupt multi-byte UTF-8
+        // text elsewhere on the same line (e.g. non-English log content).
+        let text = "пользователь 11111111-2222-4333-8444-555555555555 подключился успешно";
+        let redacted = redact_secrets(text);
+        assert!(redacted.starts_with("пользователь "));
+        assert!(redacted.ends_with(" подключился успешно"));
+        assert!(redacted.contains("<redacted>"));
     }
 }

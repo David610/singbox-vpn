@@ -400,9 +400,16 @@ sudo vpn-admin doctor --protocol          # expect [L5-6] OK, not [WARN]/[FAIL]
 
 # 8. subscription HTTPS returns current config
 curl -fsS "https://<subscription_host>:<port>/sub/<token>" | jq '.outbounds | length'
-#    expect 3 (reality outbound, hysteria2 outbound, urltest) — confirms
-#    the PUBLIC-facing HTTPS path (through nginx) actually serves
-#    current data, not just the loopback backend doctor already checked
+#    expect 5 (reality outbound, hysteria2 outbound, urltest "auto", the
+#    manual "select" selector, and "direct") — confirms the PUBLIC-facing
+#    HTTPS path (through nginx) actually serves current data, not just
+#    the loopback backend doctor already checked. As of the Telegram-
+#    reliability pass (docs/TELEGRAM_RESILIENCE_PLAN.md) the subscription
+#    also carries a "select" outbound whose "default" is the REALITY
+#    endpoint's tag — check that field, not just the count, to confirm
+#    REALITY is really the deterministic default:
+curl -fsS "https://<subscription_host>:<port>/sub/<token>" | jq '.outbounds[] | select(.type=="selector") | .default'
+#    expect the REALITY endpoint's tag (e.g. "Reality"), not "auto"
 
 # 9. fresh profile imports into Hiddify — see §11 steps 1-2
 

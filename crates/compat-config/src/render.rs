@@ -96,15 +96,40 @@ pub fn render_uri_list(
 /// spec §22. This is *not* claiming the Rust policy engine drives
 /// third-party clients (it doesn't, see §55) — it's sing-box's own
 /// built-in `urltest` capability, configured by us.
+///
+/// As of the Telegram-reliability pass, the subscription's default route
+/// is NOT the `urltest` group. `urltest` only proves a fast plain-HTTPS
+/// request to a Google endpoint succeeds — it says nothing about
+/// Telegram, long-lived connections, media transfers, or how a transport
+/// behaves under active DPI. A transport that wins that race is not
+/// necessarily the right default for a censored network. Instead we add
+/// a `selector` outbound (sing-box's manual proxy-group type, rendered
+/// by Hiddify/NekoBox-style clients as a tappable list) with:
+///   - `default`: the VLESS+REALITY endpoint's tag — REALITY remains the
+///     conservative, deterministic default transport until real
+///     measurements say otherwise (see docs/TELEGRAM_RESILIENCE_PLAN.md).
+///   - options: every real endpoint tag, in the order supplied, plus
+///     `auto` (the pre-existing `urltest` group) as an explicit opt-in.
+///
+/// `route.final` points at the selector, not at `auto`, so a client that
+/// never touches the proxy-group UI still gets the deterministic default
+/// rather than whatever `urltest` happened to prefer at import time.
+/// Users who want automatic switching can still tap into `auto`
+/// themselves — `auto` is not removed, only demoted from being the
+/// silent default.
 pub fn render_singbox_client_subscription(
     user: &CompatUser,
     endpoints: &[CompatEndpoint],
 ) -> Result<serde_json::Value, CompatError> {
     let mut outbounds = Vec::new();
     let mut tags = Vec::new();
+    let mut reality_tag: Option<String> = None;
     for ep in endpoints {
         let tag = ep.label.clone();
         tags.push(tag.clone());
+        if matches!(ep.transport, CompatTransport::VlessReality) && reality_tag.is_none() {
+            reality_tag = Some(tag.clone());
+        }
         let outbound = match &ep.public_parameters {
             PublicParameters::Reality {
                 public_key_hex,
@@ -157,11 +182,31 @@ pub fn render_singbox_client_subscription(
         "url": "https://www.gstatic.com/generate_204",
         "interval": "1m",
     }));
+
+    // Manual selector: what actually decides the default route. `default`
+    // is the first VLESS+REALITY endpoint's tag when one is present
+    // (conservative default — see this function's doc comment), falling
+    // back to the first endpoint of any kind if this deployment somehow
+    // has no REALITY endpoint (never expected in the standard two-
+    // endpoint deployment, but the renderer must not panic on a
+    // reduced/experimental endpoint set).
+    let mut selector_options = tags.clone();
+    selector_options.push("auto".to_string());
+    let default_tag = reality_tag
+        .or_else(|| tags.first().cloned())
+        .unwrap_or_else(|| "auto".to_string());
+    outbounds.push(json!({
+        "type": "selector",
+        "tag": "select",
+        "outbounds": selector_options,
+        "default": default_tag,
+    }));
+
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
 
     Ok(json!({
         "outbounds": outbounds,
-        "route": { "final": "auto" }
+        "route": { "final": "select" }
     }))
 }
 
@@ -329,8 +374,60 @@ mod tests {
         assert!(types.contains(&"vless"));
         assert!(types.contains(&"hysteria2"));
         assert!(types.contains(&"urltest"));
+        assert!(types.contains(&"selector"));
         let json_str = serde_json::to_string(&doc).unwrap();
         assert!(!json_str.to_lowercase().contains("private_key"));
+    }
+
+    #[test]
+    fn route_final_points_at_manual_selector_not_urltest() {
+        let doc =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        assert_eq!(doc["route"]["final"], "select");
+    }
+
+    #[test]
+    fn selector_default_is_reality_and_lists_hysteria2_and_auto() {
+        let doc =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let selector = outbounds
+            .iter()
+            .find(|o| o["type"] == "selector")
+            .expect("selector outbound present");
+        assert_eq!(selector["tag"], "select");
+        assert_eq!(
+            selector["default"], "Germany - Reality",
+            "REALITY must remain the deterministic default until measurements say otherwise"
+        );
+        let options: Vec<&str> = selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(options.contains(&"Germany - Reality"));
+        assert!(options.contains(&"Germany - Hysteria2"));
+        assert!(
+            options.contains(&"auto"),
+            "auto (urltest) must stay selectable, not be removed"
+        );
+    }
+
+    #[test]
+    fn selector_default_falls_back_to_first_endpoint_when_no_reality_endpoint_present() {
+        // Defensive case: a reduced/experimental endpoint set with no
+        // VLESS+REALITY endpoint at all must not panic and must still
+        // produce a valid default rather than an empty/missing one.
+        let doc = render_singbox_client_subscription(&user(), &[hysteria_endpoint()]).unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let selector = outbounds
+            .iter()
+            .find(|o| o["type"] == "selector")
+            .expect("selector outbound present");
+        assert_eq!(selector["default"], "Germany - Hysteria2");
     }
 
     #[test]

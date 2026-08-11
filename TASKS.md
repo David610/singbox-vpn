@@ -279,3 +279,76 @@ scoped from (what already existed vs. what was genuinely missing).
       against a live system in this sandbox — they degrade to `[WARN]`
       here (verified by test — see `doctor_reports_missing_singbox_binary_as_failure`)
       and need a real AlmaLinux host to exercise the `[OK]` paths.
+
+## Phase 17 — Telegram reliability pass
+
+See `docs/TELEGRAM_RESILIENCE_PLAN.md` for the full investigation,
+confirmed issues vs. probable-but-unproven weaknesses, and an explicit
+statement that this pass does NOT claim Telegram is fixed under Russian
+censorship — there is no way to verify that from outside Russia.
+
+- [x] Deterministic transport default: `render_singbox_client_subscription`
+      now emits a manual `selector` outbound (default: REALITY) alongside
+      the pre-existing `urltest` `auto` group; `route.final` points at the
+      selector, not at `auto`. `auto`/Hysteria2 remain fully selectable.
+      Tested (`crates/compat-config/src/render.rs`); docs updated
+      (`docs/CLIENT_COMPATIBILITY.md`, `docs/HIDDIFY_ANDROID.md`,
+      `docs/clients/HIDDIFY_IOS.md`,
+      `docs/INCIDENT_2026-08-10_REALITY_HANDSHAKE_TIMEOUT.md`).
+- [x] `vpn doctor`: new public-hostname/IPv6-policy check (A/AAAA
+      resolution + AAAA-conditional IPv6 egress probe), new multiple-
+      sing-box-binary version-consistency check, permanent `[INFO]`
+      reminder that `auto`/`urltest` is not a Telegram-specific test.
+      Tested (`apps/admin/src/main.rs` unit tests +
+      `apps/admin/tests/cli.rs` integration tests).
+- [x] `vpn doctor --telegram`: server-side-only Telegram-oriented
+      summary, ending in the exact disclaimer specified by the
+      investigation (never claims Russian DPI/client verification).
+      Tested.
+- [x] `vpn doctor --report [--report-output PATH]`: sanitized diagnostic
+      bundle; `redact_secrets` strips UUIDs and hex/base64url-shaped
+      tokens (no regex dependency added) without corrupting non-ASCII
+      text. 5 unit tests + 3 integration tests, including a real-secret-
+      never-appears assertion against a freshly `init`'d deployment.
+- [x] `docs/TELEGRAM_TROUBLESHOOTING.md`: 8-step client-side procedure
+      (Telegram's own proxy, per-transport testing, the 9-function
+      checklist, Android/iOS-specific checks, IPv6-leak detection,
+      controlled MTU experiments, evidence collection with an explicit
+      never-share-this list).
+- [x] `docs/DEVICE_ACCEPTANCE_TESTS.md`: new Telegram x transport x
+      function matrix, all cells honestly "not yet tested."
+- [x] Hysteria2 Salamander obfuscation audited: mechanism was already
+      correctly designed (optional, explicit, safe rotation, never
+      silently enabled) — no code change needed there; diagnostic
+      framing improved (`doctor --telegram`'s summary, troubleshooting
+      doc cross-reference).
+- [!] Multi-node (multiple independent VPS endpoints in one
+      subscription) — design documented in
+      `docs/TELEGRAM_RESILIENCE_PLAN.md` §K, deliberately NOT
+      implemented this pass. The subscription renderer already
+      generalizes to N labeled endpoints with zero code changes
+      (verified by this pass's own tests); the genuinely missing piece
+      is credential-distribution/cross-host-trust design for
+      `DeploymentConfig`/`vpn-admin`/`services/subscription`, which
+      deserves its own focused security review rather than a late
+      addition to this pass. Interim zero-code mitigation documented:
+      run two independent single-node deployments and give each user two
+      subscription profiles.
+- [!] Automatic Hysteria2 Salamander enablement for brand-new
+      installs — evaluated, not implemented; needs its own review of
+      `install.sh`'s first-boot subscription-generation timing rather
+      than a late addition to this pass.
+- [!] Global MTU/MSS override — deliberately not implemented; see
+      `docs/TELEGRAM_RESILIENCE_PLAN.md` §J for why (cannot help
+      Hysteria2/QUIC at all, no evidence it's the actual cause, wrong
+      value degrades every user). Controlled, revertible, client-side
+      experiment procedure documented instead.
+- [~] None of this pass's new checks were exercised against a real VPS,
+      real Hiddify/Android/iOS device, or a real Russian network — see
+      `docs/TELEGRAM_RESILIENCE_PLAN.md` §5 "Remaining limitations."
+      `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
+      warnings`, and `cargo test --workspace` all run clean in this
+      sandbox (3 pre-existing, unrelated `apps/admin` integration-test
+      failures reproduce identically on `main` without this pass's
+      changes — a missing `vpn-subscription` system group in this
+      sandbox, not a regression).
