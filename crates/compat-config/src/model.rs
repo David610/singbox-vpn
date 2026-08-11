@@ -55,32 +55,6 @@ pub struct CompatEndpoint {
     pub server_name: Option<String>,
     pub label: String,
     pub public_parameters: PublicParameters,
-    /// Per-endpoint transport credential override, for a multi-node
-    /// deployment where each node runs its own independent REALITY
-    /// keyset / Hysteria2 user store rather than sharing one identity
-    /// (see `docs/TELEGRAM_RESILIENCE_PLAN.md` §K "Option A"). `None`
-    /// (the default, and the only value ever produced by
-    /// `standard_endpoints` for a single-node deployment) means "use
-    /// the `CompatUser`'s own credentials," preserving today's
-    /// single-node behavior exactly. A multi-node subscription merge
-    /// sets this per endpoint instead of requiring one shared
-    /// `CompatUser` identity to be valid on every node.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credentials: Option<EndpointCredentials>,
-}
-
-/// Transport-specific secret material for one endpoint, used only when
-/// it differs from the rendering `CompatUser`'s own credentials (i.e.
-/// only in a multi-node merge — see `CompatEndpoint::credentials`).
-/// Only the field relevant to the endpoint's own transport is ever
-/// read; the other is simply unused for that endpoint's transport type,
-/// not an error.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EndpointCredentials {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vless_uuid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hysteria2_password: Option<SecretString>,
 }
 
 /// A compatibility (third-party-client) user. Persisted in

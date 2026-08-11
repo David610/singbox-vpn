@@ -1818,6 +1818,45 @@ enum CheckStatus {
     Fail,
 }
 
+/// Explicit, exhaustive outcome of the L5-6 real-protocol self-test —
+/// deliberately NOT a `bool`, and deliberately never inferred from the
+/// L1-L4 failure counter. A prior version of this coverage logic used
+/// `failures == 0` to mean "passed," which silently conflated
+/// `Inconclusive` (a real dial happened, but the result cannot be
+/// interpreted as pass or fail) with `Passed`, and separately used a
+/// single shared counter that could make L1-L4's status look tainted by
+/// an L5-6 failure or vice versa. This type exists so the coverage line
+/// can only ever report exactly one of these four states — there is no
+/// fifth, implicit "kind of passed" state to fall into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProtocolCheckResult {
+    /// `--protocol` was not passed, OR it was passed but a pre-flight
+    /// check bailed before a single packet was sent (missing binary,
+    /// missing keys, no active user, harness setup failure). No real
+    /// dial was attempted either way.
+    NotRun,
+    /// A real handshake was dialed and completed successfully end-to-end.
+    Passed,
+    /// A real handshake was dialed and definitively failed (REALITY
+    /// rejected it).
+    Failed,
+    /// A real handshake was dialed but the result cannot be read as
+    /// pass or fail (e.g. no HTTP success response through the tunnel).
+    /// This is NOT the same as `Passed` and NOT the same as `Failed`.
+    Inconclusive,
+}
+
+impl ProtocolCheckResult {
+    fn label(self) -> &'static str {
+        match self {
+            ProtocolCheckResult::NotRun => "NOT RUN",
+            ProtocolCheckResult::Passed => "PASSED",
+            ProtocolCheckResult::Failed => "FAILED",
+            ProtocolCheckResult::Inconclusive => "INCONCLUSIVE",
+        }
+    }
+}
+
 /// `layer` is one of `"L1"` (process), `"L2"` (config/key/cert),
 /// `"L3"` (listeners/network), `"L4"` (subscription-coherence), or
 /// `"L5-6"` (real protocol handshake) — see the module-level note above
@@ -2287,15 +2326,18 @@ fn cmd_doctor(
          docs/TELEGRAM_RESILIENCE_PLAN.md and docs/TELEGRAM_TROUBLESHOOTING.md.",
     );
 
-    // `protocol_actually_ran` — NOT the same as the `protocol` CLI flag.
-    // `--protocol` without `--require-protocol` can still bail out before
-    // dialing a single packet (missing binary/keys/active user), in which
-    // case it only ever produces a [WARN], never increments `failures`,
-    // and no real handshake was attempted. Conflating "the flag was
-    // passed" with "the check actually ran" was a real overclaim this
-    // investigation found — see `check_l5_l6_protocol_selftest`'s return
-    // value, which is the one source of truth for whether a dial happened.
-    let protocol_actually_ran = if protocol {
+    // L1-L4's outcome is captured as a snapshot BEFORE the L5-6 check
+    // runs, so the coverage line below can report each layer's status
+    // independently — L1-4 must never look tainted by an L5-6 failure,
+    // and L5-6 must never be inferred from the L1-4 count (or from
+    // whether `--protocol` was merely passed on the command line: it
+    // can bail out before dialing a single packet on missing binary/
+    // keys/active user, in which case no real handshake was attempted
+    // even though the flag was set). `check_l5_l6_protocol_selftest`'s
+    // `ProtocolCheckResult` return value is the one source of truth for
+    // what actually happened at L5-6.
+    let l1_l4_failures = failures;
+    let protocol_result = if protocol {
         check_l5_l6_protocol_selftest(cfg, &mut failures, require_protocol)
     } else {
         report_check(
@@ -2305,15 +2347,15 @@ fn cmd_doctor(
              server's own REALITY listener with a throwaway sing-box client) — passing every \
              check above does NOT prove a real client can authenticate",
         );
-        false
+        ProtocolCheckResult::NotRun
     };
 
     if telegram {
-        print_telegram_diagnostics_summary(cfg, failures, protocol_actually_ran);
+        print_telegram_diagnostics_summary(cfg, l1_l4_failures, protocol_result);
     }
 
     if client {
-        print_client_acceptance_checklist(cfg, failures, protocol_actually_ran);
+        print_client_acceptance_checklist(cfg, l1_l4_failures, protocol_result);
     }
 
     println!();
@@ -2336,10 +2378,14 @@ fn cmd_doctor(
 /// test — see docs/TELEGRAM_TROUBLESHOOTING.md and
 /// docs/DEVICE_ACCEPTANCE_TESTS.md for the real, per-function test
 /// matrix that only a real device on a real network can actually run.
-fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig, failures: u32, protocol_ran: bool) {
+fn print_telegram_diagnostics_summary(
+    cfg: &DeploymentConfig,
+    l1_l4_failures: u32,
+    protocol_result: ProtocolCheckResult,
+) {
     println!();
     println!("--- Telegram-oriented summary (server-side only) ---");
-    print_doctor_coverage_line(failures, protocol_ran);
+    print_doctor_coverage_line(l1_l4_failures, protocol_result);
     println!();
     println!(
         "Public endpoints: {}:{} (VLESS+REALITY tcp), {}:{} (Hysteria2 udp)",
@@ -2395,15 +2441,19 @@ fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig, failures: u32, pro
 /// grant the iOS "Allow VPN Configurations" permission — those are
 /// entirely client-side settings/permissions this repository does not
 /// control.
-fn print_client_acceptance_checklist(cfg: &DeploymentConfig, failures: u32, protocol_ran: bool) {
+fn print_client_acceptance_checklist(
+    cfg: &DeploymentConfig,
+    l1_l4_failures: u32,
+    protocol_result: ProtocolCheckResult,
+) {
     println!();
     println!("--- Client acceptance checklist (fill in by hand on the device) ---");
     println!();
-    if failures > 0 {
+    if l1_l4_failures > 0 {
         println!(
-            "WARNING: {failures} check(s) earlier in this report FAILED. Server-side health is \
-             NOT proven — fix those failures before trusting this checklist to isolate a \
-             client-side cause."
+            "WARNING: {l1_l4_failures} check(s) earlier in this report FAILED. Server-side \
+             health is NOT proven — fix those failures before trusting this checklist to \
+             isolate a client-side cause."
         );
         println!();
     }
@@ -2445,7 +2495,7 @@ fn print_client_acceptance_checklist(cfg: &DeploymentConfig, failures: u32, prot
     println!(
         "If step 8 or 9 shows an unchanged IP: go back to steps 1-4 (client mode/permission)."
     );
-    print_doctor_coverage_line(failures, protocol_ran);
+    print_doctor_coverage_line(l1_l4_failures, protocol_result);
     println!(
         "A PASS above only proves this server's own listener/key/auth path works FROM THIS \
          SERVER'S OWN vantage point — it never proves reachability from the phone's specific \
@@ -2455,73 +2505,139 @@ fn print_client_acceptance_checklist(cfg: &DeploymentConfig, failures: u32, prot
     );
     println!();
     println!(
-        "If 1-12 are all satisfied and it STILL doesn't work: check Hiddify's own current \
-         release health before assuming a behavioral bug. As of 2026-08, hiddify/hiddify-app has"
+        "If 1-12 are all satisfied and it STILL doesn't work: check your Hiddify build/version"
     );
     println!(
-        "a currently OPEN issue (#2317) where the live App Store iOS build shipped as an \
-         unsigned \"dev\" flavor because its release CI was failing — check your app's About/"
-    );
-    println!("version screen for a \"dev\" tag, and hiddify/hiddify-app#2317 for current status,");
-    println!(
-        "before troubleshooting further. Older reports of this exact symptom on iOS \
-         (hiddify/hiddify-app#1812, #1485, #290) are CLOSED (stale-bot, no linked fix) as of"
+        "before assuming a behavioral bug. As of 2026-08, hiddify/hiddify-app#2317 (OPEN) \
+         documents problems in Hiddify's own iOS release pipeline (App Store build reporting"
     );
     println!(
-        "2026-08-11 — historical evidence this has happened before, not a currently tracked \
-         bug. Nothing in this server's subscription can detect or fix any of this. Try: update"
+        "\"4.0.0 dev\", CI/signing/config inconsistencies, later tagged releases not producing \
+         normal iOS artifacts). This does NOT establish that #2317 CAUSES the \"connected but no"
     );
     println!(
-        "Hiddify, delete+reinstall it, remove ALL its VPN profiles from Settings before \
-         reconnecting, reboot, retry — then report fresh to Hiddify's tracker if still broken."
+        "VPN tunnel\" symptom this checklist exists for — it only means the exact installed iOS \
+         client build is an important variable to record when reporting a problem: note the"
     );
+    println!(
+        "exact version/build shown in Hiddify's About screen. Older reports of this exact \
+         symptom on iOS (hiddify/hiddify-app#1812, #1485, #290) are CLOSED (stale-bot, no linked"
+    );
+    println!(
+        "fix) as of 2026-08-11 — historical evidence this class of bug has happened before, not \
+         a currently tracked, causally-established bug. Nothing in this server's subscription"
+    );
+    println!(
+        "can detect or fix any of this. Try: update Hiddify, delete+reinstall it, remove ALL its \
+         VPN profiles from Settings before reconnecting, reboot, retry — then report fresh to"
+    );
+    println!("Hiddify's tracker (with your exact app version/build) if still broken.");
     println!();
     println!("Full walkthrough and troubleshooting priority order: docs/clients/HIDDIFY_IOS.md");
 }
 
 /// Explicit diagnostic-coverage line, shared by the Telegram and client
-/// summaries. `failures == 0` alone is NOT "server proven healthy" — it
-/// only means every check that actually RAN passed. `--protocol` gates
-/// the strongest check (a real handshake against this server's own
-/// listener); skip it and L5-6 is simply unproven, not assumed-fine.
-fn print_doctor_coverage_line(failures: u32, protocol_ran: bool) {
+/// summaries. L1-4's status and L5-6's status are tracked completely
+/// independently — `l1_l4_failures == 0` says nothing about L5-6, and
+/// `protocol_result` says nothing about L1-4. Each of the following
+/// combinations must print distinctly, with no state inferred from the
+/// other layer or collapsed into a fifth implicit "kind of passed"
+/// state:
+///
+///   Coverage: L1-4: PASSED       L5-6: NOT RUN
+///   Coverage: L1-4: PASSED       L5-6: PASSED
+///   Coverage: L1-4: PASSED       L5-6: INCONCLUSIVE
+///   Coverage: L1-4: PASSED       L5-6: FAILED
+///   Coverage: L1-4: FAILED (n)   L5-6: PASSED
+///   Coverage: L1-4: FAILED (n)   L5-6: NOT RUN
+///   Coverage: L1-4: FAILED (n)   L5-6: INCONCLUSIVE
+///   Coverage: L1-4: FAILED (n)   L5-6: FAILED
+///
+/// All 8 (2×4) combinations get their own match arm in
+/// `build_doctor_coverage_report` with no wildcard — see that
+/// function's own comment for why the wildcard-free match itself, not
+/// a test, is what actually guards against a future 5th
+/// `ProtocolCheckResult` variant being silently swallowed.
+///
+/// "Server proven healthy end-to-end" requires BOTH `l1_l4_failures ==
+/// 0` AND `protocol_result == Passed` — every other combination gets an
+/// explicit, distinct caveat, including `Inconclusive` (a real dial
+/// happened, but the result cannot be read as pass or fail — this is
+/// NOT "passed" and NOT "not run").
+fn print_doctor_coverage_line(l1_l4_failures: u32, protocol_result: ProtocolCheckResult) {
     println!();
     println!(
-        "Coverage: L1-L4 (process/config/listeners/subscription) {}; L5-6 (real protocol \
-         handshake) {}.",
-        if failures == 0 {
-            "RAN, PASSED"
-        } else {
-            "RAN, FAILURES ABOVE"
-        },
-        if protocol_ran {
-            if failures == 0 {
-                "RAN, PASSED"
-            } else {
-                "RAN — see failures above"
-            }
-        } else {
-            "NOT RUN (pass --protocol --require-protocol to actually run it)"
-        }
+        "{}",
+        build_doctor_coverage_report(l1_l4_failures, protocol_result)
     );
-    if failures > 0 {
-        println!(
-            "{failures} check(s) FAILED — server-side health is NOT established. Fix those \
-             first."
-        );
-    } else if !protocol_ran {
-        println!(
-            "No failures among checks that ran, but the real-handshake check (L5-6) did not \
-             run — this is NOT the same as \"server proven healthy end-to-end.\" Re-run with \
-             `--protocol --require-protocol` before treating the server as cleared."
-        );
+}
+
+/// Pure string-building half of [`print_doctor_coverage_line`], split
+/// out so the exhaustive combination matrix in its doc comment is
+/// directly unit-testable without capturing stdout. Never call this
+/// from anywhere that isn't `print_doctor_coverage_line` or a test —
+/// the leading-blank-line/println wrapping is that function's job.
+fn build_doctor_coverage_report(
+    l1_l4_failures: u32,
+    protocol_result: ProtocolCheckResult,
+) -> String {
+    let l1_l4_label = if l1_l4_failures == 0 {
+        "PASSED".to_string()
     } else {
-        println!(
+        format!("FAILED ({l1_l4_failures})")
+    };
+    let header = format!(
+        "Coverage: L1-4 (process/config/listeners/subscription): {l1_l4_label}   L5-6 (real \
+         protocol handshake): {}",
+        protocol_result.label()
+    );
+    // Deliberately no `_`/wildcard arm on `protocol_result`: if a fifth
+    // `ProtocolCheckResult` variant is ever added, this match fails to
+    // COMPILE rather than silently falling into a collapsed message —
+    // that's the actual guard against a future regression here (a
+    // wildcard arm would defeat it even with 100% test coverage of
+    // today's four variants).
+    let detail = match (l1_l4_failures == 0, protocol_result) {
+        (true, ProtocolCheckResult::Passed) => {
             "All checks that ran, including the real protocol handshake, passed. This proves \
              the server's own listener/key/auth path — nothing about external reachability, \
              the client device, or the network in between (see below)."
-        );
-    }
+        }
+        (true, ProtocolCheckResult::NotRun) => {
+            "No failures among checks that ran, but the real-handshake check (L5-6) did not \
+             run — this is NOT the same as \"server proven healthy end-to-end.\" Re-run with \
+             `--protocol --require-protocol` before treating the server as cleared."
+        }
+        (true, ProtocolCheckResult::Inconclusive) => {
+            "L1-4 passed, but the real-handshake check (L5-6) DIALED and got an INCONCLUSIVE \
+             result — not a pass, not a definitive failure. Do not treat this as \"server \
+             healthy\"; inspect both sing-box processes' logs before concluding anything."
+        }
+        (true, ProtocolCheckResult::Failed) => {
+            "L1-4 passed, but the real-handshake check (L5-6) FAILED — a real client using this \
+             server's own current key material could not complete a handshake. This is a \
+             server-side finding, not proof the problem is client-side."
+        }
+        (false, ProtocolCheckResult::Passed) => {
+            "L1-4 check(s) FAILED even though L5-6's real handshake passed — these are \
+             independent signals; a passing handshake does NOT clear the L1-4 failures above. \
+             Fix those before treating the server as healthy."
+        }
+        (false, ProtocolCheckResult::NotRun) => {
+            "L1-4 check(s) FAILED, and the real-handshake check (L5-6) did not run either — \
+             server-side health is NOT established on either axis. Fix the L1-4 failures first."
+        }
+        (false, ProtocolCheckResult::Inconclusive) => {
+            "L1-4 check(s) FAILED, and the real-handshake check (L5-6) DIALED but got an \
+             INCONCLUSIVE result — server-side health is NOT established on either axis. Fix \
+             the L1-4 failures first, then re-run the protocol self-test."
+        }
+        (false, ProtocolCheckResult::Failed) => {
+            "L1-4 check(s) FAILED, and the real-handshake check (L5-6) also FAILED — server-side \
+             health is NOT established on either axis. Fix the L1-4 failures first."
+        }
+    };
+    format!("{header}\n{detail}")
 }
 
 /// `vpn doctor --report`: a sanitized diagnostic bundle suitable for
@@ -3517,20 +3633,21 @@ fn listener_reported_by_ss(port: u16, udp: bool) -> Option<bool> {
     }))
 }
 
-/// Returns whether a real handshake was actually DIALED against this
-/// server's own listener — distinct from `require_protocol`/`failures`,
-/// which only say whether the CLI demanded it and whether it passed.
-/// `false` means every pre-flight check bailed before a single packet
-/// was sent (missing binary, missing keys, no active user) — the
-/// caller must not treat that the same as a completed, interpretable
-/// self-test. This is what `cmd_doctor` uses to decide whether the
-/// coverage line can honestly say L5-6 "RAN," regardless of whether
-/// `--protocol` was merely passed on the command line.
+/// Returns the exact outcome of the L5-6 real-protocol self-test as a
+/// `ProtocolCheckResult` — never a `bool`, and never something the
+/// caller has to re-derive from `failures`. `NotRun` means every
+/// pre-flight check bailed before a single packet was sent (missing
+/// binary, missing keys, no active user, or a harness setup failure) —
+/// the caller must not treat that the same as a completed,
+/// interpretable self-test. This is what `cmd_doctor` uses to decide
+/// exactly what the coverage line can honestly say about L5-6,
+/// regardless of whether `--protocol` was merely passed on the command
+/// line and regardless of the unrelated L1-4 failure count.
 fn check_l5_l6_protocol_selftest(
     cfg: &DeploymentConfig,
     failures: &mut u32,
     require_protocol: bool,
-) -> bool {
+) -> ProtocolCheckResult {
     if !cfg.singbox_binary.exists() {
         report_protocol_unavailable(
             require_protocol,
@@ -3540,7 +3657,7 @@ fn check_l5_l6_protocol_selftest(
                 cfg.singbox_binary
             ),
         );
-        return false;
+        return ProtocolCheckResult::NotRun;
     }
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
@@ -3550,7 +3667,7 @@ fn check_l5_l6_protocol_selftest(
                 failures,
                 format!("cannot self-test: {e}"),
             );
-            return false;
+            return ProtocolCheckResult::NotRun;
         }
     };
     let users = match store::load_users(&cfg.users_file()) {
@@ -3561,7 +3678,7 @@ fn check_l5_l6_protocol_selftest(
                 failures,
                 format!("cannot self-test: failed to load users: {e}"),
             );
-            return false;
+            return ProtocolCheckResult::NotRun;
         }
     };
     let now = UnixSeconds::now().0 as i64;
@@ -3571,7 +3688,7 @@ fn check_l5_l6_protocol_selftest(
             failures,
             "cannot self-test: there is no enabled, unexpired VLESS user",
         );
-        return false;
+        return ProtocolCheckResult::NotRun;
     };
     let port = cfg.reality.listen_port;
 
@@ -3586,7 +3703,7 @@ fn check_l5_l6_protocol_selftest(
                      through 127.0.0.1:{port} and returned application bytes end-to-end"
                 ),
             );
-            true
+            ProtocolCheckResult::Passed
         }
         Ok(RealitySelfTestOutcome::HandshakeRejected) => {
             report_check(
@@ -3617,7 +3734,7 @@ fn check_l5_l6_protocol_selftest(
                 ),
             );
             *failures += 1;
-            true
+            ProtocolCheckResult::Failed
         }
         Ok(RealitySelfTestOutcome::Inconclusive) => {
             report_protocol_unavailable(
@@ -3628,7 +3745,7 @@ fn check_l5_l6_protocol_selftest(
                  authentication, routing, decoy, listener, or transient failure; inspect both \
                  sing-box processes' logs.",
             );
-            true
+            ProtocolCheckResult::Inconclusive
         }
         Err(e) => {
             report_protocol_unavailable(
@@ -3636,7 +3753,7 @@ fn check_l5_l6_protocol_selftest(
                 failures,
                 format!("cannot self-test: {e}"),
             );
-            false
+            ProtocolCheckResult::NotRun
         }
     }
 }
@@ -4594,5 +4711,159 @@ mod udp_probe_tests {
         assert!(redacted.starts_with("пользователь "));
         assert!(redacted.ends_with(" подключился успешно"));
         assert!(redacted.contains("<redacted>"));
+    }
+}
+
+/// Regression tests for the doctor coverage-state bug found in review:
+/// L1-4's outcome and L5-6's outcome must never be inferred from each
+/// other, and L5-6 must be a real four-state result (NotRun / Passed /
+/// Failed / Inconclusive), never a `bool` collapsed from "the flag was
+/// passed." Every combination in `build_doctor_coverage_report`'s doc
+/// comment is covered here directly (no stdout capture needed — see
+/// that function's own doc comment for why it's split out this way).
+#[cfg(test)]
+mod doctor_coverage_tests {
+    use super::*;
+
+    #[test]
+    fn l1_l4_passed_l5_l6_not_run() {
+        let report = build_doctor_coverage_report(0, ProtocolCheckResult::NotRun);
+        assert!(report.contains("L1-4"));
+        assert!(report.contains("PASSED"));
+        assert!(report.contains("L5-6"));
+        assert!(report.contains("NOT RUN"));
+        assert!(
+            !report.contains("All checks that ran, including the real protocol handshake, passed"),
+            "L1-4 passing alone must never be read as full server health:\n{report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_passed_l5_l6_passed_is_the_only_full_health_claim() {
+        let report = build_doctor_coverage_report(0, ProtocolCheckResult::Passed);
+        assert!(report.contains("PASSED"));
+        assert!(
+            report.contains("All checks that ran, including the real protocol handshake, passed"),
+            "only this exact combination may claim full coverage passed:\n{report}"
+        );
+    }
+
+    /// The specific scenario the review flagged: `--protocol` passed
+    /// without `--require-protocol`, and the self-test result is
+    /// `Inconclusive` (a real dial happened, HTTP success wasn't
+    /// returned). This must NOT print "L5-6 ... PASSED" — it is a
+    /// distinct third state, not folded into pass or not-run.
+    #[test]
+    fn l1_l4_passed_l5_l6_inconclusive_is_never_reported_as_passed_or_not_run() {
+        let report = build_doctor_coverage_report(0, ProtocolCheckResult::Inconclusive);
+        assert!(
+            report.contains("INCONCLUSIVE"),
+            "must explicitly say INCONCLUSIVE:\n{report}"
+        );
+        assert!(
+            !report.contains("L5-6 (real protocol handshake): PASSED"),
+            "an inconclusive self-test must never be reported as PASSED:\n{report}"
+        );
+        assert!(
+            !report.contains("L5-6 (real protocol handshake): NOT RUN"),
+            "an inconclusive self-test actually dialed — it must never be reported as NOT RUN:\n\
+             {report}"
+        );
+        assert!(
+            report.contains("not a definitive failure") || report.contains("DIALED"),
+            "must make clear a real dial happened but the result is ambiguous:\n{report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_passed_l5_l6_failed() {
+        let report = build_doctor_coverage_report(0, ProtocolCheckResult::Failed);
+        assert!(report.contains("L5-6 (real protocol handshake): FAILED"));
+        assert!(
+            report.contains("not proof the problem is client-side"),
+            "an L5-6 failure must not be framed as proving the client is at fault:\n{report}"
+        );
+    }
+
+    /// The other half of the review finding: L1-4's failure count must
+    /// not taint or be inferred from an L5-6 result that happens to
+    /// pass. Both must be visible, independently, in the same report.
+    #[test]
+    fn l1_l4_failed_l5_l6_passed_does_not_imply_l1_l4_ok() {
+        let report = build_doctor_coverage_report(3, ProtocolCheckResult::Passed);
+        assert!(
+            report.contains("FAILED (3)"),
+            "L1-4's failure count must still be visible even when L5-6 passed:\n{report}"
+        );
+        assert!(
+            report.contains("L5-6 (real protocol handshake): PASSED"),
+            "L5-6's own passing result must still be visible independently:\n{report}"
+        );
+        assert!(
+            report.contains("does NOT clear the L1-4 failures"),
+            "a passing handshake must not be read as clearing unrelated L1-4 failures:\n{report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_failed_l5_l6_not_run() {
+        let report = build_doctor_coverage_report(2, ProtocolCheckResult::NotRun);
+        assert!(report.contains("FAILED (2)"));
+        assert!(report.contains("L5-6 (real protocol handshake): NOT RUN"));
+        assert!(report.contains("NOT established"));
+        assert!(
+            report.contains("did not run either"),
+            "the L1-4-failed + L5-6-not-run combination has its own distinct message, not the \
+             generic L1-4-only one:\n{report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_failed_l5_l6_inconclusive_still_reports_both_independently() {
+        let report = build_doctor_coverage_report(1, ProtocolCheckResult::Inconclusive);
+        assert!(report.contains("FAILED (1)"));
+        assert!(report.contains("L5-6 (real protocol handshake): INCONCLUSIVE"));
+        assert!(
+            report.contains("INCONCLUSIVE result"),
+            "the L1-4-failed + L5-6-inconclusive combination has its own distinct message:\n\
+             {report}"
+        );
+    }
+
+    #[test]
+    fn l1_l4_failed_l5_l6_failed_both_shown() {
+        let report = build_doctor_coverage_report(4, ProtocolCheckResult::Failed);
+        assert!(report.contains("FAILED (4)"));
+        assert!(report.contains("L5-6 (real protocol handshake): FAILED"));
+        assert!(
+            report.contains("also FAILED"),
+            "the L1-4-failed + L5-6-failed combination has its own distinct message stating \
+             BOTH failed, not just L1-4:\n{report}"
+        );
+    }
+
+    /// `ProtocolCheckResult::label()` must stay a strict 4-state match —
+    /// this test's own `match` has no `_` arm, so it fails to COMPILE if
+    /// a variant is ever added without updating `label()`. Note this
+    /// guards `label()` specifically, not `build_doctor_coverage_report`
+    /// — that function has its own separate exhaustive (also
+    /// wildcard-free) match and is protected by the compiler directly,
+    /// not by this test.
+    #[test]
+    fn protocol_check_result_label_is_exhaustively_defined() {
+        for result in [
+            ProtocolCheckResult::NotRun,
+            ProtocolCheckResult::Passed,
+            ProtocolCheckResult::Failed,
+            ProtocolCheckResult::Inconclusive,
+        ] {
+            let label = match result {
+                ProtocolCheckResult::NotRun => "NOT RUN",
+                ProtocolCheckResult::Passed => "PASSED",
+                ProtocolCheckResult::Failed => "FAILED",
+                ProtocolCheckResult::Inconclusive => "INCONCLUSIVE",
+            };
+            assert_eq!(result.label(), label);
+        }
     }
 }

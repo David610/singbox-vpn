@@ -141,7 +141,6 @@ fn build_configs(
         public_parameters: compat_config::model::PublicParameters::Hysteria2 {
             obfs_password: client_obfs_password.map(|s| s.to_string()),
         },
-        credentials: None,
     };
     let mut client_cfg = render::render_singbox_client_subscription(
         &test_user(password),

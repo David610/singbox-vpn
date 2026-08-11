@@ -129,19 +129,24 @@ server keys or suspecting the VPS until you've exhausted steps 1-6.
     blocking (ISP/DPI/firewall) between that specific network and this
     server — not the server, and not necessarily Hiddify either.
 11. **If steps 1-10 are all satisfied and it still doesn't work**:
-    check Hiddify's own current release health before assuming a
+    record your exact Hiddify app version/build before assuming a
     behavioral bug. As of this writing (2026-08), Hiddify's iOS release
     pipeline has a **currently open, confirmed** problem:
-    hiddify/hiddify-app#2317 — the live App Store build was reporting
-    itself as a "4.0.0 dev" build, CI jobs for signed iOS releases were
-    failing (Apple auth errors), and iOS was pulled from the release
-    build matrix, meaning the latest tagged release (v4.1.1) shipped
-    with no new iOS binary at all. If your Hiddify app's own
-    About/version screen shows a "dev" build tag, this is likely why,
-    and it is entirely outside this server's control — check
-    hiddify/hiddify-app#2317 for current status before troubleshooting
-    further, and consider whether a rebuild/reinstall from a properly
-    signed release becomes available.
+    hiddify/hiddify-app#2317 documents the App Store build reporting
+    itself as "4.0.0 dev", CI/signing/configuration inconsistencies in
+    the iOS release workflow, and later tagged releases not producing
+    normal iOS artifacts. **This does NOT establish that #2317 causes
+    the "connected but no VPN tunnel / IP unchanged" symptom** — no
+    causal link between the release-pipeline problems and this specific
+    VPN/TUN-routing symptom has been confirmed. What it does mean: the
+    current Hiddify iOS release pipeline has documented problems, which
+    makes the exact installed iOS client version/build an important
+    diagnostic variable to record (check Hiddify's own About/version
+    screen) when comparing notes or reporting a problem — not proof of
+    cause. Check hiddify/hiddify-app#2317 for current status, and
+    consider whether a different, more recently verified build is
+    available, but treat this as one more diagnostic data point, not a
+    root-cause explanation.
     Separately: several OLDER Hiddify iOS reports of "connected in-app
     but no OS tunnel" exist in Hiddify's issue history (e.g.
     hiddify/hiddify-app#1812, #1485, #290) — but as of 2026-08-11 these
