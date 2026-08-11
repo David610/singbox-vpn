@@ -391,6 +391,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hiddify_format_is_identical_to_uri_format() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let uri_resp = oneshot_with_addr(state.clone(), "/sub/goodtoken?format=uri").await;
+        let hiddify_resp = oneshot_with_addr(state, "/sub/goodtoken?format=hiddify").await;
+        assert_eq!(uri_resp.status(), StatusCode::OK);
+        assert_eq!(hiddify_resp.status(), StatusCode::OK);
+        let uri_body = axum::body::to_bytes(uri_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let hiddify_body = axum::body::to_bytes(hiddify_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            uri_body, hiddify_body,
+            "?format=hiddify must render exactly what ?format=uri renders"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_id_is_never_accepted_where_a_subscription_token_is_expected() {
+        // Regression for the user-id/token confusion: a user's public ID
+        // (`user_<uuid>`, e.g. from `vpn-admin user list`) must never work
+        // as a `/sub/` path segment — only the opaque high-entropy token
+        // returned once at `create`/`rotate-token` time does.
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/u1").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn oversized_token_is_rejected_cheaply() {
         let state = make_state(vec![user_with_token("goodtoken", true)]);
         let long_token = "a".repeat(500);

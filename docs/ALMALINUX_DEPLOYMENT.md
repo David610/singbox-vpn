@@ -193,14 +193,22 @@ sudo vpn-admin --config /etc/vpn/deployment.toml user create --name test
 Prints:
 
 ```
-User created: user_xxxxxxxx
+User ID:
+  user_xxxxxxxx
 
-Subscription:
-https://sub.example.com:8443/sub/<token>
+IMPORTANT:
+  The User ID above is NOT a credential and NOT your subscription token.
+  ...
+
+Hiddify subscription URL (this IS the credential — treat it like a password):
+  https://sub.example.com:8443/sub/<token>
 ```
 
 This URL is shown exactly once (spec §26 — only the token's hash is
-persisted). Copy it now.
+persisted). Copy it now. The User ID printed above it is a separate,
+non-secret account identifier (`vpn-admin user <id> ...`) — it is never
+accepted as a `/sub/` path segment, so never substitute it into the
+subscription URL.
 
 ## Testing with Hiddify
 

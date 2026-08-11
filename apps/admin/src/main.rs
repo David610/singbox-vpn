@@ -106,6 +106,18 @@ enum Commands {
         report: bool,
         #[arg(long, requires = "report")]
         report_output: Option<PathBuf>,
+        /// Print an interactive client-acceptance checklist after the
+        /// standard server-side checks: what a Hiddify/iOS (or other
+        /// client) user must verify ON THE DEVICE — this process cannot
+        /// reach into a phone, so every line here is something the human
+        /// operator checks and fills in by hand, never something this
+        /// command probes itself. Exists because "Hiddify shows
+        /// connected" and "the device's system traffic is actually
+        /// routed through the VPN" are different claims, and conflating
+        /// them is the single most common support failure for this
+        /// deployment — see docs/clients/HIDDIFY_IOS.md.
+        #[arg(long)]
+        client: bool,
     },
     /// Back up the minimum state needed to rebuild this deployment
     /// (users, credential metadata, REALITY keys, Hysteria2 TLS
@@ -253,6 +265,7 @@ fn main() -> Result<()> {
             telegram,
             report,
             report_output,
+            client,
         } => cmd_doctor(
             &cfg,
             protocol,
@@ -260,6 +273,7 @@ fn main() -> Result<()> {
             telegram,
             report,
             report_output.as_deref(),
+            client,
         ),
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
@@ -1328,19 +1342,44 @@ fn cmd_user_create(
         return Ok(());
     }
 
-    println!("User created: {id}");
+    println!("User ID:");
+    println!("  {id}");
     println!();
-    println!("Subscription:\n{url}");
+    println!("IMPORTANT:");
+    println!("  The User ID above is NOT a credential and NOT your subscription token.");
+    println!("  It only names the account for `vpn-admin user <id> ...` commands.");
+    println!("  Never put the User ID after /sub/ — that endpoint takes the subscription");
+    println!("  token below, and a User ID there will always 404.");
     println!();
-    println!("This URL is shown once. It is not recoverable — use `vpn-admin user rotate-token {id}` to mint a new one if lost.");
+    println!("Hiddify subscription URL (this IS the credential — treat it like a password):");
+    println!("  {url}");
+    println!();
+    println!(
+        "This URL is shown once and cannot be recovered later — use \
+         `vpn-admin user rotate-token {id}` to mint a new one if lost."
+    );
     if qr {
         println!();
-        println!("Scan this QR code in Hiddify (Add profile -> Scan QR):");
+        println!("Scan this QR code in Hiddify (Add profile -> Scan QR code):");
         print_qr(&url)?;
     }
     println!();
-    println!("Recommended client: Hiddify (iOS/Android/MagicOS/Linux/Windows/macOS).");
-    println!("1. Install Hiddify.  2. Add profile.  3. Scan the QR code above or paste the subscription URL.  4. Connect.");
+    println!("Client: Hiddify (iOS/Android/MagicOS/Linux/Windows/macOS).");
+    println!();
+    println!("iPhone setup:");
+    println!("  1. Install Hiddify from the App Store.");
+    println!("  2. Scan the QR code above, or paste the subscription URL (Add profile).");
+    println!("  3. When iOS asks \"Would Like to Add VPN Configurations\", tap Allow.");
+    println!("  4. In Hiddify's settings, confirm Service Mode is VPN/TUN mode (not");
+    println!("     \"Proxy Only\" — that mode never shows the iOS VPN icon or changes your");
+    println!("     public IP by design).");
+    println!("  5. Connect to REALITY first (the deterministic default).");
+    println!("  6. Verify the iOS status bar/Control Center shows the VPN indicator, then");
+    println!("     check your public IP changed to this server's IP.");
+    println!("  7. Then test Hysteria2 the same way, selected explicitly.");
+    println!();
+    println!("Full walkthrough and troubleshooting: docs/clients/HIDDIFY_IOS.md");
+    println!("Run `vpn-admin doctor --client` for an interactive on-device acceptance checklist.");
     Ok(())
 }
 
@@ -1383,10 +1422,17 @@ fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<(
     // Token rotation does not change VLESS/Hysteria2 credentials, so the
     // sing-box config is unaffected — no re-render needed.
     let url = subscription_url(cfg, &token);
-    println!("New subscription:\n{url}");
-    println!("The previous subscription URL for this user no longer works.");
+    println!("New Hiddify subscription URL for {id}:");
+    println!("  {url}");
+    println!();
+    println!("The previous subscription URL for this user no longer works — anyone still on");
+    println!("it (including the user's own already-imported profile) must re-import this one.");
+    println!("Note: this does not rotate the Hysteria2 Salamander obfuscation password, so any");
+    println!("already-imported Hysteria2 profile keeps working once re-imported with this URL;");
+    println!("only `vpn-admin hysteria-obfs-rotate` changes that shared secret.");
     if qr {
         println!();
+        println!("Scan this QR code in Hiddify (Add profile -> Scan QR code):");
         print_qr(&url)?;
     }
     Ok(())
@@ -1770,6 +1816,7 @@ fn cmd_doctor(
     telegram: bool,
     report: bool,
     report_output: Option<&std::path::Path>,
+    client: bool,
 ) -> Result<()> {
     if report {
         return cmd_doctor_report(cfg, report_output);
@@ -2140,6 +2187,10 @@ fn cmd_doctor(
         print_telegram_diagnostics_summary(cfg);
     }
 
+    if client {
+        print_client_acceptance_checklist(cfg);
+    }
+
     println!();
     if failures > 0 {
         bail!("{failures} check(s) failed");
@@ -2191,6 +2242,70 @@ fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig) {
     println!();
     println!("Run the client acceptance checklist next: docs/TELEGRAM_TROUBLESHOOTING.md and");
     println!("docs/DEVICE_ACCEPTANCE_TESTS.md.");
+}
+
+/// `vpn doctor --client`: after the standard server-side checks, print an
+/// interactive, fill-in-by-hand checklist for onboarding a client device
+/// (Hiddify on iOS in particular).
+///
+/// This performs NO device-side probing — it CANNOT reach into a phone —
+/// and it must never be read as claiming otherwise. Its entire value is
+/// separating what this host can already prove (everything above this
+/// point in `doctor`'s output) from what only the human operator, sitting
+/// with the device, can check next, in an order that finds the actual
+/// fault fastest.
+///
+/// Exists because of a real, recurring confusion: Hiddify's own UI
+/// showing a transport as "connected" is a claim about Hiddify's
+/// internal proxy engine, not about the operating system's VPN/TUN
+/// state. On iOS those are two different subsystems (Hiddify's local
+/// proxy vs. NetworkExtension's `NEPacketTunnelProvider`), and Hiddify
+/// has shipped builds/modes where the former activates without the
+/// latter ever doing so — see docs/clients/HIDDIFY_IOS.md for the full
+/// explanation and prioritized troubleshooting order. Nothing in the
+/// subscription this server generates (outbounds + a manual selector)
+/// can select Hiddify's "VPN/TUN" mode over its "Proxy Only" mode, or
+/// grant the iOS "Allow VPN Configurations" permission — those are
+/// entirely client-side settings/permissions this repository does not
+/// control.
+fn print_client_acceptance_checklist(cfg: &DeploymentConfig) {
+    println!();
+    println!("--- Client acceptance checklist (fill in by hand on the device) ---");
+    println!();
+    println!("IMPORTANT: \"Connected\" in Hiddify's own UI does NOT by itself prove system");
+    println!("traffic is routed through the VPN. Hiddify's in-app connected state and iOS's");
+    println!("system VPN/TUN state are two different things — verify BOTH, in this order.");
+    println!();
+    println!(
+        "Public endpoints under test: {}:{} (REALITY tcp), {}:{} (Hysteria2 udp)",
+        cfg.public_host, cfg.reality.listen_port, cfg.public_host, cfg.hysteria2.listen_port
+    );
+    println!();
+    println!("1. [ ] Hiddify's Service Mode is set to VPN / TUN mode, NOT \"Proxy Only\"");
+    println!("       (Hiddify Settings — the two modes look similar but only VPN/TUN mode");
+    println!("       captures system-wide traffic; \"Proxy Only\" never shows an iOS VPN icon");
+    println!("       and never changes your public IP by design).");
+    println!("2. [ ] iOS granted the \"Allow VPN Configurations\" permission when first asked");
+    println!("       (a dismissed/denied prompt fails silently — no error shown in Hiddify).");
+    println!("3. [ ] Settings -> General -> VPN & Device Management shows a Hiddify VPN");
+    println!("       profile actually installed (not just the app installed).");
+    println!("4. [ ] No stale/duplicate VPN profiles from a previous install are present —");
+    println!("       remove any and reconnect if so.");
+    println!("5. [ ] iOS status bar / Control Center shows the VPN indicator once connected.");
+    println!("6. [ ] Public IPv4 BEFORE connecting: ______________");
+    println!("7. [ ] Select REALITY explicitly in Hiddify's server list (don't rely on auto).");
+    println!("8. [ ] Public IPv4 AFTER connecting to REALITY: ______________  (must differ");
+    println!("       from step 6 and match this server's public IP)");
+    println!("9. [ ] Disconnect, select Hysteria2 explicitly, reconnect, and repeat the public");
+    println!("       IP check for Hysteria2 alone.");
+    println!("10.[ ] Tested on Wi-Fi.");
+    println!("11.[ ] Tested on mobile/cellular data.");
+    println!();
+    println!("If step 8 or 9 shows an unchanged IP: go back to steps 1-4 (client mode/permission)");
+    println!("before suspecting anything server-side — the checks earlier in this report already");
+    println!("prove the server's REALITY/Hysteria2 listeners and subscription are healthy.");
+    println!();
+    println!("Full walkthrough and troubleshooting priority order: docs/clients/HIDDIFY_IOS.md");
 }
 
 /// `vpn doctor --report`: a sanitized diagnostic bundle suitable for
