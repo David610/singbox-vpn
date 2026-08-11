@@ -754,6 +754,29 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
         false
     };
 
+    // `reload_and_verify` on both units only proves each PROCESS stayed up
+    // — it says nothing about whether the NEW REALITY key material actually
+    // authenticates a real client. A rotation that installs a broken
+    // keypair (or any other protocol-breaking change) would otherwise be
+    // reported as a full success here on `is-active` alone. Only run this
+    // when both services claim to be live already — if either isn't, the
+    // "not fully reloaded live" branch below already refuses to claim
+    // success and this self-test would be probing a server that may not
+    // even have the candidate key loaded yet.
+    if singbox_reloaded_live && sub_restarted_live {
+        if let Some(RealitySelfTestOutcome::HandshakeRejected) = verify_reality_handshake_or_warn(
+            cfg,
+            &users,
+            &candidate_reality,
+            cfg.reality.listen_port,
+        ) {
+            bail!(rollback(
+                "new REALITY key material failed a real handshake self-test — a real Hiddify \
+                 client using this same key material would be rejected identically"
+            ));
+        }
+    }
+
     // Commit: only now is it safe to discard the rollback material.
     for p in [&priv_path, &pub_path, &sid_path] {
         remove_rotate_backup(p);
@@ -761,9 +784,10 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
 
     if singbox_reloaded_live && sub_restarted_live {
         println!(
-            "REALITY key rotated and applied. Every existing client's REALITY profile is now \
-             invalid (server public key changed) until re-imported. Subscription URLs are \
-             unaffected and still fetch/refresh normally; Hysteria2 profiles are unaffected."
+            "REALITY key rotated and applied, and a real handshake self-test against the new \
+             key material passed. Every existing client's REALITY profile is now invalid \
+             (server public key changed) until re-imported. Subscription URLs are unaffected \
+             and still fetch/refresh normally; Hysteria2 profiles are unaffected."
         );
     } else {
         println!(
@@ -1271,9 +1295,44 @@ fn render_and_apply_singbox_config(
             }
         );
     }
+    // `reload_and_verify` only proves the sing-box PROCESS stayed up — it
+    // is `systemctl is-active`, which passes for a syntactically valid but
+    // protocol-broken REALITY config exactly as readily as for a correct
+    // one (sing-box does not itself validate that its REALITY key material
+    // can authenticate anything). Without this, a transaction can commit a
+    // config that no real Hiddify client can ever complete a handshake
+    // against as "reloaded and verified active." Best-effort: only a
+    // definitive `HandshakeRejected` verdict blocks the commit; `None`
+    // (no test user / no sing-box binary / harness setup failure) and
+    // `Inconclusive` do not, since this self-test cannot always reach a
+    // verdict (see `run_reality_client_selftest`'s doc comment) and must
+    // not turn an environmental limitation into a false failure here.
+    if let Some(RealitySelfTestOutcome::HandshakeRejected) =
+        verify_reality_handshake_or_warn(cfg, users, &reality, ports.vless_reality_port)
+    {
+        let backup = config_backup_path(&target);
+        let restored = backup.exists() && std::fs::copy(&backup, &target).is_ok();
+        let recovery_reload_ok = restored && mgr.reload_and_verify().is_ok();
+        bail!(
+            "sing-box reloaded and stayed active, but a real REALITY handshake self-test \
+             against the just-applied config FAILED — a real Hiddify client using this same \
+             key material would be rejected identically. The requested change did NOT take \
+             effect safely. {}",
+            if recovery_reload_ok {
+                "Previous working config was restored and the service was reloaded back to it \
+                 successfully — the server is running the PREVIOUS configuration now."
+            } else {
+                "Attempted to restore the previous config but that ALSO failed to reload — \
+                 the service may be in a broken state. Manual intervention required: check \
+                 `systemctl status sing-box` and `journalctl -u sing-box`."
+            }
+        );
+    }
     commit_applied_config_stamp(&target, &candidate_fingerprint)
         .context("recording the config version verified live")?;
-    println!("sing-box reloaded and verified active.");
+    println!(
+        "sing-box reloaded and verified active (including a real REALITY handshake self-test)."
+    );
     Ok(true)
 }
 
@@ -3618,6 +3677,28 @@ fn report_protocol_unavailable(
     }
 }
 
+/// Runs the real REALITY handshake self-test against candidate/live key
+/// material as a live-health gate for the apply/rotate transactions (not
+/// just `doctor --protocol`, which is diagnostic-only and never blocks
+/// anything). `None` means the check could not run at all — no sing-box
+/// binary, or no enabled/unexpired user to test with (e.g. a brand-new
+/// deployment with zero users yet) — and callers must treat that as "not
+/// verified," never as a pass. Only `Some(HandshakeRejected)` is meant to
+/// block a transaction; `Some(Pass)`/`Some(Inconclusive)` are informational.
+fn verify_reality_handshake_or_warn(
+    cfg: &DeploymentConfig,
+    users: &[CompatUser],
+    reality: &RealityServerParams,
+    reality_port: u16,
+) -> Option<RealitySelfTestOutcome> {
+    if !cfg.singbox_binary.exists() {
+        return None;
+    }
+    let now = UnixSeconds::now().0 as i64;
+    let test_user = users.iter().find(|u| u.is_active(now))?;
+    run_reality_client_selftest(cfg, reality, test_user, reality_port).ok()
+}
+
 fn listener_reported_by_ss(port: u16, udp: bool) -> Option<bool> {
     let args = if udp { ["-H", "-lun"] } else { ["-H", "-ltn"] };
     let output = std::process::Command::new("ss").args(args).output().ok()?;
@@ -3895,25 +3976,80 @@ fn run_reality_client_selftest(
     if relay_ok {
         return Ok(RealitySelfTestOutcome::Pass);
     }
-    // A definitive signal that the handshake does not work — our own
-    // throwaway client, built from the CURRENT REALITY public_key/short_id
-    // exactly as a real subscription would hand a real client, could not
-    // complete it.
-    //
-    // What it is NOT is evidence about the CAUSE. "processed invalid
-    // connection" is sing-box's message for any connection that fails to
-    // complete REALITY's hijack — including one whose key material is
-    // perfect but whose handshake_server returned an over-budget TLS record
-    // (see `crates/compat-config/tests/reality_decoy_budget.rs`). The
-    // caller reports both possibilities; it must not claim a key mismatch.
-    // Distinct from a bare timeout, which proves nothing either way (see
-    // the caller's WARN path).
-    if captured_stderr.contains("reality verification failed")
-        || captured_stderr.contains("processed invalid connection")
-    {
+    if reality_selftest_stderr_or_journal_indicates_rejection(
+        &captured_stderr,
+        server_journal_shows_processed_invalid_connection_recently(),
+    ) {
         return Ok(RealitySelfTestOutcome::HandshakeRejected);
     }
     Ok(RealitySelfTestOutcome::Inconclusive)
+}
+
+/// A definitive signal that the handshake does not work — our own throwaway
+/// client, built from the CURRENT REALITY public_key/short_id exactly as a
+/// real subscription would hand a real client, could not complete it.
+///
+/// What it is NOT is evidence about the CAUSE. "processed invalid
+/// connection" is sing-box's message for any connection that fails to
+/// complete REALITY's hijack — including one whose key material is perfect
+/// but whose handshake_server returned an over-budget TLS record (see
+/// `crates/compat-config/tests/reality_decoy_budget.rs`). The caller reports
+/// both possibilities; it must not claim a key mismatch. Distinct from a
+/// bare timeout, which proves nothing either way (see the caller's WARN
+/// path).
+///
+/// `captured_stderr` alone almost never catches a genuine REALITY auth
+/// failure, and that is not a bug in the string list — it is REALITY
+/// working as designed. On rejection the SERVER transparently proxies the
+/// connection through to the real `handshake_server` decoy, so the CLIENT
+/// typically completes what looks like an entirely normal TLS session (or,
+/// if the decoy's cert isn't in its trust store, an ordinary x509
+/// validation error unrelated to REALITY) and only then hangs trying to
+/// speak VLESS to a plain HTTPS site — producing no "reality verification
+/// failed"/"processed invalid connection" on the client side at all.
+/// Reproduced directly against the pinned real sing-box binary with a
+/// genuinely mismatched (but well-formed) REALITY keypair: the server
+/// logged `hs.c.conn == conn: false` / `TLS handshake: REALITY: processed
+/// invalid connection`, while the client — run with this self-test's exact
+/// production log level — logged nothing matching either string.
+///
+/// The SERVER's own log is the reliable signal (confirmed: it logs
+/// `processed invalid connection` at ERROR severity, so it survives the
+/// production default `"log": {"level": "warn"}`, matching `journalctl -u
+/// sing-box` output an operator would see directly), so `journal_hit`
+/// (a cross-check of that log during this self-test's own connection
+/// attempt) also counts. This is still only corroborating evidence, not
+/// proof of cause: unrelated scanner traffic hitting the same port during
+/// the self-test's brief window could in principle produce a false-positive
+/// correlation, and — per the HandshakeRejected message in
+/// `check_l5_l6_protocol_selftest` — the same server log line is also what
+/// an oversized decoy TLS record produces even when REALITY authentication
+/// itself succeeded. It is never used to fabricate a PASS, only to promote
+/// an otherwise-silent failure out of Inconclusive.
+fn reality_selftest_stderr_or_journal_indicates_rejection(
+    captured_stderr: &str,
+    journal_hit: bool,
+) -> bool {
+    captured_stderr.contains("reality verification failed")
+        || captured_stderr.contains("processed invalid connection")
+        || journal_hit
+}
+
+/// Best-effort cross-check of the LIVE `sing-box` server's own journal for a
+/// `processed invalid connection` entry logged during this self-test's brief
+/// connection attempt. `false` on any failure to query the journal (missing
+/// `journalctl`, no permission, non-systemd host) — this never fabricates a
+/// positive result, it only widens what counts as corroborating evidence for
+/// a rejection the caller already suspects from `relay_ok == false`.
+fn server_journal_shows_processed_invalid_connection_recently() -> bool {
+    std::process::Command::new("journalctl")
+        .args(["-u", "sing-box", "--since", "-20s", "--no-pager", "-q"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| {
+            String::from_utf8_lossy(&o.stdout).contains("processed invalid connection")
+        })
 }
 
 /// See `run_reality_client_selftest`'s doc comment for how these are
@@ -4542,6 +4678,63 @@ fn cmd_restore(
     );
     println!("Restore applied and validated against the running server.");
     Ok(())
+}
+
+#[cfg(test)]
+mod reality_selftest_classification_tests {
+    use super::*;
+
+    #[test]
+    fn client_side_rejection_strings_are_still_detected() {
+        assert!(reality_selftest_stderr_or_journal_indicates_rejection(
+            "some prefix reality verification failed some suffix",
+            false,
+        ));
+        assert!(reality_selftest_stderr_or_journal_indicates_rejection(
+            "TLS handshake: REALITY: processed invalid connection",
+            false,
+        ));
+    }
+
+    /// The exact production incident this fix addresses. Reproduced against
+    /// the real pinned sing-box 1.13.14 binary with a genuinely mismatched
+    /// (well-formed) REALITY keypair and a local TLS 1.3 decoy: the
+    /// throwaway client, run with this self-test's real production log
+    /// level ("error"), logged an x509 chain-validation error from falling
+    /// through to the decoy — NOT either of the two REALITY-specific
+    /// strings — because REALITY's entire design goal is to make a
+    /// rejected connection indistinguishable from a normal TLS session with
+    /// the decoy. Before this fix, this exact client stderr made
+    /// `check_l5_l6_protocol_selftest` report `Inconclusive` for a
+    /// definitive, reproducible handshake failure — matching the live
+    /// incident's `doctor --protocol` output verbatim ("protocol self-test
+    /// INCONCLUSIVE"). The journal cross-check is what recovers a correct
+    /// verdict here.
+    #[test]
+    fn a_real_key_mismatch_does_not_reliably_produce_either_client_side_string() {
+        let real_client_stderr_from_repro = "ERROR[0002] [2197300140 43ms] connection: open \
+             connection to 127.0.0.1:19999 using outbound/vless[reality-selftest]: x509: \
+             certificate signed by unknown authority (possibly because of \"x509: invalid \
+             signature: parent certificate cannot sign this kind of certificate\" while trying \
+             to verify candidate authority certificate \"localhost\")";
+        assert!(!reality_selftest_stderr_or_journal_indicates_rejection(
+            real_client_stderr_from_repro,
+            false,
+        ));
+        // The same failure IS caught once the server's own journal
+        // corroborates it — this is the fix.
+        assert!(reality_selftest_stderr_or_journal_indicates_rejection(
+            real_client_stderr_from_repro,
+            true,
+        ));
+    }
+
+    #[test]
+    fn empty_client_stderr_and_no_journal_hit_stays_inconclusive() {
+        assert!(!reality_selftest_stderr_or_journal_indicates_rejection(
+            "", false,
+        ));
+    }
 }
 
 #[cfg(test)]
