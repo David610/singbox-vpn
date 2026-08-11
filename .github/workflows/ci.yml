@@ -245,3 +245,88 @@ jobs:
             exit 1
           fi
           echo "all $total_ok real-binary interop tests executed and passed"
+
+      # The reality_interop.rs suite above proves crate-level config
+      # RENDERING is protocol-correct; it never runs `vpn-admin` itself. This
+      # step closes that gap: it runs the actual `vpn-admin doctor --protocol`
+      # self-test — the one thing this repository's own audit docs
+      # (docs/FINAL_PRODUCTION_AUDIT.md) said had never been exercised against
+      # a real handshake in CI — against a real, live `sing-box` server AND a
+      # real, live `subscription` process, both spawned directly (no systemd
+      # unit in this runner, matching every other step in this job). A local
+      # TLS 1.3 decoy is used for the same determinism reason
+      # reality_decoy_budget.rs's doc comment gives for not dialing a
+      # third-party CDN in a merge-gating test.
+      #
+      # This only asserts the L5-6 line is OK, not the whole command's exit
+      # code: `doctor`'s file-ownership/group checks (L2) always fail on a
+      # GitHub-hosted runner, which has no `sing-box`/`vpn-subscription`
+      # system groups — that is a real, pre-existing environment gap in this
+      # runner, not something this step is responsible for proving.
+      - name: vpn-admin doctor --protocol against a real live sing-box + subscription process
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p admin
+          cargo build --locked --release -p subscription
+          ADMIN=./target/release/vpn-admin
+          SUB=./target/release/subscription
+          STATE="$RUNNER_TEMP/vpn-protocol-selftest"
+          mkdir -p "$STATE/hysteria"
+
+          openssl req -x509 -newkey rsa:2048 -days 1 -nodes \
+            -keyout "$RUNNER_TEMP/decoy-key.pem" -out "$RUNNER_TEMP/decoy-cert.pem" \
+            -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost"
+          openssl s_server -accept 28997 -cert "$RUNNER_TEMP/decoy-cert.pem" \
+            -key "$RUNNER_TEMP/decoy-key.pem" -tls1_3 -quiet -naccept 100 \
+            > /dev/null 2>&1 &
+          echo $! > "$RUNNER_TEMP/decoy.pid"
+
+          openssl req -x509 -newkey ed25519 -days 1 -nodes \
+            -keyout "$STATE/hysteria/key.pem" -out "$STATE/hysteria/cert.pem" \
+            -subj "/CN=ci-test.example.com"
+
+          cat > "$RUNNER_TEMP/protocol-selftest-deployment.toml" <<EOF
+          public_host = "127.0.0.1"
+          subscription_host = "127.0.0.1"
+          state_dir = "$STATE"
+          singbox_binary = "/usr/local/bin/sing-box"
+
+          [reality]
+          listen_port = 28445
+          handshake_server = "localhost"
+          handshake_port = 28997
+
+          [hysteria2]
+          listen_port = 28446
+
+          [subscription]
+          listen_port = 29101
+          EOF
+
+          CFG="$RUNNER_TEMP/protocol-selftest-deployment.toml"
+          VPN1_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" init
+          VPN1_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" user create --name ci-protocol-test
+          "$ADMIN" --config "$CFG" render-config
+
+          /usr/local/bin/sing-box run -c "$STATE/sing-box/config.json" > "$RUNNER_TEMP/singbox.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/singbox.pid"
+          sleep 1
+          "$SUB" --config "$CFG" > "$RUNNER_TEMP/subscription.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/subscription.pid"
+          sleep 1
+
+          set +e
+          "$ADMIN" --config "$CFG" doctor --protocol > "$RUNNER_TEMP/doctor.log" 2>&1
+          set -e
+          cat "$RUNNER_TEMP/doctor.log"
+
+          kill "$(cat "$RUNNER_TEMP/singbox.pid")" "$(cat "$RUNNER_TEMP/subscription.pid")" \
+               "$(cat "$RUNNER_TEMP/decoy.pid")" 2>/dev/null || true
+
+          if ! grep -q "^\[OK\]   \[L5-6\] protocol self-test:" "$RUNNER_TEMP/doctor.log"; then
+            echo "::error::vpn-admin doctor --protocol did not report a real L5-6 handshake PASS against a live sing-box+subscription pair. See --- singbox.log/subscription.log below."
+            echo "--- singbox.log ---"; cat "$RUNNER_TEMP/singbox.log"
+            echo "--- subscription.log ---"; cat "$RUNNER_TEMP/subscription.log"
+            exit 1
+          fi
+          echo "vpn-admin doctor --protocol proved a real REALITY handshake end-to-end."
