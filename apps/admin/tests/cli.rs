@@ -342,15 +342,18 @@ fn full_user_lifecycle() {
         .assert()
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    assert!(stdout.contains("User created: user_"));
+    assert!(stdout.contains("User ID:"));
+    assert!(stdout.contains("NOT your subscription token"));
     assert!(stdout.contains("https://sub.example.com:8443/sub/"));
 
     let user_id = stdout
         .lines()
-        .find(|l| l.starts_with("User created: "))
+        .skip_while(|l| *l != "User ID:")
+        .nth(1)
         .unwrap()
-        .trim_start_matches("User created: ")
+        .trim()
         .to_string();
+    assert!(user_id.starts_with("user_"));
 
     // list never prints secrets.
     let output = admin(dir.path(), &cfg_path)
@@ -386,7 +389,7 @@ fn full_user_lifecycle() {
         .assert()
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    assert!(stdout.contains("New subscription:"));
+    assert!(stdout.contains("New Hiddify subscription URL for"));
 
     // remove deletes the user.
     admin(dir.path(), &cfg_path)
@@ -588,9 +591,10 @@ fn user_qr_rotates_token_and_warns_it_is_new() {
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     let user_id = stdout
         .lines()
-        .find(|l| l.starts_with("User created: "))
+        .skip_while(|l| *l != "User ID:")
+        .nth(1)
         .unwrap()
-        .trim_start_matches("User created: ")
+        .trim()
         .to_string();
 
     let output = admin(dir.path(), &cfg_path)
@@ -599,7 +603,7 @@ fn user_qr_rotates_token_and_warns_it_is_new() {
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("mints a fresh one"));
-    assert!(stdout.contains("New subscription:"));
+    assert!(stdout.contains("New Hiddify subscription URL for"));
 }
 
 #[test]
@@ -917,6 +921,33 @@ fn doctor_telegram_prints_disclaimer_and_never_claims_russian_verification() {
         "doctor --telegram must never claim to verify Russian censorship compatibility:\n{stdout}"
     );
     assert!(stdout.contains("docs/TELEGRAM_TROUBLESHOOTING.md"));
+}
+
+#[test]
+fn doctor_client_prints_interactive_checklist_and_never_claims_to_probe_the_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    let output = admin(dir.path(), &cfg_path)
+        .args(["doctor", "--client"])
+        .assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("Client acceptance checklist"));
+    assert!(
+        stdout.contains("does NOT by itself prove"),
+        "doctor --client must lead with the connected-in-app-vs-VPN-routed distinction:\n{stdout}"
+    );
+    assert!(stdout.contains("Proxy Only"));
+    assert!(stdout.contains("docs/clients/HIDDIFY_IOS.md"));
+    // This command cannot reach into a phone — it must read as a checklist
+    // to fill in by hand, never a claim of automated device inspection.
+    assert!(stdout.contains("[ ]"));
 }
 
 #[test]
