@@ -830,9 +830,15 @@ fn doctor_fails_on_unresolvable_public_hostname() {
     );
 }
 
-/// `localhost` resolves to an IPv4 loopback address only in this sandbox
-/// (no AAAA/`::1` route configured) — the IPv6-policy check must report
-/// this as an explicit `[INFO]` (no AAAA record => no leak risk, but
+/// A raw IPv4 literal as `public_host` resolves to exactly that one
+/// IPv4 address and nothing else — `to_socket_addrs` parses a literal
+/// address directly, without consulting DNS or `/etc/hosts`, so this is
+/// deterministic across sandboxes/CI runners unlike `"localhost"` (which
+/// resolves to IPv4-only on some hosts but IPv4+`::1` on others,
+/// depending on that host's own `/etc/hosts` — this test used
+/// `"localhost"` originally and was flaky in CI for exactly that
+/// reason). The IPv6-policy check must report an address with no AAAA
+/// as an explicit `[INFO]` (no AAAA record => no leak risk, but
 /// IPv6-only clients cannot reach this host), not silently omit any
 /// mention of IPv6 at all.
 #[test]
@@ -842,7 +848,7 @@ fn doctor_reports_ipv4_only_hostname_as_info_not_a_failure() {
     let cfg_path = dir.path().join("deployment.toml");
     let toml = format!(
         r#"
-public_host = "localhost"
+public_host = "127.0.0.1"
 subscription_host = "sub.example.com"
 state_dir = "{state}"
 singbox_binary = "{state}/nonexistent-sing-box"
