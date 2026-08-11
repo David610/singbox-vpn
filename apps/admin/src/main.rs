@@ -1425,11 +1425,14 @@ fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<(
     println!("New Hiddify subscription URL for {id}:");
     println!("  {url}");
     println!();
-    println!("The previous subscription URL for this user no longer works — anyone still on");
-    println!("it (including the user's own already-imported profile) must re-import this one.");
-    println!("Note: this does not rotate the Hysteria2 Salamander obfuscation password, so any");
-    println!("already-imported Hysteria2 profile keeps working once re-imported with this URL;");
-    println!("only `vpn-admin hysteria-obfs-rotate` changes that shared secret.");
+    println!("The previous subscription URL now 404s — it can no longer be used to FETCH or");
+    println!("REFRESH this user's config. This does NOT change the VLESS UUID or Hysteria2");
+    println!("password: an already-imported REALITY/Hysteria2 profile keeps connecting exactly");
+    println!("as before, since those transport credentials are unchanged. Re-importing this new");
+    println!("URL is only needed so the client can refresh in the future (some clients also drop");
+    println!("saved servers on a failed refresh — re-import here avoids depending on that).");
+    println!("Only `vpn-admin hysteria-obfs-rotate` changes the Hysteria2 obfuscation secret");
+    println!("itself, which DOES require re-importing to keep the Hysteria2 profile working.");
     if qr {
         println!();
         println!("Scan this QR code in Hiddify (Add profile -> Scan QR code):");
@@ -1445,7 +1448,8 @@ fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     println!(
         "Note: the subscription token is never stored in recoverable form, \
          so this mints a fresh one (like `rotate-token`) — the previous \
-         subscription URL for this user stops working."
+         subscription URL for this user stops working for fetch/refresh \
+         (any already-imported profile keeps connecting; see below)."
     );
     println!();
     cmd_user_rotate_token(cfg, id, true)
@@ -2184,11 +2188,11 @@ fn cmd_doctor(
     }
 
     if telegram {
-        print_telegram_diagnostics_summary(cfg);
+        print_telegram_diagnostics_summary(cfg, failures);
     }
 
     if client {
-        print_client_acceptance_checklist(cfg);
+        print_client_acceptance_checklist(cfg, failures);
     }
 
     println!();
@@ -2211,9 +2215,16 @@ fn cmd_doctor(
 /// test — see docs/TELEGRAM_TROUBLESHOOTING.md and
 /// docs/DEVICE_ACCEPTANCE_TESTS.md for the real, per-function test
 /// matrix that only a real device on a real network can actually run.
-fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig) {
+fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig, failures: u32) {
     println!();
     println!("--- Telegram-oriented summary (server-side only) ---");
+    if failures > 0 {
+        println!(
+            "WARNING: {failures} check(s) above FAILED. Server-side health is NOT proven — fix \
+             those failures first. Nothing below claims the server is healthy."
+        );
+        println!();
+    }
     println!(
         "Public endpoints: {}:{} (VLESS+REALITY tcp), {}:{} (Hysteria2 udp)",
         cfg.public_host, cfg.reality.listen_port, cfg.public_host, cfg.hysteria2.listen_port
@@ -2268,10 +2279,18 @@ fn print_telegram_diagnostics_summary(cfg: &DeploymentConfig) {
 /// grant the iOS "Allow VPN Configurations" permission — those are
 /// entirely client-side settings/permissions this repository does not
 /// control.
-fn print_client_acceptance_checklist(cfg: &DeploymentConfig) {
+fn print_client_acceptance_checklist(cfg: &DeploymentConfig, failures: u32) {
     println!();
     println!("--- Client acceptance checklist (fill in by hand on the device) ---");
     println!();
+    if failures > 0 {
+        println!(
+            "WARNING: {failures} check(s) earlier in this report FAILED. Server-side health is \
+             NOT proven — fix those failures before trusting this checklist to isolate a \
+             client-side cause."
+        );
+        println!();
+    }
     println!("IMPORTANT: \"Connected\" in Hiddify's own UI does NOT by itself prove system");
     println!("traffic is routed through the VPN. Hiddify's in-app connected state and iOS's");
     println!("system VPN/TUN state are two different things — verify BOTH, in this order.");
@@ -2301,9 +2320,29 @@ fn print_client_acceptance_checklist(cfg: &DeploymentConfig) {
     println!("10.[ ] Tested on Wi-Fi.");
     println!("11.[ ] Tested on mobile/cellular data.");
     println!();
+    println!("If 1-9 are all satisfied and it STILL doesn't work: this matches a currently open,");
+    println!(
+        "unresolved bug class in Hiddify's own iOS app (its in-app \"Connected\" state and iOS's"
+    );
+    println!("actual NEPacketTunnelProvider tunnel state can go out of sync) — see");
+    println!("hiddify/hiddify-app issues #1812, #1485, #290, #1478. Nothing in this server's");
+    println!(
+        "subscription can detect or fix that. Try: update Hiddify, delete+reinstall it, remove"
+    );
+    println!("ALL its VPN profiles from Settings before reconnecting, reboot, retry.");
+    println!();
     println!("If step 8 or 9 shows an unchanged IP: go back to steps 1-4 (client mode/permission)");
-    println!("before suspecting anything server-side — the checks earlier in this report already");
-    println!("prove the server's REALITY/Hysteria2 listeners and subscription are healthy.");
+    if failures == 0 {
+        println!(
+            "before suspecting anything server-side — the checks earlier in this report already"
+        );
+        println!("prove the server's REALITY/Hysteria2 listeners and subscription are healthy.");
+    } else {
+        println!(
+            "AND re-run `vpn-admin doctor --protocol --require-protocol` first — {failures} \
+             check(s) above failed, so server-side health is not yet established either."
+        );
+    }
     println!();
     println!("Full walkthrough and troubleshooting priority order: docs/clients/HIDDIFY_IOS.md");
 }

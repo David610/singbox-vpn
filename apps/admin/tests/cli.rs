@@ -606,6 +606,49 @@ fn user_qr_rotates_token_and_warns_it_is_new() {
     assert!(stdout.contains("New Hiddify subscription URL for"));
 }
 
+/// Regression test for a real user-confusion bug this investigation
+/// found: `rotate-token` claimed the user's already-imported
+/// REALITY/Hysteria2 profile "must re-import" the new URL, implying
+/// rotation breaks an already-established connection. It does not —
+/// rotation only invalidates the subscription URL used to FETCH/REFRESH
+/// config; the VLESS UUID and Hysteria2 password are untouched. The
+/// wording must say so explicitly and must not claim the old profile
+/// stops connecting.
+#[test]
+fn rotate_token_does_not_claim_already_imported_profile_stops_connecting() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "erin"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let user_id = stdout
+        .lines()
+        .skip_while(|l| *l != "User ID:")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "rotate-token", &user_id])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("does NOT change the VLESS UUID or Hysteria2")
+            && stdout.contains("keeps connecting exactly"),
+        "rotate-token must state that an already-imported profile keeps connecting \
+         (transport credentials are unaffected by subscription-token rotation):\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("must re-import this one"),
+        "rotate-token must not claim the already-imported profile requires re-import to keep \
+         working:\n{stdout}"
+    );
+}
+
 #[test]
 fn doctor_reports_missing_singbox_binary_as_failure() {
     let dir = tempfile::tempdir().unwrap();
@@ -948,6 +991,53 @@ fn doctor_client_prints_interactive_checklist_and_never_claims_to_probe_the_devi
     // This command cannot reach into a phone — it must read as a checklist
     // to fill in by hand, never a claim of automated device inspection.
     assert!(stdout.contains("[ ]"));
+}
+
+/// Regression test for the bug this investigation found: `doctor
+/// --client`/`--telegram` printed a hardcoded "the checks earlier in
+/// this report already prove the server ... are healthy" claim
+/// unconditionally — even when an earlier check actually failed. Force
+/// a real failure (no sing-box binary at all, so `init`/`render-config`
+/// never ran and the L1 binary check fails) and assert the healthy-
+/// server claim is replaced by an explicit warning instead.
+#[test]
+fn doctor_client_and_telegram_never_claim_server_is_healthy_when_checks_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+
+    let client_output = admin(dir.path(), &cfg_path)
+        .args(["doctor", "--client"])
+        .assert()
+        .failure();
+    let client_stdout = String::from_utf8(client_output.get_output().stdout.clone()).unwrap();
+    assert!(
+        client_stdout.contains("[FAIL]"),
+        "test setup must actually produce a failing check:\n{client_stdout}"
+    );
+    assert!(
+        !client_stdout.contains(
+            "already\nprove the server's REALITY/Hysteria2 listeners and \
+             subscription are healthy"
+        ) && !client_stdout.contains("already prove the server's REALITY/Hysteria2 listeners and"),
+        "doctor --client must not claim server health is proven when earlier checks failed:\n\
+         {client_stdout}"
+    );
+    assert!(
+        client_stdout.contains("FAILED") && client_stdout.contains("NOT proven"),
+        "doctor --client must explicitly warn that server-side health is unproven after a \
+         failure:\n{client_stdout}"
+    );
+
+    let telegram_output = admin(dir.path(), &cfg_path)
+        .args(["doctor", "--telegram"])
+        .assert()
+        .failure();
+    let telegram_stdout = String::from_utf8(telegram_output.get_output().stdout.clone()).unwrap();
+    assert!(
+        telegram_stdout.contains("FAILED") && telegram_stdout.contains("NOT proven"),
+        "doctor --telegram must explicitly warn that server-side health is unproven after a \
+         failure:\n{telegram_stdout}"
+    );
 }
 
 #[test]

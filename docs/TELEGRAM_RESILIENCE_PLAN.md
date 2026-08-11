@@ -468,3 +468,73 @@ This requires no new code, no new trust boundary, and no schema change
 — it is available today, and is the recommended interim answer to "what
 do we do if this VPS gets blocked" until Option A above is built
 properly.
+
+### 2026-08 addendum: fresh research on the open questions above
+
+A follow-up investigation (iPhone/Telegram/Russia resilience pass,
+2026-08-11) re-researched the specific open questions this section left
+unanswered, using current primary sources. Findings, each graded:
+
+- **sing-box still has no ordered-failover primitive** (CONFIRMED
+  against `sagernet/sing-box` source at HEAD as of 2026-08-11).
+  `selector` is manual-only (no health check at all);
+  `urltest` is a latency race with a sticky `tolerance` window — it
+  prefers whichever outbound is *currently selected* unless a candidate
+  beats it by more than `tolerance` (default 50ms), and only falls back
+  to list-order when NO outbound has any latency history yet (which can
+  hand a dead node to a client that never got a successful probe). List
+  order does not otherwise express priority. Feature requests for a
+  true "try A, else B, else C" priority group
+  (github.com/SagerNet/sing-box/issues/2130 and /4065) are both open
+  and unimplemented. This confirms Option A's own framing above: a
+  `selector` (manual override, default = REALITY on the
+  first/preferred node) containing all four labeled endpoints, plus one
+  `urltest` "auto" group racing all four, is the most correct
+  structure achievable with stock sing-box today — true deterministic
+  ordered failover is not.
+- **Hysteria2 Salamander obfuscation may already be fingerprintable in
+  Russia** (LIKELY, not independently verified in this repo). Upstream
+  `apernet/hysteria` shipped a newer "Gecko" obfuscation mode in
+  v2.9.2 specifically because Salamander's fixed packet-size signature
+  is reportedly becoming classifiable. **Do not switch to it yet**:
+  `sagernet/sing-box` — the actual server/client implementation this
+  deployment and Hiddify both run — does not support `obfs.type:
+  gecko` yet; it is an open, unimplemented feature request
+  (github.com/SagerNet/sing-box/issues/4171). Configuring it today
+  would either be silently ignored or rejected, not a real
+  improvement. Track that issue; revisit once sing-box ships support.
+- **AWS as Node B's provider is not obviously a resilience win**
+  (LIKELY, general trend evidence only — NOT specific to this
+  deployment's actual AWS IP, which has not been tested from a real
+  Russian network path in this investigation). Current secondary
+  reporting describes large, well-known cloud ASNs (AWS included) as
+  increasingly, not decreasingly, targeted for blocking in Russia,
+  alongside continued targeting of common budget-European-VPS ranges
+  (e.g. Hetzner, DigitalOcean) with a TCP-freeze-on-large-payload
+  technique. Before committing real users to a second node on the
+  existing AWS VPS: have someone reachable in Russia actually test the
+  specific AWS IP (`curl`/`Test-NetConnection` to its REALITY/Hysteria2
+  ports) before importing it into anyone's subscription. If it tests
+  unreachable or unreliable, a small, independent, non-hyperscaler
+  European VPS is at least as defensible a second-node choice per this
+  same evidence, and the architecture above (Option A) does not care
+  which provider Node B actually is.
+- **Telegram's status in Russia may have changed materially since this
+  plan was first written** (reported as CONFIRMED by the research pass
+  that produced this addendum, via secondary aggregation of OONI-style
+  reporting — NOT independently re-verified against a primary OONI
+  Explorer query in this pass, since that domain was unreachable from
+  this environment; treat the specific dates/percentages as unverified
+  pending a direct check). If Telegram is now blocked at the network
+  level in Russia rather than merely degraded, the practical
+  implication does not change this plan's priorities: getting a VPN
+  tunnel out of Russia reliably at all (REALITY primary, Hysteria2
+  secondary, now with the multi-node option above) remains the
+  dominant lever — there is no in-tunnel Telegram-specific fix to chase
+  if the block is at the network/IP level outside the tunnel.
+
+None of the above changes this document's existing "Not changed" list.
+No transport, obfuscation mode, or MTU value was altered by this
+addendum — it only sharpens the evidence behind decisions already made
+above and flags two items (Gecko, AWS reachability) to revisit with
+real verification before acting on them.

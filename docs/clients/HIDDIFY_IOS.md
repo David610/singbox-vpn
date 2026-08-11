@@ -100,17 +100,38 @@ server keys or suspecting the VPS until you've exhausted steps 1-6.
    prove a real client can complete a REALITY handshake against this
    server.
 9. **Only then** investigate server/network-side causes (firewall,
-   DPI/blocking on your specific network, DNS). `vpn-admin doctor`
-   already proves the server's listeners, keys, and subscription
-   coherence are healthy — a real device failure past step 8 usually
-   means something about the specific network path, not this
-   deployment's configuration.
+   DPI/blocking on your specific network, DNS). `vpn-admin doctor
+   --protocol --require-protocol` reports whether this server's own
+   listeners, keys, and subscription coherence currently pass — read its
+   actual output, since a step-8 failure means the fault is confirmed
+   client-side, but a step-8 fault does NOT by itself prove step 1-7
+   already ruled out everything (see "known Hiddify bug" below).
+10. **If steps 1-9 are all satisfied and it still doesn't work**: this
+    matches a currently open, unresolved class of bug in Hiddify's own
+    iOS app, not something this server's subscription can detect or
+    work around. Hiddify's app-level "Connected" state and iOS's actual
+    `NEPacketTunnelProvider` tunnel state are two separate systems that
+    have shipped out of sync — see Hiddify's own issue tracker, e.g.
+    hiddify/hiddify-app#1812 ("Unable to add VPN to iPhone" — consent
+    accepted, no profile created), #1485 ("vpn enable ... not working"),
+    #290 ("VPN configuration not registering in iOS Settings"), and
+    #1478 (UI stuck on "Connection" instead of "Connected"). None of
+    these are fixed by anything in this server's subscription content.
+    Try, in order: updating Hiddify to its latest App Store version,
+    deleting and reinstalling the app (this also clears any stale
+    NetworkExtension state iOS may be holding), removing ALL VPN
+    profiles for Hiddify from Settings → General → VPN & Device
+    Management before reconnecting, and retrying on a fresh iOS reboot.
+    If it still fails, this is a Hiddify/iOS defect to report upstream,
+    not evidence of a misconfigured server.
 
-If Hiddify's server list shows REALITY/Hysteria2 as connected but your
-IP never changes, the fault has consistently turned out to be step 1 or
-2 above (Proxy Only mode, or a missed/denied VPN permission prompt) —
-those are Hiddify/iOS-side settings this server's subscription cannot
-see or control.
+Do not treat "Hiddify's server list shows REALITY/Hysteria2 as
+connected but the IP never changes" as proof of any single cause — it
+is consistent with steps 1, 2, or 10 above, all of which are
+client/OS-side and outside what this server's subscription can see or
+control. This project has not yet reproduced the failure on a real
+device end-to-end; treat any specific-cause claim beyond this list as
+unverified until it is.
 
 ## Other things to check if it doesn't connect at all
 
@@ -126,11 +147,29 @@ see or control.
 ## Privacy
 
 The subscription URL is your personal credential. Don't share it —
-anyone who has it can connect as you until an administrator rotates
-(`vpn-admin user rotate-token`) or disables (`vpn-admin user disable`)
-your account. Rotating the Hysteria2 Salamander obfuscation password
-(`vpn-admin hysteria-obfs-rotate`) is a separate, deployment-wide
-action — it does not rotate your personal subscription token, but it
-does mean your already-imported Hysteria2 profile needs to be
-re-imported (the obfuscation password changed) even though your
-subscription URL and REALITY connection are unaffected.
+anyone who fetches it gets your VLESS UUID and Hysteria2 password and
+can import their own profile from them.
+
+Two different things can happen to your credentials, and they are NOT
+the same:
+
+- **`vpn-admin user rotate-token`** (or `user qr`) invalidates the
+  *subscription URL itself* — it 404s from that moment on, so it can no
+  longer be used to fetch or refresh a config. It does **not** change
+  your VLESS UUID or Hysteria2 password, so an **already-imported**
+  REALITY/Hysteria2 profile — yours or anyone else's who had the old
+  URL — keeps connecting exactly as before. Rotating a leaked token
+  stops *future* fetches with it; it does not retroactively cut off a
+  connection someone already imported. If you believe your transport
+  credentials themselves are compromised, use `user disable` (or
+  contact your administrator to recreate your account).
+- **`vpn-admin hysteria-obfs-rotate`** is a separate, deployment-wide
+  action that changes the shared Hysteria2 Salamander obfuscation
+  password for every user. It does not rotate your personal
+  subscription token, but it does mean your already-imported Hysteria2
+  profile stops authenticating until you re-import — your subscription
+  URL and REALITY connection are unaffected.
+
+`vpn-admin user disable` is the only action that stops an
+already-imported profile from connecting at all (the server refuses the
+UUID/password on the next handshake).
