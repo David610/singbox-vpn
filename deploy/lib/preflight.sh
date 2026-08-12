@@ -53,10 +53,42 @@ preflight_check_memory() {
   fi
 }
 
+# Shared bounded-retry curl wrapper for every network-dependent preflight
+# check below. A single transient blip against one URL (a dropped
+# packet, a momentary DNS hiccup, a mid-TLS-handshake stall) must not
+# hard-abort the whole installer — but retries are still bounded, and
+# failure after they're exhausted is still a hard failure (fail-closed).
+# `$@` = the same args you'd pass straight to `curl` (including the
+# URL), e.g. `preflight_curl_retry -fsS -o /dev/null "$url"`.
+#
+# Reuses the caller's own CURL_NET_FLAGS array (install.sh and the root
+# bootstrap installer both already define one, sourced before this file)
+# when present, so retry/stall-timeout behavior stays defined in exactly
+# one place per script rather than drifting between two copies. Falls
+# back to an equivalent inline default only when no such array is
+# defined (e.g. a test or another caller sources preflight.sh standalone).
+preflight_curl_retry() {
+  local flags
+  if declare -p CURL_NET_FLAGS >/dev/null 2>&1; then
+    flags=("${CURL_NET_FLAGS[@]}")
+  else
+    flags=(--connect-timeout 10 --max-time 60 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+  fi
+  if curl "${flags[@]}" "$@"; then
+    return 0
+  fi
+  # One further fallback attempt preferring IPv4, tried only AFTER a
+  # normal attempt already failed — never the only mode used — so a
+  # working IPv6-only or dual-stack host is never broken by forcing
+  # IPv4. This covers the class of failure where DNS/routing picks a
+  # broken AAAA path on a dual-stack host while IPv4 egress is fine.
+  curl -4 "${flags[@]}" "$@"
+}
+
 preflight_check_connectivity() {
   local url="${1:-https://github.com}"
-  if ! curl -fsS --max-time 8 -o /dev/null "$url"; then
-    die "no outbound internet connectivity (failed to reach $url). vpn1 needs to download sing-box/binaries during install."
+  if ! preflight_curl_retry -fsS -o /dev/null "$url"; then
+    die "no outbound internet connectivity (failed to reach $url after retries). vpn1 needs to download sing-box/binaries during install."
   fi
   log "internet connectivity OK ($url reachable)"
 }
@@ -161,7 +193,7 @@ preflight_detect_public_ip() {
     # `|| true`: under `set -e`/pipefail a failed lookup (timeout,
     # non-200, DNS block) would otherwise abort the whole installer on
     # the first candidate instead of trying the next fallback URL.
-    ip="$(curl -fsS --max-time 6 "$url" 2>/dev/null | tr -d '[:space:]')" || true
+    ip="$(preflight_curl_retry -fsS "$url" 2>/dev/null | tr -d '[:space:]')" || true
     if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
       echo "$ip"
       return 0

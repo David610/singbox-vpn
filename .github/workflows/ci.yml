@@ -116,6 +116,14 @@ jobs:
         run: bash deploy/lib/tests/test-perf-tuning.sh
       - name: install.sh / update.sh runtime-asset parity check
         run: bash deploy/lib/tests/test-install-update-parity.sh
+      - name: Amazon Linux 2023 detection + curl-minimal handling unit tests
+        run: bash deploy/lib/tests/test-amazon-linux-2023.sh
+      - name: preflight curl-retry (bounded network-blip resilience) unit tests
+        run: bash deploy/lib/tests/test-preflight-curl-retry.sh
+      - name: release archive/checksum contract static test
+        run: bash deploy/lib/tests/test-release-archive-contract.sh
+      - name: installer manifest-timing/idempotency static test
+        run: bash deploy/lib/tests/test-install-manifest-idempotency.sh
 
   secret-logging-check:
     runs-on: ubuntu-latest

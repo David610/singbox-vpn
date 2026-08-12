@@ -197,10 +197,15 @@ the ports again).
 ### Advanced / manual deployment
 
 The one-liner above wraps `deploy/almalinux/install.sh` (which, despite
-the directory name, supports the RHEL family — AlmaLinux, Rocky Linux,
-RHEL — and the Debian family — Ubuntu, Debian; see `deploy/lib/os.sh`).
-You can run it directly for full control over every install stage,
-including a fully manual TLS setup:
+the directory name, supports the RHEL family — AlmaLinux 9, Rocky Linux
+9, RHEL 9, Amazon Linux 2023 — and the Debian family — Ubuntu 22.04/24.04,
+Debian 12/13; see `deploy/lib/os.sh`). Amazon Linux 2023 support is
+covered by automated detection/dependency unit tests
+(`deploy/lib/tests/test-amazon-linux-2023.sh`) but has not been verified
+end to end on a real Amazon Linux 2023 host — see
+`docs/ALMALINUX_DEPLOYMENT.md`'s support matrix for the exact
+tested-vs-untested status of every OS. You can run it directly for full
+control over every install stage, including a fully manual TLS setup:
 
 ```bash
 sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com \
