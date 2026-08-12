@@ -202,6 +202,9 @@ assert_eq "rollback with recorded baseline: exit 0" "0" "$rollback_rc"
 assert_contains "rollback: rollback drop-in contains baseline rmem_max" \
   "$(cat "$PERF_ROLLBACK_DROPIN")" "net.core.rmem_max = 212992"
 assert_contains "rollback: reports rmem_max restored" "$rollback_out" "restored to 212992"
+assert_contains "rollback: rollback drop-in contains baseline default_qdisc" \
+  "$(cat "$PERF_ROLLBACK_DROPIN")" "net.core.default_qdisc = pfifo_fast"
+assert_contains "rollback: reports default_qdisc restored" "$rollback_out" "net.core.default_qdisc restored to pfifo_fast"
 assert_eq "rollback: vpn1's active drop-in was removed" "0" "$( [ -f "$PERF_SYSCTL_DROPIN" ] && echo 1 || echo 0 )"
 
 # Restoration verification: if the effective value does NOT actually
@@ -222,6 +225,27 @@ rollback_rc=$?
 set -e
 assert_eq "rollback: reports failure when effective value does not match baseline" "1" "$rollback_rc"
 assert_contains "rollback: explains the mismatch" "$rollback_out" "did not restore"
+
+# qdisc-specific mismatch: rmem/wmem/congestion-control all restore
+# correctly, but default_qdisc does not — rollback must still report
+# failure, isolated to the qdisc value (not masked by the other three
+# happening to match).
+perf_read_sysctl() {
+  case "$1" in
+    net.core.rmem_max) echo "212992" ;;
+    net.core.wmem_max) echo "212992" ;;
+    net.ipv4.tcp_congestion_control) echo "cubic" ;;
+    net.core.default_qdisc) echo "fq_codel" ;; # wrong on purpose
+  esac
+}
+set +e
+rollback_out="$(perf_tuning_rollback 2>&1)"
+rollback_rc=$?
+set -e
+assert_eq "rollback: reports failure when only default_qdisc fails to restore" "1" "$rollback_rc"
+assert_contains "rollback: explains the qdisc-specific mismatch" "$rollback_out" "net.core.default_qdisc did not restore to pfifo_fast"
+assert_not_contains "rollback: does not misreport rmem_max as failing in the qdisc-only mismatch case" \
+  "$rollback_out" "net.core.rmem_max did not restore"
 
 echo
 if [ "$failures" -eq 0 ]; then

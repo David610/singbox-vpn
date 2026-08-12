@@ -309,9 +309,20 @@ tunnel_benchmark() {
   # hardcodes a tag string. 0 matches is a legitimate "this deployment
   # doesn't offer that transport" (SKIP); >1 matches is ambiguous and
   # must never be guessed at (hard failure, not a silent pick).
+  #
+  # Deliberately NOT `out_tag="$(...)"; rc=$?` — under `set -e`, a failed
+  # command substitution inside a plain assignment terminates the whole
+  # script right there, before `rc=$?` (or anything else) ever runs. An
+  # `if`/`else` conditional is exempt from errexit by POSIX/bash
+  # definition, so this is the one form that actually lets a nonzero
+  # `vpn_benchmark_discover_outbound_tag` exit status reach the handling
+  # below instead of silently killing the benchmark run.
   local out_tag rc
-  out_tag="$(vpn_benchmark_discover_outbound_tag "$sub_json" "$transport")"
-  rc=$?
+  if out_tag="$(vpn_benchmark_discover_outbound_tag "$sub_json" "$transport")"; then
+    rc=0
+  else
+    rc=$?
+  fi
   if [ "$rc" -eq 2 ]; then
     kv "$label" "SKIPPED: no $transport outbound in this deployment's subscription"
     return

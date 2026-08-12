@@ -316,6 +316,11 @@ perf_tuning_rollback() {
       && log "net.ipv4.tcp_congestion_control restored to $BASELINE_TCP_CONGESTION_CONTROL" \
       || { warn "net.ipv4.tcp_congestion_control did not restore to $BASELINE_TCP_CONGESTION_CONTROL"; failed=1; }
   fi
+  if [ -n "${BASELINE_DEFAULT_QDISC:-}" ]; then
+    [ "$(perf_read_sysctl net.core.default_qdisc)" = "$BASELINE_DEFAULT_QDISC" ] \
+      && log "net.core.default_qdisc restored to $BASELINE_DEFAULT_QDISC" \
+      || { warn "net.core.default_qdisc did not restore to $BASELINE_DEFAULT_QDISC"; failed=1; }
+  fi
   return "$failed"
 }
 

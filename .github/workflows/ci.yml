@@ -110,6 +110,8 @@ jobs:
           shellcheck -S warning install.sh deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
       - name: vpn-benchmark outbound-discovery unit tests
         run: bash deploy/lib/tests/test-vpn-benchmark-lib.sh
+      - name: vpn-benchmark set -e / discovery-call-site regression test
+        run: bash deploy/lib/tests/test-vpn-benchmark-set-e-regression.sh
       - name: perf-tuning rendering/baseline/rollback unit tests
         run: bash deploy/lib/tests/test-perf-tuning.sh
       - name: install.sh / update.sh runtime-asset parity check
