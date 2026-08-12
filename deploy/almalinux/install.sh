@@ -211,7 +211,17 @@ preflight_stage() {
   acquire_installer_lock
   detect_os || die "unsupported operating system."
   log "detected OS: $OS_PRETTY_NAME (family=$OS_FAMILY, support=$OS_SUPPORT)"
-  [ "$OS_SUPPORT" = "tested" ] || warn "this OS/version combination is not in the tested support matrix; continuing, but this is not a guarantee it works."
+  # Three OS_SUPPORT tiers (see deploy/lib/os.sh) get three distinct
+  # messages — do not collapse "ci-tested" into either "tested" (overclaims)
+  # or the generic "untested" warning (underclaims; it has real automated
+  # coverage the generic message wouldn't mention).
+  case "$OS_SUPPORT" in
+    tested) ;;
+    ci-tested)
+      warn "this OS (Amazon Linux 2023) has automated static/unit test coverage (deploy/lib/tests/test-amazon-linux-2023.sh) but has NOT been verified end-to-end on a live host of this OS; continuing, but this is not the same guarantee as the tested matrix (AlmaLinux/Rocky/RHEL 9, Ubuntu 22.04/24.04, Debian 12/13)." ;;
+    *)
+      warn "this OS/version combination is not in the tested support matrix; continuing, but this is not a guarantee it works." ;;
+  esac
   ARCH="$(detect_arch)" || die "unsupported CPU architecture: $(uname -m). vpn1 supports x86_64 and aarch64."
   log "detected architecture: $ARCH ($(uname -m))"
   preflight_require_systemd
@@ -234,9 +244,23 @@ preflight_stage() {
 # ---------------------------------------------------------------------
 install_dependencies_rhel() {
   log "installing OS packages (dnf)..."
-  dnf install -y --setopt=install_weak_deps=False \
-    gcc gcc-c++ make pkgconf-pkg-config openssl-devel openssl \
-    firewalld policycoreutils-python-utils tar curl jq nginx certbot >/dev/null
+  local pkgs=(gcc gcc-c++ make pkgconf-pkg-config openssl-devel openssl
+    firewalld policycoreutils-python-utils tar jq nginx certbot)
+  # Amazon Linux 2023 ships `curl-minimal` preinstalled, providing
+  # /usr/bin/curl already — it and the full `curl` package both own
+  # /usr/bin/curl, so `dnf install curl` on top of it is a file conflict
+  # that dnf refuses without --allowerasing (explicitly not allowed
+  # here: it can silently remove/replace unrelated packages depending on
+  # what else is installed, which is not an acceptable installer
+  # shortcut). Same idempotency principle as everywhere else in this
+  # script: only install a package if a working equivalent isn't already
+  # present, rather than unconditionally forcing a specific package.
+  if command -v curl >/dev/null 2>&1 && curl --version >/dev/null 2>&1; then
+    log "usable curl already present ($(command -v curl)) — not adding 'curl' to the install list (avoids a curl-minimal/curl file conflict on Amazon Linux 2023 and similar images)."
+  else
+    pkgs+=(curl)
+  fi
+  dnf install -y --setopt=install_weak_deps=False "${pkgs[@]}" >/dev/null
   systemctl enable --now firewalld >/dev/null
 }
 
@@ -729,16 +753,54 @@ attempt_automatic_certbot() {
       && log "temporarily allowed inbound TCP/80 for the ACME HTTP-01 challenge."
   fi
   log "requesting a Let's Encrypt certificate for $host via certbot (HTTP-01, standalone)..."
-  local rc=0
-  certbot certonly --standalone -d "$host" --non-interactive --agree-tos \
-      -m "admin@$host" --no-eff-email >/dev/null 2>&1 || rc=$?
+  local rc=0 certbot_output
+  certbot_output="$(certbot certonly --standalone -d "$host" --non-interactive --agree-tos \
+      -m "admin@$host" --no-eff-email 2>&1)" || rc=$?
   acme_cleanup
   trap - INT TERM
   if [ "$rc" -eq 0 ]; then
     log "certificate issued for $host."
     return 0
   fi
+  # Local port 80 being free (checked above) is NOT the same as port 80
+  # being reachable from the internet — HTTP-01 requires Let's Encrypt's
+  # servers to actually connect in from outside. vpn1 only manages the
+  # HOST firewall (firewalld/ufw); it cannot see or touch a cloud
+  # provider's separate network-level firewall (AWS security groups,
+  # etc.), and a security group with no inbound TCP/80 rule silently
+  # blocks the challenge with no error on this host at all — the most
+  # common real-world cause of this failure on a fresh cloud VPS.
   warn "automatic certbot issuance failed for $host."
+  cat >&2 <<EOF
+[install] Common causes, in likely order:
+  1. DNS for '$host' does not yet resolve to THIS server's public IP
+     (check: dig +short $host   — or: getent hosts $host).
+  2. TCP/80 is free locally (already checked) but blocked from the
+     PUBLIC internet by your cloud provider's separate network firewall
+     (e.g. an AWS/EC2 security group, a GCP firewall rule, an Azure NSG)
+     — vpn1 only manages this host's own firewall (firewalld/ufw) and
+     cannot see or change a cloud-provider-level firewall.
+     For automatic certificate issuance (Let's Encrypt HTTP-01), TCP/80
+     must be reachable from the public Internet (0.0.0.0/0) — Let's
+     Encrypt's validation servers do not originate from your own IP, so
+     restricting the rule to your IP will NOT make issuance succeed.
+     If you only want to manually verify reachability from your own
+     machine first, a rule scoped to your IP is fine for that test
+     alone, but must be widened to 0.0.0.0/0 (or removed) before
+     certbot will succeed. Add the appropriate inbound rule in that
+     provider's console, then re-run.
+  3. Verify external reachability directly, from a DIFFERENT machine
+     (not this server — a check from here would only prove loopback
+     works):
+       curl -sS --max-time 5 http://$host/ -o /dev/null -w '%{http_code}\n'
+     Any HTTP response (even 404) means TCP/80 is reachable from
+     outside; a timeout/connection-refused means it is not.
+  4. certbot's own log has the exact reason:
+       tail -n 50 /var/log/letsencrypt/letsencrypt.log
+
+Certbot output:
+$certbot_output
+EOF
   return 1
 }
 
@@ -784,7 +846,19 @@ require_hysteria_tls() {
   Hysteria2 TLS certificate missing: $cert
   Hysteria2 TLS key missing:         $key
 
-Provision a certificate for ${PUBLIC_HOST:-<PUBLIC_HOST>} first, e.g. with certbot:
+Automatic issuance (certbot HTTP-01) already failed above — see that
+output for the specific reason. In summary, ALL of the following must be
+true simultaneously for automatic issuance to succeed:
+  - DNS for ${PUBLIC_HOST:-<PUBLIC_HOST>} resolves to this server's public IP.
+  - TCP/80 is reachable from the public internet, not just locally free.
+    vpn1 only manages the HOST firewall (firewalld/ufw) — a cloud
+    provider's separate network firewall/security group (AWS, GCP,
+    Azure, ...) may ALSO need an inbound TCP/80 rule; vpn1 cannot see or
+    change that layer. Test from a DIFFERENT machine:
+      curl -sS --max-time 5 http://${PUBLIC_HOST:-<PUBLIC_HOST>}/ -o /dev/null -w '%{http_code}\n'
+  - certbot is installed and nothing else is holding TCP/80.
+
+Provision a certificate for ${PUBLIC_HOST:-<PUBLIC_HOST>} manually once the above are confirmed, e.g. with certbot:
 
   certbot certonly --standalone -d ${PUBLIC_HOST:-<PUBLIC_HOST>} \\
     --non-interactive --agree-tos -m admin@${PUBLIC_HOST:-<PUBLIC_HOST>}
@@ -1211,6 +1285,12 @@ start_stage() {
   confirm_subscription_backend
   install -m 0755 "$REPO_ROOT/deploy/almalinux/health-check.sh" "$BIN_DIR/vpn-health-check"
   install_vpn_benchmark
+  # Write the manifest NOW, not only after acceptance_stage succeeds
+  # (see write_install_state_manifest's doc comment) — the data plane
+  # and subscription backend are confirmed listening at this point, so
+  # a re-run after a later acceptance-only failure correctly detects
+  # this as an existing install to repair, not a fresh one.
+  write_install_state_manifest "pending"
 }
 
 # `vpn-benchmark` sources `vpn-benchmark-lib.sh` from its own directory
@@ -1263,8 +1343,28 @@ acceptance_stage() {
   if ! "$BIN_DIR/vpn-health-check"; then
     die "post-install health check failed — see output above. Installation did not complete cleanly."
   fi
-  if ! "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" doctor --protocol --require-protocol; then
-    die "real VLESS+REALITY end-to-end acceptance failed. The selected REALITY_HANDSHAKE_SERVER may exceed sing-box's handshake budget or live credentials/state may be incoherent; installation is not accepted."
+  # Capture doctor's own output rather than only its exit code: doctor
+  # reports each check independently and prefixes failing lines with
+  # "[FAIL]" (see apps/admin/src/main.rs report_check/CheckStatus), so
+  # relaying that here tells the operator exactly which check(s) failed
+  # — e.g. an unrelated IPv6 diagnostic vs. the REALITY handshake itself
+  # — instead of a single generic message that blames "acceptance"
+  # regardless of cause. A previous version of this message always said
+  # "real VLESS+REALITY end-to-end acceptance failed" even when the
+  # REALITY handshake itself (L5/L6) had actually passed and the real
+  # failing check was something else entirely.
+  local doctor_output doctor_rc=0
+  doctor_output="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" doctor --protocol --require-protocol 2>&1)" || doctor_rc=$?
+  if [ "$doctor_rc" -ne 0 ]; then
+    echo "$doctor_output" >&2
+    local fail_lines
+    fail_lines="$(echo "$doctor_output" | grep -F '[FAIL]' || true)"
+    if [ -n "$fail_lines" ]; then
+      die "post-install acceptance check(s) failed — see the [FAIL] line(s) above for the specific cause (this is not necessarily the VLESS+REALITY handshake itself; re-run 'vpn doctor --protocol' any time to see current status):
+$fail_lines"
+    else
+      die "'vpn doctor --protocol --require-protocol' exited non-zero (status $doctor_rc) but printed no [FAIL] line — see full output above. Re-run 'vpn doctor --protocol' for details; installation is not accepted."
+    fi
   fi
   log "health check passed."
 }
@@ -1277,7 +1377,33 @@ acceptance_stage() {
 # raw secrets, only metadata about what this install IS and what it
 # owns. Best-effort `sing-box version` line included for support/debug
 # purposes only.
+# The manifest is the ONLY thing `existing_install_present()` checks to
+# decide fresh-install vs. repair (docs/FINAL_PRODUCTION_AUDIT.md P1
+# "install-state manifest"). It used to be written ONLY inside
+# print_status(), which main() only reaches after acceptance_stage()
+# succeeds — so an install that got as far as "services running and
+# confirmed listening" (start_stage) but then failed the separate
+# acceptance test (acceptance_stage — e.g. a flaky REALITY_HANDSHAKE_SERVER
+# or an unrelated diagnostic) left NO manifest on disk at all. A re-run
+# after that then looked exactly like a fresh install: it re-ran the
+# stage-1 port-conflict checks against 443/tcp+udp and SUBSCRIPTION_PORT,
+# which vpn1's own already-running services legitimately hold — turning
+# a "just re-run it" repair into a hard failure at stage 1.
+#
+# Fix: write the manifest right after start_stage confirms the data
+# plane + subscription backend are actually listening (an "acceptance:
+# pending" state — this IS a real install, just not yet accepted), and
+# update the same field to "accepted" once acceptance_stage also
+# succeeds. existing_install_present() treats BOTH states as "an
+# existing install exists, do a repair" — the distinction only matters
+# for reporting. print_status's own hard asserts below are untouched by
+# this change and still refuse to print a success banner unless
+# VLESS_REALITY_OK/HYSTERIA2_OK/SUBSCRIPTION_BACKEND_OK are actually
+# confirmed true in-memory in *this* run.
+#
+# $1 = acceptance status to record: "pending" or "accepted".
 write_install_state_manifest() {
+  local acceptance="${1:?write_install_state_manifest requires an acceptance status argument}"
   local manifest_dir="/var/lib/vpn1" manifest="/var/lib/vpn1/install-state.json"
   install -d -m 0755 "$manifest_dir"
   local singbox_version
@@ -1293,17 +1419,18 @@ write_install_state_manifest() {
   "subscription_host": "${SUBSCRIPTION_HOST:-$PUBLIC_HOST}",
   "firewall_backend": "$FIREWALL_BACKEND",
   "os_family": "$OS_FAMILY",
-  "repo_root": "$REPO_ROOT"
+  "repo_root": "$REPO_ROOT",
+  "acceptance": "$acceptance"
 }
 EOF
   chmod 0644 "$manifest.tmp"
   mv -f "$manifest.tmp" "$manifest"
-  log "wrote install-state manifest: $manifest"
+  log "wrote install-state manifest ($manifest, acceptance=$acceptance)"
 }
 
 print_status() {
   stage 18 "summary"
-  write_install_state_manifest
+  write_install_state_manifest "accepted"
   # Never print a success banner claiming a component works when it
   # wasn't actually confirmed (docs/FINAL_PRODUCTION_AUDIT.md P0-14) —
   # these are the same booleans set at each stage's real confirmation
@@ -1386,4 +1513,20 @@ main() {
   print_status
 }
 
-main "$@"
+# Guard against auto-execution when this file is `source`d (e.g. by
+# deploy/lib/tests/test-install-manifest-idempotency.sh, to exercise the
+# real existing_install_present()/write_install_state_manifest()
+# functions without running the whole production installer). Every real
+# invocation path runs this file as a script, never sources it:
+#   - the top-level bootstrap (install.sh) always does `bash
+#     "$SRC_DIR/deploy/almalinux/install.sh"` with a real file path, so
+#     BASH_SOURCE[0] == $0 there;
+#   - a manual `./deploy/almalinux/install.sh` or `bash
+#     deploy/almalinux/install.sh` invocation has the same property.
+# This script is never invoked via `curl | bash` directly (only the
+# top-level bootstrap is; see install.sh's own comment on why $0/
+# BASH_SOURCE are unreliable under stdin piping) — this file is always
+# handed a real path, so this guard does not need to handle that case.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

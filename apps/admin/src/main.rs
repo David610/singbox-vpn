@@ -1889,6 +1889,7 @@ fn cert_expiry_days(path: &std::path::Path) -> Option<Result<i64, String>> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckStatus {
     Ok,
     Info,
@@ -2346,7 +2347,6 @@ fn cmd_doctor(
     if let Some(true) = listener_reported_by_ss(cfg.hysteria2.listen_port, true) {
         let probe_cfg = cfg.udp_probe_config();
         let ipv4_candidates_vec = probe_cfg.ipv4_resolvers;
-        let ipv6_candidates_vec = probe_cfg.ipv6_resolvers;
         let timeout = std::time::Duration::from_millis(probe_cfg.timeout_ms);
         let retries = probe_cfg.retries;
         let delay = std::time::Duration::from_millis(probe_cfg.delay_ms);
@@ -2373,27 +2373,24 @@ fn cmd_doctor(
             ),
         }
 
-        let ipv6_refs: Vec<&str> = ipv6_candidates_vec.iter().map(|s| s.as_str()).collect();
-        match run_udp_probe_candidates(&ipv6_refs, timeout, retries, delay) {
-            Some(true) => report_check(
-                CheckStatus::Ok,
-                "L3",
-                "UDP egress (IPv6) appears functional (DNS via UDP to public resolvers succeeded)",
-            ),
-            Some(false) => {
-                report_check(
-                    CheckStatus::Fail,
-                    "L3",
-                    "UDP egress (IPv6) appears blocked — QUIC/UDP over IPv6 may not work from this VPS (tried multiple resolvers)",
-                );
-                failures += 1;
-            }
-            None => report_check(
-                CheckStatus::Warn,
-                "L3",
-                "UDP egress check (IPv6) unavailable on this host (socket bind/permission failed or IPv6 disabled)",
-            ),
-        }
+        // NOTE: there is deliberately no blanket IPv6 UDP egress check
+        // here. IPv6 egress is only actually *required* when the public
+        // hostname has an AAAA record — on an IPv4-only host (no AAAA,
+        // the common case on a plain EC2 box with no IPv6 configured at
+        // all) failing this would blame an unrelated, expected-absent
+        // capability for what is otherwise a fully working deployment
+        // (docs/FINAL_PRODUCTION_AUDIT.md: "never infer one component's
+        // status from another"). This exact bug used to abort
+        // `--require-protocol` acceptance on IPv4-only hosts even though
+        // the real VLESS+REALITY L5/L6 handshake passed. The
+        // AAAA-aware, single source of truth for IPv6 posture is
+        // `check_public_hostname_and_ipv6_policy` below — it is the only
+        // place that runs the IPv6 UDP probe and decides fatality, so
+        // there is exactly one IPv6 verdict line instead of two
+        // potentially-contradictory ones. Do not add a second IPv6 probe
+        // here; extend `classify_ipv6_posture`/`ipv6_posture_report`
+        // instead. Only the IPv4 probe belongs here because IPv4 egress
+        // is unconditionally required regardless of DNS records.
     }
 
     check_l4_subscription_coherence(cfg, &mut failures);
@@ -3276,6 +3273,75 @@ fn redact_secrets(text: &str) -> String {
 /// is exactly the ambiguous state the spec asks to surface explicitly,
 /// so it is `[WARN]`, not `[FAIL]` (this check cannot see the client's
 /// own network, only the server's) and not silently `[OK]`.
+/// The DNS-and-egress state that decides how IPv6 is reported by
+/// `check_public_hostname_and_ipv6_policy`. Factored out as a plain enum
+/// (no I/O) so the fatality decision below is unit-testable without a
+/// real resolver or a real UDP socket — see `ipv6_posture_tests`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ipv6Posture {
+    /// No AAAA record at all. IPv6 was never advertised as working, so
+    /// this VPS's own IPv6 egress (or lack of it) is irrelevant — an
+    /// IPv4-only host (the common case, e.g. a plain EC2 box) must never
+    /// be reported as failing over this.
+    NoAaaa,
+    /// AAAA exists and the IPv6 UDP egress probe positively succeeded.
+    AaaaEgressOk,
+    /// AAAA exists and the IPv6 UDP egress probe positively observed
+    /// broken egress — IPv6-preferring clients would be stranded. This
+    /// is the one case that stays fatal.
+    AaaaEgressBroken,
+    /// AAAA exists but the probe itself could not run (no socket
+    /// permission, etc.) — inconclusive, never escalated to a failure.
+    AaaaEgressUnknown,
+}
+
+fn classify_ipv6_posture(has_aaaa: bool, probe: Option<bool>) -> Ipv6Posture {
+    if !has_aaaa {
+        return Ipv6Posture::NoAaaa;
+    }
+    match probe {
+        Some(true) => Ipv6Posture::AaaaEgressOk,
+        Some(false) => Ipv6Posture::AaaaEgressBroken,
+        None => Ipv6Posture::AaaaEgressUnknown,
+    }
+}
+
+/// `(status, increment_failures, message)` for a given posture. This is
+/// the ONLY place in the codebase that decides whether an IPv6 egress
+/// finding is fatal — kept as a single pure mapping so
+/// `check_public_hostname_and_ipv6_policy` (the only caller) and its
+/// tests cannot drift apart.
+fn ipv6_posture_report(posture: Ipv6Posture) -> (CheckStatus, bool, &'static str) {
+    match posture {
+        Ipv6Posture::NoAaaa => (
+            CheckStatus::Info,
+            false,
+            "public hostname has no AAAA/IPv6 record — IPv6-capable clients will connect over \
+             IPv4 only, which avoids IPv6-leak risk but means an IPv6-only client network cannot \
+             reach this deployment at all",
+        ),
+        Ipv6Posture::AaaaEgressOk => (
+            CheckStatus::Ok,
+            false,
+            "public hostname has an AAAA record and this VPS has working IPv6 UDP egress",
+        ),
+        Ipv6Posture::AaaaEgressBroken => (
+            CheckStatus::Fail,
+            true,
+            "public hostname has an AAAA record but this VPS's IPv6 egress appears blocked — \
+             IPv6-preferring clients may fail to connect at all while IPv4 clients work fine. \
+             Either fix VPS IPv6 routing or remove the AAAA record so clients fall back to IPv4.",
+        ),
+        Ipv6Posture::AaaaEgressUnknown => (
+            CheckStatus::Warn,
+            false,
+            "public hostname has an AAAA record but server IPv6 connectivity could not be \
+             verified from this host (probe unavailable) — this does NOT confirm IPv6 works, \
+             only that it could not be checked here",
+        ),
+    }
+}
+
 fn check_public_hostname_and_ipv6_policy(cfg: &DeploymentConfig, failures: &mut u32) {
     use std::net::IpAddr;
 
@@ -3326,13 +3392,11 @@ fn check_public_hostname_and_ipv6_policy(cfg: &DeploymentConfig, failures: &mut 
         );
     }
     if !has_v6 {
-        report_check(
-            CheckStatus::Info,
-            "L2",
-            "public hostname has no AAAA/IPv6 record — IPv6-capable clients will connect over \
-             IPv4 only, which avoids IPv6-leak risk but means an IPv6-only client network cannot \
-             reach this deployment at all",
-        );
+        let (status, increment, msg) = ipv6_posture_report(classify_ipv6_posture(false, None));
+        report_check(status, "L2", msg);
+        if increment {
+            *failures += 1;
+        }
         return;
     }
 
@@ -3340,7 +3404,13 @@ fn check_public_hostname_and_ipv6_policy(cfg: &DeploymentConfig, failures: &mut 
     // egress before claiming IPv6 "works". sing-box's listeners bind
     // `::` (dual-stack) regardless (see crates/compat-config/src/
     // server.rs), so an AAAA record with no real server-side IPv6
-    // connectivity would silently strand IPv6-preferring clients.
+    // connectivity would silently strand IPv6-preferring clients. This
+    // is the ONLY IPv6 UDP egress probe run anywhere in `doctor` — see
+    // the comment in the blanket Hysteria2 UDP egress block above for
+    // why the old, unconditional (AAAA-blind) IPv6 probe was removed:
+    // it used to fail hard on IPv4-only hosts with no AAAA record at
+    // all, blaming an unrelated diagnostic for what was otherwise a
+    // fully passing VLESS+REALITY acceptance run.
     let probe_cfg = cfg.udp_probe_config();
     let ipv6_refs: Vec<&str> = probe_cfg
         .ipv6_resolvers
@@ -3348,31 +3418,16 @@ fn check_public_hostname_and_ipv6_policy(cfg: &DeploymentConfig, failures: &mut 
         .map(|s| s.as_str())
         .collect();
     let timeout = std::time::Duration::from_millis(probe_cfg.timeout_ms);
-    match run_udp_probe_candidates(
+    let probe_result = run_udp_probe_candidates(
         &ipv6_refs,
         timeout,
         probe_cfg.retries,
         std::time::Duration::from_millis(probe_cfg.delay_ms),
-    ) {
-        Some(true) => report_check(
-            CheckStatus::Ok,
-            "L2",
-            "public hostname has an AAAA record and this VPS has working IPv6 UDP egress",
-        ),
-        Some(false) => report_check(
-            CheckStatus::Warn,
-            "L2",
-            "public hostname has an AAAA record but this VPS's IPv6 egress appears blocked — \
-             IPv6-preferring clients may fail to connect at all while IPv4 clients work fine. \
-             Either fix VPS IPv6 routing or remove the AAAA record so clients fall back to IPv4.",
-        ),
-        None => report_check(
-            CheckStatus::Warn,
-            "L2",
-            "public hostname has an AAAA record but server IPv6 connectivity could not be \
-             verified from this host (probe unavailable) — this does NOT confirm IPv6 works, \
-             only that it could not be checked here",
-        ),
+    );
+    let (status, increment, msg) = ipv6_posture_report(classify_ipv6_posture(true, probe_result));
+    report_check(status, "L2", msg);
+    if increment {
+        *failures += 1;
     }
 }
 
@@ -5039,6 +5094,92 @@ mod reality_selftest_classification_tests {
         assert!(!reality_selftest_stderr_or_journal_indicates_rejection(
             "", false,
         ));
+    }
+}
+
+/// Regression coverage for the IPv4-only-host doctor bug: a blanket,
+/// AAAA-blind IPv6 UDP egress check used to unconditionally fail
+/// `--require-protocol` acceptance even when the real VLESS+REALITY L5/L6
+/// handshake passed and the host simply had no IPv6 configured at all
+/// (the common case on a plain EC2 box). `classify_ipv6_posture` /
+/// `ipv6_posture_report` are the single source of truth for IPv6
+/// fatality now; these tests pin every state so that bug cannot come
+/// back silently.
+#[cfg(test)]
+mod ipv6_posture_tests {
+    use super::*;
+
+    #[test]
+    fn ipv4_only_host_no_aaaa_is_never_fatal_regardless_of_probe_outcome() {
+        // No AAAA record at all — this VPS's own IPv6 egress state is
+        // irrelevant to fatality; even a broken/unavailable probe result
+        // must not escalate. `has_aaaa=false` short-circuits before a
+        // probe would ever run in the real caller, but the classifier
+        // itself must be robust to any `probe` value passed here.
+        for probe in [None, Some(true), Some(false)] {
+            let posture = classify_ipv6_posture(false, probe);
+            assert_eq!(posture, Ipv6Posture::NoAaaa);
+            let (status, increment, _msg) = ipv6_posture_report(posture);
+            assert_eq!(status, CheckStatus::Info);
+            assert!(
+                !increment,
+                "an IPv4-only host (no AAAA) must never increment failures, probe={probe:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reality_pass_is_not_undermined_by_ipv4_only_ipv6_diagnostic() {
+        // Pins the actual regression: simulate an otherwise-fully-passing
+        // doctor run (failures starts at 0, REALITY/Hysteria2 listeners
+        // OK) on an IPv4-only host and confirm the IPv6 diagnostic alone
+        // does not push `failures` above zero.
+        let mut failures: u32 = 0;
+        let (status, increment, _msg) = ipv6_posture_report(classify_ipv6_posture(false, None));
+        if increment {
+            failures += 1;
+        }
+        assert_eq!(status, CheckStatus::Info);
+        assert_eq!(
+            failures, 0,
+            "an unrelated IPv4-only IPv6 diagnostic must not fail an otherwise-passing acceptance run"
+        );
+    }
+
+    #[test]
+    fn aaaa_present_and_egress_confirmed_working_is_ok_and_non_fatal() {
+        let posture = classify_ipv6_posture(true, Some(true));
+        assert_eq!(posture, Ipv6Posture::AaaaEgressOk);
+        let (status, increment, _msg) = ipv6_posture_report(posture);
+        assert_eq!(status, CheckStatus::Ok);
+        assert!(!increment);
+    }
+
+    #[test]
+    fn aaaa_present_and_egress_confirmed_broken_is_fatal() {
+        // The one case that must stay fatal: IPv6 is actually advertised
+        // (AAAA exists) and the probe positively observed it does not
+        // work — IPv6-preferring clients would be silently stranded.
+        let posture = classify_ipv6_posture(true, Some(false));
+        assert_eq!(posture, Ipv6Posture::AaaaEgressBroken);
+        let (status, increment, msg) = ipv6_posture_report(posture);
+        assert_eq!(status, CheckStatus::Fail);
+        assert!(
+            increment,
+            "AAAA present + confirmed-broken IPv6 egress must increment failures"
+        );
+        assert!(msg.contains("blocked"));
+    }
+
+    #[test]
+    fn aaaa_present_but_probe_unavailable_is_inconclusive_not_fatal() {
+        // The probe itself failing to run (no socket permission, etc.)
+        // is not evidence IPv6 is broken — must warn, not fail.
+        let posture = classify_ipv6_posture(true, None);
+        assert_eq!(posture, Ipv6Posture::AaaaEgressUnknown);
+        let (status, increment, _msg) = ipv6_posture_report(posture);
+        assert_eq!(status, CheckStatus::Warn);
+        assert!(!increment);
     }
 }
 

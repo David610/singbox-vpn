@@ -3,8 +3,47 @@
 Production runbook for the Hiddify/VLESS-REALITY/Hysteria2 compatibility
 stack. Despite the filename/directory name (kept for backwards
 compatibility with existing links), this deployment path now supports
-the RHEL family (AlmaLinux, Rocky Linux, RHEL 9) and the Debian family
-(Ubuntu 22.04/24.04, Debian 12/13) — see `deploy/lib/os.sh`. Every
+the RHEL family (AlmaLinux 9, Rocky Linux 9, RHEL 9, Amazon Linux 2023)
+and the Debian family (Ubuntu 22.04/24.04, Debian 12/13) — see
+`deploy/lib/os.sh`.
+
+### Support matrix — three tiers, not two
+
+`OS_SUPPORT` (see `deploy/lib/os.sh`) has three distinct values. Do not
+read "ci-tested" as a synonym for "tested" — it is a materially weaker
+claim, and the installer's own preflight warning says so at runtime too.
+
+| OS | Family | `OS_SUPPORT` | Basis |
+|---|---|---|---|
+| AlmaLinux 9 | RHEL | `tested` | exercised as the primary development/CI target |
+| Rocky Linux 9 | RHEL | `tested` | same install path as AlmaLinux 9 (dnf/firewalld) |
+| RHEL 9 | RHEL | `tested` | same install path as AlmaLinux 9 |
+| Amazon Linux 2023 | RHEL | `ci-tested` | automated unit/fixture coverage only, no live-host run — see below |
+| Ubuntu 22.04 / 24.04 | Debian | `tested` | exercised as a development/CI target |
+| Debian 12 / 13 | Debian | `tested` | same install path as Ubuntu (apt/ufw) |
+| anything else | — | `untested` | installer warns and continues; no guarantee |
+
+- **`tested`** — genuinely exercised as a development/CI target (AlmaLinux
+  9, Rocky 9, RHEL 9, Ubuntu 22.04/24.04, Debian 12/13).
+- **`ci-tested`** — Amazon Linux 2023 only. Covered by automated
+  static/unit tests (`deploy/lib/tests/test-amazon-linux-2023.sh`), which
+  `source` the real `deploy/lib/os.sh` and exercise the real `detect_os()`
+  against a fixture `/etc/os-release` (`ID=amzn`/`ID_LIKE=fedora`
+  correctly mapping to the RHEL family), plus the real
+  `install_dependencies_rhel()`'s `curl-minimal`/`curl` package-conflict
+  handling — it has **not** been verified end to end against a real
+  Amazon Linux 2023 EC2 instance (no such host was available while this
+  support was added). In particular, whether `firewalld` is actually
+  installable from AL2023's default `dnf` repos on a stock EC2 image has
+  not been confirmed live; if it isn't, `packages_stage` will fail loudly
+  at `dnf install` rather than silently degrading — check
+  `journalctl`/the installer's own error output if that happens, and
+  please report back so this matrix can be corrected (and, once a real
+  run succeeds, so this can be upgraded to `tested`).
+- **`untested`** — everything else; installer warns and continues, no
+  automated coverage at all.
+
+Every
 command below is copy-pasteable. This deploys the compatibility
 (sing-box) data plane only — the native `direct-tls`/`noise-quic` stack
 stays on `deploy/local/` (see `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md`
@@ -21,11 +60,31 @@ curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
 That command downloads this repo, auto-detects your public IP, issues a
 real (non-self-signed) TLS certificate automatically via
 [sslip.io](https://sslip.io) + certbot, and runs everything below for
-you — no domain, no manual certbot step, no Rust toolchain (it prefers
-a prebuilt release binary and only falls back to `cargo build` when
-none exists yet). The rest of this document describes what that
-one-liner does internally, and how to run every stage manually if you
-want full control (your own domain, hand-provisioned certs, etc).
+you. `fetch_release_binaries()` in `install.sh` prefers a prebuilt,
+checksum-verified release binary for your exact version/architecture and
+only falls back to installing a Rust toolchain (via `rustup`) and running
+`cargo build` when no matching release asset exists.
+
+**As of this writing, no `vX.Y.Z` tag has ever been pushed to this repo,
+so every `curl | sudo bash` install today takes the source-build fallback
+path unconditionally** — there is no prebuilt binary to fall back *from*
+yet. That means, until someone actually pushes a real release tag and its
+`.github/workflows/release.yml` build completes, every install: downloads
+and installs a Rust toolchain if one isn't already present, compiles
+`vpn-admin`/`vpn-subscription-svc` from source (slower — several minutes
+on a small VPS instead of seconds, and needs meaningfully more RAM/CPU
+during the build than the prebuilt path does), and takes the extra
+network round-trip to fetch the rustup installer. Publishing the first
+tagged release is a manual, human, one-time operational action (`git tag
+vX.Y.Z && git push --tags`, or an equivalent GitHub release) — no code
+change in this repository can complete that step by itself, and none has
+been attempted here. `release.yml`'s packaging/checksum logic has been
+reviewed and is exercised by `deploy/lib/tests/test-release-archive-contract.sh`,
+but "the fast path is wired up correctly" and "the fast path has actually
+been used by a real install" are two different claims; only the first is
+true today. The rest of this document describes what that one-liner does
+internally, and how to run every stage manually if you want full control
+(your own domain, hand-provisioned certs, etc).
 `REALITY_HANDSHAKE_SERVER` has no universal safe default: the example is
 only a starting selection, and installation succeeds only after the real
 sing-box protocol acceptance test returns application data. Do not use
@@ -117,6 +176,59 @@ hook is the natural way to automate this on a real host, not
 implemented by this repo. After the subscription cert renews, `nginx -s
 reload` is enough (TLS termination lives entirely in nginx, no
 compatibility-stack service needs to restart).
+
+**TCP/80 must stay reachable from the public internet long-term, not
+just during the initial install.** Both certificates above use the
+HTTP-01 challenge, which certbot's renewal timer re-runs automatically
+roughly every 60 days for the lifetime of this deployment — if TCP/80
+becomes unreachable from outside (a cloud-provider security group rule
+removed after the initial install, a host firewall change, etc.),
+renewal will silently start failing until someone notices the
+certificate is approaching expiry. `install.sh` only opens TCP/80
+*temporarily* during the install itself (see "Cloud provider firewalls /
+security groups" below) — it does not leave it open permanently, since
+vpn1's own protocols (VLESS+REALITY, Hysteria2, the subscription HTTPS
+vhost) never use port 80. Either:
+  - permanently allow inbound TCP/80 at both the host firewall layer
+    (vpn1 manages this) and, if applicable, the separate cloud-provider
+    firewall layer (vpn1 does not manage this — see below), or
+  - switch to a different ACME challenge method (e.g. DNS-01) that
+    doesn't need port 80 open at all — not implemented by this repo;
+    you would configure it directly in certbot/your ACME client and
+    point `install_certbot_renewal_hook`'s deploy hook at the resulting
+    lineage the same way.
+
+### Cloud provider firewalls / security groups
+
+vpn1's firewall stages (`firewall.sh`/`firewall-ufw.sh`) only manage
+this **host's own** firewall (`firewalld` or `ufw`). Most cloud
+providers (AWS EC2 security groups, GCP firewall rules, Azure NSGs, ...)
+enforce a **separate**, network-level firewall in front of the VM that
+vpn1 cannot see or change — both layers must independently allow a port
+before traffic reaches the service. If automatic certificate issuance
+fails, or Hysteria2/VLESS+REALITY seem to work locally but no client can
+ever connect, check the cloud-provider layer first:
+
+- Allow inbound TCP/80 (temporarily, for ACME HTTP-01 — see above for
+  why it may need to stay open long-term) from `0.0.0.0/0`, or at least
+  from Let's Encrypt's validation servers/your own testing IP.
+- Allow inbound TCP/443 and UDP/443 (VLESS+REALITY and Hysteria2)
+  permanently from `0.0.0.0/0`.
+- Allow inbound TCP on your `SUBSCRIPTION_PORT` (default `8443`)
+  permanently from `0.0.0.0/0`.
+
+Test external reachability from a **different** machine than the VPS
+itself (a check run from the VPS only proves loopback works, not that
+the internet can reach it):
+
+```bash
+curl -sS --max-time 5 http://<host>/ -o /dev/null -w '%{http_code}\n'   # TCP/80, during ACME issuance
+curl -sS --max-time 5 https://<host>:8443/ -o /dev/null -w '%{http_code}\n'   # subscription HTTPS
+```
+
+Any HTTP response code (even an error like 404) means the port is
+reachable from outside; a timeout or connection-refused means it is
+not — check the cloud-provider firewall layer next.
 
 ## Fresh install (manual, own domain)
 
