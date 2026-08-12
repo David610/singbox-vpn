@@ -146,6 +146,15 @@ fn find_user_by_token(users: &[CompatUser], token: &str, now_unix: i64) -> Optio
 #[derive(serde::Deserialize)]
 pub struct SubQuery {
     pub format: Option<String>,
+    /// Which transport the `format=singbox` subscription's manual
+    /// selector defaults to: `reliability` (default, unchanged — REALITY),
+    /// `performance` (Hysteria2), or `auto` (sing-box's own urltest
+    /// group). See `compat_config::render::SelectionProfile`'s doc
+    /// comment for exactly what each does and does not change. An
+    /// unrecognized value falls back to the default rather than erroring
+    /// — a typo in a query parameter must not break someone's VPN
+    /// subscription.
+    pub profile: Option<String>,
 }
 
 async fn get_subscription(
@@ -200,11 +209,25 @@ async fn get_subscription(
         Some(u) => u,
     };
 
-    tracing::info!(user_id = %user.id, format = ?query.format, "subscription served");
+    tracing::info!(
+        user_id = %user.id,
+        format = ?query.format,
+        profile = ?query.profile,
+        "subscription served"
+    );
 
     let format = query.format.as_deref().unwrap_or("singbox");
+    let profile = query
+        .profile
+        .as_deref()
+        .and_then(render::SelectionProfile::parse)
+        .unwrap_or_default();
     match format {
-        "singbox" => match render::render_singbox_client_subscription(&user, &state.endpoints) {
+        "singbox" => match render::render_singbox_client_subscription_with_profile(
+            &user,
+            &state.endpoints,
+            profile,
+        ) {
             Ok(doc) => (
                 StatusCode::OK,
                 [("content-type", "application/json")],

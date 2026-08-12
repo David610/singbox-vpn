@@ -80,6 +80,19 @@ pub fn render_singbox_server_config(
             "password": obfs_pw.expose(),
         });
     }
+    // Fixed-rate (Brutal) congestion control, opt-in only (never
+    // hardcode a guessed bandwidth — see model.rs doc comment on
+    // `Hysteria2ServerParams::up_mbps`/`down_mbps`). Both fields absent
+    // (the default) leaves sing-box's adaptive BBR-based congestion
+    // control in place. `ignore_client_bandwidth: true` accompanies an
+    // explicit rate so sing-box enforces the operator-measured value
+    // rather than trusting a client-declared one, per upstream sing-box
+    // guidance for servers whose admin already knows the real bandwidth.
+    if let (Some(up), Some(down)) = (hysteria.up_mbps, hysteria.down_mbps) {
+        hysteria_inbound["up_mbps"] = json!(up);
+        hysteria_inbound["down_mbps"] = json!(down);
+        hysteria_inbound["ignore_client_bandwidth"] = json!(true);
+    }
 
     json!({
         "log": { "level": "warn", "timestamp": true },
@@ -319,6 +332,8 @@ mod tests {
             tls_key_path: "/etc/vpn/compat/hysteria/key.pem".into(),
             obfs_password: None,
             masquerade_dir_path: Some("/etc/vpn/compat/hysteria/masquerade".into()),
+            up_mbps: None,
+            down_mbps: None,
         }
     }
 
@@ -486,5 +501,44 @@ mod tests {
             1000,
         );
         assert!(cfg["inbounds"][1].get("masquerade").is_none());
+    }
+
+    #[test]
+    fn hysteria_bandwidth_omitted_by_default() {
+        let cfg = render_singbox_server_config(
+            &users(),
+            &reality(),
+            &hysteria(),
+            ServerPorts {
+                vless_reality_port: 443,
+                hysteria2_port: 443,
+            },
+            1000,
+        );
+        let inbound = &cfg["inbounds"][1];
+        assert!(inbound.get("up_mbps").is_none());
+        assert!(inbound.get("down_mbps").is_none());
+        assert!(inbound.get("ignore_client_bandwidth").is_none());
+    }
+
+    #[test]
+    fn hysteria_bandwidth_set_together_forces_ignore_client_bandwidth() {
+        let mut h = hysteria();
+        h.up_mbps = Some(100);
+        h.down_mbps = Some(80);
+        let cfg = render_singbox_server_config(
+            &users(),
+            &reality(),
+            &h,
+            ServerPorts {
+                vless_reality_port: 443,
+                hysteria2_port: 443,
+            },
+            1000,
+        );
+        let inbound = &cfg["inbounds"][1];
+        assert_eq!(inbound["up_mbps"], 100);
+        assert_eq!(inbound["down_mbps"], 80);
+        assert_eq!(inbound["ignore_client_bandwidth"], true);
     }
 }

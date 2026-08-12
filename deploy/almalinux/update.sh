@@ -15,6 +15,9 @@ die() { echo "[update] ERROR: $*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/perf-tuning.sh"
+
 # Serialize installers while the slow build runs. The deployment state lock
 # is acquired only immediately before mutation, after all expensive work.
 exec 200>/run/lock/vpn1-installer.lock
@@ -123,4 +126,10 @@ log "running health check..."
 
 committed=1
 trap - ERR INT TERM EXIT
+
+# Best-effort re-apply of kernel network tuning (idempotent — a no-op if
+# already applied by a prior install.sh/update.sh run). Never blocks or
+# rolls back an otherwise-successful update; see deploy/lib/perf-tuning.sh.
+perf_tuning_apply || warn "kernel network tuning re-apply failed; update itself still succeeded."
+
 log "update complete. Previous binaries and config are root-only at $BACKUP_DIR."

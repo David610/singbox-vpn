@@ -111,6 +111,8 @@ fn build_configs(
         tls_key_path: key_path.display().to_string(),
         obfs_password: server_obfs_password.map(|s| SecretString::new(s.to_string())),
         masquerade_dir_path: None,
+        up_mbps: None,
+        down_mbps: None,
     };
     let users = vec![test_user(password)];
     let mut server_cfg = render_singbox_server_config(

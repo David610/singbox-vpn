@@ -68,7 +68,7 @@ die() {
   echo "  vpn doctor" >&2
   exit 1
 }
-stage() { echo; echo "[install] === [$1/17] $2 ==="; }
+stage() { echo; echo "[install] === [$1/18] $2 ==="; }
 
 # Shared curl flags for network fetches below (sing-box release asset,
 # checksums, prebuilt vpn1 release). `--retry` alone does not protect
@@ -84,6 +84,8 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 . "$REPO_ROOT/deploy/lib/os.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/preflight.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 
 # ---------------------------------------------------------------------
 # [1] preflight
@@ -1070,13 +1072,26 @@ configure_firewall() {
 }
 
 firewall_stage() {
-  stage 13 "firewall"
+  stage 14 "firewall"
   configure_firewall
   FIREWALL_OK=1
 }
 
 # ---------------------------------------------------------------------
-# [14] SELinux (RHEL family only)
+# [13] kernel network tuning
+# ---------------------------------------------------------------------
+# Runs before the firewall stage so a re-run's port-open behavior is
+# unaffected by tuning ordering either way; placement here is otherwise
+# arbitrary among the post-nginx stages. See deploy/lib/perf-tuning.sh
+# for exactly what is (and is not) changed, and why — this stage only
+# calls into that module, it contains no tuning logic itself.
+perf_tuning_stage() {
+  stage 13 "kernel network tuning"
+  perf_tuning_apply
+}
+
+# ---------------------------------------------------------------------
+# [15] SELinux (RHEL family only)
 # ---------------------------------------------------------------------
 configure_selinux() {
   # sing-box binds 443/tcp+udp and reads config/certs from
@@ -1100,7 +1115,7 @@ configure_selinux() {
 }
 
 selinux_stage() {
-  stage 14 "SELinux"
+  stage 15 "SELinux"
   if [ "$OS_FAMILY" = "rhel" ]; then
     configure_selinux
   else
@@ -1179,12 +1194,13 @@ confirm_subscription_backend() {
 }
 
 start_stage() {
-  stage 15 "validation + start"
+  stage 16 "validation + start"
   validate_before_start
   enable_and_start_services
   confirm_data_plane_listening
   confirm_subscription_backend
   install -m 0755 "$REPO_ROOT/deploy/almalinux/health-check.sh" "$BIN_DIR/vpn-health-check"
+  install -m 0755 "$REPO_ROOT/deploy/lib/vpn-benchmark.sh" "$BIN_DIR/vpn-benchmark"
 }
 
 # ---------------------------------------------------------------------
@@ -1219,7 +1235,7 @@ ensure_first_user() {
 }
 
 acceptance_stage() {
-  stage 16 "first user + acceptance test"
+  stage 17 "first user + acceptance test"
   ensure_first_user
   if ! "$BIN_DIR/vpn-health-check"; then
     die "post-install health check failed — see output above. Installation did not complete cleanly."
@@ -1263,7 +1279,7 @@ EOF
 }
 
 print_status() {
-  stage 17 "summary"
+  stage 18 "summary"
   write_install_state_manifest
   # Never print a success banner claiming a component works when it
   # wasn't actually confirmed (docs/FINAL_PRODUCTION_AUDIT.md P0-14) —
@@ -1311,6 +1327,8 @@ Management
   vpn status
   vpn doctor                 # process/config/listeners/subscription-coherence (fast)
   vpn doctor --protocol      # + a real throwaway sing-box handshake self-test (slower)
+  vpn doctor --performance   # host/kernel/network MEASUREMENTS (CPU, steal, buffers, ...)
+  vpn-benchmark               # real throughput/latency benchmark (see docs/PERFORMANCE_OPTIMIZATION_PLAN.md)
   vpn user create --name NAME
   vpn user list
   vpn user rotate-token USER
@@ -1337,6 +1355,7 @@ main() {
   reality_keys_stage
   server_config_stage
   nginx_stage
+  perf_tuning_stage
   firewall_stage
   selinux_stage
   start_stage

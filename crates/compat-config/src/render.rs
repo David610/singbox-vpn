@@ -90,6 +90,50 @@ pub fn render_uri_list(
     Ok(lines.join("\n"))
 }
 
+/// Which endpoint the manual `select` outbound defaults to. This picks
+/// ONLY the default — every profile still lists every real endpoint tag
+/// plus `auto` (urltest) in the selector, so a user can always override
+/// by hand regardless of profile (see `render_singbox_client_subscription`'s
+/// doc comment for why `urltest` alone is never a safe silent default).
+///
+/// There is no data-driven "smart" auto mode here: `crates/network-state`
+/// and `crates/failure-classifier` currently track only boolean
+/// success/failure, not latency or throughput (see
+/// docs/PERFORMANCE_OPTIMIZATION_PLAN.md), so `Auto` below means exactly
+/// what sing-box's own `urltest` group means — a plain-HTTPS
+/// latency/success race — not a throughput- or censorship-aware
+/// selector. Advertising more than that without the underlying
+/// measurements would be a false claim, not a feature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SelectionProfile {
+    /// Deterministic REALITY default (unchanged pre-existing behavior).
+    /// The only profile safe to run as a fleet-wide default under active
+    /// DPI — see docs/TELEGRAM_RESILIENCE_PLAN.md.
+    #[default]
+    Reliability,
+    /// Deterministic Hysteria2 default. Opt-in only: Hysteria2/QUIC is
+    /// more exposed to UDP blocking/throttling than REALITY's TCP/443
+    /// disguise, so this trades some of that resilience for the
+    /// generally higher throughput UDP/QUIC gets when it isn't blocked.
+    Performance,
+    /// Defaults the selector itself to sing-box's `auto` (urltest) group
+    /// — a plain-HTTPS latency/success race between transports, nothing
+    /// more (see this enum's doc comment). Still fully overridable by
+    /// hand in the client.
+    Auto,
+}
+
+impl SelectionProfile {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "reliability" => Some(Self::Reliability),
+            "performance" => Some(Self::Performance),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+}
+
 /// Native sing-box client subscription: an `outbounds` array (one per
 /// endpoint) plus a `urltest` selector so Hiddify/sing-box can
 /// automatically pick whichever transport currently measures healthy —
@@ -121,14 +165,30 @@ pub fn render_singbox_client_subscription(
     user: &CompatUser,
     endpoints: &[CompatEndpoint],
 ) -> Result<serde_json::Value, CompatError> {
+    render_singbox_client_subscription_with_profile(user, endpoints, SelectionProfile::default())
+}
+
+/// Same as `render_singbox_client_subscription`, with the manual
+/// selector's default chosen by `profile` instead of always REALITY —
+/// see `SelectionProfile`'s doc comment for exactly what each variant
+/// does and does not change.
+pub fn render_singbox_client_subscription_with_profile(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    profile: SelectionProfile,
+) -> Result<serde_json::Value, CompatError> {
     let mut outbounds = Vec::new();
     let mut tags = Vec::new();
     let mut reality_tag: Option<String> = None;
+    let mut hysteria2_tag: Option<String> = None;
     for ep in endpoints {
         let tag = ep.label.clone();
         tags.push(tag.clone());
         if matches!(ep.transport, CompatTransport::VlessReality) && reality_tag.is_none() {
             reality_tag = Some(tag.clone());
+        }
+        if matches!(ep.transport, CompatTransport::Hysteria2) && hysteria2_tag.is_none() {
+            hysteria2_tag = Some(tag.clone());
         }
         let outbound = match &ep.public_parameters {
             PublicParameters::Reality {
@@ -184,17 +244,24 @@ pub fn render_singbox_client_subscription(
     }));
 
     // Manual selector: what actually decides the default route. `default`
-    // is the first VLESS+REALITY endpoint's tag when one is present
-    // (conservative default — see this function's doc comment), falling
-    // back to the first endpoint of any kind if this deployment somehow
-    // has no REALITY endpoint (never expected in the standard two-
-    // endpoint deployment, but the renderer must not panic on a
-    // reduced/experimental endpoint set).
+    // is chosen by `profile` (see `SelectionProfile`'s doc comment):
+    // Reliability picks REALITY, Performance picks Hysteria2, Auto picks
+    // the `auto` (urltest) group itself. Every profile falls back to the
+    // first endpoint of any kind, then to `auto`, if its preferred
+    // transport isn't present in this deployment's endpoint set — the
+    // renderer must not panic on a reduced/experimental endpoint set.
     let mut selector_options = tags.clone();
     selector_options.push("auto".to_string());
-    let default_tag = reality_tag
-        .or_else(|| tags.first().cloned())
-        .unwrap_or_else(|| "auto".to_string());
+    let default_tag = match profile {
+        SelectionProfile::Reliability => reality_tag
+            .or_else(|| tags.first().cloned())
+            .unwrap_or_else(|| "auto".to_string()),
+        SelectionProfile::Performance => hysteria2_tag
+            .or(reality_tag)
+            .or_else(|| tags.first().cloned())
+            .unwrap_or_else(|| "auto".to_string()),
+        SelectionProfile::Auto => "auto".to_string(),
+    };
     outbounds.push(json!({
         "type": "selector",
         "tag": "select",
@@ -428,6 +495,84 @@ mod tests {
             .find(|o| o["type"] == "selector")
             .expect("selector outbound present");
         assert_eq!(selector["default"], "Germany - Hysteria2");
+    }
+
+    #[test]
+    fn performance_profile_defaults_selector_to_hysteria2() {
+        let doc = render_singbox_client_subscription_with_profile(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::Performance,
+        )
+        .unwrap();
+        let selector = doc["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["type"] == "selector")
+            .expect("selector outbound present");
+        assert_eq!(selector["default"], "Germany - Hysteria2");
+        // still fully overridable — REALITY and auto remain listed.
+        let options: Vec<&str> = selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(options.contains(&"Germany - Reality"));
+        assert!(options.contains(&"auto"));
+    }
+
+    #[test]
+    fn auto_profile_defaults_selector_to_urltest_group() {
+        let doc = render_singbox_client_subscription_with_profile(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::Auto,
+        )
+        .unwrap();
+        let selector = doc["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["type"] == "selector")
+            .expect("selector outbound present");
+        assert_eq!(selector["default"], "auto");
+        // route.final still points at the manual selector, not directly
+        // at urltest — the selector's default merely equals "auto" here,
+        // so a client tapping the selector UI still sees every option.
+        assert_eq!(doc["route"]["final"], "select");
+    }
+
+    #[test]
+    fn reliability_profile_matches_default_profile_behavior() {
+        let explicit = render_singbox_client_subscription_with_profile(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::Reliability,
+        )
+        .unwrap();
+        let implicit =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        assert_eq!(explicit, implicit);
+    }
+
+    #[test]
+    fn selection_profile_parse_rejects_unknown_values() {
+        assert_eq!(
+            SelectionProfile::parse("reliability"),
+            Some(SelectionProfile::Reliability)
+        );
+        assert_eq!(
+            SelectionProfile::parse("performance"),
+            Some(SelectionProfile::Performance)
+        );
+        assert_eq!(
+            SelectionProfile::parse("auto"),
+            Some(SelectionProfile::Auto)
+        );
+        assert_eq!(SelectionProfile::parse("bogus"), None);
     }
 
     #[test]
