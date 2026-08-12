@@ -8,15 +8,25 @@
 # attributed to the right one):
 #   1. Host: CPU/RAM/steal/load — see also `vpn doctor --performance`.
 #   2. Network path: packet loss, RTT, jitter, MTU/PMTU to a chosen
-#      target — independent of anything VPN-specific.
+#      target — independent of anything VPN-specific. THIS is the layer
+#      that characterizes a real client's network path — pass
+#      --target-host pointed at (or run this whole script from) an
+#      actual vantage point on that path for a meaningful reading.
 #   3. Raw VPS throughput: a plain HTTPS download FROM this host to a
 #      public CDN, no tunnel involved — isolates "this VPS's own
 #      uplink/provider" from "the tunnel software".
-#   4. VLESS+REALITY / Hysteria2 throughput: a REAL sing-box client
-#      dials this server's OWN public listener (over the real network,
-#      not loopback-only) through a throwaway benchmark user created
+#   4. VLESS+REALITY / Hysteria2 SERVER-SIDE PROTOCOL OVERHEAD: a REAL
+#      sing-box client, running on THIS SAME VPS, dials THIS SAME VPS's
+#      own public listener through a throwaway benchmark user created
 #      and deleted by this script, while sing-box's own CPU usage is
-#      sampled — isolates "the tunnel" from "the raw uplink" (layer 3).
+#      sampled. This isolates "the tunnel protocol/crypto/QUIC stack's
+#      own overhead" from "the raw uplink" (layer 3) — it does NOT
+#      measure a real remote client's network path (see layer 2), because
+#      the traffic here never leaves this host's own uplink/routing. A
+#      real Russia-side measurement requires either layer 2 run from that
+#      vantage point, or a sing-box client run on a real remote host on
+#      that path against this VPS — this script cannot fake that from
+#      the server side alone.
 #
 # NOT authoritative: a single public CDN's speed is not a ceiling on
 # what your ISP path can do, and one run is noise — this script always
@@ -29,6 +39,10 @@
 # fabricates a number and never aborts the whole report over one
 # unavailable layer.
 set -Eeuo pipefail
+
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=deploy/lib/vpn-benchmark-lib.sh
+. "$LIB_DIR/vpn-benchmark-lib.sh"
 
 CONFIG="/etc/vpn/deployment.toml"
 RUNS=3
@@ -217,11 +231,27 @@ else
 fi
 
 # ---------------------------------------------------------------------
-# 4. VLESS+REALITY / Hysteria2 throughput (real tunnel, real network)
+# 4. VLESS+REALITY / Hysteria2 SERVER-SIDE PROTOCOL OVERHEAD
+#    (NOT a Russia -> VPS network-path measurement — see label below)
 # ---------------------------------------------------------------------
+# IMPORTANT measurement-methodology note: this section runs a real
+# sing-box CLIENT on this same VPS, dialing this same VPS's public IP.
+# That is a genuinely real handshake and a genuinely real transfer
+# through the real protocol/crypto/QUIC stack, which is useful for
+# isolating protocol/CPU overhead (layer 3's raw-throughput number vs.
+# this layer's tunneled number, at matched RTT ~0). It is explicitly
+# NOT a measurement of the actual client-side network path (e.g. a
+# Russian ISP's route to this VPS) — traffic here never leaves the
+# host's own uplink/loopback-adjacent routing, so path-specific loss,
+# jitter, censorship middleboxes, or peering problems on a real client's
+# route are invisible to this test by construction. Do not read this
+# section's numbers as "what a real user in Russia would see" — for
+# that, run this same script's --target-host network-path section
+# (layer 2) from an actual vantage point on that path, or run a sing-box
+# client on a real remote host on that path against this VPS.
 tunnel_benchmark() {
-  local proto_tag="$1" out_tag="$2" label="$3"
-  section "$label throughput (through a real sing-box client, over the real network)"
+  local transport="$1" label="$2"
+  section "$label protocol/server-side overhead (sing-box client on THIS VPS -> THIS VPS's public IP; NOT a remote-client network-path measurement)"
   if [ "$SKIP_TUNNEL" -eq 1 ]; then
     kv "$label" "SKIPPED: --skip-tunnel"
     return
@@ -274,18 +304,40 @@ tunnel_benchmark() {
     return
   fi
 
+  # Discover the outbound tag dynamically — see
+  # deploy/lib/vpn-benchmark-lib.sh's doc comment for why this never
+  # hardcodes a tag string. 0 matches is a legitimate "this deployment
+  # doesn't offer that transport" (SKIP); >1 matches is ambiguous and
+  # must never be guessed at (hard failure, not a silent pick).
+  local out_tag rc
+  out_tag="$(vpn_benchmark_discover_outbound_tag "$sub_json" "$transport")"
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    kv "$label" "SKIPPED: no $transport outbound in this deployment's subscription"
+    return
+  elif [ "$rc" -ne 0 ]; then
+    kv "$label" "FAILED: could not identify the $transport outbound (see stderr above) — refusing to guess"
+    return
+  fi
+
   local local_socks_port=18080
   local client_cfg="$tmpdir/client.json"
   # Reuse the exact outbound the real subscription serves (so this
   # measures what a real client actually gets, not a hand-tuned test
   # config), pointed at through a local-only SOCKS inbound, routed to
-  # ONLY the requested transport's outbound tag.
+  # ONLY the dynamically discovered transport's outbound tag.
   jq --arg tag "$out_tag" --argjson port "$local_socks_port" \
     '{ log: {level:"warn"}, inbounds: [{type:"mixed",tag:"in",listen:"127.0.0.1",listen_port:$port}], outbounds: .outbounds, route: {final: $tag} }' \
     <<<"$sub_json" > "$client_cfg" 2>/dev/null || {
-      kv "$label" "SKIPPED: no $proto_tag outbound in this deployment's subscription"
+      kv "$label" "FAILED: could not build the client config from the discovered outbound"
       return
     }
+
+  if ! "$SINGBOX_BIN" check -c "$client_cfg" >"$tmpdir/check.log" 2>&1; then
+    kv "$label" "FAILED: sing-box check rejected the generated client config (see $tmpdir/check.log if it still exists)"
+    sed 's/^/    /' "$tmpdir/check.log" 2>/dev/null || true
+    return
+  fi
 
   "$SINGBOX_BIN" run -c "$client_cfg" >"$tmpdir/client.log" 2>&1 &
   SINGBOX_CLIENT_PID=$!
@@ -321,26 +373,37 @@ tunnel_benchmark() {
   fi
 }
 
-tunnel_benchmark "vless" "vless-reality-out" "VLESS+REALITY"
-tunnel_benchmark "hysteria2" "hysteria2-out" "Hysteria2"
+tunnel_benchmark "vless-reality" "VLESS+REALITY"
+tunnel_benchmark "hysteria2" "Hysteria2"
 
 section "Assessment"
 cat <<'EOF'
 This script reports MEASUREMENTS only. It does not compute a verdict —
 compare the numbers above against docs/PERFORMANCE_OPTIMIZATION_PLAN.md's
-decision guide:
-  - Raw VPS download far below your provider's advertised rate, with high
-    CPU steal -> likely a noisy-neighbor/oversubscribed host, not
-    something sysctl/sing-box tuning can fix.
-  - Raw VPS throughput fine, but VLESS/Hysteria2 throughput much lower
-    with low sing-box CPU -> likely network path (loss/PMTU/congestion
-    control), not CPU-bound.
-  - VLESS/Hysteria2 throughput much lower AND sing-box CPU pinned near
+decision guide. IMPORTANT: layer 4 (VLESS+REALITY / Hysteria2) above is a
+same-host hairpin test (this VPS's own sing-box client dialing this same
+VPS) — it measures protocol/CPU overhead, NOT a real remote client's
+network path. Read it accordingly:
+  - Raw VPS download (layer 3) far below your provider's advertised rate,
+    with high CPU steal -> likely a noisy-neighbor/oversubscribed host,
+    not something sysctl/sing-box tuning can fix.
+  - Raw VPS throughput fine, but the layer-4 hairpin throughput is much
+    lower with low sing-box CPU during the transfer -> likely
+    protocol/congestion-control overhead intrinsic to the tunnel at this
+    RTT, not something this test can attribute to CPU or to the real
+    network path (which it cannot see).
+  - Layer-4 hairpin throughput much lower AND sing-box CPU pinned near
     100% of one core -> likely CPU-bound userspace crypto/QUIC processing
     -> consider more/better vCPUs (see docs/PERFORMANCE_OPTIMIZATION_PLAN.md).
-  - High packet loss or RTT/jitter to --target-host, independent of the
-    VPN entirely -> likely the network path itself (peering/routing),
-    which no server-side tuning here can fix.
+  - High packet loss or RTT/jitter in layer 2 (network path) to
+    --target-host -> that IS a real network-path measurement (unlike
+    layer 4) -> if --target-host is a real vantage point on your users'
+    ISP path, this is evidence of a peering/routing problem no
+    server-side tuning here can fix. The default --target-host (a public
+    resolver near this VPS) only characterizes this VPS's own uplink,
+    not your users' path.
 Re-run with --target-host set to a real vantage point on your users' ISP
-path (not this script's default) for a meaningful network-path reading.
+path (not this script's default) for a meaningful network-path reading —
+this is the only layer above that can actually see that path. Layer 4
+cannot, no matter how it's re-run from this VPS alone.
 EOF

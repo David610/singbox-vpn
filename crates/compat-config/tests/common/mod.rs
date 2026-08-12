@@ -319,6 +319,21 @@ impl SingBox {
         None
     }
 
+    /// Runs `sing-box check -c <config_path>` against the real pinned
+    /// binary and returns the captured output. Cheaper and faster than
+    /// `run`/`run_logged` for tests that only need to prove a generated
+    /// config is syntactically/schema valid to sing-box, not drive a
+    /// live handshake — no socket, no background process, no need for a
+    /// `Guard` to clean it up.
+    pub fn check(&self, config_path: &std::path::Path) -> std::process::Output {
+        std::process::Command::new(&self.path)
+            .arg("check")
+            .arg("-c")
+            .arg(config_path)
+            .output()
+            .expect("run sing-box check")
+    }
+
     pub fn run(&self, config_path: &std::path::Path) -> std::process::Child {
         std::process::Command::new(&self.path)
             .arg("run")

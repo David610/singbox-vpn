@@ -6,10 +6,24 @@ of these; do not track `latest` in production.
 
 | Component | Version pinned | Source | Checked |
 |---|---|---|---|
-| sing-box | `1.13.14` (latest stable, non-beta) | https://github.com/SagerNet/sing-box/releases | 2026-08-09 |
+| sing-box | `1.13.18` (latest stable, non-beta) | https://github.com/SagerNet/sing-box/releases | 2026-08-12 |
 | Hysteria2 | bundled inbound inside sing-box (not the standalone `apernet/hysteria` binary) | https://sing-box.sagernet.org/configuration/inbound/hysteria2/ | 2026-08-09 |
 | Xray-core | not used this phase (sing-box chosen instead, see ADR below) | https://github.com/XTLS/Xray-core | 2026-08-09 |
 | Hiddify (Android) | any current release supporting sing-box-format subscriptions (client-side, not pinned by us) | https://github.com/hiddify/hiddify-app | 2026-08-09 |
+
+`1.13.14 -> 1.13.18` bump (checked 2026-08-12): audited the full commit
+range (`v1.13.17` does not exist as a stable release — SagerNet went
+`1.13.16 -> 1.13.18` directly). No REALITY-related commits, no
+Hysteria2/vless/reality config-schema changes affecting this repo's
+JSON generator fields (`private_key`/`short_id`/`handshake.*`,
+`users`/`password`/`masquerade`/`obfs`/`up_mbps`/`down_mbps`/
+`ignore_client_bandwidth`). Two QUIC-adjacent stability fixes landed
+(`quic-go` write leak in 1.13.15; `sing-quic` "UDP sessions not closed
+on connection close" in 1.13.16 — net-positive for Hysteria2
+reliability), plus an unrelated AnyTLS client-metadata privacy fix in
+1.13.16 (AnyTLS is not used by this deployment). No regressions were
+found reported against any version in this range. See
+`docs/PERFORMANCE_OPTIMIZATION_PLAN.md` for the full write-up.
 
 ## Why sing-box, not Xray-core, for this phase
 
@@ -74,7 +88,7 @@ assumed compatible by spec conformance.
 `Cargo.toml`/root license file — it never links, statically or
 dynamically, against sing-box.
 
-**sing-box** (`SagerNet/sing-box`, pinned `v1.13.14`) is licensed
+**sing-box** (`SagerNet/sing-box`, pinned `v1.13.18`) is licensed
 **GPL-3.0-only** upstream — verify against the `LICENSE` file at that
 exact tag in the SagerNet/sing-box repository before relying on this
 statement for anything beyond this project's own documentation; this is

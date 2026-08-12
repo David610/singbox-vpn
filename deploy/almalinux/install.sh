@@ -32,18 +32,28 @@ DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
 SUBSCRIPTION_BACKEND_PORT="$(awk '/^\[subscription\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*listen_port[[:space:]]*=/{gsub(/[^0-9]/,"",$0); print; exit}' "$DEPLOYMENT_TOML" 2>/dev/null || true)"
 : "${SUBSCRIPTION_BACKEND_PORT:=9100}"
 BIN_DIR="/usr/local/bin"
-SINGBOX_VERSION="1.13.14"
+SINGBOX_VERSION="1.13.18"
 # Pinned expected SHA256 for the exact release assets fetched by
 # install_singbox() below, for the architectures vpn1 supports. sing-box
 # does not publish a detached checksums.txt for every release (confirmed:
-# v1.13.14 has none) — these values were computed by hand from the real
-# asset bytes downloaded directly from the URLs below, and are the
-# trusted-comparison target when upstream doesn't provide its own
-# checksums file (docs/FINAL_PRODUCTION_AUDIT.md P0-8). Bumping
+# neither v1.13.14 nor v1.13.18 has one) — these values were computed by
+# hand from the real asset bytes downloaded directly from the URLs below
+# (and re-verified with a second independent download before pinning),
+# and are the trusted-comparison target when upstream doesn't provide its
+# own checksums file (docs/FINAL_PRODUCTION_AUDIT.md P0-8). Bumping
 # SINGBOX_VERSION MUST update these in the same commit, or install_singbox
 # will correctly refuse to proceed rather than silently skip verification.
-SINGBOX_SHA256_AMD64="f48703461a15476951ac4967cdad339d986f4b8096b4eb3ff0829a500502d697"
-SINGBOX_SHA256_ARM64="4742df6a4314e8ecc41736849fca6d73b8f9e91b6e8b06ee794ff17ba180579e"
+#
+# 1.13.14 -> 1.13.18 change audit (docs/PERFORMANCE_OPTIMIZATION_PLAN.md
+# has the full write-up): no REALITY changes, no Hysteria2/vless/reality
+# config-schema changes affecting this generator's fields, two
+# QUIC-adjacent stability fixes (quic-go write leak; sing-quic UDP
+# sessions not closed on connection close — the latter net-positive for
+# Hysteria2 reliability), one unrelated AnyTLS privacy fix. No known
+# regressions found for this range. v1.13.17 does not exist as a stable
+# release (SagerNet went 1.13.16 -> 1.13.18 directly).
+SINGBOX_SHA256_AMD64="d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
+SINGBOX_SHA256_ARM64="a894f6152cade4a2c9d062762d54dea0c1aee673ab4759e0829e19cace932719"
 SINGBOX_BIN="$BIN_DIR/sing-box"
 NGINX_CONF="/etc/nginx/conf.d/vpn-subscription.conf"
 VPN1_VERSION="${VPN1_VERSION:-}"
@@ -1200,7 +1210,20 @@ start_stage() {
   confirm_data_plane_listening
   confirm_subscription_backend
   install -m 0755 "$REPO_ROOT/deploy/almalinux/health-check.sh" "$BIN_DIR/vpn-health-check"
+  install_vpn_benchmark
+}
+
+# `vpn-benchmark` sources `vpn-benchmark-lib.sh` from its own directory
+# (`$(dirname "${BASH_SOURCE[0]}")` — see deploy/lib/vpn-benchmark.sh) so
+# it works correctly from a plain repo checkout without any install step
+# at all; installed as a flat copy (not a symlink back into $REPO_ROOT,
+# which could go stale or dangle if the source tree ever moves/is
+# removed) into $BIN_DIR, the lib file must be installed alongside it in
+# that same directory, or the installed copy fails immediately with
+# "No such file or directory" the first time anyone runs `vpn-benchmark`.
+install_vpn_benchmark() {
   install -m 0755 "$REPO_ROOT/deploy/lib/vpn-benchmark.sh" "$BIN_DIR/vpn-benchmark"
+  install -m 0644 "$REPO_ROOT/deploy/lib/vpn-benchmark-lib.sh" "$BIN_DIR/vpn-benchmark-lib.sh"
 }
 
 # ---------------------------------------------------------------------

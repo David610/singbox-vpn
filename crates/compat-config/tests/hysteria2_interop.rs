@@ -437,3 +437,91 @@ fn hysteria2_handshake_fails_with_wrong_obfs_password() {
          wire-level access"
     );
 }
+
+/// Validates the OPTIONAL Brutal fixed-bandwidth Hysteria2 configuration
+/// (`up_mbps`/`down_mbps` + `ignore_client_bandwidth` — see
+/// `Hysteria2ServerParams::up_mbps`/`down_mbps` in `model.rs`, and
+/// `server.rs`'s rendering of them) against the REAL pinned sing-box
+/// binary via `sing-box check`. `server.rs`'s own unit tests
+/// (`hysteria_bandwidth_set_together_forces_ignore_client_bandwidth`)
+/// only prove this crate PRODUCES the expected JSON shape; they cannot
+/// prove the exact pinned sing-box version actually ACCEPTS it as a
+/// valid Hysteria2 inbound — a field-name typo or a schema change in a
+/// future sing-box version would still pass those unit tests but fail
+/// here, which is exactly the gap this test closes.
+#[test]
+fn hysteria2_brutal_bandwidth_config_passes_real_sing_box_check() {
+    let Some(sb) = common::SingBox::find() else {
+        skip_or_fail("no sing-box binary available (set SING_BOX_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let Some((cert, key)) = generate_self_signed_cert(dir.path(), "hysteria2-test.invalid") else {
+        skip_or_fail("openssl not available to generate a test certificate");
+        return;
+    };
+
+    let reality = RealityServerParams {
+        private_key_hex: SecretString::new("unused".to_string()),
+        public_key_hex: "unused".into(),
+        short_ids: vec!["00000000".into()],
+        handshake_server: "www.google.com".into(),
+        handshake_port: 443,
+    };
+    let hysteria = Hysteria2ServerParams {
+        tls_cert_path: cert.display().to_string(),
+        tls_key_path: key.display().to_string(),
+        obfs_password: None,
+        masquerade_dir_path: None,
+        up_mbps: Some(100),
+        down_mbps: Some(80),
+    };
+    let users = vec![test_user("brutal-bandwidth-test-password")];
+    let mut server_cfg = render_singbox_server_config(
+        &users,
+        &reality,
+        &hysteria,
+        ServerPorts {
+            vless_reality_port: free_port(), // unused, dropped below
+            hysteria2_port: free_port(),
+        },
+        0,
+    );
+    // Isolate Hysteria2, same as build_configs above — REALITY needs a
+    // real handshake-target dependency `sing-box check` (a static config
+    // validation, not a live dial) doesn't need to exercise here.
+    server_cfg["inbounds"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|ib| ib["tag"] == "hysteria2-in");
+
+    // Sanity check on the test's own setup: an empty/absent Brutal
+    // config is ALSO valid Hysteria2, so a passing `sing-box check`
+    // alone would not prove anything about Brutal specifically unless
+    // this test first confirms the fields it's validating are actually
+    // present in the config being checked.
+    let hy_inbound = &server_cfg["inbounds"][0];
+    assert_eq!(
+        hy_inbound["up_mbps"], 100,
+        "test setup bug: rendered config is missing up_mbps"
+    );
+    assert_eq!(
+        hy_inbound["down_mbps"], 80,
+        "test setup bug: rendered config is missing down_mbps"
+    );
+    assert_eq!(
+        hy_inbound["ignore_client_bandwidth"], true,
+        "test setup bug: rendered config is missing ignore_client_bandwidth"
+    );
+
+    let server_path = write_json(dir.path(), "server.json", &server_cfg);
+    let output = sb.check(&server_path);
+    assert!(
+        output.status.success(),
+        "real sing-box check REJECTED a Hysteria2 inbound with \
+         up_mbps/down_mbps/ignore_client_bandwidth set (pinned version: see \
+         deploy/almalinux/install.sh SINGBOX_VERSION).\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
