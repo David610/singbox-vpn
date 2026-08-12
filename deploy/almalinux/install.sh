@@ -211,7 +211,17 @@ preflight_stage() {
   acquire_installer_lock
   detect_os || die "unsupported operating system."
   log "detected OS: $OS_PRETTY_NAME (family=$OS_FAMILY, support=$OS_SUPPORT)"
-  [ "$OS_SUPPORT" = "tested" ] || warn "this OS/version combination is not in the tested support matrix; continuing, but this is not a guarantee it works."
+  # Three OS_SUPPORT tiers (see deploy/lib/os.sh) get three distinct
+  # messages — do not collapse "ci-tested" into either "tested" (overclaims)
+  # or the generic "untested" warning (underclaims; it has real automated
+  # coverage the generic message wouldn't mention).
+  case "$OS_SUPPORT" in
+    tested) ;;
+    ci-tested)
+      warn "this OS (Amazon Linux 2023) has automated static/unit test coverage (deploy/lib/tests/test-amazon-linux-2023.sh) but has NOT been verified end-to-end on a live host of this OS; continuing, but this is not the same guarantee as the tested matrix (AlmaLinux/Rocky/RHEL 9, Ubuntu 22.04/24.04, Debian 12/13)." ;;
+    *)
+      warn "this OS/version combination is not in the tested support matrix; continuing, but this is not a guarantee it works." ;;
+  esac
   ARCH="$(detect_arch)" || die "unsupported CPU architecture: $(uname -m). vpn1 supports x86_64 and aarch64."
   log "detected architecture: $ARCH ($(uname -m))"
   preflight_require_systemd
@@ -769,9 +779,16 @@ attempt_automatic_certbot() {
      PUBLIC internet by your cloud provider's separate network firewall
      (e.g. an AWS/EC2 security group, a GCP firewall rule, an Azure NSG)
      — vpn1 only manages this host's own firewall (firewalld/ufw) and
-     cannot see or change a cloud-provider-level firewall. Temporarily
-     add an inbound rule allowing TCP/80 from 0.0.0.0/0 (or at least
-     your own IP, for testing) in that provider's console, then re-run.
+     cannot see or change a cloud-provider-level firewall.
+     For automatic certificate issuance (Let's Encrypt HTTP-01), TCP/80
+     must be reachable from the public Internet (0.0.0.0/0) — Let's
+     Encrypt's validation servers do not originate from your own IP, so
+     restricting the rule to your IP will NOT make issuance succeed.
+     If you only want to manually verify reachability from your own
+     machine first, a rule scoped to your IP is fine for that test
+     alone, but must be widened to 0.0.0.0/0 (or removed) before
+     certbot will succeed. Add the appropriate inbound rule in that
+     provider's console, then re-run.
   3. Verify external reachability directly, from a DIFFERENT machine
      (not this server — a check from here would only prove loopback
      works):
@@ -1496,4 +1513,20 @@ main() {
   print_status
 }
 
-main "$@"
+# Guard against auto-execution when this file is `source`d (e.g. by
+# deploy/lib/tests/test-install-manifest-idempotency.sh, to exercise the
+# real existing_install_present()/write_install_state_manifest()
+# functions without running the whole production installer). Every real
+# invocation path runs this file as a script, never sources it:
+#   - the top-level bootstrap (install.sh) always does `bash
+#     "$SRC_DIR/deploy/almalinux/install.sh"` with a real file path, so
+#     BASH_SOURCE[0] == $0 there;
+#   - a manual `./deploy/almalinux/install.sh` or `bash
+#     deploy/almalinux/install.sh` invocation has the same property.
+# This script is never invoked via `curl | bash` directly (only the
+# top-level bootstrap is; see install.sh's own comment on why $0/
+# BASH_SOURCE are unreliable under stdin piping) — this file is always
+# handed a real path, so this guard does not need to handle that case.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

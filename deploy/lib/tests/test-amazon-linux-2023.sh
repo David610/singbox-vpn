@@ -1,18 +1,36 @@
 #!/usr/bin/env bash
-# Unit tests for Amazon Linux 2023 support:
-#   1. deploy/lib/os.sh's detect_os() correctly classifies a real AL2023
-#      /etc/os-release (ID=amzn, VERSION_ID=2023, ID_LIKE=fedora) as
+# Tests for Amazon Linux 2023 support:
+#   1. FUNCTIONAL: deploy/lib/os.sh's REAL detect_os() (sourced, not
+#      duplicated) correctly classifies a real AL2023 /etc/os-release
+#      (ID=amzn, VERSION_ID=2023, ID_LIKE=fedora) as
 #      OS_FAMILY=rhel/PKG_MANAGER=dnf/FIREWALL_BACKEND=firewalld and marks
-#      it "tested" — NOT falling through to the generic ID_LIKE-fedora
+#      it "ci-tested" — NOT falling through to the generic ID_LIKE-fedora
 #      branch, which would leave it permanently "untested" with no
-#      dedicated place to hang AL2023-specific behavior.
-#   2. deploy/almalinux/install.sh's install_dependencies_rhel() does not
-#      try to force-install `curl` (conflicts with AL2023's preinstalled
-#      `curl-minimal`, which also owns /usr/bin/curl) when a usable curl
-#      is already present, and DOES still request it when no usable curl
-#      exists at all (e.g. a minimal AlmaLinux/Rocky image).
+#      dedicated place to hang AL2023-specific behavior. detect_os() is
+#      exercised via its OS_RELEASE_FILE override (see deploy/lib/os.sh)
+#      against a fixture file, so this is the actual production function,
+#      not a reimplementation of its logic.
+#   2. FUNCTIONAL: the same real detect_os(), against a second fixture
+#      with a plain `ID_LIKE="fedora"` and no explicit amzn/almalinux/
+#      rocky/rhel/centos ID (a hypothetical future fedora-based distro),
+#      still lands on the generic ID_LIKE-fedora fallback path and
+#      classifies as OS_SUPPORT=untested. This proves the explicit
+#      `amzn)` case and the generic fallback case are two genuinely
+#      distinct code paths, not one path with a name that happens to
+#      match "amzn" too.
+#   3. FUNCTIONAL: deploy/almalinux/install.sh's REAL
+#      install_dependencies_rhel() (its body is extracted from the real
+#      source file and eval'd with dnf/systemctl stubbed out — not
+#      reimplemented) does not try to force-install `curl` (conflicts
+#      with AL2023's preinstalled `curl-minimal`, which also owns
+#      /usr/bin/curl) when a usable curl is already present, and DOES
+#      still request it when no usable curl exists at all (e.g. a
+#      minimal AlmaLinux/Rocky image).
+#   4. STATIC: a few structural greps against the real os.sh source,
+#      clearly labeled as static/structural checks (not a substitute for
+#      #1/#2 above, which actually execute the function).
 #
-# This is a STATIC/unit test — it does not run dnf, does not require
+# This is a unit/fixture test — it does not run dnf, does not require
 # root, and does not run on a real Amazon Linux 2023 host. It proves the
 # detection logic and the package-list decision are correct in isolation,
 # not that a live AL2023 EC2 instance installs cleanly end to end.
@@ -36,7 +54,7 @@ assert_eq() {
 TMPDIR_TEST="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
-echo "--- detect_os(): Amazon Linux 2023 ---"
+echo "--- detect_os() [real function, via OS_RELEASE_FILE fixture]: Amazon Linux 2023 ---"
 
 # A real AL2023 /etc/os-release (trimmed to the fields detect_os() reads).
 cat > "$TMPDIR_TEST/os-release-al2023" <<'EOF'
@@ -46,63 +64,15 @@ ID="amzn"
 ID_LIKE="fedora"
 VERSION_ID="2023"
 PLATFORM_ID="platform:al2023"
-PRETTY_NAME="Amazon Linux 2023.6.20250107"
+PRETTY_NAME="Amazon Linux 2023"
 EOF
 
 run_detect_os_against() {
   local os_release_file="$1"
-  # detect_os() does `. /etc/os-release` with a hardcoded path — run it
-  # in a subshell inside a bind-mount-free sandbox by temporarily
-  # exporting a fake /etc/os-release via a wrapper function instead of
-  # touching the real file. Simplest robust approach: copy detect_os()'s
-  # logic path by sourcing os.sh, then monkeypatch by running in a
-  # subshell chrooted-in-spirit via a symlink swap is overkill — instead,
-  # source os.sh and call a thin wrapper that reads the given file.
   (
     # shellcheck source=/dev/null
     . "$OS_SH"
-    # Reproduce detect_os()'s own path resolution by copying the target
-    # file to a throwaway /etc/os-release look-alike path is not
-    # possible without root. Instead, replicate exactly what detect_os()
-    # does but point it at our fixture via a local override of the
-    # `/etc/os-release` read: temporarily override with a function that
-    # sources the fixture path instead.
-    detect_os() {
-      [ -f "$os_release_file" ] || return 1
-      # shellcheck disable=SC1090
-      . "$os_release_file"
-      OS_ID="${ID:-unknown}"
-      OS_VERSION_ID="${VERSION_ID:-unknown}"
-      OS_PRETTY_NAME="${PRETTY_NAME:-$OS_ID $OS_VERSION_ID}"
-      OS_ID_LIKE="${ID_LIKE:-}"
-      case "$OS_ID" in
-        almalinux|rocky|rhel|centos)
-          OS_FAMILY="rhel"; PKG_MANAGER="dnf"; FIREWALL_BACKEND="firewalld" ;;
-        amzn)
-          OS_FAMILY="rhel"; PKG_MANAGER="dnf"; FIREWALL_BACKEND="firewalld" ;;
-        ubuntu|debian)
-          OS_FAMILY="debian"; PKG_MANAGER="apt"; FIREWALL_BACKEND="ufw" ;;
-        *)
-          case " $OS_ID_LIKE " in
-            *" rhel "*|*" fedora "*)
-              OS_FAMILY="rhel"; PKG_MANAGER="dnf"; FIREWALL_BACKEND="firewalld" ;;
-            *" debian "*)
-              OS_FAMILY="debian"; PKG_MANAGER="apt"; FIREWALL_BACKEND="ufw" ;;
-            *)
-              return 1 ;;
-          esac
-          ;;
-      esac
-      case "$OS_FAMILY-$OS_ID-$OS_VERSION_ID" in
-        rhel-almalinux-9*|rhel-rocky-9*|rhel-rhel-9*) OS_SUPPORT="tested" ;;
-        debian-ubuntu-22.04*|debian-ubuntu-24.04*) OS_SUPPORT="tested" ;;
-        debian-debian-12*|debian-debian-13*) OS_SUPPORT="tested" ;;
-        rhel-amzn-2023*) OS_SUPPORT="tested" ;;
-        *) OS_SUPPORT="untested" ;;
-      esac
-      return 0
-    }
-    detect_os
+    OS_RELEASE_FILE="$os_release_file" detect_os
     echo "OS_ID=$OS_ID"
     echo "OS_VERSION_ID=$OS_VERSION_ID"
     echo "OS_PRETTY_NAME=$OS_PRETTY_NAME"
@@ -113,31 +83,57 @@ run_detect_os_against() {
   )
 }
 
-# NOTE: the harness above duplicates detect_os()'s case logic rather than
-# exercising the real /etc/os-release path (which is hardcoded and not
-# root-writable in CI). This is a deliberate, explicit trade-off — see
-# the "real amzn case in the actual file" grep-based check further below,
-# which asserts the real deploy/lib/os.sh source file, not a copy, so
-# this duplicated logic cannot silently drift from it undetected.
 out="$(run_detect_os_against "$TMPDIR_TEST/os-release-al2023")"
 assert_eq "OS_ID" "amzn" "$(echo "$out" | sed -n 's/^OS_ID=//p')"
 assert_eq "OS_FAMILY" "rhel" "$(echo "$out" | sed -n 's/^OS_FAMILY=//p')"
 assert_eq "PKG_MANAGER" "dnf" "$(echo "$out" | sed -n 's/^PKG_MANAGER=//p')"
 assert_eq "FIREWALL_BACKEND" "firewalld" "$(echo "$out" | sed -n 's/^FIREWALL_BACKEND=//p')"
-assert_eq "OS_SUPPORT" "tested" "$(echo "$out" | sed -n 's/^OS_SUPPORT=//p')"
+assert_eq "OS_SUPPORT" "ci-tested" "$(echo "$out" | sed -n 's/^OS_SUPPORT=//p')"
 
 echo
-echo "--- deploy/lib/os.sh source: real amzn case exists (not just this test's copy) ---"
+echo "--- detect_os() [real function, via OS_RELEASE_FILE fixture]: generic ID_LIKE=fedora fallback ---"
+echo "    (a hypothetical future distro: no explicit amzn/almalinux/rocky/rhel/centos ID,"
+echo "     proving the amzn) case and the fallback case are genuinely distinct paths)"
+
+cat > "$TMPDIR_TEST/os-release-generic-fedora-like" <<'EOF'
+NAME="Hypothetical Future Linux"
+VERSION="1"
+ID="hypothetical-future-linux"
+ID_LIKE="fedora"
+VERSION_ID="1"
+PRETTY_NAME="Hypothetical Future Linux 1"
+EOF
+
+out2="$(run_detect_os_against "$TMPDIR_TEST/os-release-generic-fedora-like")"
+assert_eq "OS_ID (fallback)" "hypothetical-future-linux" "$(echo "$out2" | sed -n 's/^OS_ID=//p')"
+assert_eq "OS_FAMILY (fallback)" "rhel" "$(echo "$out2" | sed -n 's/^OS_FAMILY=//p')"
+assert_eq "PKG_MANAGER (fallback)" "dnf" "$(echo "$out2" | sed -n 's/^PKG_MANAGER=//p')"
+assert_eq "FIREWALL_BACKEND (fallback)" "firewalld" "$(echo "$out2" | sed -n 's/^FIREWALL_BACKEND=//p')"
+assert_eq "OS_SUPPORT (fallback)" "untested" "$(echo "$out2" | sed -n 's/^OS_SUPPORT=//p')"
+
+echo
+echo "--- detect_os() [real function]: missing OS_RELEASE_FILE fails loudly ---"
+missing_rc=0
+run_detect_os_against "$TMPDIR_TEST/does-not-exist" >/dev/null 2>&1 || missing_rc=$?
+if [ "$missing_rc" -ne 0 ]; then
+  echo "ok: detect_os() fails when OS_RELEASE_FILE does not exist"
+else
+  echo "FAIL: detect_os() did not fail for a missing OS_RELEASE_FILE"
+  failures=$((failures + 1))
+fi
+
+echo
+echo "--- static: deploy/lib/os.sh source structure (supplementary to the functional checks above) ---"
 if grep -qE '^\s*amzn\)' "$OS_SH"; then
   echo "ok: os.sh has an explicit 'amzn)' case (not relying on the generic ID_LIKE-fedora fallthrough)"
 else
   echo "FAIL: os.sh has no explicit 'amzn)' case"
   failures=$((failures + 1))
 fi
-if grep -q 'rhel-amzn-2023' "$OS_SH"; then
-  echo "ok: os.sh marks amzn-2023 as tested in the OS_SUPPORT case"
+if grep -q 'rhel-amzn-2023\*) OS_SUPPORT="ci-tested"' "$OS_SH"; then
+  echo "ok: os.sh marks amzn-2023 as ci-tested (not the full 'tested' tier) in the OS_SUPPORT case"
 else
-  echo "FAIL: os.sh does not mark amzn-2023 as tested"
+  echo "FAIL: os.sh does not mark amzn-2023 as ci-tested"
   failures=$((failures + 1))
 fi
 if grep -q 'Amazon Linux 2023' "$OS_SH"; then
@@ -148,14 +144,17 @@ else
 fi
 
 echo
-echo "--- install_dependencies_rhel(): curl-minimal / already-usable-curl handling ---"
+echo "--- install_dependencies_rhel() [real function body, dnf/systemctl stubbed]: curl-minimal / already-usable-curl handling ---"
 
-# Extract install_dependencies_rhel()'s body so we can exercise its
-# curl-decision logic in isolation, stubbing dnf/systemctl instead of
-# actually running them (no root, no real package manager needed).
-# Extracted once, outside any PATH/command override, so the extraction
-# itself never depends on what we're about to fake below.
+# Extract install_dependencies_rhel()'s body from the real install.sh so
+# we exercise the actual production logic (eval'd, with dnf/systemctl
+# stubbed rather than reimplemented) instead of running real package
+# manager commands (no root, no real package manager needed).
 INSTALL_DEPS_RHEL_BODY="$(sed -n '/^install_dependencies_rhel() {/,/^}/p' "$INSTALL_SH")"
+if [ -z "$INSTALL_DEPS_RHEL_BODY" ]; then
+  echo "FAIL: could not extract install_dependencies_rhel() from $INSTALL_SH — has it been renamed/moved?"
+  failures=$((failures + 1))
+fi
 
 run_install_dependencies_rhel() {
   local curl_present="$1" # "yes" or "no"

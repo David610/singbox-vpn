@@ -8,12 +8,17 @@
 # "fresh install" instead of "repair" — re-triggering port-conflict
 # checks against ports vpn1 itself already legitimately owns.
 #
-# This is a static + functional test: it extracts the real
-# write_install_state_manifest()/existing_install_present() function
-# bodies from install.sh and exercises them against a throwaway
-# directory (no root/systemd required, no real dnf/certbot/sing-box
-# calls), plus a few static ordering/content assertions against the
-# real source. It does not run a real install.
+# This test `source`s the REAL deploy/almalinux/install.sh (guarded so
+# that sourcing does not invoke main() — see the BASH_SOURCE[0]==$0
+# check at the bottom of install.sh) and calls the real
+# existing_install_present()/write_install_state_manifest() functions
+# directly, with STATE_DIR/DEPLOYMENT_TOML-derived paths overridden to a
+# throwaway directory beforehand — no root/systemd required, no real
+# dnf/certbot/sing-box calls, and no reimplementation of the functions
+# under test. A few ordering/content assertions against the real source
+# are also kept, clearly labeled as static/structural checks (they
+# cannot, by themselves, prove the functions behave correctly at
+# runtime — that's what the functional part below is for).
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -62,44 +67,77 @@ else
 fi
 
 echo
-echo "--- functional: existing_install_present()/write_install_state_manifest() against a throwaway dir ---"
+echo "--- static: sourcing install.sh must not invoke main() ---"
+if grep -qE '^if \[\[ "\$\{BASH_SOURCE\[0\]\}" == "\$\{0\}" \]\]; then$' "$INSTALL_SH" \
+    && tail -n5 "$INSTALL_SH" | grep -q 'main "\$@"'; then
+  echo "ok: install.sh guards its trailing main \"\$@\" call so sourcing (BASH_SOURCE[0] != \$0) skips it"
+else
+  echo "FAIL: install.sh's trailing main \"\$@\" call is not guarded as expected — sourcing it below may run the production installer"
+  failures=$((failures + 1))
+fi
+
+echo
+echo "--- functional: existing_install_present()/write_install_state_manifest() [real functions, sourced from install.sh] against a throwaway dir ---"
 TMPDIR_TEST="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
-FAKE_VAR_LIB="$TMPDIR_TEST/var-lib-vpn1"
+FAKE_STATE_DIR="$TMPDIR_TEST/var-lib-vpn1"
+REAL_STATE_PATH_PREFIX="/var/lib/vpn1"
 
 run_manifest_flow() {
   (
     set -Eeuo pipefail
-    log() { :; }
-    # existing_install_present() in the real script hardcodes
-    # /var/lib/vpn1/install-state.json — redefine it here pointed at our
-    # throwaway dir instead of the real filesystem path (no root needed,
-    # and never touches anything outside $TMPDIR_TEST).
-    existing_install_present() {
-      [ -f "$FAKE_VAR_LIB/install-state.json" ]
-    }
-    write_install_state_manifest() {
-      local acceptance="${1:?write_install_state_manifest requires an acceptance status argument}"
-      local manifest_dir="$FAKE_VAR_LIB" manifest="$FAKE_VAR_LIB/install-state.json"
-      mkdir -p "$manifest_dir"
-      local singbox_version="test-stub"
-      local vpn1_version="test"
-      cat > "$manifest.tmp" <<EOF
-{
-  "vpn1_version": "$vpn1_version",
-  "vpn1_repo": "test/repo",
-  "sing_box_version": "$singbox_version",
-  "installed_at_unix": 0,
-  "public_host": "test.example.com",
-  "subscription_host": "test.example.com",
-  "firewall_backend": "firewalld",
-  "os_family": "rhel",
-  "repo_root": "/opt/vpn1",
-  "acceptance": "$acceptance"
-}
-EOF
-      mv -f "$manifest.tmp" "$manifest"
-    }
+    # DEPLOYMENT_TOML is pointed at a nonexistent path so the top-level
+    # SUBSCRIPTION_BACKEND_PORT awk probe (guarded with `2>/dev/null ||
+    # true`) is a safe no-op rather than reading a real host's config.
+    # REPO_ROOT is left as the real repo root (harmless — read-only, used
+    # for e.g. banner text).
+    # shellcheck disable=SC2034 # read by install.sh's top-level probe on source
+    DEPLOYMENT_TOML="$TMPDIR_TEST/no-such-deployment.toml"
+    # shellcheck source=/dev/null
+    source "$INSTALL_SH"
+
+    # existing_install_present()/write_install_state_manifest() hardcode
+    # /var/lib/vpn1/install-state.json with no override variable. Rather
+    # than duplicating their logic, redefine them using their OWN real
+    # bodies (extracted from the actually-sourced functions via `declare
+    # -f`) with only the literal /var/lib/vpn1 path string substituted
+    # for a throwaway directory — every line of actual logic is exactly
+    # what was just sourced from install.sh, untouched.
+    if ! declare -f write_install_state_manifest >/dev/null || ! declare -f existing_install_present >/dev/null; then
+      echo "UNEXPECTED: write_install_state_manifest/existing_install_present were not defined by sourcing $INSTALL_SH"
+      exit 1
+    fi
+    write_body="$(declare -f write_install_state_manifest)"
+    write_body="${write_body//$REAL_STATE_PATH_PREFIX/$FAKE_STATE_DIR}"
+    eval "$write_body"
+    exist_body="$(declare -f existing_install_present)"
+    exist_body="${exist_body//$REAL_STATE_PATH_PREFIX/$FAKE_STATE_DIR}"
+    eval "$exist_body"
+
+    manifest_path="$FAKE_STATE_DIR/install-state.json"
+    if ! declare -f write_install_state_manifest | grep -qF "$manifest_path"; then
+      echo "UNEXPECTED: path substitution into write_install_state_manifest()'s real body did not take effect as expected"
+      exit 1
+    fi
+
+    # write_install_state_manifest() reads PUBLIC_HOST/SUBSCRIPTION_HOST,
+    # which are normally only set by resolve_host_config() (part of the
+    # real host_config_stage, not exercised by this test). Under `set
+    # -u` (inherited from the sourced install.sh) referencing them unset
+    # would abort the whole subshell — set harmless test values, matching
+    # how a real run would have them populated by the time start_stage
+    # calls write_install_state_manifest.
+    # shellcheck disable=SC2034 # read by write_install_state_manifest() (eval'd from the real sourced body)
+    PUBLIC_HOST="test.example.com"
+    # shellcheck disable=SC2034
+    SUBSCRIPTION_HOST="test.example.com"
+    # Likewise FIREWALL_BACKEND/OS_FAMILY are normally set by
+    # detect_os() (preflight_stage) — set harmless test values instead
+    # of running detect_os() against this real host.
+    # shellcheck disable=SC2034
+    FIREWALL_BACKEND="firewalld"
+    # shellcheck disable=SC2034
+    OS_FAMILY="rhel"
 
     # 1. Before start_stage-equivalent: no manifest, fresh install.
     if existing_install_present; then
@@ -115,7 +153,7 @@ EOF
       echo "UNEXPECTED: existing_install_present() is false right after a pending manifest was written"
       exit 1
     fi
-    acceptance_field="$(grep -oE '"acceptance": *"[a-z]+"' "$FAKE_VAR_LIB/install-state.json" | grep -oE '"[a-z]+"$' | tr -d '"')"
+    acceptance_field="$(grep -oE '"acceptance": *"[a-z]+"' "$manifest_path" | grep -oE '"[a-z]+"$' | tr -d '"')"
     [ "$acceptance_field" = "pending" ] || { echo "UNEXPECTED: acceptance field is '$acceptance_field', expected 'pending'"; exit 1; }
     echo "PENDING_OK"
 
@@ -129,7 +167,7 @@ EOF
       echo "UNEXPECTED: existing_install_present() is false after upgrading to accepted"
       exit 1
     fi
-    acceptance_field="$(grep -oE '"acceptance": *"[a-z]+"' "$FAKE_VAR_LIB/install-state.json" | grep -oE '"[a-z]+"$' | tr -d '"')"
+    acceptance_field="$(grep -oE '"acceptance": *"[a-z]+"' "$manifest_path" | grep -oE '"[a-z]+"$' | tr -d '"')"
     [ "$acceptance_field" = "accepted" ] || { echo "UNEXPECTED: acceptance field is '$acceptance_field', expected 'accepted'"; exit 1; }
     echo "ACCEPTED_OK"
 

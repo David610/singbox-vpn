@@ -3,9 +3,10 @@
 Production deployment tooling for the Hiddify/VLESS-REALITY/Hysteria2
 compatibility stack. Despite the directory name (kept for backwards
 compatibility with existing links), it supports the RHEL family
-(AlmaLinux 9, Rocky Linux 9, RHEL 9, Amazon Linux 2023 — the last one
-covered by automated unit tests only, not a real-host verification; see
-`docs/ALMALINUX_DEPLOYMENT.md`'s support matrix) and the Debian family
+(AlmaLinux 9, Rocky Linux 9, RHEL 9, Amazon Linux 2023 — the last one is
+`ci-tested` only: automated unit/fixture coverage, not a real-host
+verification; see `docs/ALMALINUX_DEPLOYMENT.md`'s three-tier support
+matrix) and the Debian family
 (Ubuntu 22.04/24.04, Debian 12/13) — see `deploy/lib/os.sh`. See
 `docs/ALMALINUX_DEPLOYMENT.md` for the full runbook; this file is a
 quick index.

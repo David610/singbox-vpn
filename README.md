@@ -109,8 +109,17 @@ and are both effectively unblockable at internet scale, which also makes
 them good REALITY decoys for censorship-resistance: a censor blocking the
 decoy's SNI would also break a huge amount of unrelated traffic through
 the same CDN/provider.
-The command downloads the vpn1 source (a prebuilt release if
-one has been published, source otherwise), detects your OS/architecture,
+The command downloads the vpn1 source and detects your OS/architecture.
+It prefers a prebuilt, checksum-verified release binary for your exact
+version/arch, falling back to installing a Rust toolchain and building
+from source when no matching release asset exists — **as of this
+writing no `vX.Y.Z` tag has ever been pushed to this repo, so every
+install today takes that slower source-build fallback** (a Rust
+toolchain download plus several minutes of compilation, and more
+RAM/CPU than the prebuilt path needs). Publishing the first tagged
+release is a manual operational step outside this codebase — see
+`docs/ALMALINUX_DEPLOYMENT.md` for details; a code change alone cannot
+complete it. Once that happens, the installer continues,
 installs dependencies, auto-detects your server's public IP, issues a
 real TLS certificate for it automatically (via [sslip.io](https://sslip.io)
 + certbot — no domain needed), stands up VLESS+REALITY and Hysteria2
@@ -199,13 +208,15 @@ the ports again).
 The one-liner above wraps `deploy/almalinux/install.sh` (which, despite
 the directory name, supports the RHEL family — AlmaLinux 9, Rocky Linux
 9, RHEL 9, Amazon Linux 2023 — and the Debian family — Ubuntu 22.04/24.04,
-Debian 12/13; see `deploy/lib/os.sh`). Amazon Linux 2023 support is
-covered by automated detection/dependency unit tests
-(`deploy/lib/tests/test-amazon-linux-2023.sh`) but has not been verified
-end to end on a real Amazon Linux 2023 host — see
-`docs/ALMALINUX_DEPLOYMENT.md`'s support matrix for the exact
-tested-vs-untested status of every OS. You can run it directly for full
-control over every install stage, including a fully manual TLS setup:
+Debian 12/13; see `deploy/lib/os.sh`). Amazon Linux 2023 is `ci-tested`,
+not `tested`: it's covered by automated detection/dependency unit tests
+(`deploy/lib/tests/test-amazon-linux-2023.sh`, which exercise the real
+`detect_os()`/`install_dependencies_rhel()` functions against fixtures)
+but has **not** been verified end to end on a real Amazon Linux 2023
+host — see `docs/ALMALINUX_DEPLOYMENT.md`'s three-tier support matrix for
+the exact tested/ci-tested/untested status of every OS. You can run it
+directly for full control over every install stage, including a fully
+manual TLS setup:
 
 ```bash
 sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com \

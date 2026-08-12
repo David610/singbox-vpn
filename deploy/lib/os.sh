@@ -12,10 +12,16 @@
 # instead of silently pretending to work (task requirement: "do not
 # pretend an OS is supported if it is not").
 
+# Path to the os-release file detect_os() reads. Overridable so tests can
+# exercise the real function against a fixture file instead of the live
+# host's /etc/os-release; every real caller (install.sh's preflight_stage)
+# leaves this at its default and is unaffected.
+OS_RELEASE_FILE="${OS_RELEASE_FILE:-/etc/os-release}"
+
 detect_os() {
-  [ -f /etc/os-release ] || { echo "cannot detect OS: /etc/os-release missing" >&2; return 1; }
-  # shellcheck disable=SC1091
-  . /etc/os-release
+  [ -f "$OS_RELEASE_FILE" ] || { echo "cannot detect OS: $OS_RELEASE_FILE missing" >&2; return 1; }
+  # shellcheck disable=SC1090,SC1091
+  . "$OS_RELEASE_FILE"
   OS_ID="${ID:-unknown}"
   OS_VERSION_ID="${VERSION_ID:-unknown}"
   OS_PRETTY_NAME="${PRETTY_NAME:-$OS_ID $OS_VERSION_ID}"
@@ -32,14 +38,15 @@ detect_os() {
       # (no "rhel" token), so without this explicit case it fell through
       # into the generic ID_LIKE-fedora branch below with OS_SUPPORT
       # always "untested" — same OS_FAMILY/PKG_MANAGER/FIREWALL_BACKEND
-      # values, but no way to ever mark it "tested" and no dedicated
+      # values, but no way to ever mark it distinctly and no dedicated
       # place to hang AL2023-specific behavior (e.g. install_dependencies_rhel's
       # curl-minimal handling). AL2023 uses dnf and, per its own package
       # repos, ships firewalld as an installable (not preinstalled)
       # package — same as a minimal AlmaLinux/Rocky image, so the existing
       # rhel-family firewalld install path applies unchanged. This has
       # NOT been verified against a live AL2023 host; see the OS-support
-      # matrix docs for what is and is not covered by automated tests.
+      # matrix docs and the "ci-tested" OS_SUPPORT tier below for what is
+      # and is not covered by automated tests.
       OS_FAMILY="rhel"
       PKG_MANAGER="dnf"
       FIREWALL_BACKEND="firewalld"
@@ -64,16 +71,29 @@ detect_os() {
       ;;
   esac
 
+  # OS_SUPPORT has three tiers — do not collapse them:
+  #   "tested"    — genuinely exercised as a development/CI target and/or
+  #                 confirmed against a real host. The strongest claim.
+  #   "ci-tested" — covered by automated static/unit tests (this repo's
+  #                 own test suite exercises the real detect_os()/
+  #                 install_dependencies_rhel() logic against fixtures)
+  #                 but NOT yet run end-to-end against a live host of
+  #                 that OS. Weaker than "tested" — say so in any
+  #                 user-facing message, never conflate the two.
+  #   "untested"  — no dedicated coverage at all; generic warn-and-continue.
   case "$OS_FAMILY-$OS_ID-$OS_VERSION_ID" in
     rhel-almalinux-9*|rhel-rocky-9*|rhel-rhel-9*) OS_SUPPORT="tested" ;;
     debian-ubuntu-22.04*|debian-ubuntu-24.04*) OS_SUPPORT="tested" ;;
     debian-debian-12*|debian-debian-13*) OS_SUPPORT="tested" ;;
-    # "tested" here means: covered by automated detection + curl-minimal
-    # handling tests (deploy/lib/tests/test-amazon-linux-2023.sh) — NOT
-    # verified end-to-end against a real Amazon Linux 2023 EC2 instance.
-    # Be honest about that distinction; do not broaden this pattern to
-    # other amzn versions without equivalent coverage for them too.
-    rhel-amzn-2023*) OS_SUPPORT="tested" ;;
+    # Amazon Linux 2023: covered by automated detection + curl-minimal
+    # handling tests (deploy/lib/tests/test-amazon-linux-2023.sh), which
+    # exercise the real detect_os()/install_dependencies_rhel() functions
+    # against fixtures — but it has NOT been verified end-to-end against
+    # a real Amazon Linux 2023 host. Deliberately "ci-tested", not
+    # "tested" — do not broaden this pattern to other amzn versions
+    # without equivalent coverage for them too, and do not upgrade this
+    # to "tested" until a real AL2023 host run has actually succeeded.
+    rhel-amzn-2023*) OS_SUPPORT="ci-tested" ;;
     *) OS_SUPPORT="untested" ;;
   esac
 

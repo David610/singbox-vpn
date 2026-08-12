@@ -7,31 +7,43 @@ the RHEL family (AlmaLinux 9, Rocky Linux 9, RHEL 9, Amazon Linux 2023)
 and the Debian family (Ubuntu 22.04/24.04, Debian 12/13) — see
 `deploy/lib/os.sh`.
 
-### Support matrix — tested vs. untested
+### Support matrix — three tiers, not two
+
+`OS_SUPPORT` (see `deploy/lib/os.sh`) has three distinct values. Do not
+read "ci-tested" as a synonym for "tested" — it is a materially weaker
+claim, and the installer's own preflight warning says so at runtime too.
 
 | OS | Family | `OS_SUPPORT` | Basis |
 |---|---|---|---|
 | AlmaLinux 9 | RHEL | `tested` | exercised as the primary development/CI target |
 | Rocky Linux 9 | RHEL | `tested` | same install path as AlmaLinux 9 (dnf/firewalld) |
 | RHEL 9 | RHEL | `tested` | same install path as AlmaLinux 9 |
-| Amazon Linux 2023 | RHEL | `tested`* | *automated unit coverage only — see below |
+| Amazon Linux 2023 | RHEL | `ci-tested` | automated unit/fixture coverage only, no live-host run — see below |
 | Ubuntu 22.04 / 24.04 | Debian | `tested` | exercised as a development/CI target |
 | Debian 12 / 13 | Debian | `tested` | same install path as Ubuntu (apt/ufw) |
 | anything else | — | `untested` | installer warns and continues; no guarantee |
 
-Amazon Linux 2023's `tested` marking is narrower than the others: it is
-covered by automated static/unit tests
-(`deploy/lib/tests/test-amazon-linux-2023.sh`) for OS detection
-(`ID=amzn`/`ID_LIKE=fedora` correctly mapping to the RHEL family) and for
-the `curl-minimal`/`curl` package-conflict handling in
-`install_dependencies_rhel()` — it has **not** been verified end to end
-against a real Amazon Linux 2023 EC2 instance (no such host was
-available while this support was added). In particular, whether
-`firewalld` is actually installable from AL2023's default `dnf` repos on
-a stock EC2 image has not been confirmed live; if it isn't, `packages_stage`
-will fail loudly at `dnf install` rather than silently degrading — check
-`journalctl`/the installer's own error output if that happens, and please
-report back so this matrix can be corrected. Every
+- **`tested`** — genuinely exercised as a development/CI target (AlmaLinux
+  9, Rocky 9, RHEL 9, Ubuntu 22.04/24.04, Debian 12/13).
+- **`ci-tested`** — Amazon Linux 2023 only. Covered by automated
+  static/unit tests (`deploy/lib/tests/test-amazon-linux-2023.sh`), which
+  `source` the real `deploy/lib/os.sh` and exercise the real `detect_os()`
+  against a fixture `/etc/os-release` (`ID=amzn`/`ID_LIKE=fedora`
+  correctly mapping to the RHEL family), plus the real
+  `install_dependencies_rhel()`'s `curl-minimal`/`curl` package-conflict
+  handling — it has **not** been verified end to end against a real
+  Amazon Linux 2023 EC2 instance (no such host was available while this
+  support was added). In particular, whether `firewalld` is actually
+  installable from AL2023's default `dnf` repos on a stock EC2 image has
+  not been confirmed live; if it isn't, `packages_stage` will fail loudly
+  at `dnf install` rather than silently degrading — check
+  `journalctl`/the installer's own error output if that happens, and
+  please report back so this matrix can be corrected (and, once a real
+  run succeeds, so this can be upgraded to `tested`).
+- **`untested`** — everything else; installer warns and continues, no
+  automated coverage at all.
+
+Every
 command below is copy-pasteable. This deploys the compatibility
 (sing-box) data plane only — the native `direct-tls`/`noise-quic` stack
 stays on `deploy/local/` (see `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md`
@@ -48,11 +60,31 @@ curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
 That command downloads this repo, auto-detects your public IP, issues a
 real (non-self-signed) TLS certificate automatically via
 [sslip.io](https://sslip.io) + certbot, and runs everything below for
-you — no domain, no manual certbot step, no Rust toolchain (it prefers
-a prebuilt release binary and only falls back to `cargo build` when
-none exists yet). The rest of this document describes what that
-one-liner does internally, and how to run every stage manually if you
-want full control (your own domain, hand-provisioned certs, etc).
+you. `fetch_release_binaries()` in `install.sh` prefers a prebuilt,
+checksum-verified release binary for your exact version/architecture and
+only falls back to installing a Rust toolchain (via `rustup`) and running
+`cargo build` when no matching release asset exists.
+
+**As of this writing, no `vX.Y.Z` tag has ever been pushed to this repo,
+so every `curl | sudo bash` install today takes the source-build fallback
+path unconditionally** — there is no prebuilt binary to fall back *from*
+yet. That means, until someone actually pushes a real release tag and its
+`.github/workflows/release.yml` build completes, every install: downloads
+and installs a Rust toolchain if one isn't already present, compiles
+`vpn-admin`/`vpn-subscription-svc` from source (slower — several minutes
+on a small VPS instead of seconds, and needs meaningfully more RAM/CPU
+during the build than the prebuilt path does), and takes the extra
+network round-trip to fetch the rustup installer. Publishing the first
+tagged release is a manual, human, one-time operational action (`git tag
+vX.Y.Z && git push --tags`, or an equivalent GitHub release) — no code
+change in this repository can complete that step by itself, and none has
+been attempted here. `release.yml`'s packaging/checksum logic has been
+reviewed and is exercised by `deploy/lib/tests/test-release-archive-contract.sh`,
+but "the fast path is wired up correctly" and "the fast path has actually
+been used by a real install" are two different claims; only the first is
+true today. The rest of this document describes what that one-liner does
+internally, and how to run every stage manually if you want full control
+(your own domain, hand-provisioned certs, etc).
 `REALITY_HANDSHAKE_SERVER` has no universal safe default: the example is
 only a starting selection, and installation succeeds only after the real
 sing-box protocol acceptance test returns application data. Do not use
