@@ -12,6 +12,14 @@ handshake_port = 443
 
 [hysteria2]
 listen_port = 443
+# Fixed-rate (Brutal) congestion control: leave commented out unless you
+# have actually measured this VPS's sustained throughput with
+# `vpn benchmark` (see docs/PERFORMANCE_OPTIMIZATION_PLAN.md). Both
+# values must be set together, in Mbps, and should be your MEASURED
+# sustained rate, not your provider's advertised/burst rate — setting
+# these too high causes self-induced congestion, not a speedup.
+# up_mbps = 100
+# down_mbps = 100
 
 [subscription]
 listen_port = 9100

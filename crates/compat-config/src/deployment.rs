@@ -68,6 +68,17 @@ pub struct RealitySection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hysteria2Section {
     pub listen_port: u16,
+    /// Fixed-rate (Brutal) congestion-control bandwidth, Mbps. Leave
+    /// unset (the default) unless the real sustained throughput of this
+    /// VPS has actually been measured (`vpn benchmark` /
+    /// docs/PERFORMANCE_OPTIMIZATION_PLAN.md) — an unmeasured/guessed
+    /// value causes self-induced congestion, not a speedup. Both fields
+    /// must be set together; setting only one is rejected by
+    /// `DeploymentConfig::validate` (see `store.rs`/tests below).
+    #[serde(default)]
+    pub up_mbps: Option<u32>,
+    #[serde(default)]
+    pub down_mbps: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,7 +142,22 @@ impl Default for UdpProbeSection {
 impl DeploymentConfig {
     pub fn load(path: &Path) -> Result<Self, CompatError> {
         let text = std::fs::read_to_string(path).map_err(|e| CompatError::Io(e.to_string()))?;
-        toml::from_str(&text).map_err(|e| CompatError::Parse(e.to_string()))
+        let cfg: Self = toml::from_str(&text).map_err(|e| CompatError::Parse(e.to_string()))?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Structural checks that TOML deserialization alone can't express
+    /// (field-value-shape defaults, not schema shape).
+    pub fn validate(&self) -> Result<(), CompatError> {
+        if self.hysteria2.up_mbps.is_some() != self.hysteria2.down_mbps.is_some() {
+            return Err(CompatError::Parse(
+                "[hysteria2] up_mbps and down_mbps must be set together (both, or neither) — \
+                 see docs/PERFORMANCE_OPTIMIZATION_PLAN.md"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Return the effective UDP probe configuration, falling back to
@@ -243,5 +269,51 @@ timeout_ms = 1500
         // unspecified fields take defaults
         assert!(!udp.ipv6_resolvers.is_empty());
         assert_eq!(udp.delay_ms, 250u64);
+    }
+
+    fn base_toml() -> String {
+        r#"
+public_host = "vpn.example.com"
+subscription_host = "sub.example.com"
+
+[reality]
+listen_port = 443
+handshake_server = "www.google.com"
+
+[hysteria2]
+listen_port = 443
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn hysteria2_bandwidth_defaults_to_unset() {
+        let toml_str = format!("{}\n[subscription]\nlisten_port = 9100\n", base_toml());
+        let cfg: DeploymentConfig = toml::from_str(&toml_str).unwrap();
+        assert!(cfg.hysteria2.up_mbps.is_none());
+        assert!(cfg.hysteria2.down_mbps.is_none());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn hysteria2_bandwidth_set_together_is_valid() {
+        let toml_str = format!(
+            "{}up_mbps = 100\ndown_mbps = 80\n\n[subscription]\nlisten_port = 9100\n",
+            base_toml()
+        );
+        let cfg: DeploymentConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(cfg.hysteria2.up_mbps, Some(100));
+        assert_eq!(cfg.hysteria2.down_mbps, Some(80));
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn hysteria2_bandwidth_set_alone_fails_validation() {
+        let toml_str = format!(
+            "{}up_mbps = 100\n\n[subscription]\nlisten_port = 9100\n",
+            base_toml()
+        );
+        let cfg: DeploymentConfig = toml::from_str(&toml_str).unwrap();
+        assert!(cfg.validate().is_err());
     }
 }

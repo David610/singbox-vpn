@@ -99,15 +99,23 @@ jobs:
       - name: bash -n (syntax check every shipped script)
         run: |
           set -euo pipefail
-          for f in install.sh deploy/almalinux/*.sh deploy/lib/*.sh; do
+          for f in install.sh deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
       - name: shellcheck
         run: |
           sudo apt-get update -y >/dev/null
-          sudo apt-get install -y shellcheck >/dev/null
-          shellcheck -S warning install.sh deploy/lib/*.sh deploy/almalinux/*.sh
+          sudo apt-get install -y shellcheck jq >/dev/null
+          shellcheck -S warning install.sh deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
+      - name: vpn-benchmark outbound-discovery unit tests
+        run: bash deploy/lib/tests/test-vpn-benchmark-lib.sh
+      - name: vpn-benchmark set -e / discovery-call-site regression test
+        run: bash deploy/lib/tests/test-vpn-benchmark-set-e-regression.sh
+      - name: perf-tuning rendering/baseline/rollback unit tests
+        run: bash deploy/lib/tests/test-perf-tuning.sh
+      - name: install.sh / update.sh runtime-asset parity check
+        run: bash deploy/lib/tests/test-install-update-parity.sh
 
   secret-logging-check:
     runs-on: ubuntu-latest
@@ -135,12 +143,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      SINGBOX_VERSION: "1.13.14"
+      SINGBOX_VERSION: "1.13.18"
       # Kept in lockstep with deploy/almalinux/install.sh's
       # SINGBOX_SHA256_AMD64 — same reasoning: this is the checked-in
       # trusted digest used when upstream doesn't publish its own
       # checksums.txt for this release (docs/FINAL_PRODUCTION_AUDIT.md P0-8).
-      SINGBOX_SHA256_AMD64: "f48703461a15476951ac4967cdad339d986f4b8096b4eb3ff0829a500502d697"
+      SINGBOX_SHA256_AMD64: "d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -232,9 +240,11 @@ jobs:
           # Assert the exact number of tests that actually executed.
           # Update this count deliberately when adding a test — never by
           # pasting whatever the log happened to print.
-          #   3 reality_interop + 1 reality_decoy_budget + 4 hysteria2_interop
-          #   (2 original + 2 added for salamander obfuscation coverage)
-          expected=8
+          #   3 reality_interop + 1 reality_decoy_budget + 5 hysteria2_interop
+          #   (2 original + 2 added for salamander obfuscation coverage +
+          #   1 added for the optional Brutal up_mbps/down_mbps config,
+          #   validated against the real pinned binary via `sing-box check`)
+          expected=9
           total_ok="$(grep -c "^test .* \.\.\. ok$" interop.log || true)"
           if [ "$total_ok" != "$expected" ]; then
             echo "::error::expected $expected real interop tests to run and pass, saw $total_ok"

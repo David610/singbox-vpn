@@ -106,4 +106,16 @@ pub struct Hysteria2ServerParams {
     /// auth-reject signature. `None` disables masquerade (e.g. in tests
     /// that don't care about this behavior).
     pub masquerade_dir_path: Option<String>,
+    /// Explicit fixed-rate (Brutal) bandwidth, Mbps, set only when the
+    /// operator has measured the VPS's real sustained throughput (`vpn
+    /// benchmark`) — see docs/PERFORMANCE_OPTIMIZATION_PLAN.md. `None`
+    /// (the default) leaves sing-box's adaptive BBR-based congestion
+    /// control in place, which is the only safe default when the real
+    /// bandwidth is unknown: an inflated fixed value causes sustained
+    /// self-induced congestion instead of the loss-adaptive backoff BBR
+    /// provides (see `render_hysteria2_inbound`'s doc comment for the
+    /// mechanism). Both fields are set together or not at all — see
+    /// `Hysteria2Section::bandwidth` in `deployment.rs`.
+    pub up_mbps: Option<u32>,
+    pub down_mbps: Option<u32>,
 }

@@ -118,6 +118,21 @@ enum Commands {
         /// deployment — see docs/clients/HIDDIFY_IOS.md.
         #[arg(long)]
         client: bool,
+        /// Print host/kernel/network performance MEASUREMENTS — CPU
+        /// model, vCPU count, load average, %steal, RAM/swap, current
+        /// vs. available TCP congestion control, qdisc, UDP socket
+        /// buffer ceilings, UDP/TCP error counters, sing-box's own CPU
+        /// share and effective nice/rlimits — never a
+        /// recommendation, never a pass/fail verdict, and never a
+        /// substitute for `vpn benchmark`'s actual throughput numbers
+        /// (see docs/PERFORMANCE_OPTIMIZATION_PLAN.md, which explains
+        /// why: this command cannot tell you whether the bottleneck is
+        /// this host or the network path to it — only a real transfer
+        /// can). A metric this process cannot read on the running
+        /// kernel/host is printed as `unavailable`, never guessed or
+        /// omitted silently. Read-only; changes nothing.
+        #[arg(long)]
+        performance: bool,
     },
     /// Back up the minimum state needed to rebuild this deployment
     /// (users, credential metadata, REALITY keys, Hysteria2 TLS
@@ -266,6 +281,7 @@ fn main() -> Result<()> {
             report,
             report_output,
             client,
+            performance,
         } => cmd_doctor(
             &cfg,
             protocol,
@@ -274,6 +290,7 @@ fn main() -> Result<()> {
             report,
             report_output.as_deref(),
             client,
+            performance,
         ),
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
@@ -1140,6 +1157,8 @@ fn load_hysteria_params(cfg: &DeploymentConfig) -> Hysteria2ServerParams {
         masquerade_dir_path: masquerade_dir
             .exists()
             .then(|| masquerade_dir.to_string_lossy().into_owned()),
+        up_mbps: cfg.hysteria2.up_mbps,
+        down_mbps: cfg.hysteria2.down_mbps,
     }
 }
 
@@ -2023,6 +2042,7 @@ fn report_installed_file_policy(
 /// never `[FAIL]` — see `check_l5_l6_protocol_selftest`'s doc comment
 /// for why it cannot always distinguish "broken" from "untestable from
 /// here".
+#[allow(clippy::too_many_arguments)]
 fn cmd_doctor(
     cfg: &DeploymentConfig,
     protocol: bool,
@@ -2031,9 +2051,13 @@ fn cmd_doctor(
     report: bool,
     report_output: Option<&std::path::Path>,
     client: bool,
+    performance: bool,
 ) -> Result<()> {
     if report {
         return cmd_doctor_report(cfg, report_output);
+    }
+    if performance {
+        return cmd_doctor_performance();
     }
 
     let mut failures = 0u32;
@@ -2697,6 +2721,287 @@ fn build_doctor_coverage_report(
         }
     };
     format!("{header}\n{detail}")
+}
+
+/// Reads a `/proc`/`/sys` file and returns its trimmed contents, or
+/// `None` if unreadable — the uniform "can't read it, say so, don't
+/// guess" path every metric below goes through.
+fn perf_read(path: &str) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+fn perf_line(label: &str, value: Option<String>) {
+    match value {
+        Some(v) if !v.is_empty() => println!("  {label}: {v}"),
+        _ => println!("  {label}: unavailable"),
+    }
+}
+
+fn perf_cpu_model() -> Option<String> {
+    let text = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+    text.lines()
+        .find(|l| l.starts_with("model name"))
+        .and_then(|l| l.split(':').nth(1))
+        .map(|s| s.trim().to_string())
+}
+
+fn perf_vcpu_count() -> Option<String> {
+    std::thread::available_parallelism()
+        .ok()
+        .map(|n| n.get().to_string())
+}
+
+/// `/proc/stat`'s first line (aggregate across all CPUs): user nice
+/// system idle iowait irq softirq steal ... Two samples ~200ms apart
+/// give an instantaneous, not since-boot-average, reading — since-boot
+/// figures are close to meaningless on a host that's been up for weeks.
+fn perf_cpu_and_steal_pct() -> Option<(f64, f64)> {
+    let parse = |line: &str| -> Option<[u64; 8]> {
+        let mut fields = [0u64; 8];
+        let nums: Vec<u64> = line
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if nums.len() < 8 {
+            return None;
+        }
+        fields.copy_from_slice(&nums[..8]);
+        Some(fields)
+    };
+    let read_cpu_line = || -> Option<[u64; 8]> {
+        let stat = std::fs::read_to_string("/proc/stat").ok()?;
+        let line = stat.lines().find(|l| l.starts_with("cpu "))?;
+        parse(line)
+    };
+    let a = read_cpu_line()?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let b = read_cpu_line()?;
+    let deltas: Vec<u64> = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| y.saturating_sub(*x))
+        .collect();
+    let total: u64 = deltas.iter().sum();
+    if total == 0 {
+        return None;
+    }
+    let idle = deltas[3] + deltas[4]; // idle + iowait
+    let steal = deltas[7];
+    let busy_pct = 100.0 * (total.saturating_sub(idle)) as f64 / total as f64;
+    let steal_pct = 100.0 * steal as f64 / total as f64;
+    Some((busy_pct, steal_pct))
+}
+
+fn perf_load_average() -> Option<String> {
+    perf_read("/proc/loadavg").map(|s| s.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+}
+
+fn perf_meminfo_field(field: &str) -> Option<String> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    text.lines()
+        .find(|l| l.starts_with(field))
+        .map(|l| l.trim().to_string())
+}
+
+/// The primary non-loopback interface, best-effort: the first `UP`
+/// interface `/proc/net/route` names as the default-route device. `None`
+/// if the host has no default route (nothing meaningful to probe) or
+/// `ip` isn't present.
+fn perf_primary_interface() -> Option<String> {
+    let text = std::fs::read_to_string("/proc/net/route").ok()?;
+    text.lines().skip(1).find_map(|l| {
+        let mut fields = l.split_whitespace();
+        let iface = fields.next()?;
+        let dest = fields.next()?;
+        (dest == "00000000").then(|| iface.to_string())
+    })
+}
+
+fn perf_run(cmd: &str, args: &[&str]) -> Option<String> {
+    std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Finds a running `sing-box` process's PID via `/proc/*/comm` — no
+/// `pidof`/`pgrep` dependency, and this never touches process
+/// arguments/environment (which could contain secrets on other
+/// processes; sing-box's own argv here is just `run -c <path>` but the
+/// principle is to never read argv/environ of an arbitrary process).
+fn perf_singbox_pid() -> Option<u32> {
+    let entries = std::fs::read_dir("/proc").ok()?;
+    for entry in entries.flatten() {
+        let pid: u32 = match entry.file_name().to_str().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
+        if comm.trim() == "sing-box" {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+/// `vpn doctor --performance`: host/kernel/network MEASUREMENTS only —
+/// see the `--performance` flag's doc comment on why this deliberately
+/// never emits a verdict or a recommendation. Every number here is
+/// either read straight from `/proc`/`/sys` or from a well-known
+/// read-only tool (`ip`, `tc`, `ss`); nothing is derived by inference.
+/// Always exits 0 — there is no pass/fail concept for a measurement.
+fn cmd_doctor_performance() -> Result<()> {
+    println!("vpn1 performance diagnostics (MEASUREMENTS, not recommendations)");
+    println!(
+        "See docs/PERFORMANCE_OPTIMIZATION_PLAN.md for how to interpret these numbers, and \
+         `vpn benchmark` for actual throughput tests these alone cannot provide."
+    );
+
+    println!("\nCPU");
+    perf_line("model", perf_cpu_model());
+    perf_line("vCPUs", perf_vcpu_count());
+    perf_line("load average (1m 5m 15m)", perf_load_average());
+    match perf_cpu_and_steal_pct() {
+        Some((busy, steal)) => {
+            println!("  utilisation (instantaneous, ~200ms sample): {busy:.1}%");
+            println!("  steal (instantaneous, ~200ms sample): {steal:.1}%");
+        }
+        None => {
+            println!("  utilisation: unavailable");
+            println!("  steal: unavailable");
+        }
+    }
+
+    println!("\nMemory");
+    perf_line("RAM total", perf_meminfo_field("MemTotal"));
+    perf_line("RAM available", perf_meminfo_field("MemAvailable"));
+    perf_line("swap total", perf_meminfo_field("SwapTotal"));
+    perf_line("swap free", perf_meminfo_field("SwapFree"));
+
+    println!("\nNetwork interface");
+    let iface = perf_primary_interface();
+    perf_line("primary interface", iface.clone());
+    if let Some(ref iface) = iface {
+        perf_line(
+            "MTU",
+            perf_run("ip", &["-o", "link", "show", "dev", iface]).and_then(|s| {
+                s.split_whitespace()
+                    .position(|w| w == "mtu")
+                    .and_then(|i| s.split_whitespace().nth(i + 1).map(str::to_string))
+            }),
+        );
+        perf_line("qdisc", perf_run("tc", &["qdisc", "show", "dev", iface]));
+    } else {
+        perf_line("MTU", None);
+        perf_line("qdisc", None);
+    }
+
+    println!("\nTCP congestion control");
+    perf_line(
+        "current",
+        perf_read("/proc/sys/net/ipv4/tcp_congestion_control"),
+    );
+    perf_line(
+        "available",
+        perf_read("/proc/sys/net/ipv4/tcp_available_congestion_control"),
+    );
+
+    println!("\nUDP/TCP buffers (sysctl ceilings, not in-use size)");
+    perf_line(
+        "net.core.rmem_max",
+        perf_read("/proc/sys/net/core/rmem_max"),
+    );
+    perf_line(
+        "net.core.wmem_max",
+        perf_read("/proc/sys/net/core/wmem_max"),
+    );
+
+    println!("\nProtocol error counters (cumulative since boot — compare two runs, not the absolute value)");
+    if let Ok(snmp) = std::fs::read_to_string("/proc/net/snmp") {
+        let field = |proto_prefix: &str, field_name: &str| -> Option<String> {
+            let mut lines = snmp.lines();
+            while let Some(header) = lines.next() {
+                if !header.starts_with(proto_prefix) {
+                    continue;
+                }
+                let values = lines.next()?;
+                let names: Vec<&str> = header.split_whitespace().skip(1).collect();
+                let vals: Vec<&str> = values.split_whitespace().skip(1).collect();
+                return names
+                    .iter()
+                    .position(|n| *n == field_name)
+                    .and_then(|i| vals.get(i))
+                    .map(|s| s.to_string());
+            }
+            None
+        };
+        perf_line("TCP retransmitted segments", field("Tcp:", "RetransSegs"));
+        perf_line("UDP receive errors", field("Udp:", "InErrors"));
+        perf_line("UDP receive buffer errors", field("Udp:", "RcvbufErrors"));
+        perf_line("UDP send buffer errors", field("Udp:", "SndbufErrors"));
+    } else {
+        perf_line("TCP retransmitted segments", None);
+        perf_line("UDP receive errors", None);
+        perf_line("UDP receive buffer errors", None);
+        perf_line("UDP send buffer errors", None);
+    }
+
+    println!("\nsing-box process");
+    match perf_singbox_pid() {
+        Some(pid) => {
+            println!("  pid: {pid}");
+            perf_line(
+                "nice",
+                perf_run("ps", &["-o", "ni=", "-p", &pid.to_string()])
+                    .map(|s| s.trim().to_string()),
+            );
+            perf_line(
+                "open file descriptor limit (soft/hard)",
+                std::fs::read_to_string(format!("/proc/{pid}/limits"))
+                    .ok()
+                    .and_then(|s| {
+                        s.lines()
+                            .find(|l| l.starts_with("Max open files"))
+                            .map(|l| {
+                                l.split_whitespace()
+                                    .skip(3)
+                                    .take(2)
+                                    .collect::<Vec<_>>()
+                                    .join(" / ")
+                            })
+                    }),
+            );
+            perf_line(
+                "CPU time consumed (utime+stime, clock ticks since process start)",
+                std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .ok()
+                    .and_then(|s| {
+                        let fields: Vec<&str> = s.rsplit(')').next()?.split_whitespace().collect();
+                        // Fields after the ')' are 1-indexed from field 3 in `man
+                        // proc`; utime is index 11, stime is index 12 in that
+                        // scheme, i.e. offsets 11-3=8 and 12-3=9 here (0-indexed
+                        // after skipping state at offset 0).
+                        let utime: u64 = fields.get(11).and_then(|s| s.parse().ok())?;
+                        let stime: u64 = fields.get(12).and_then(|s| s.parse().ok())?;
+                        Some((utime + stime).to_string())
+                    }),
+            );
+        }
+        None => println!("  not found (is sing-box running?)"),
+    }
+
+    println!(
+        "\nDone. These are point-in-time measurements; CPU/steal figures in particular are \
+         noisy over a 200ms sample — re-run under real load for a meaningful reading, and see \
+         `vpn benchmark` for throughput/latency numbers this command does not attempt to \
+         collect."
+    );
+    Ok(())
 }
 
 /// `vpn doctor --report`: a sanitized diagnostic bundle suitable for

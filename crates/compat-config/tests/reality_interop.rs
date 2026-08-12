@@ -111,6 +111,8 @@ fn build_configs(
         tls_key_path: "/dev/null".into(),
         obfs_password: None,
         masquerade_dir_path: None,
+        up_mbps: None,
+        down_mbps: None,
     };
     let users = vec![test_user()];
     let mut server_cfg = render_singbox_server_config(
@@ -375,6 +377,8 @@ fn server_and_client_configs_agree_on_reality_key_material() {
         tls_key_path: "/dev/null".into(),
         obfs_password: None,
         masquerade_dir_path: None,
+        up_mbps: None,
+        down_mbps: None,
     };
     let users = vec![test_user()];
     let server_cfg = render_singbox_server_config(

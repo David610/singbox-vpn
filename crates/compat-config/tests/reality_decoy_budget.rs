@@ -129,6 +129,8 @@ fn oversized_decoy_certificate_breaks_the_tunnel_even_though_reality_auth_succee
         tls_key_path: "/dev/null".into(),
         obfs_password: None,
         masquerade_dir_path: None,
+        up_mbps: None,
+        down_mbps: None,
     };
     let mut server_cfg = render_singbox_server_config(
         &[test_user()],
