@@ -132,6 +132,15 @@ plumbing for a runner-minutes-only win; deferred.
    and other digits' write bit independently. New tests:
    `deploy/lib/tests/test-uninstall-hardening.sh` (14 checks) +
    `ownership_path_is_safe()` cases added to `test-ownership-manifest.sh`.
+   PR #20's first real CI run (not reproducible in the sandbox — the
+   sandbox's checkout happens to be root-owned) caught 2 real bugs the
+   FAST GATE could not: the new root-controlled-execution check firing
+   on any non-`/opt/vpn1` checkout (fixed: scoped to `/opt/vpn1` only),
+   and a pre-existing (checkpoint 3) `ci.yml` bug appending
+   `versions.env`'s comment header raw to `$GITHUB_ENV` (fixed: filter
+   comments/blanks; regression test added). Lesson: FAST GATE running as
+   root in this sandbox cannot catch non-root-checkout-specific bugs —
+   real CI is still load-bearing for this class of issue.
 
 ## Blockers
 
