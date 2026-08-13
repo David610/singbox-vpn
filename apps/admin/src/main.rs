@@ -51,7 +51,27 @@ enum Commands {
     },
     /// Regenerate and atomically apply the sing-box server config from
     /// the current user store, without changing any user.
-    RenderConfig,
+    RenderConfig {
+        /// Exit non-zero if the rendered config actually differs from
+        /// what's live (i.e. reconciliation was attempted) but could
+        /// not be fully applied — missing sing-box binary, systemctl
+        /// unavailable, sing-box.service not installed, or a reload
+        /// failure. Without this flag those conditions only print a
+        /// warning and exit 0 (kept lenient for manual/dev/CI use,
+        /// where "sing-box isn't installed yet" is expected, not a
+        /// failure). `vpn-expiry-reconcile.service` — the once-a-minute
+        /// timer that is the only thing keeping expired users'
+        /// authorization in sync with the live server — passes this,
+        /// because on a real deployment every one of those conditions
+        /// is a genuine regression, and reporting success while
+        /// silently failing to reconcile is exactly the failure mode
+        /// this flag exists to close. A no-op ("already current, no
+        /// reload needed") is always success, with or without this
+        /// flag — this only changes what happens when reconciliation
+        /// was actually attempted and did not complete.
+        #[arg(long)]
+        require_applied: bool,
+    },
     /// Print vpn-admin's own version and the configured sing-box
     /// binary's reported version, if present.
     Version,
@@ -271,7 +291,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { rotate } => cmd_init(&cfg, rotate),
-        Commands::RenderConfig => cmd_render_config(&cfg),
+        Commands::RenderConfig { require_applied } => cmd_render_config(&cfg, require_applied),
         Commands::Version => cmd_version(&cfg),
         Commands::Status => cmd_status(&cfg),
         Commands::Doctor {
@@ -780,18 +800,20 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     // "not fully reloaded live" branch below already refuses to claim
     // success and this self-test would be probing a server that may not
     // even have the candidate key loaded yet.
-    if singbox_reloaded_live && sub_restarted_live {
-        if let Some(RealitySelfTestOutcome::HandshakeRejected) = verify_reality_handshake_or_warn(
-            cfg,
-            &users,
-            &candidate_reality,
-            cfg.reality.listen_port,
-        ) {
-            bail!(rollback(
-                "new REALITY key material failed a real handshake self-test — a real Hiddify \
-                 client using this same key material would be rejected identically"
-            ));
-        }
+    let handshake_verification = if singbox_reloaded_live && sub_restarted_live {
+        verify_reality_handshake_or_warn(cfg, &users, &candidate_reality, cfg.reality.listen_port)
+    } else {
+        HandshakeVerification::NotRun(
+            "sing-box/vpn-subscription were not both confirmed live-reloaded".to_string(),
+        )
+    };
+    if let HandshakeVerification::Ran(RealitySelfTestOutcome::HandshakeRejected) =
+        &handshake_verification
+    {
+        bail!(rollback(
+            "new REALITY key material failed a real handshake self-test — a real Hiddify \
+             client using this same key material would be rejected identically"
+        ));
     }
 
     // Commit: only now is it safe to discard the rollback material.
@@ -800,11 +822,32 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     }
 
     if singbox_reloaded_live && sub_restarted_live {
+        let handshake_line = match handshake_verification {
+            HandshakeVerification::Ran(RealitySelfTestOutcome::Pass) => {
+                "Handshake verification: PASSED — a real handshake self-test against the new \
+                 key material succeeded."
+                    .to_string()
+            }
+            HandshakeVerification::Ran(RealitySelfTestOutcome::Inconclusive) => {
+                "Handshake verification: INCONCLUSIVE — a real handshake was attempted but its \
+                 result could not be read as pass or fail; inspect sing-box logs and re-run \
+                 'vpn doctor --protocol' before assuming clients can connect."
+                    .to_string()
+            }
+            HandshakeVerification::NotRun(reason) => format!(
+                "Handshake verification: NOT RUN ({reason}) — this does NOT confirm a real \
+                 client can connect with the new key material; re-run 'vpn doctor --protocol' \
+                 once that's possible."
+            ),
+            HandshakeVerification::Ran(RealitySelfTestOutcome::HandshakeRejected) => {
+                unreachable!("HandshakeRejected already bailed out above")
+            }
+        };
         println!(
-            "REALITY key rotated and applied, and a real handshake self-test against the new \
-             key material passed. Every existing client's REALITY profile is now invalid \
-             (server public key changed) until re-imported. Subscription URLs are unaffected \
-             and still fetch/refresh normally; Hysteria2 profiles are unaffected."
+            "REALITY key rotated and applied. {handshake_line} Every existing client's REALITY \
+             profile is now invalid (server public key changed) until re-imported. \
+             Subscription URLs are unaffected and still fetch/refresh normally; Hysteria2 \
+             profiles are unaffected."
         );
     } else {
         println!(
@@ -1326,8 +1369,10 @@ fn render_and_apply_singbox_config(
     // `Inconclusive` do not, since this self-test cannot always reach a
     // verdict (see `run_reality_client_selftest`'s doc comment) and must
     // not turn an environmental limitation into a false failure here.
-    if let Some(RealitySelfTestOutcome::HandshakeRejected) =
-        verify_reality_handshake_or_warn(cfg, users, &reality, ports.vless_reality_port)
+    let handshake_verification =
+        verify_reality_handshake_or_warn(cfg, users, &reality, ports.vless_reality_port);
+    if let HandshakeVerification::Ran(RealitySelfTestOutcome::HandshakeRejected) =
+        &handshake_verification
     {
         let backup = config_backup_path(&target);
         let restored = backup.exists() && std::fs::copy(&backup, &target).is_ok();
@@ -1349,9 +1394,24 @@ fn render_and_apply_singbox_config(
     }
     commit_applied_config_stamp(&target, &candidate_fingerprint)
         .context("recording the config version verified live")?;
-    println!(
-        "sing-box reloaded and verified active (including a real REALITY handshake self-test)."
-    );
+    let handshake_line = match handshake_verification {
+        HandshakeVerification::Ran(RealitySelfTestOutcome::Pass) => {
+            "including a real REALITY handshake self-test that PASSED".to_string()
+        }
+        HandshakeVerification::Ran(RealitySelfTestOutcome::Inconclusive) => {
+            "a real REALITY handshake self-test was attempted but its result was INCONCLUSIVE \
+             — this does NOT confirm a real client can connect; re-run 'vpn doctor --protocol'"
+                .to_string()
+        }
+        HandshakeVerification::NotRun(reason) => format!(
+            "no REALITY handshake self-test was run ({reason}) — this does NOT confirm a real \
+             client can connect; re-run 'vpn doctor --protocol' once that's possible"
+        ),
+        HandshakeVerification::Ran(RealitySelfTestOutcome::HandshakeRejected) => {
+            unreachable!("HandshakeRejected already bailed out above")
+        }
+    };
+    println!("sing-box reloaded and verified active ({handshake_line}).");
     Ok(true)
 }
 
@@ -1383,14 +1443,29 @@ fn apply_restored_file_policy(_path: &std::path::Path, _group: &str) -> Result<(
     Ok(())
 }
 
-fn regenerate_singbox_config(cfg: &DeploymentConfig, require_live_apply: bool) -> Result<()> {
+fn regenerate_singbox_config(cfg: &DeploymentConfig, require_live_apply: bool) -> Result<bool> {
     let users = store::load_users(&cfg.users_file())?;
-    render_and_apply_singbox_config(cfg, &users, require_live_apply)?;
-    Ok(())
+    render_and_apply_singbox_config(cfg, &users, require_live_apply)
 }
 
-fn cmd_render_config(cfg: &DeploymentConfig) -> Result<()> {
-    regenerate_singbox_config(cfg, false)
+/// `applied` distinguishes a genuine no-op ("nothing changed") from a
+/// change that was actually written+reloaded+verified live — both are
+/// `true`. `false` means reconciliation was attempted (the rendered
+/// config differs from what's live) but could not be fully applied; see
+/// `require_applied`'s doc comment on `Commands::RenderConfig` for what
+/// that does with this distinction.
+fn cmd_render_config(cfg: &DeploymentConfig, require_applied: bool) -> Result<()> {
+    let applied = regenerate_singbox_config(cfg, false)?;
+    if !applied && require_applied {
+        bail!(
+            "reconciliation was attempted (the rendered sing-box config differs from what's \
+             live) but could not be fully applied — see the warning(s) above for the specific \
+             cause. Expired/disabled users' authorization may still be live on the running \
+             server. This is not a transient no-op; investigate before the next scheduled \
+             reconciliation."
+        );
+    }
+    Ok(())
 }
 
 fn subscription_url(cfg: &DeploymentConfig, token: &str) -> String {
@@ -2289,6 +2364,44 @@ fn cmd_doctor(
                 format!("{name}.service not active"),
             );
             failures += 1;
+        }
+    }
+
+    // The once-a-minute reconciler is the only thing that applies user
+    // expiry/disablement to the LIVE server between explicit `vpn-admin`
+    // mutations — since it now runs with `--require-applied`, a failure
+    // to reconcile makes this oneshot unit `failed`, and that state
+    // persists (visible here) until the next successful run. This is
+    // deliberately NOT the same question as "is it active" (see
+    // `is_failed`'s doc comment) and deliberately does not fail overall
+    // `doctor` just because the unit isn't installed (dev/CI hosts).
+    {
+        let reconcile_mgr = CompatibilityServiceManager::new("vpn-expiry-reconcile");
+        if reconcile_mgr.is_available() && reconcile_mgr.is_unit_installed() {
+            if reconcile_mgr.is_failed() {
+                report_check(
+                    CheckStatus::Fail,
+                    "L1",
+                    "vpn-expiry-reconcile.service is in a FAILED state — expired/disabled \
+                     users' authorization may not be in sync with the live server; run `sudo \
+                     journalctl -u vpn-expiry-reconcile` for the cause, then `sudo vpn-admin \
+                     render-config --require-applied` to retry by hand",
+                );
+                failures += 1;
+            } else {
+                report_check(
+                    CheckStatus::Ok,
+                    "L1",
+                    "vpn-expiry-reconcile.service has no recorded failure",
+                );
+            }
+        } else {
+            report_check(
+                CheckStatus::Warn,
+                "L1",
+                "vpn-expiry-reconcile.service not installed on this host — expiry is not being \
+                 reconciled automatically",
+            );
         }
     }
 
@@ -4037,26 +4150,51 @@ fn report_protocol_unavailable(
     }
 }
 
+/// Outcome of `verify_reality_handshake_or_warn`. Deliberately distinct
+/// from a bare `Option<RealitySelfTestOutcome>`: that shape let a caller
+/// print a single unconditional "handshake self-test passed" message
+/// regardless of whether a handshake was ever actually attempted (a
+/// fresh deployment with no active user, or a rotation with no sing-box
+/// binary, both produced `None`, and the caller's success text did not
+/// distinguish that from `Some(Pass)`). `NotRun` carries the reason so a
+/// caller can — and must — say plainly that verification did not happen
+/// and why, instead of staying silent about the gap.
+enum HandshakeVerification {
+    Ran(RealitySelfTestOutcome),
+    NotRun(String),
+}
+
 /// Runs the real REALITY handshake self-test against candidate/live key
 /// material as a live-health gate for the apply/rotate transactions (not
 /// just `doctor --protocol`, which is diagnostic-only and never blocks
-/// anything). `None` means the check could not run at all — no sing-box
-/// binary, or no enabled/unexpired user to test with (e.g. a brand-new
-/// deployment with zero users yet) — and callers must treat that as "not
-/// verified," never as a pass. Only `Some(HandshakeRejected)` is meant to
-/// block a transaction; `Some(Pass)`/`Some(Inconclusive)` are informational.
+/// anything). `NotRun` means the check could not run at all — no
+/// sing-box binary, no enabled/unexpired user to test with (e.g. a
+/// brand-new deployment with zero users yet), or a harness setup
+/// failure — and callers must treat that as "not verified," never as a
+/// pass. Only `Ran(HandshakeRejected)` is meant to block a transaction;
+/// `Ran(Pass)`/`Ran(Inconclusive)` are informational.
 fn verify_reality_handshake_or_warn(
     cfg: &DeploymentConfig,
     users: &[CompatUser],
     reality: &RealityServerParams,
     reality_port: u16,
-) -> Option<RealitySelfTestOutcome> {
+) -> HandshakeVerification {
     if !cfg.singbox_binary.exists() {
-        return None;
+        return HandshakeVerification::NotRun(format!(
+            "no sing-box binary at {:?}",
+            cfg.singbox_binary
+        ));
     }
     let now = UnixSeconds::now().0 as i64;
-    let test_user = users.iter().find(|u| u.is_active(now))?;
-    run_reality_client_selftest(cfg, reality, test_user, reality_port).ok()
+    let Some(test_user) = users.iter().find(|u| u.is_active(now)) else {
+        return HandshakeVerification::NotRun(
+            "no enabled, unexpired VLESS user to test with".to_string(),
+        );
+    };
+    match run_reality_client_selftest(cfg, reality, test_user, reality_port) {
+        Ok(outcome) => HandshakeVerification::Ran(outcome),
+        Err(e) => HandshakeVerification::NotRun(format!("self-test harness failed: {e:#}")),
+    }
 }
 
 fn listener_reported_by_ss(port: u16, udp: bool) -> Option<bool> {
@@ -4508,6 +4646,62 @@ fn socks5_http_get_succeeds(
     response.starts_with(b"HTTP/1.0 200") || response.starts_with(b"HTTP/1.1 200")
 }
 
+/// Canonical, single-source list of every file a backup archive may
+/// contain besides `deployment.toml` (handled separately below — it
+/// comes from the caller's `--config` argument, not a `DeploymentConfig`
+/// accessor, and restore deliberately never overwrites it: a restore
+/// onto a different host must keep that host's own domain/paths).
+///
+/// This one list drives backup creation (`stage_backup_contents`),
+/// archive-extraction allow-listing (`extract_validated_backup`), and
+/// restore installation (`cmd_restore`) — previously each of those three
+/// had its own independently hand-maintained copy, and they drifted:
+/// backup creation included `reality/hysteria_obfs_password.txt` while
+/// the extraction allowlist did not, so `vpn-admin restore` unconditionally
+/// rejected any backup of a deployment that had ever run
+/// `hysteria-obfs-rotate`, before restore's own (correct) handling of
+/// that file ever got a chance to run.
+type BackupFileAccessor = fn(&DeploymentConfig) -> PathBuf;
+const BACKUP_MANIFEST: &[(&str, BackupFileAccessor)] = &[
+    ("users/users.json", |cfg| cfg.users_file()),
+    ("reality/private.key", |cfg| cfg.reality_private_key_file()),
+    ("reality/public.key", |cfg| cfg.reality_public_key_file()),
+    ("reality/short_id.txt", |cfg| {
+        cfg.reality_dir().join("short_id.txt")
+    }),
+    ("hysteria/cert.pem", |cfg| {
+        cfg.hysteria_dir().join("cert.pem")
+    }),
+    ("hysteria/key.pem", |cfg| cfg.hysteria_dir().join("key.pem")),
+    // Optional: absent on deployments that never enabled obfuscation.
+    ("reality/hysteria_obfs_password.txt", |cfg| {
+        cfg.hysteria_obfs_password_file()
+    }),
+];
+
+/// True for `deployment.toml`, every path in `BACKUP_MANIFEST`, and the
+/// directory entries a tar archive built from those paths necessarily
+/// contains (e.g. `reality` as the parent of `reality/private.key`).
+/// Shared by `extract_validated_backup`'s allowlist check so the archive
+/// format's real shape can never drift from `BACKUP_MANIFEST` itself.
+fn is_allowed_backup_path(path: &std::path::Path) -> bool {
+    if path == std::path::Path::new("deployment.toml") {
+        return true;
+    }
+    for (rel, _) in BACKUP_MANIFEST {
+        let rel_path = std::path::Path::new(rel);
+        if path == rel_path {
+            return true;
+        }
+        if let Some(parent) = rel_path.parent() {
+            if !parent.as_os_str().is_empty() && path == parent {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Stage the minimum state needed to rebuild this deployment into `dir`:
 /// users store, deployment config, REALITY key material, Hysteria2 TLS
 /// material. Missing optional pieces (e.g. no Hysteria2 cert yet) are
@@ -4529,35 +4723,10 @@ fn stage_backup_contents(
         Ok(())
     };
 
-    copy_if_exists(&cfg.users_file(), &dir.join("users/users.json"))?;
     copy_if_exists(config_path, &dir.join("deployment.toml"))?;
-    copy_if_exists(
-        &cfg.reality_private_key_file(),
-        &dir.join("reality/private.key"),
-    )?;
-    copy_if_exists(
-        &cfg.reality_public_key_file(),
-        &dir.join("reality/public.key"),
-    )?;
-    copy_if_exists(
-        &cfg.reality_dir().join("short_id.txt"),
-        &dir.join("reality/short_id.txt"),
-    )?;
-    copy_if_exists(
-        &cfg.hysteria_dir().join("cert.pem"),
-        &dir.join("hysteria/cert.pem"),
-    )?;
-    copy_if_exists(
-        &cfg.hysteria_dir().join("key.pem"),
-        &dir.join("hysteria/key.pem"),
-    )?;
-    // Optional: absent on deployments that never enabled obfuscation.
-    // `copy_if_exists` is a no-op when the source is missing, so backing
-    // up a pre-obfuscation deployment is unaffected.
-    copy_if_exists(
-        &cfg.hysteria_obfs_password_file(),
-        &dir.join("reality/hysteria_obfs_password.txt"),
-    )?;
+    for (rel, accessor) in BACKUP_MANIFEST {
+        copy_if_exists(&accessor(cfg), &dir.join(rel))?;
+    }
     Ok(())
 }
 
@@ -4660,18 +4829,6 @@ fn extract_validated_backup(archive_path: &std::path::Path, dir: &std::path::Pat
     const MAX_ENTRIES: usize = 32;
     const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
     const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
-    const ALLOWED: &[&str] = &[
-        "users",
-        "users/users.json",
-        "deployment.toml",
-        "reality",
-        "reality/private.key",
-        "reality/public.key",
-        "reality/short_id.txt",
-        "hysteria",
-        "hysteria/cert.pem",
-        "hysteria/key.pem",
-    ];
 
     let file = std::fs::File::open(archive_path)
         .with_context(|| format!("opening backup archive {archive_path:?}"))?;
@@ -4699,10 +4856,7 @@ fn extract_validated_backup(archive_path: &std::path::Path, dir: &std::path::Pat
         if !seen.insert(path.clone()) {
             bail!("backup archive contains duplicate entry {path:?}");
         }
-        if !ALLOWED
-            .iter()
-            .any(|allowed| path == std::path::Path::new(allowed))
-        {
+        if !is_allowed_backup_path(&path) {
             bail!("backup archive contains unexpected entry {path:?}");
         }
         let entry_type = entry.header().entry_type();
@@ -4810,24 +4964,19 @@ fn cmd_restore(
     std::fs::create_dir_all(cfg.hysteria_dir())?;
     std::fs::create_dir_all(cfg.users_file().parent().unwrap())?;
 
-    let restore_targets: [(&str, PathBuf); 6] = [
-        ("reality/private.key", cfg.reality_private_key_file()),
-        ("reality/public.key", cfg.reality_public_key_file()),
-        (
-            "reality/short_id.txt",
-            cfg.reality_dir().join("short_id.txt"),
-        ),
-        ("hysteria/cert.pem", cfg.hysteria_dir().join("cert.pem")),
-        ("hysteria/key.pem", cfg.hysteria_dir().join("key.pem")),
-        // Optional: absent from archives taken before obfuscation was
-        // enabled, or of a deployment that never enabled it. The
-        // `install_all` loop below already skips any entry missing from
-        // the archive, so this is safe on old backups.
-        (
-            "reality/hysteria_obfs_password.txt",
-            cfg.hysteria_obfs_password_file(),
-        ),
-    ];
+    // Derived from the same BACKUP_MANIFEST that drives backup creation
+    // and archive-extraction allow-listing (see its doc comment) — minus
+    // `users/users.json`, which restore handles separately above via
+    // `restored_users`/`save_users_atomic` rather than a raw file copy.
+    // Optional entries (e.g. hysteria_obfs_password.txt) are absent from
+    // archives taken before obfuscation was enabled; the `install_all`
+    // loop below already skips any entry missing from the archive, so
+    // this is safe on old backups.
+    let restore_targets: Vec<(&str, PathBuf)> = BACKUP_MANIFEST
+        .iter()
+        .filter(|(rel, _)| *rel != "users/users.json")
+        .map(|(rel, accessor)| (*rel, accessor(cfg)))
+        .collect();
 
     // Back EVERYTHING up before touching any of it, so a failure part-way
     // through can put the deployment back exactly as it was. `restore` was

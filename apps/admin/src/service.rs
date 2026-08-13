@@ -114,6 +114,23 @@ impl CompatibilityServiceManager {
             .unwrap_or(false)
     }
 
+    /// True only if systemd is actually holding this unit in `failed`
+    /// state right now (persists until the next successful run or an
+    /// explicit `systemctl reset-failed`, so a caller polling this
+    /// occasionally — e.g. `vpn doctor` — will still see a failure that
+    /// happened between polls). Meant for oneshot units like
+    /// `vpn-expiry-reconcile.service`, where `is_active` is not the
+    /// right question (a successful oneshot run is briefly "active" and
+    /// then normally "inactive (dead)", never "active" at rest — only
+    /// "failed" is the durable, checkable signal). `false` on any
+    /// systemctl/spawn problem — this must never itself manufacture a
+    /// failure report out of "couldn't check."
+    pub fn is_failed(&self) -> bool {
+        self.run(&["is-failed", "--quiet", &self.service_name])
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
     /// Reload/restart the service, then verify it actually came back up
     /// healthy. Returns Err (without panicking or leaving the caller
     /// guessing) if either step fails — the caller is responsible for
@@ -211,6 +228,46 @@ exit 1
             .with_settle(Duration::from_millis(1));
         let err = mgr.reload_and_verify().unwrap_err();
         assert!(err.contains("did not remain active"));
+    }
+
+    /// `systemctl is-failed` exits 0 when the unit IS in `failed` state
+    /// and non-zero otherwise — mirrors real systemd's own contract.
+    fn fake_systemctl_is_failed(dir: &std::path::Path, failed: bool) -> PathBuf {
+        let path = dir.join("systemctl");
+        let is_failed_exit = if failed { 0 } else { 1 };
+        let script = format!(
+            r#"#!/usr/bin/env bash
+case "$1" in
+  --version) exit 0 ;;
+  show) echo "loaded"; exit 0 ;;
+  is-failed) exit {is_failed_exit} ;;
+esac
+exit 1
+"#
+        );
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(script.as_bytes()).unwrap();
+        drop(f);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn is_failed_true_when_systemctl_reports_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = fake_systemctl_is_failed(dir.path(), true);
+        let mgr = CompatibilityServiceManager::new("vpn-expiry-reconcile")
+            .with_systemctl_binary(systemctl);
+        assert!(mgr.is_failed());
+    }
+
+    #[test]
+    fn is_failed_false_when_systemctl_reports_not_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = fake_systemctl_is_failed(dir.path(), false);
+        let mgr = CompatibilityServiceManager::new("vpn-expiry-reconcile")
+            .with_systemctl_binary(systemctl);
+        assert!(!mgr.is_failed());
     }
 
     #[test]

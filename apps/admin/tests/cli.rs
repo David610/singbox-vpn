@@ -817,6 +817,64 @@ fn reality_rotate_scopes_blast_radius_to_reality_only() {
         "REALITY rotation must scope its blast-radius claim to REALITY only, not the whole \
          subscription:\n{stdout}"
     );
+    // The fake sing-box binary has no `run` subcommand, so the real
+    // handshake self-test's throwaway client cannot actually dial
+    // anything here — this must be reported as NOT RUN, never as a
+    // silent, unconditional "passed".
+    assert!(
+        stdout.contains("Handshake verification: NOT RUN"),
+        "a handshake self-test that could not run must say so explicitly:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("PASSED"),
+        "must never claim a handshake passed when none was actually completed:\n{stdout}"
+    );
+}
+
+/// Regression test for the misleading-success-message bug: a REALITY
+/// rotation on a deployment with ZERO active users (the exact scenario
+/// where the self-test cannot run at all) must not print anything
+/// implying a handshake was verified.
+#[test]
+#[cfg(unix)]
+fn reality_rotate_reports_not_run_when_no_active_user_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    // No `user create` call at all — zero users exist when rotation runs.
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("init")
+        .assert()
+        .success();
+
+    let output = admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args(["init", "--rotate"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("Handshake verification: NOT RUN")
+            && stdout.contains("no enabled, unexpired VLESS user"),
+        "must explicitly say verification did not run and why, with zero users present:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("PASSED"),
+        "must never claim a handshake passed with no user to test against:\n{stdout}"
+    );
 }
 
 #[test]
@@ -860,6 +918,135 @@ fn doctor_rejects_wrong_reality_public_key_install_policy() {
         stdout.contains("REALITY public key policy invalid"),
         "doctor must enforce the installed root:vpn-subscription 0640 contract:\n{stdout}"
     );
+}
+
+/// Regression test for the misleading-success-message bug in
+/// `render_and_apply_singbox_config`: with a real (fake) systemctl
+/// wired so the config actually gets live-reloaded, but no real
+/// sing-box `run` support in the fake binary (so the handshake
+/// self-test's throwaway client cannot dial anything), `render-config`
+/// must say the self-test was NOT run — never an unconditional
+/// "verified active (including a real REALITY handshake self-test)".
+#[test]
+#[cfg(unix)]
+fn render_config_never_claims_handshake_passed_when_selftest_could_not_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("init")
+        .assert()
+        .success();
+
+    let output = admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("render-config")
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("sing-box reloaded and verified active"),
+        "the config was in fact reloaded and stayed active; that much should still be said:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("no REALITY handshake self-test was run"),
+        "must explicitly say the handshake self-test did not run:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("that PASSED"),
+        "must never claim the handshake self-test passed when it could not run:\n{stdout}"
+    );
+}
+
+/// Failure-injection test for the expiry-reconciler's exit-semantics
+/// fix: with no real sing-box binary at all, a plain `render-config`
+/// still degrades to a warning and exits 0 (unchanged, deliberately
+/// lenient default — dev/CI/manual use), but `render-config
+/// --require-applied` (what the timer now passes) must fail loudly,
+/// because reconciliation was genuinely attempted and could not be
+/// applied.
+#[test]
+fn render_config_require_applied_fails_when_reconciliation_could_not_be_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(state_dir.join("reality")).unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), REALITY_PRIVATE_A).unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), REALITY_PUBLIC_A).unwrap();
+    std::fs::write(state_dir.join("reality/short_id.txt"), "deadbeef").unwrap();
+
+    // Baseline: without the flag, a missing sing-box binary is still
+    // just a warning, exit 0 — must not regress this.
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("not found; wrote nothing"));
+
+    // With the flag: the exact same condition must now fail loudly.
+    admin(dir.path(), &cfg_path)
+        .args(["render-config", "--require-applied"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("reconciliation was attempted"));
+}
+
+/// The other half of the required distinction: a genuine no-op (nothing
+/// to reconcile) must remain success even with `--require-applied` —
+/// this must never be misclassified as a failure.
+#[test]
+#[cfg(unix)]
+fn render_config_require_applied_succeeds_on_true_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("init")
+        .assert()
+        .success();
+
+    // First render-config actually applies the initial config.
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args(["render-config", "--require-applied"])
+        .assert()
+        .success();
+
+    // Second run: nothing changed since — must be a true no-op success,
+    // not a failure, even with --require-applied.
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args(["render-config", "--require-applied"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("already current"));
 }
 
 /// L4 subscription-coherence checks pass once `init` and `render-config`
@@ -1344,6 +1531,63 @@ fn backup_then_restore_round_trips_users() {
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("erin"));
+}
+
+#[test]
+fn backup_then_restore_round_trips_hysteria2_obfuscation_password() {
+    // Regression test for a manifest-drift bug: backup creation included
+    // reality/hysteria_obfs_password.txt (once Hysteria2 obfuscation was
+    // enabled) but the archive-extraction allowlist did not, so `restore`
+    // unconditionally rejected any backup of a deployment that had ever
+    // run `hysteria-obfs-rotate` — before restore's own (correct)
+    // handling of that file ever got a chance to run. Fails on the old
+    // three-independent-lists implementation; passes once backup
+    // creation, extraction allow-listing, and restore installation all
+    // derive from one shared manifest.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+
+    std::fs::create_dir_all(state_dir.join("reality")).unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), REALITY_PRIVATE_A).unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), REALITY_PUBLIC_A).unwrap();
+    std::fs::write(state_dir.join("reality/short_id.txt"), "deadbeef").unwrap();
+    let obfs_password = "correct-horse-battery-staple";
+    std::fs::write(
+        state_dir.join("reality/hysteria_obfs_password.txt"),
+        obfs_password,
+    )
+    .unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "erin"])
+        .assert()
+        .success();
+
+    let backup_path = dir.path().join("backup.tar");
+    admin(dir.path(), &cfg_path)
+        .args(["backup", "--output"])
+        .arg(&backup_path)
+        .assert()
+        .success();
+    assert!(backup_path.exists());
+
+    // Simulate loss of live state, then restore from the backup that
+    // contains the obfuscation password.
+    std::fs::remove_file(state_dir.join("reality/hysteria_obfs_password.txt")).unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .arg("restore")
+        .arg(&backup_path)
+        .assert()
+        .success();
+
+    let restored =
+        std::fs::read_to_string(state_dir.join("reality/hysteria_obfs_password.txt")).unwrap();
+    assert_eq!(
+        restored, obfs_password,
+        "restored obfuscation password must match what was backed up"
+    );
 }
 
 #[test]
