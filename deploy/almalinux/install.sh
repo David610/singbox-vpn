@@ -1811,6 +1811,20 @@ Documentation:
 BANNER
 }
 
+
+# Failure-injection testability hook (deploy/almalinux/lifecycle-acceptance.sh
+# stage 10, "failed/interrupted install cleanup"): when
+# VPN1_LIFECYCLE_GATE_ABORT_AFTER=<stage-name> is set, abort right after
+# that stage completes, so the destructive lifecycle gate can
+# deterministically exercise "install died partway through, does
+# uninstall still clean up completely" without relying on a real,
+# unreproducible mid-install crash. Unset in every real install path
+# (bootstrap install.sh never sets it) — a no-op there.
+lifecycle_gate_abort_hook() {
+  [ "${VPN1_LIFECYCLE_GATE_ABORT_AFTER:-}" = "$1" ] || return 0
+  die "VPN1_LIFECYCLE_GATE_ABORT_AFTER=$1 — deliberately aborting for lifecycle-gate testing."
+}
+
 main() {
   parse_cli_args "$@"
   preflight_stage
@@ -1818,6 +1832,7 @@ main() {
   host_config_stage
   binaries_stage
   singbox_install_stage
+  lifecycle_gate_abort_hook install_singbox
   systemd_stage
   users_groups_stage
   directories_stage
