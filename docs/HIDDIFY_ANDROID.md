@@ -9,7 +9,7 @@
    https://github.com/hiddify/hiddify-app, если Google Play недоступен).
 2. Скопируйте вашу ссылку подписки — её пришлёт администратор. Она
    выглядит так:
-   `https://sub.example.com:8443/sub/<длинный-случайный-токен>`
+   `https://sub.example.com:8443/sub/<длинный-случайный-токен>?format=hiddify`
 3. Откройте Hiddify → **New Profile** → **Add from Clipboard**
    («Добавить из буфера обмена»).
 4. Hiddify скачает профиль — в нём будут два способа подключения:

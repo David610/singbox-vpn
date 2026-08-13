@@ -49,7 +49,14 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 
 # ---------------------------------------------------------------------
 # argument parsing (curl ... | sudo bash -s -- --version v1.2.3)
+#
+# Bootstrap-specific flags are consumed here. Everything else (e.g.
+# --domain, --reality-handshake-server, --subscription-port,
+# --non-interactive) is passed through UNCHANGED to the real installer
+# at deploy/almalinux/install.sh, which is the one that understands
+# them — kept in exactly one place rather than duplicated/drifting here.
 # ---------------------------------------------------------------------
+PASSTHROUGH_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --version)
@@ -70,10 +77,21 @@ vpn1 one-command bootstrap installer.
 
   curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
 
-Options:
+Bootstrap options:
   --version, -s -- --version v1.2.3   pin to a specific tagged release
   --repo owner/repo                   install from a fork
   --ref branch-name                   source branch when no tag/version is given (default: main)
+
+Installer options (passed through to deploy/almalinux/install.sh):
+  --domain HOST                    use your own domain (accepts Unicode/IDN,
+                                    e.g. чёрт.com — converted to punycode
+                                    automatically)
+  --reality-handshake-server HOST  REALITY decoy TLS 1.3 hostname; required
+                                    for a non-interactive install, no unsafe
+                                    default is ever chosen automatically
+  --subscription-port PORT         public HTTPS port for the subscription
+                                    endpoint (default 8443)
+  --non-interactive                never prompt; fail fast instead
 
 By default this installer resolves the latest STABLE tagged release and
 installs source + binaries from that exact tag together (never a mix of
@@ -81,11 +99,11 @@ main-branch source with a different release's binaries). Set
 VPN1_CHANNEL=dev to explicitly track '--ref' (default: main) instead —
 intended for development/testing only, not production VPS installs.
 
-Environment overrides: VPN1_VERSION, VPN1_REPO, VPN1_REF, VPN1_CHANNEL, PUBLIC_HOST, SUBSCRIPTION_HOST
+Environment overrides: VPN1_VERSION, VPN1_REPO, VPN1_REF, VPN1_CHANNEL, PUBLIC_HOST, SUBSCRIPTION_HOST, REALITY_HANDSHAKE_SERVER
 USAGE
       exit 0 ;;
     *)
-      die "unknown argument: $1" ;;
+      PASSTHROUGH_ARGS+=("$1"); shift ;;
   esac
 done
 
@@ -194,7 +212,7 @@ echo
 # and the exact exit code of the real installer — never mask a failure.
 set +e
 VPN1_RELEASE_REPO="$VPN1_REPO" VPN1_VERSION="$VPN1_VERSION" \
-  bash "$SRC_DIR/deploy/almalinux/install.sh"
+  bash "$SRC_DIR/deploy/almalinux/install.sh" "${PASSTHROUGH_ARGS[@]}"
 rc=$?
 set -e
 exit "$rc"

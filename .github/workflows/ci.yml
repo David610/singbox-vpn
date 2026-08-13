@@ -99,15 +99,15 @@ jobs:
       - name: bash -n (syntax check every shipped script)
         run: |
           set -euo pipefail
-          for f in install.sh deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh; do
+          for f in install.sh uninstall.sh deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
       - name: shellcheck
         run: |
           sudo apt-get update -y >/dev/null
-          sudo apt-get install -y shellcheck jq >/dev/null
-          shellcheck -S warning install.sh deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
+          sudo apt-get install -y shellcheck jq idn2 >/dev/null
+          shellcheck -S warning install.sh uninstall.sh deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
       - name: vpn-benchmark outbound-discovery unit tests
         run: bash deploy/lib/tests/test-vpn-benchmark-lib.sh
       - name: vpn-benchmark set -e / discovery-call-site regression test
@@ -126,6 +126,16 @@ jobs:
         run: bash deploy/lib/tests/test-release-archive-contract.sh
       - name: installer manifest-timing/idempotency static test
         run: bash deploy/lib/tests/test-install-manifest-idempotency.sh
+      - name: ownership manifest unit tests
+        run: bash deploy/lib/tests/test-ownership-manifest.sh
+      - name: install/uninstall ownership-key parity cross-check
+        run: bash deploy/lib/tests/test-uninstall-ownership-parity.sh
+      - name: preflight-first REALITY/host-config ordering regression test
+        run: bash deploy/lib/tests/test-preflight-ordering.sh
+      - name: IDN/punycode domain handling tests
+        run: bash deploy/lib/tests/test-idn-punycode.sh
+      - name: uninstall idempotency (real script, no-op-only environment)
+        run: sudo bash deploy/lib/tests/test-uninstall-idempotency.sh
 
   secret-logging-check:
     runs-on: ubuntu-latest

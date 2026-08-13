@@ -90,6 +90,17 @@ only a starting selection, and installation succeeds only after the real
 sing-box protocol acceptance test returns application data. Do not use
 `www.microsoft.com` with the pinned sing-box build; its current TLS flight
 exceeds the underlying REALITY implementation's record budget.
+`--reality-handshake-server`/`REALITY_HANDSHAKE_SERVER` is validated in
+**preflight**, before any package/certificate/user/directory is touched
+— a missing or invalid value fails immediately with zero host mutation
+(interactive installs are prompted for it instead of failing, unless
+`--non-interactive` is also passed). `PUBLIC_HOST`/`--domain` is
+validated at the same time, including a check that its DNS actually
+resolves to this VPS before any certificate is requested for it —
+domains that are stale, still point elsewhere, or sit behind a
+proxy/CDN are rejected with a precise error before certbot/firewall
+changes happen, since REALITY/Hysteria2 need to terminate the raw
+connection on this host directly.
 
 ## Prerequisites (manual path)
 
@@ -313,8 +324,18 @@ IMPORTANT:
   ...
 
 Hiddify subscription URL (this IS the credential — treat it like a password):
-  https://sub.example.com:8443/sub/<token>
+  https://sub.example.com:8443/sub/<token>?format=hiddify
 ```
+
+The `?format=hiddify` query parameter is required, not cosmetic: a bare
+`/sub/<token>` (no `format`) is served as native sing-box JSON, which
+Hiddify's bundled sing-box fork can strict-unmarshal incorrectly and
+silently fail to import (the subscription fetch succeeds, but neither
+transport ever dials). `?format=hiddify` serves the plain
+`vless://`/`hysteria2://` share-link representation instead, which
+Hiddify's importer builds outbounds from directly. Native sing-box
+clients (not Hiddify) should use `?format=singbox` instead — see
+"Testing with Hiddify" below.
 
 This URL is shown exactly once (spec §26 — only the token's hash is
 persisted). Copy it now. The User ID printed above it is a separate,
@@ -427,16 +448,33 @@ sudo systemctl reload-or-restart sing-box
 
 ## Uninstall
 
+One command, no flags, from anywhere (does not require the repo to be
+cloned):
+
 ```bash
-sudo ./deploy/almalinux/uninstall.sh                 # keeps /etc/vpn
-sudo ./deploy/almalinux/uninstall.sh --purge-state --purge-firewall  # full removal
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
 ```
 
-`uninstall.sh` never deletes `/etc/vpn` (REALITY private key,
-`users.json`, TLS material) without the explicit `--purge-state` flag,
-and never touches firewall rules without `--purge-firewall`.
-`--purge-state` prints exactly what it is about to remove before doing
-so.
+This removes **everything** vpn1 created by default — `/etc/vpn`
+(REALITY private key, `users.json`, TLS material), `/opt/vpn1`,
+`/var/lib/vpn1`, all vpn1 systemd units, the nginx vhost, the sing-box
+binary (if vpn1 installed it), certbot's vpn1 renewal hook and any
+certificate lineages vpn1 issued, vpn1's firewall rules, the Rust
+toolchain (if vpn1 installed it), and vpn1's kernel network tuning
+(restored to the host's pre-vpn1 baseline via
+`deploy/lib/perf-tuning.sh`'s rollback). There is no `--purge-state`/
+`--purge-firewall` opt-in anymore — complete removal is simply what
+"uninstall" means now. It is ownership-aware: anything that already
+existed on the host before vpn1 (nginx, certbot, firewalld/ufw, a
+pre-existing Rust toolchain, unrelated certificates, pre-existing users)
+is left alone or restored to its previous enabled/state, never deleted.
+Safe to run more than once. It prints a checklist at the end for the one
+thing it genuinely cannot touch: your cloud provider's network-level
+firewall/security group, if you opened one for vpn1 there.
+
+If you already have the repo checked out, `deploy/almalinux/uninstall.sh`
+is the same script and works identically — the root `uninstall.sh` above
+is only a downloader that hands off to it.
 
 ## Acceptance test
 

@@ -96,6 +96,125 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 . "$REPO_ROOT/deploy/lib/preflight.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/ownership.sh"
+
+# ---------------------------------------------------------------------
+# CLI flags (all optional; env var equivalents also work, e.g. for
+# `curl | sudo bash -s -- --domain vpn.example.com`). The normal
+# zero-argument invocation never requires any of these.
+# ---------------------------------------------------------------------
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
+# Set definitively inside preflight_stage once existing_install_present()
+# has actually been checked. Defaults to 0 (repair) so that IF the
+# on_fatal_error trap somehow fires before preflight_stage reaches that
+# check, it fails safe: it does NOT auto-uninstall on the (safer)
+# assumption that something might already exist, rather than risking a
+# full teardown of a live deployment it never actually verified was new.
+IS_FRESH_INSTALL=0
+print_install_help() {
+  cat <<'USAGE'
+vpn1 installer (deploy/almalinux/install.sh).
+
+Normal usage takes no arguments at all:
+  curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
+
+Optional flags (all have environment-variable equivalents):
+  --domain HOST                    same as PUBLIC_HOST; accepts a Unicode
+                                    (IDN) domain such as чёрт.com and
+                                    converts it to punycode automatically
+  --reality-handshake-server HOST  same as REALITY_HANDSHAKE_SERVER; a TLS
+                                    1.3 hostname to use as the REALITY decoy.
+                                    Required in non-interactive mode — there
+                                    is no safe default.
+  --subscription-port PORT         same as SUBSCRIPTION_PORT (default 8443)
+  --non-interactive                never prompt on /dev/tty; fail fast with
+                                    a precise error instead of blocking if a
+                                    required value (e.g. the REALITY decoy)
+                                    is missing. Implied automatically when no
+                                    TTY is attached.
+  -h, --help                       show this message and exit
+USAGE
+}
+
+parse_cli_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --domain) PUBLIC_HOST="$2"; shift 2 ;;
+      --domain=*) PUBLIC_HOST="${1#*=}"; shift ;;
+      --reality-handshake-server) REALITY_HANDSHAKE_SERVER="$2"; shift 2 ;;
+      --reality-handshake-server=*) REALITY_HANDSHAKE_SERVER="${1#*=}"; shift ;;
+      --subscription-port) SUBSCRIPTION_PORT="$2"; shift 2 ;;
+      --subscription-port=*) SUBSCRIPTION_PORT="${1#*=}"; shift ;;
+      --non-interactive) NONINTERACTIVE=1; shift ;;
+      -h|--help) print_install_help; exit 0 ;;
+      *) die "unknown argument: $1 (see --help)" ;;
+    esac
+  done
+}
+
+# ---------------------------------------------------------------------
+# Transactional/rollback-safe installation: a failed FRESH install must
+# never leave the VPS half-installed. The ownership manifest
+# (deploy/lib/ownership.sh) is written incrementally, starting in stage
+# 1 — not only at the end — so at ANY point after preflight begins, it
+# accurately reflects everything mutated so far. If any stage fails
+# fatally (any unhandled non-zero exit under `set -Eeuo pipefail`) DURING
+# A FRESH INSTALL (nothing existed before this run started), this trap
+# automatically runs the same uninstaller a manual "remove vpn1" run
+# would use, so a failed fresh install is cleaned back up to a pristine
+# state without operator intervention.
+#
+# Deliberately NOT applied to a failed REPAIR/upgrade run (one where
+# existing_install_present() was already true when this run started,
+# i.e. IS_FRESH_INSTALL=0): auto-uninstalling in that case would destroy
+# a previously-working deployment's live users/keys/certificates over
+# what might be a purely transient failure, which is strictly worse than
+# leaving the (still mostly-working) host as-is for the operator to
+# retry or investigate.
+#
+# Set VPN1_NO_AUTO_ROLLBACK=1 to disable automatic rollback entirely
+# (fresh installs included) and leave the partial install in place for
+# debugging.
+# ---------------------------------------------------------------------
+on_fatal_error() {
+  local exit_code=$?
+  trap - ERR
+  echo "[install] ERROR: installation failed (exit $exit_code)." >&2
+  if [ "${VPN1_NO_AUTO_ROLLBACK:-0}" -eq 1 ] 2>/dev/null; then
+    echo "[install] VPN1_NO_AUTO_ROLLBACK=1 set — leaving the host as-is for inspection. Run '$REPO_ROOT/deploy/almalinux/uninstall.sh' to remove everything vpn1 created so far." >&2
+    exit "$exit_code"
+  fi
+  if ! ownership_is_marked INSTALL_ATTEMPTED; then
+    # Nothing was mutated yet (failure happened before stage 1 finished
+    # resolving input) — nothing to roll back.
+    exit "$exit_code"
+  fi
+  if [ "$IS_FRESH_INSTALL" -ne 1 ]; then
+    # This run was a REPAIR/upgrade of an existing, previously-working
+    # installation (existing_install_present() was already true when
+    # this run started) — automatically running a COMPLETE uninstall
+    # here would destroy a live deployment's users/keys/certificates
+    # over what might be a purely transient failure (a network blip
+    # mid-repair, for example). That is a strictly worse outcome than
+    # leaving the host in its current (partially-repaired, but still
+    # running with its previous working state underneath) condition.
+    # Automatic rollback is only safe — and only attempted — for a
+    # FRESH install that had nothing to lose.
+    echo "[install] this was a REPAIR of an existing installation, not a fresh install — NOT auto-rolling-back (that would risk destroying a previously-working deployment's users/keys/certificates over what may be a transient failure)." >&2
+    echo "[install] the previous working installation should still be intact; re-run install.sh to retry the repair, or investigate with 'vpn doctor' / 'journalctl -u sing-box -u vpn-subscription'." >&2
+    exit "$exit_code"
+  fi
+  echo "[install] this was a FRESH install (nothing existed before this run) — rolling back everything vpn1 created during this failed attempt..." >&2
+  if [ -x "$REPO_ROOT/deploy/almalinux/uninstall.sh" ]; then
+    bash "$REPO_ROOT/deploy/almalinux/uninstall.sh" \
+      || echo "[install] WARNING: automatic rollback itself hit an error — inspect the host and re-run '$REPO_ROOT/deploy/almalinux/uninstall.sh' manually." >&2
+  else
+    echo "[install] WARNING: could not find uninstall.sh to auto-rollback; run it manually once available." >&2
+  fi
+  exit "$exit_code"
+}
+trap on_fatal_error ERR
 
 # ---------------------------------------------------------------------
 # [1] preflight
@@ -170,6 +289,8 @@ check_ports_free() {
 # this run. A no-op when already running from that persistent copy
 # (e.g. someone `cd /opt/vpn1 && ./deploy/almalinux/install.sh`).
 PERSIST_DIR="/opt/vpn1"
+OPT_VPN1_PRE_EXISTED=0
+[ -e "$PERSIST_DIR" ] && OPT_VPN1_PRE_EXISTED=1
 persist_source_tree() {
   if [ "$REPO_ROOT" = "$PERSIST_DIR" ]; then
     return
@@ -205,6 +326,33 @@ and kill whatever it reports before retrying."
   log "acquired installer lock (/run/lock/vpn1-installer.lock) — no other install.sh/update.sh can run concurrently."
 }
 
+# Best-effort: enables real Unicode->punycode conversion for an IDN
+# domain (PUBLIC_HOST/SUBSCRIPTION_HOST/REALITY_HANDSHAKE_SERVER, e.g.
+# чёрт.com). Optional and non-fatal — derive_punycode_host() already
+# falls back to leaving non-ASCII input unchanged (which then correctly
+# fails preflight_validate_hostname with a clear error, rather than
+# silently mis-encoding it) when no converter is available, so a
+# failure/absence here never blocks installation. Run once, early in
+# preflight — BEFORE any operator-supplied hostname is normalized —
+# rather than in packages_stage, since by the time packages_stage runs
+# the hostnames must already be resolved and validated (see
+# resolve_reality_handshake_server/resolve_host_config, now called from
+# preflight_stage itself).
+install_idn_support() {
+  command -v idn2 >/dev/null 2>&1 && return 0
+  local pkg=""
+  case "$OS_FAMILY" in
+    rhel) pkg="libidn2" ;;
+    debian) pkg="idn2" ;;
+    *) return 0 ;;
+  esac
+  case "$OS_FAMILY" in
+    rhel) dnf install -y --setopt=install_weak_deps=False "$pkg" >/dev/null 2>&1 && ownership_list_add PKGS_INSTALLED_BY_VPN1 "$pkg" ;;
+    debian) apt-get install -y --no-install-recommends "$pkg" >/dev/null 2>&1 && ownership_list_add PKGS_INSTALLED_BY_VPN1 "$pkg" ;;
+  esac
+  return 0
+}
+
 preflight_stage() {
   stage 1 "preflight"
   preflight_require_root
@@ -233,15 +381,59 @@ preflight_stage() {
   check_ports_free
   if existing_install_present; then
     log "existing vpn1 installation detected at $DEPLOYMENT_TOML — this run will UPGRADE/REPAIR in place, preserving users and keys."
+    IS_FRESH_INSTALL=0
   else
     log "no existing installation detected — this will be a fresh install."
+    IS_FRESH_INSTALL=1
   fi
   persist_source_tree
+  # ---------------------------------------------------------------
+  # Collect and validate EVERY required operator input and fatal
+  # precondition HERE, before packages/certs/users/systemd/firewall/
+  # sysctls/persistent files are touched. This is the fix for the
+  # REALITY-decoy incident: REALITY_HANDSHAKE_SERVER (and PUBLIC_HOST)
+  # used to only be validated in stage 10 (render_deployment_toml),
+  # after packages, sing-box, users, directories and a real Let's
+  # Encrypt certificate had already been created. Determine everything
+  # up front instead, and fail immediately with zero host mutation if a
+  # required value is missing/invalid in non-interactive mode.
+  # ---------------------------------------------------------------
+  install_idn_support
+  resolve_host_config
+  resolve_reality_handshake_server
+  ownership_mark INSTALL_ATTEMPTED
+  ownership_set_baseline_once OPT_VPN1_PRE_EXISTED "$OPT_VPN1_PRE_EXISTED"
+  # Write the install-state manifest NOW (acceptance="installing"), not
+  # only at the very end — a fatal failure at ANY later stage still
+  # leaves repo_root/public_host/subscription_host/firewall_backend on
+  # disk for the automatic-rollback trap (on_fatal_error) and for a
+  # manual uninstall.sh run to find, instead of only self-describing
+  # once the whole install already succeeded.
+  write_install_state_manifest "installing"
 }
 
 # ---------------------------------------------------------------------
 # [2] OS packages
 # ---------------------------------------------------------------------
+# Records, for every package in $1 (name-per-word), whether it was
+# ALREADY installed before this run — via the ownership manifest's
+# PKGS_INSTALLED_BY_VPN1 list — so uninstall.sh can later remove exactly
+# the packages vpn1 introduced and leave everything the operator already
+# had alone. Must be called with the exact package list BEFORE the
+# package manager installs anything.
+record_package_ownership_rhel() {
+  local p
+  for p in "$@"; do
+    rpm -q "$p" >/dev/null 2>&1 || ownership_list_add PKGS_INSTALLED_BY_VPN1 "$p"
+  done
+}
+record_package_ownership_debian() {
+  local p
+  for p in "$@"; do
+    dpkg -s "$p" >/dev/null 2>&1 || ownership_list_add PKGS_INSTALLED_BY_VPN1 "$p"
+  done
+}
+
 install_dependencies_rhel() {
   log "installing OS packages (dnf)..."
   local pkgs=(gcc gcc-c++ make pkgconf-pkg-config openssl-devel openssl
@@ -260,6 +452,13 @@ install_dependencies_rhel() {
   else
     pkgs+=(curl)
   fi
+  # Baseline (once-ever) capture of pre-existing state, BEFORE any
+  # package is installed or firewalld/nginx/certbot state changes —
+  # uninstall.sh restores exactly these, never guesses them.
+  ownership_set_baseline_once NGINX_PRE_INSTALLED "$(command -v nginx >/dev/null 2>&1 && echo 1 || echo 0)"
+  ownership_set_baseline_once FIREWALLD_PRE_INSTALLED "$(command -v firewall-cmd >/dev/null 2>&1 && echo 1 || echo 0)"
+  ownership_set_baseline_once FIREWALLD_PRE_ENABLED "$(systemctl is-enabled --quiet firewalld 2>/dev/null && echo 1 || echo 0)"
+  record_package_ownership_rhel "${pkgs[@]}"
   dnf install -y --setopt=install_weak_deps=False "${pkgs[@]}" >/dev/null
   systemctl enable --now firewalld >/dev/null
 }
@@ -267,10 +466,12 @@ install_dependencies_rhel() {
 install_dependencies_debian() {
   log "installing OS packages (apt)..."
   export DEBIAN_FRONTEND=noninteractive
+  local pkgs=(build-essential pkg-config libssl-dev ufw tar curl jq nginx certbot ca-certificates)
+  ownership_set_baseline_once NGINX_PRE_INSTALLED "$(command -v nginx >/dev/null 2>&1 && echo 1 || echo 0)"
+  ownership_set_baseline_once UFW_PRE_ENABLED "$(ufw status 2>/dev/null | grep -q 'Status: active' && echo 1 || echo 0)"
+  record_package_ownership_debian "${pkgs[@]}"
   apt-get update -y >/dev/null
-  apt-get install -y --no-install-recommends \
-    build-essential pkg-config libssl-dev \
-    ufw tar curl jq nginx certbot ca-certificates >/dev/null
+  apt-get install -y --no-install-recommends "${pkgs[@]}" >/dev/null
   systemctl enable --now ufw >/dev/null 2>&1 || true
 }
 
@@ -326,10 +527,16 @@ derive_punycode_host() {
   local input="$1"
   case "$input" in
     *[!\ -~]*)
+      # Force a UTF-8 locale for the converter regardless of this host's
+      # own locale settings — a non-UTF-8 locale (common on a minimal
+      # VPS image) makes idn2/idn fail to even parse the input, which
+      # would otherwise silently fall through to returning the
+      # unconverted Unicode string (and then correctly, but confusingly,
+      # fail hostname validation instead of being converted).
       if command -v idn2 >/dev/null 2>&1; then
-        idn2 "$input" 2>/dev/null || echo "$input"
+        LC_ALL=C.UTF-8 idn2 "$input" 2>/dev/null || LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 idn2 "$input" 2>/dev/null || echo "$input"
       elif command -v idn >/dev/null 2>&1; then
-        idn --quiet -a "$input" 2>/dev/null || echo "$input"
+        LC_ALL=C.UTF-8 idn --quiet -a "$input" 2>/dev/null || LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 idn --quiet -a "$input" 2>/dev/null || echo "$input"
       else
         echo "$input"
       fi
@@ -369,30 +576,122 @@ resolve_host_config() {
     return
   fi
 
-  if [ -z "${PUBLIC_HOST:-}" ]; then
+  local operator_supplied=0
+  if [ -n "${PUBLIC_HOST:-}" ]; then
+    operator_supplied=1
+    PUBLIC_HOST="$(derive_punycode_host "$PUBLIC_HOST")"
+  elif [ "$NONINTERACTIVE" -ne 1 ]; then
     local prompted
     prompted="$(prompt_for_public_host)" || prompted=""
-    [ -n "$prompted" ] && PUBLIC_HOST="$prompted"
+    if [ -n "$prompted" ]; then
+      PUBLIC_HOST="$prompted"
+      operator_supplied=1
+    fi
   fi
 
-  if [ -n "${PUBLIC_HOST:-}" ]; then
+  if [ "$operator_supplied" -eq 1 ]; then
     log "using operator-supplied PUBLIC_HOST=$PUBLIC_HOST"
   else
     log "no PUBLIC_HOST set — detecting public IP for zero-touch install..."
-    PUBLIC_IP="$(preflight_detect_public_ip)" || die "could not auto-detect this server's public IP. Re-run with PUBLIC_HOST=your.domain.com set explicitly."
+    PUBLIC_IP="$(preflight_detect_public_ip)" || die "could not auto-detect this server's public IP. Re-run with PUBLIC_HOST=your.domain.com (or --domain your.domain.com) set explicitly."
     log "detected public IP: $PUBLIC_IP"
     PUBLIC_HOST="$(derive_auto_host "$PUBLIC_IP")"
     log "auto-assigned hostname: $PUBLIC_HOST (resolves to $PUBLIC_IP via sslip.io, no DNS setup needed)"
   fi
-  SUBSCRIPTION_HOST="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
+  SUBSCRIPTION_HOST="$(derive_punycode_host "${SUBSCRIPTION_HOST:-$PUBLIC_HOST}")"
   preflight_validate_hostname "$PUBLIC_HOST" "PUBLIC_HOST" || die "invalid PUBLIC_HOST — refusing to interpolate it into deployment.toml/nginx config."
   preflight_validate_hostname "$SUBSCRIPTION_HOST" "SUBSCRIPTION_HOST" || die "invalid SUBSCRIPTION_HOST — refusing to interpolate it into deployment.toml/nginx config."
+  # A domain the operator explicitly typed/passed (as opposed to the
+  # auto-assigned sslip.io hostname, which is correct by construction —
+  # it literally encodes this host's own detected IP) must actually
+  # resolve to THIS server before we go on to open firewall ports and
+  # request a certificate for it. A mismatch here means either stale
+  # DNS, a domain still pointed at a previous host, or the domain is
+  # fronted by a proxy/CDN whose edge terminates TLS instead of this
+  # VPS — REALITY/Hysteria2 need to terminate the raw TCP/UDP connection
+  # themselves, so a CDN in front of it will never work correctly even
+  # if DNS/cert issuance somehow succeeded anyway.
+  if [ "$operator_supplied" -eq 1 ]; then
+    local dns_rc=0
+    preflight_check_hostname_resolves_here "$PUBLIC_HOST" || dns_rc=$?
+    case "$dns_rc" in
+      0) ;;
+      1) die "PUBLIC_HOST=$PUBLIC_HOST does not resolve to this server. Point its DNS A/AAAA record directly at this VPS's public IP (not through a proxy/CDN — REALITY and Hysteria2 must terminate the raw connection on THIS host) and re-run once DNS has propagated. Refusing to open firewall ports or request a certificate for a domain that resolves elsewhere." ;;
+      2) warn "could not conclusively verify that PUBLIC_HOST=$PUBLIC_HOST resolves to this server (no DNS tool, or DNS returned nothing yet) — continuing, but certificate issuance will fail later if it doesn't." ;;
+    esac
+  fi
   export PUBLIC_HOST SUBSCRIPTION_HOST
 }
 
 host_config_stage() {
   stage 3 "host configuration"
-  resolve_host_config
+  # PUBLIC_HOST/SUBSCRIPTION_HOST were already resolved and validated in
+  # preflight_stage (stage 1) — required so packages/certs/users are
+  # never touched before a fatal input problem (bad hostname, DNS not
+  # pointed here) is caught. This stage just confirms the values in the
+  # per-stage log for operators following along.
+  log "host configuration: PUBLIC_HOST=$PUBLIC_HOST SUBSCRIPTION_HOST=$SUBSCRIPTION_HOST"
+}
+
+# ---------------------------------------------------------------------
+# REALITY decoy handshake server — resolved and validated in preflight
+# (stage 1), BEFORE packages/sing-box/users/directories/certificates are
+# ever touched. This is the fix for the incident this task was filed
+# about: the installer used to only discover a missing
+# REALITY_HANDSHAKE_SERVER deep in stage 10 (render_deployment_toml),
+# after a real Let's Encrypt certificate had already been issued and
+# every package/user/directory already created.
+#
+# There is intentionally NO universally safe default decoy — a bad
+# choice (a host that blocks/detects REALITY probing, or one the
+# operator doesn't actually control/intend) is a real security/
+# reliability footgun, so this never silently invents one. Interactive
+# mode asks once, early. Non-interactive mode requires
+# --reality-handshake-server/REALITY_HANDSHAKE_SERVER and fails
+# immediately, with zero host mutation, if it's absent.
+# ---------------------------------------------------------------------
+resolve_reality_handshake_server() {
+  # A re-run against an already-committed deployment.toml already has a
+  # validated, working value baked in — render_deployment_toml() leaves
+  # an existing file untouched, so requiring the env var again here
+  # would turn a harmless repair re-run into a hard failure.
+  if [ -f "$DEPLOYMENT_TOML" ]; then
+    return
+  fi
+  if [ -z "${REALITY_HANDSHAKE_SERVER:-}" ] && [ "$NONINTERACTIVE" -ne 1 ] \
+      && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    local reply=""
+    printf '\nREALITY needs a TLS 1.3 "decoy" hostname — a real, already-running TLS\n1.3 server that you control or have deliberately chosen (NOT this VPS\nitself). There is no universally safe default.\nEnter a REALITY handshake server hostname (e.g. a domain you already run TLS 1.3 on): ' >/dev/tty
+    IFS= read -r reply </dev/tty || reply=""
+    [ -n "$reply" ] && REALITY_HANDSHAKE_SERVER="$reply"
+  fi
+  REALITY_HANDSHAKE_SERVER="$(derive_punycode_host "${REALITY_HANDSHAKE_SERVER:-}")"
+  : "${REALITY_HANDSHAKE_SERVER:?REALITY_HANDSHAKE_SERVER is required and was not supplied. Pass --reality-handshake-server <host> (or set REALITY_HANDSHAKE_SERVER=<host>) to a TLS 1.3 hostname you control or have explicitly selected as the REALITY decoy. There is no universally safe default — vpn1 refuses to guess one, and refuses to make ANY change to this host without it. See docs/ALMALINUX_DEPLOYMENT.md for how to choose a decoy.}"
+  preflight_validate_hostname "$REALITY_HANDSHAKE_SERVER" "REALITY_HANDSHAKE_SERVER" \
+    || die "invalid REALITY_HANDSHAKE_SERVER — refusing to make any host changes."
+  # Best-effort "is this candidate actually usable for REALITY" check,
+  # as far as practical BEFORE any mutation. This is deliberately not
+  # the full acceptance gate — the real go/no-go is stage 17's
+  # 'vpn doctor --protocol' real sing-box handshake self-test, which
+  # needs sing-box/keys/config that don't exist yet at this point — but
+  # a quick outbound TLS 1.3 probe catches an obviously wrong/unreachable
+  # host early, before packages/certs/users are touched.
+  if command -v openssl >/dev/null 2>&1; then
+    local probe_out
+    probe_out="$(mktemp)"
+    if timeout 8 openssl s_client -connect "${REALITY_HANDSHAKE_SERVER}:443" \
+        -tls1_3 -servername "$REALITY_HANDSHAKE_SERVER" </dev/null >"$probe_out" 2>&1; then
+      if grep -q 'Protocol.*TLSv1.3' "$probe_out"; then
+        log "REALITY_HANDSHAKE_SERVER=$REALITY_HANDSHAKE_SERVER answered with TLS 1.3 on 443/tcp — looks usable as a decoy."
+      else
+        warn "REALITY_HANDSHAKE_SERVER=$REALITY_HANDSHAKE_SERVER is reachable on 443/tcp but did not confirm TLS 1.3 in this probe — REALITY requires a genuine TLS 1.3 server. Double-check this is really the host you intend before continuing (the real acceptance gate runs later, at the end of install)."
+      fi
+    else
+      warn "could not reach REALITY_HANDSHAKE_SERVER=$REALITY_HANDSHAKE_SERVER on 443/tcp from this host (egress firewall, or the target itself, may be the cause). Continuing — the end-of-install protocol self-test is the real acceptance gate, but a decoy unreachable from this VPS will fail that test too."
+    fi
+    rm -f "$probe_out"
+  fi
+  export REALITY_HANDSHAKE_SERVER
 }
 
 # ---------------------------------------------------------------------
@@ -465,6 +764,12 @@ install_rustup_noninteractive() {
     die "rustup installation failed or exceeded its 15-minute hard deadline"
   fi
   rm -f "$rustup_script"
+  # Track that VPN1 (not the operator) introduced this toolchain, so
+  # uninstall can remove it later — but only when no toolchain was
+  # already present (checked by build_binaries_from_source before it
+  # ever calls this function).
+  ownership_mark RUSTUP_INSTALLED_BY_VPN1
+  ownership_set RUSTUP_HOME_DIR "$HOME"
   # shellcheck disable=SC1091
   . "$HOME/.cargo/env"
 }
@@ -505,6 +810,7 @@ install_singbox() {
     log "sing-box $SINGBOX_VERSION already installed, skipping."
     return
   fi
+  ownership_set_baseline_once SINGBOX_BIN_PRE_EXISTED "$([ -e "$SINGBOX_BIN" ] && echo 1 || echo 0)"
   local tmpdir tarball
   tmpdir="$(mktemp -d)"
   tarball="sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"
@@ -590,8 +896,8 @@ systemd_stage() {
 # [7] users/groups
 # ---------------------------------------------------------------------
 create_service_users() {
-  id vpn-subscription >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin vpn-subscription
-  id sing-box >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin sing-box
+  id vpn-subscription >/dev/null 2>&1 || { useradd --system --no-create-home --shell /usr/sbin/nologin vpn-subscription; ownership_mark USER_VPNSUB_CREATED; }
+  id sing-box >/dev/null 2>&1 || { useradd --system --no-create-home --shell /usr/sbin/nologin sing-box; ownership_mark USER_SINGBOX_CREATED; }
   # Shared traversal-only group: neither service's *files* become
   # readable by the other (that's still controlled by per-file group
   # ownership below), but both services' primary groups need to walk
@@ -599,7 +905,7 @@ create_service_users() {
   # belonging to both services. Without this, sing-box (Group=sing-box)
   # cannot even stat() its way down to sing-box/config.json through a
   # vpn-subscription-owned parent, and vice versa for reality/public.key.
-  getent group vpn-compat >/dev/null 2>&1 || groupadd --system vpn-compat
+  getent group vpn-compat >/dev/null 2>&1 || { groupadd --system vpn-compat; ownership_mark GROUP_VPNCOMPAT_CREATED; }
   usermod -aG vpn-compat sing-box
   usermod -aG vpn-compat vpn-subscription
 }
@@ -760,6 +1066,7 @@ attempt_automatic_certbot() {
   trap - INT TERM
   if [ "$rc" -eq 0 ]; then
     log "certificate issued for $host."
+    ownership_list_add CERT_LINEAGES_CREATED_BY_VPN1 "$host"
     return 0
   fi
   # Local port 80 being free (checked above) is NOT the same as port 80
@@ -936,6 +1243,8 @@ install_certbot_renewal_hook() {
     fi
   done
   if [ -n "$renewal_unit" ]; then
+    ownership_set_baseline_once CERTBOT_TIMER_UNIT "$renewal_unit"
+    ownership_set_baseline_once CERTBOT_TIMER_PRE_ENABLED "$(systemctl is-enabled --quiet "$renewal_unit" 2>/dev/null && echo 1 || echo 0)"
     if systemctl enable --now "$renewal_unit" >/dev/null 2>&1; then
       log "$renewal_unit enabled."
     else
@@ -1062,11 +1371,13 @@ configure_nginx() {
   # otherwise.
   if [ "$OS_FAMILY" = "rhel" ] && command -v semanage >/dev/null 2>&1; then
     if semanage port -l 2>/dev/null | awk '/^http_port_t/' | grep -qw "$port"; then
-      : # already labeled http_port_t
+      : # already labeled http_port_t — vpn1 did not add this mapping, nothing to undo
     elif semanage port -l 2>/dev/null | grep -w tcp | grep -qw "$port"; then
       die "SELinux port ${port}/tcp is already owned by a non-http type. Refusing to relabel another service's port; choose another SUBSCRIPTION_PORT."
     else
-      semanage port -a -t http_port_t -p tcp "$port" || warn "could not add SELinux port context for ${port}/tcp — nginx may fail to bind it."
+      semanage port -a -t http_port_t -p tcp "$port" \
+        && ownership_list_add SELINUX_PORT_LABELS_ADDED "${port}/tcp" \
+        || warn "could not add SELinux port context for ${port}/tcp — nginx may fail to bind it."
     fi
   fi
   # SELinux also blocks httpd_t from making ANY outbound network
@@ -1077,7 +1388,10 @@ configure_nginx() {
   # above) but every request 502s because nginx is denied when it tries
   # to connect to the backend. Caught on the same real AlmaLinux
   # install, immediately after fixing the port-bind denial above.
-  if [ "$OS_FAMILY" = "rhel" ] && command -v setsebool >/dev/null 2>&1; then
+  if [ "$OS_FAMILY" = "rhel" ] && command -v setsebool >/dev/null 2>&1 && command -v getsebool >/dev/null 2>&1; then
+    local prior
+    prior="$(getsebool httpd_can_network_connect 2>/dev/null | awk '{print $NF}')"
+    ownership_set_baseline_once SELINUX_HTTPD_NETCONNECT_PRE "${prior:-unknown}"
     setsebool -P httpd_can_network_connect 1 || warn "could not enable SELinux boolean httpd_can_network_connect — nginx's proxy_pass to the subscription backend may 502."
   fi
   # Swap and reload as one recoverable transaction. `nginx -t` cannot
@@ -1091,6 +1405,7 @@ configure_nginx() {
     cp -a "$NGINX_CONF" "$nginx_backup"
     nginx_had_previous=1
   fi
+  ownership_set_baseline_once NGINX_PRE_ENABLED "$(systemctl is-enabled --quiet nginx 2>/dev/null && echo 1 || echo 0)"
   install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"
   rm -f "$NGINX_CONF.tmp"
   # `systemctl enable --now` is a no-op on an already-active nginx — it
@@ -1193,6 +1508,10 @@ configure_selinux() {
     semanage fcontext -a -t etc_t "$STATE_DIR/sing-box(/.*)?" 2>/dev/null || true
     semanage fcontext -a -t cert_t "$STATE_DIR/hysteria(/.*)?" 2>/dev/null || true
     restorecon -Rv "$STATE_DIR" >/dev/null 2>&1 || true
+    # These three fcontext rules are always vpn1-owned (they name only
+    # vpn1's own paths, which cannot have pre-existed before vpn1 did) —
+    # unconditional, not baseline-gated.
+    ownership_mark SELINUX_FCONTEXT_RULES_ADDED
   else
     log "semanage not found; skipping explicit SELinux file context (policycoreutils-python-utils should have installed it)."
   fi
@@ -1493,6 +1812,7 @@ BANNER
 }
 
 main() {
+  parse_cli_args "$@"
   preflight_stage
   packages_stage
   host_config_stage

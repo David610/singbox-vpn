@@ -4,7 +4,7 @@ Per-platform instructions for importing a vpn1 subscription into a
 compatible client. All of these assume the administrator has already run
 `vpn-admin user create --name <you>` (or `vpn user create ...` — same
 binary, see `apps/admin/Cargo.toml`) and handed you a subscription URL
-(`https://sub.example.com:8443/sub/<token>`) or a QR code of it
+(`https://sub.example.com:8443/sub/<token>?format=hiddify`) or a QR code of it
 (`vpn-admin user create --qr` / `vpn-admin user qr <name>`).
 
 You do not need to understand UUIDs, REALITY keys, Hysteria2 passwords,
