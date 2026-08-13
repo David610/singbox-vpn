@@ -446,6 +446,27 @@ mod tests {
         assert!(!json_str.to_lowercase().contains("private_key"));
     }
 
+    /// docs/CLIENT_PROTOCOL_BEHAVIOR.md's DNS statement depends on this
+    /// staying true: the generated subscription must never silently
+    /// start expressing DNS/routing opinions it can't actually enforce
+    /// or verify (the client app owns that entirely). Lock it in so a
+    /// future change can't add a `dns` block without deliberately
+    /// updating that doc's claims.
+    #[test]
+    fn client_subscription_has_no_dns_block_and_no_inbounds() {
+        let doc =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        assert!(
+            doc.get("dns").is_none(),
+            "generated subscription must not claim to control DNS — see docs/CLIENT_PROTOCOL_BEHAVIOR.md"
+        );
+        assert!(
+            doc.get("inbounds").is_none(),
+            "generated subscription must not define a TUN/inbound — full-device tunneling is entirely client-controlled, see docs/CLIENT_PROTOCOL_BEHAVIOR.md"
+        );
+    }
+
     #[test]
     fn route_final_points_at_manual_selector_not_urltest() {
         let doc =

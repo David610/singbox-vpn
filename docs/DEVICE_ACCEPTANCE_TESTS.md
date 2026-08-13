@@ -57,7 +57,9 @@ Prerequisites:
 5. The device under test, on a real network, with the relevant client
    installed per `docs/clients/`.
 
-For each matrix row:
+For each matrix row (see `docs/CLIENT_PROTOCOL_BEHAVIOR.md` for what
+each of the DNS/IPv6/tunnel-drop fields below actually mean and why they
+are not something server-side config can guarantee):
 
 ```
 Date:
@@ -67,10 +69,25 @@ Device model / OS version:
 VPS region / provider:
 sing-box version (from `vpn-admin version` on the VPS):
 
-VLESS+REALITY:          PASS/FAIL
-Hysteria2:               PASS/FAIL
-Subscription refresh:    PASS/FAIL
-Network switch:          PASS/FAIL
+Profile import:          PASS/FAIL
+VLESS+REALITY:            PASS/FAIL
+Hysteria2:                 PASS/FAIL / NOT TESTED
+Subscription refresh:      PASS/FAIL
+Network switch:            PASS/FAIL
+
+Observed public IP after connecting (must equal the VPS's public IP):
+Required client-side setting (e.g. Hiddify Service Mode = VPN/TUN, not
+  Proxy Only — record whatever was actually needed):
+
+DNS leak result (e.g. https://dnsleaktest.com with VPN on vs. off —
+  record which resolver/location showed, PASS if it matches the VPS's
+  location/ISP, FAIL if your real ISP/location leaked through):
+IPv6 result (does the device have IPv6 connectivity at all before
+  connecting? If so, does an IPv6-specific leak test show the VPS or
+  your real network? N/A if the device/network has no IPv6 at all):
+Tunnel-drop behavior (kill the VPS's sing-box process or disable Wi-Fi/
+  data briefly — does the client fail closed, fail open, or hang?
+  Record what actually happens, do not assume a kill switch exists):
 
 Steps to disable/revoke and prove it took effect:
   1. `vpn-admin user disable test` on the VPS.
@@ -87,6 +104,24 @@ Notes:
 
 Paste the filled-in block above as a new dated entry directly below this
 line once a real test is run, and update the corresponding matrix cell.
+
+## Performance sanity check (not a benchmark)
+
+Run once per real device/VPS test above, connected via REALITY (repeat
+for Hysteria2 if also testing it). This is meant to catch an obvious
+stall, fragmentation problem, reconnect failure, or routing break — it
+is not a throughput measurement (`vpn benchmark` on the VPS, see
+`docs/PERFORMANCE_OPTIMIZATION_PLAN.md`, is the real benchmark tool).
+
+```
+Browsing a few ordinary HTTPS sites:        PASS/FAIL (note any that hang/fail)
+Sustained download (a large file, 1+ min):   PASS/FAIL (note if it stalls or dies mid-transfer)
+Sustained upload (a large file, 1+ min):     PASS/FAIL
+Disconnect and reconnect the client:         PASS/FAIL (note how long reconnect took)
+Idle 5-10 minutes, then reuse the connection: PASS/FAIL (note if it needed a manual reconnect)
+
+Notes (any stall, unusually slow transfer, or unexpected disconnect):
+```
 
 ## Telegram-specific matrix
 

@@ -141,6 +141,39 @@ plumbing for a runner-minutes-only win; deferred.
    comments/blanks; regression test added). Lesson: FAST GATE running as
    root in this sandbox cannot catch non-root-checkout-specific bugs —
    real CI is still load-bearing for this class of issue.
+7. **Client protocol behavior audit** (this checkpoint): read the
+   subscription renderer, server config generator, and every client doc
+   against 11 client-correctness requirements — nearly all were already
+   correctly implemented and honestly documented (per-transport
+   `SelectionProfile`, deterministic REALITY default with `auto` always
+   available, disabled/revoked-user 404 + no-store + no-token-logging,
+   HIDDIFY_IOS.md's "four different claims" framework already
+   distinguishing server/client/OS-controlled behavior). Ran the real
+   sing-box interop suite for the first time in this session with a real
+   network-fetched pinned binary — all 9 tests (REALITY + Hysteria2,
+   matched/mismatched credentials, obfuscation, Brutal bandwidth) PASS —
+   upgrading `docs/CLIENT_COMPATIBILITY.md`'s sing-box row from
+   "schema-checked" to "verified" and correcting its stale "no network
+   capability in this sandbox" framing. New
+   `docs/CLIENT_PROTOCOL_BEHAVIOR.md`: the single protocol-level
+   reference for what vpn1 controls vs. client-controlled vs.
+   unguaranteed — full-device tunneling (config has no `inbounds`/TUN
+   directive at all), DNS (no `dns` block, no leak-prevention claim),
+   IPv4/IPv6 (dual-stack `"listen": "::"` server-side, no client route
+   preference expressed), MTU (no override, none needed), UDP/TCP
+   (Hysteria2 UDP not assumed to work everywhere; REALITY stays
+   selectable if it doesn't), failover honesty (`urltest`/`auto` is
+   latency-only, never called censorship-aware). Two new regression
+   tests lock the honesty claims in code: the client subscription must
+   never gain a `dns` or `inbounds` block, and both server inbounds must
+   keep binding the dual-stack wildcard. Enriched
+   `docs/DEVICE_ACCEPTANCE_TESTS.md`'s per-row template with the exact
+   fields this task's REAL CLIENT ACCEPTANCE section asks for (observed
+   public IP, DNS leak result, IPv6 result, tunnel-drop behavior,
+   required client-side setting) plus a non-benchmark performance
+   sanity-check template. No real device/client test was run — none
+   available this session; see Remaining UNVERIFIED in the final report
+   for this checkpoint.
 
 ## Blockers
 
@@ -185,12 +218,15 @@ sudo /opt/vpn1/bin/vpn1-uninstall --yes
 
 ## Next logical checkpoint
 
-Prompt 7: push the first real `vX.Y.Z` release tag, then run
+Prompt 8: push the first real `vX.Y.Z` release tag, then run
 `deploy/almalinux/lifecycle-acceptance.sh` against a real disposable
-AlmaLinux 9 host — this is now the single highest-value remaining gap:
-every hardening claim above (SSH preservation, rollback, idempotency,
-ACME restoration, config migration, offline uninstall) is code-read/
-unit/fixture verified only, never exercised against a real
-systemd/firewalld/reboot lifecycle. Until then, pick one concrete
-supported-product defect/gap and fix it with minimum churn, running
-`deploy/lib/fast-gate.sh` after every change.
+AlmaLinux 9 host AND, on that same host, work through
+`docs/DEVICE_ACCEPTANCE_TESTS.md`'s matrix with at least one real Hiddify
+device — this is now the single highest-value remaining gap across
+*every* prior checkpoint: SSH preservation, rollback, idempotency, ACME
+restoration, config migration, offline uninstall, AND real client
+connectivity/DNS/IPv6 behavior are all code-read/unit/fixture verified
+only, never exercised end-to-end against a real host + real device.
+Until then, pick one concrete supported-product defect/gap and fix it
+with minimum churn, running `deploy/lib/fast-gate.sh` after every
+change.

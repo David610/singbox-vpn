@@ -5,40 +5,43 @@ ran against the real client, or a documented manual test was performed
 and its steps/date are recorded. Nothing is marked "yes" from spec
 conformance alone.
 
+**Canonical per-platform matrix**: `docs/DEVICE_ACCEPTANCE_TESTS.md` —
+this file does not duplicate it; the table below is the summary. See
+`docs/CLIENT_PROTOCOL_BEHAVIOR.md` for the protocol-level facts (DNS,
+IPv4/IPv6, full-tunnel, UDP/TCP, failover) that apply across every
+client, and see `docs/clients/` for per-platform walkthroughs.
+
 | Client | VLESS+REALITY | Hysteria2 | Subscription import |
 |---|---|---|---|
-| Hiddify (Android) | not validated | not validated | not validated |
-| v2rayNG | not validated | not validated | not validated |
-| sing-box (CLI / `sing-box check`) | schema-checked* | schema-checked* | JSON schema-checked* |
+| Hiddify (iOS/Android/Linux/Windows/macOS/MagicOS) | not yet tested on a real device (see `docs/DEVICE_ACCEPTANCE_TESTS.md`) | not yet tested on a real device | not yet tested on a real device |
+| v2rayNG (Android, VLESS-only fallback) | not yet tested on a real device | N/A — not supported (see `docs/clients/V2RAYNG_ANDROID.md`) | not yet tested on a real device |
+| sing-box (real pinned binary, real handshake) | **verified** — real handshake against a real pinned `sing-box` binary, both success (matched keys) and failure (mismatched keys) paths | **verified** — real handshake, matched/mismatched password, obfuscated, and Brutal-bandwidth variants | **verified** — real `sing-box check` against a rendered server config, in CI on every push |
 
-`*` = the config *shape* was checked against the current sing-box
-configuration reference (`docs/COMPATIBILITY_VERSIONS.md`) and is
-covered by unit tests in `crates/compat-config` (`render.rs`,
-`server.rs`) that assert the required fields are present with the
-documented names/types. This is **not** the same as running the real
-`sing-box check` binary or a real handshake — this sandboxed development
-environment has no network capability to install/run sing-box, no
-Android device, and no public DNS/TLS certificate to test against.
+The sing-box row is genuinely verified, not schema-checked-only: this
+project's own `sing-box` interop tests
+(`crates/compat-config/tests/reality_interop.rs`,
+`reality_decoy_budget.rs`, `hysteria2_interop.rs`) download/run the real
+pinned `sing-box` binary and perform actual protocol handshakes — 9
+tests, all passing as of the date `docs/COMPATIBILITY_VERSIONS.md`
+records. CI's `singbox-validate` job (`.github/workflows/ci.yml`) does
+this on every push, and `VPN1_REQUIRE_REAL_INTEROP=1` turns any skip
+into a hard failure so this can never silently degrade to schema-only
+checking again. **This still is not the same claim as "a real Hiddify
+app on a real phone connects"** — that requires an actual device, which
+remains not yet tested (see below).
 
-## Why nothing here is marked "yes" yet
+## Why the Hiddify/v2rayNG rows aren't "yes" yet
 
-This session built and unit-tested the rendering/serving code
-end-to-end against fakes (see `docs/TEST_STRATEGY.md`-equivalent
-coverage in `crates/compat-config` and `services/subscription`), and
-wrote (but could not execute) the AlmaLinux installer. Actually
-connecting a real Hiddify install to a real VPS running real sing-box
-requires:
-
-1. A real AlmaLinux 9 host with a public IP and DNS name.
-2. `sudo ./deploy/almalinux/install.sh` run there.
-3. `sing-box check` against the rendered config on that host.
-4. An Android device with Hiddify installed, on a real network, pointed
-   at the real subscription URL.
-
-None of these are available in this development session. Treat this
-document as the checklist for that manual acceptance pass — see
+Real client/device testing requires a real AlmaLinux 9 host with a
+public IP and DNS name, `sudo ./deploy/almalinux/install.sh` run there,
+and an actual iOS/Android/Linux/Windows/macOS device with the relevant
+client installed, on a real network, pointed at the real subscription
+URL. None of that has been run in this development session (real
+sing-box protocol handshakes have been — see above; that is a narrower,
+already-satisfied claim). Treat `docs/DEVICE_ACCEPTANCE_TESTS.md` as the
+checklist for the remaining manual acceptance pass — see
 `docs/ALMALINUX_DEPLOYMENT.md` §"Testing with Hiddify" for the exact
-steps — and update the table above with the date and outcome once run.
+steps — and fill in a dated entry there once run.
 
 ## What *was* validated in this session (automated, in `cargo test`)
 
@@ -73,6 +76,13 @@ steps — and update the table above with the date and outcome once run.
   is real-binary validation, still not a real client handshake.
 
 ## Manual acceptance test template
+
+`docs/DEVICE_ACCEPTANCE_TESTS.md` is now the primary place to record
+per-platform results (it has a fuller per-row template and the
+Telegram-specific matrix) — prefer pasting entries there. The template
+below is kept for the MagicOS-specific fields it adds; either location
+is acceptable as long as the entry is dated and the corresponding matrix
+row/table cell is updated.
 
 Copy this block, fill it in, and paste the result as a new dated entry
 below when a real device/VPS test is actually run. A row in the table

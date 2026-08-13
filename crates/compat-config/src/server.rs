@@ -521,6 +521,27 @@ mod tests {
         assert!(inbound.get("ignore_client_bandwidth").is_none());
     }
 
+    /// docs/CLIENT_PROTOCOL_BEHAVIOR.md's IPv4/IPv6 statement depends on
+    /// both inbounds binding the dual-stack wildcard, not an IPv4-only
+    /// address — lock that in so it can't silently regress. A dual-stack
+    /// VPS then accepts either family; an IPv4-only VPS is limited by
+    /// its own network, not by this listen address.
+    #[test]
+    fn both_inbounds_bind_the_dual_stack_wildcard_address() {
+        let cfg = render_singbox_server_config(
+            &users(),
+            &reality(),
+            &hysteria(),
+            ServerPorts {
+                vless_reality_port: 443,
+                hysteria2_port: 443,
+            },
+            1000,
+        );
+        assert_eq!(cfg["inbounds"][0]["listen"], "::");
+        assert_eq!(cfg["inbounds"][1]["listen"], "::");
+    }
+
     #[test]
     fn hysteria_bandwidth_set_together_forces_ignore_client_bandwidth() {
         let mut h = hysteria();
