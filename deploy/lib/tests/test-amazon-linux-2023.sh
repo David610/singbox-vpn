@@ -155,6 +155,13 @@ if [ -z "$INSTALL_DEPS_RHEL_BODY" ]; then
   echo "FAIL: could not extract install_dependencies_rhel() from $INSTALL_SH — has it been renamed/moved?"
   failures=$((failures + 1))
 fi
+# install_dependencies_rhel() calls this sibling helper (also real
+# production code, not reimplemented) to record package ownership.
+RECORD_PKG_OWNERSHIP_RHEL_BODY="$(sed -n '/^record_package_ownership_rhel() {/,/^}/p' "$INSTALL_SH")"
+if [ -z "$RECORD_PKG_OWNERSHIP_RHEL_BODY" ]; then
+  echo "FAIL: could not extract record_package_ownership_rhel() from $INSTALL_SH — has it been renamed/moved?"
+  failures=$((failures + 1))
+fi
 
 run_install_dependencies_rhel() {
   local curl_present="$1" # "yes" or "no"
@@ -162,6 +169,11 @@ run_install_dependencies_rhel() {
     set -Eeuo pipefail
     log() { :; }
     warn() { :; }
+    OWNERSHIP_DIR="$TMPDIR_TEST/var-lib-vpn1-$curl_present-$$"
+    # shellcheck disable=SC2034 # read by deploy/lib/ownership.sh on source
+    OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
+    # shellcheck source=/dev/null
+    . "$REPO_ROOT/deploy/lib/ownership.sh"
     # Override the `command` builtin ONLY for the exact `command -v
     # curl` lookup install_dependencies_rhel() makes, rather than
     # touching PATH (which would also hide sed/dnf/every other command
@@ -183,6 +195,7 @@ run_install_dependencies_rhel() {
       fi
     }
     systemctl() { :; }
+    eval "$RECORD_PKG_OWNERSHIP_RHEL_BODY"
     eval "$INSTALL_DEPS_RHEL_BODY"
     install_dependencies_rhel
     cat "$DNF_CALLS_FILE"

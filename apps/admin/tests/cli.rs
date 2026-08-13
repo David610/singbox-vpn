@@ -345,6 +345,31 @@ fn full_user_lifecycle() {
     assert!(stdout.contains("User ID:"));
     assert!(stdout.contains("NOT your subscription token"));
     assert!(stdout.contains("https://sub.example.com:8443/sub/"));
+    // Regression test for the Hiddify subscription-format mismatch: a
+    // bare /sub/<token> (no `format` query) is served as native
+    // sing-box JSON by services/subscription, which Hiddify's bundled
+    // sing-box fork can silently fail to fully import (fetch succeeds,
+    // nothing dials). The URL explicitly labeled for Hiddify MUST
+    // request the Hiddify/share-link representation explicitly — see
+    // subscription_url()'s doc comment in apps/admin/src/main.rs and
+    // services/subscription/src/lib.rs's `format` query handling. If
+    // this ever regresses back to a bare URL, this assertion catches it
+    // before the installer starts advertising a URL Hiddify can fetch
+    // but not actually use.
+    let hiddify_url_line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("https://sub.example.com"))
+        .expect("a subscription URL line must be printed");
+    assert!(
+        hiddify_url_line.contains("?format=hiddify"),
+        "the URL printed under the 'Hiddify subscription URL' label must explicitly request \
+         format=hiddify (not a bare/format-less URL, which resolves to native sing-box JSON \
+         server-side and is not what Hiddify reliably imports); got: {hiddify_url_line}"
+    );
+    assert!(
+        stdout.contains("?format=singbox"),
+        "native sing-box clients must still be offered the explicit ?format=singbox URL"
+    );
 
     let user_id = stdout
         .lines()

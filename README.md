@@ -79,10 +79,11 @@ installer:
   VLESS+REALITY needs a real, unproxied TLS handshake on 443/tcp and
   Hysteria2 needs raw UDP/443 passthrough — an HTTP(S) proxy in front
   breaks both.
-- If your domain uses non-ASCII characters (Cyrillic, etc.), use its
-  ASCII/punycode form (`xn--...`) everywhere below — TLS/ACME/nginx
-  all require ASCII hostnames, even though your DNS dashboard may
-  display the Unicode form.
+- Unicode/IDN domains (Cyrillic, etc.) are handled automatically — enter
+  it exactly as it appears in your DNS dashboard (e.g. `чёрт.com`,
+  interactively or via `--domain 'чёрт.com'`); the installer converts it
+  to its ASCII/punycode form (`xn--p1aen4b.com`) internally before it
+  touches TLS/ACME/nginx. You never need to calculate punycode by hand.
 - Give DNS a minute to propagate, then confirm before installing:
   `dig +short vpn.example.com` (or `getent hosts vpn.example.com`)
   should return the VPS's IP.
@@ -129,7 +130,34 @@ a ready-to-import subscription URL with a terminal QR code.
 
 If you set up a domain in step 1, pass it explicitly instead of
 auto-detecting (the installer also prompts for one interactively if
-you run it without this and a real terminal is attached):
+you run it without this and a real terminal is attached). `--domain`/
+`PUBLIC_HOST` and `--reality-handshake-server`/`REALITY_HANDSHAKE_SERVER`
+are equivalent — use whichever is more convenient for `curl | sudo bash`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
+  | sudo bash -s -- --domain vpn.example.com --reality-handshake-server www.cloudflare.com
+```
+
+An IDN (Unicode) domain works the same way, quoted:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
+  | sudo bash -s -- --domain 'чёрт.com' --reality-handshake-server www.cloudflare.com
+```
+
+Fully non-interactive (for automation — CI, cloud-init, etc.), add
+`--non-interactive`; it fails immediately with no host changes if a
+required value like the REALITY decoy is missing, instead of blocking on
+a prompt that will never be answered:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
+  | sudo bash -s -- --non-interactive --domain vpn.example.com \
+    --reality-handshake-server www.cloudflare.com
+```
+
+The environment-variable form still works identically:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
@@ -199,9 +227,27 @@ sudo vpn user create --name NAME --qr
 binary. Other day-2 commands: `vpn version`, `vpn backup`/`vpn restore`,
 `vpn user enable/disable/rotate-token/rotate-vless/rotate-hysteria/remove/qr`
 (all keyed by user ID), `deploy/almalinux/update.sh` (safe update with
-automatic rollback on failed health check), `deploy/almalinux/uninstall.sh`
-(`--purge-state` to also remove keys/users, `--purge-firewall` to close
-the ports again).
+automatic rollback on failed health check).
+
+### Uninstalling
+
+One command, no follow-up steps, no flags needed — removes everything
+vpn1 created (secrets, users, REALITY/Hysteria2 material, source tree,
+generated configs, binaries, the sing-box binary/LICENSE if vpn1
+installed it, firewall rules, certificates, kernel tuning, and anything
+else vpn1 touched) while leaving anything that already existed on the
+host before vpn1 (nginx, certbot, firewalld/ufw, a pre-existing Rust
+toolchain, pre-existing certificates/users/firewall rules) untouched or
+restored to its prior state:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
+```
+
+Safe to run more than once — re-running after a successful uninstall
+exits cleanly and reports nothing left to remove. It cannot see or
+change your cloud provider's network-level firewall (AWS/GCP/Azure
+security groups); it prints a checklist for that at the end.
 
 ### Advanced / manual deployment
 

@@ -36,7 +36,7 @@ entirely inside the Hiddify app and iOS's own permission system.
 
 1. Install **Hiddify** from the App Store.
 2. Get your subscription URL or QR code from your administrator — it
-   looks like `https://vpn.example.com:8444/sub/<long-random-token>`.
+   looks like `https://vpn.example.com:8444/sub/<long-random-token>?format=hiddify`.
    Treat it like a password: anyone with it can connect as you until it
    is rotated. **This is not the same string as your User ID** (which
    looks like `user_<uuid>`) — the User ID only names your account for

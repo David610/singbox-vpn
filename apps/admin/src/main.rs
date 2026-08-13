@@ -1468,9 +1468,40 @@ fn cmd_render_config(cfg: &DeploymentConfig, require_applied: bool) -> Result<()
     Ok(())
 }
 
+/// The URL printed/QR-encoded and explicitly labeled "Hiddify
+/// subscription URL" everywhere in this CLI. It MUST carry
+/// `?format=hiddify` explicitly: a bare `/sub/<token>` (no `format`
+/// query parameter) is served by services/subscription as native
+/// sing-box JSON (see services/subscription/src/lib.rs), not the
+/// Hiddify/share-link representation — Hiddify's bundled sing-box fork
+/// strict-unmarshals that JSON and silently drops fields/outbounds it
+/// doesn't recognize (a version-coupling failure mode confirmed against
+/// real hiddify-app issues), which is exactly the "fetch succeeds, never
+/// dials" failure observed in production. `?format=hiddify` serves a
+/// plain vless://+hysteria2:// share-link list instead, which Hiddify's
+/// `ray2sing` importer builds outbounds from directly rather than
+/// strict-unmarshalling a full sing-box config — the more broadly
+/// compatible representation for this client.
+///
+/// services/subscription's own test
+/// `hiddify_format_is_identical_to_uri_format` and
+/// `hiddify_advertised_url_matches_served_format` (apps/admin/tests/
+/// cli.rs) both assert this stays true — do not remove the query
+/// parameter without updating both.
 fn subscription_url(cfg: &DeploymentConfig, token: &str) -> String {
     format!(
-        "https://{}:{}/sub/{}",
+        "https://{}:{}/sub/{}?format=hiddify",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
+/// The native sing-box JSON subscription URL (no `format` parameter maps
+/// to this — see services/subscription/src/lib.rs), for sing-box-core
+/// clients that are NOT Hiddify (e.g. sing-box itself, or another
+/// front-end that consumes raw sing-box config directly).
+fn subscription_url_singbox(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}?format=singbox",
         cfg.subscription_host, cfg.subscription.public_port, token
     )
 }
@@ -1550,6 +1581,11 @@ fn cmd_user_create(
         "This URL is shown once and cannot be recovered later — use \
          `vpn-admin user rotate-token {id}` to mint a new one if lost."
     );
+    println!();
+    println!(
+        "Native sing-box clients (not Hiddify) should use the ?format=singbox variant instead:"
+    );
+    println!("  {}", subscription_url_singbox(cfg, &token));
     if qr {
         println!();
         println!("Scan this QR code in Hiddify (Add profile -> Scan QR code):");

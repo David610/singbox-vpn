@@ -187,6 +187,53 @@ preflight_validate_port() {
   return 0
 }
 
+# Verifies $1 (a hostname the operator wants to use for PUBLIC_HOST)
+# actually resolves to one of THIS host's own addresses, before any
+# certificate is requested for it. Best-effort: DNS/NAT/multi-homed
+# hosts make a perfect check impossible from inside the host itself, so
+# this compares DNS answers against every locally-configured address
+# (`hostname -I`) plus the outbound-detected public IP
+# (preflight_detect_public_ip) — the same signal a real client and
+# Let's Encrypt's own HTTP-01 validator would ultimately use. Returns 1
+# (and prints the mismatch) if DNS resolves to something that is
+# provably NOT this host (e.g. it still points at a previous server, or
+# is fronted by a proxy/CDN whose edge IP is not this VPS) — callers
+# should treat that as a hard stop before touching the firewall/certbot,
+# not merely a warning, since certbot's HTTP-01 challenge is guaranteed
+# to fail (or worse, silently validate against the WRONG server) in that
+# case. Returns 2 (skip / could not verify) when no DNS tool is
+# available or DNS returns nothing — callers should warn, not hard-fail,
+# since that is inconclusive rather than a confirmed mismatch.
+preflight_check_hostname_resolves_here() {
+  local host="$1" resolved my_ips r match=0
+  if command -v getent >/dev/null 2>&1; then
+    resolved="$(getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u)"
+  elif command -v host >/dev/null 2>&1; then
+    resolved="$(host "$host" 2>/dev/null | awk '/has (address|IPv6 address)/{print $NF}' | sort -u)"
+  else
+    warn "no DNS lookup tool (getent/host) available; cannot verify $host resolves to this server."
+    return 2
+  fi
+  if [ -z "$resolved" ]; then
+    echo "DNS for '$host' did not resolve to any address at all." >&2
+    return 2
+  fi
+  my_ips="$( { command -v hostname >/dev/null 2>&1 && hostname -I 2>/dev/null; preflight_detect_public_ip 2>/dev/null; } | tr ' ' '\n' | sed '/^$/d' | sort -u)"
+  while IFS= read -r r; do
+    [ -z "$r" ] && continue
+    printf '%s\n' "$my_ips" | grep -qx "$r" && match=1
+  done <<EOF
+$resolved
+EOF
+  if [ "$match" -eq 1 ]; then
+    log "DNS for $host resolves to this server ($(printf '%s' "$resolved" | tr '\n' ' '))."
+    return 0
+  fi
+  echo "DNS for '$host' resolves to: $(printf '%s' "$resolved" | tr '\n' ' ')" >&2
+  echo "  ...none of which match this server's own addresses: $(printf '%s' "$my_ips" | tr '\n' ' ')" >&2
+  return 1
+}
+
 preflight_detect_public_ip() {
   local ip=""
   for url in "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com"; do
