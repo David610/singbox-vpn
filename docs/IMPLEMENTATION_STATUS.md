@@ -27,7 +27,9 @@ v1.0 — see `deploy/local/run-dev-slice.sh` for its dev-only entry point.
 - Rust tests: `crates/compat-config/tests/*` + `src/**` unit tests
   (interop, decoy budget, deployment/store schema+migration),
   `apps/admin/tests/*`, `services/subscription/tests/*`.
-- Shell tests: `deploy/lib/tests/*.sh` (17 files).
+- Shell tests: `deploy/lib/tests/*.sh` (18 files).
+- Offline uninstall entry point: `bin/vpn1-uninstall` (persisted to
+  `/opt/vpn1/bin/vpn1-uninstall`; wraps `deploy/almalinux/uninstall.sh`).
 - CI gates (`.github/workflows/ci.yml`): `fmt`, `clippy`, `test`
   (workspace-wide — see Known CI scope note), `audit`, `docs`, `shell`,
   `secret-logging-check`, `license-check`, `singbox-validate` (real
@@ -104,6 +106,32 @@ plumbing for a runner-minutes-only win; deferred.
      rules, firewall ownership-of-pre-existing-state ordering, ACME
      temp-port-80 open/close/interrupt/nginx-restore, custom-domain-
      default enforcement functional tests, REALITY init idempotency).
+6. **Uninstall hardening** (this checkpoint): new stable, offline entry
+   point `bin/vpn1-uninstall` (persisted to `/opt/vpn1/bin/vpn1-uninstall`
+   by `persist_source_tree`, no network access needed on a normal host).
+   `deploy/almalinux/uninstall.sh` now: requires `--yes` or an interactive
+   `/dev/tty` confirmation before this irreversible action (bootstrap
+   `uninstall.sh` forwards `--yes`/other flags through, and now prefers
+   the local `bin/vpn1-uninstall` over its old direct-`deploy/almalinux`
+   path, itself only a network-download fallback); refuses to run from a
+   directory/file it does not itself control (not root-owned, or
+   group/world-writable — defense-in-depth); re-validates manifest-
+   sourced values before destructive use (`CERT_LINEAGES_CREATED_BY_VPN1`
+   hostnames via `preflight_validate_hostname`, `RUSTUP_HOME_DIR` via new
+   `ownership_path_is_safe()`) so a corrupted `ownership.env` is reported
+   and left alone, never turned into broad `rm -rf`. `install.sh` now
+   explicitly `chown root:root`/`chmod 0755`s `/opt/vpn1` instead of
+   relying on umask. Confirmed via code reading (VERIFIED-CODE, no
+   change needed): SSH firewall state is never touched anywhere in
+   uninstall.sh; services/timers are stopped before state removal;
+   ownership-aware preserve-vs-remove logic for nginx/certbot/firewall/
+   packages/Rust toolchain was already correct. Found+fixed a real bug
+   in my OWN new safety check while testing it: the group/world-writable
+   mode check only inspected the trailing octal digit (missed mode 775 —
+   group-writable, common for shared groups); fixed to check the group
+   and other digits' write bit independently. New tests:
+   `deploy/lib/tests/test-uninstall-hardening.sh` (14 checks) +
+   `ownership_path_is_safe()` cases added to `test-ownership-manifest.sh`.
 
 ## Blockers
 
@@ -138,18 +166,22 @@ bash deploy/lib/fast-gate.sh
 ./deploy/almalinux/lifecycle-acceptance.sh \
   --host root@DISPOSABLE-HOST --i-understand-this-is-destructive
 
-# state schema validate/migrate (new this checkpoint)
+# state schema validate/migrate
 vpn-admin --config /etc/vpn/deployment.toml config validate
 vpn-admin --config /etc/vpn/deployment.toml config migrate
+
+# offline uninstall (new this checkpoint) — no network access needed
+sudo /opt/vpn1/bin/vpn1-uninstall --yes
 ```
 
 ## Next logical checkpoint
 
-Prompt 6: push the first real `vX.Y.Z` release tag, then run
+Prompt 7: push the first real `vX.Y.Z` release tag, then run
 `deploy/almalinux/lifecycle-acceptance.sh` against a real disposable
 AlmaLinux 9 host — this is now the single highest-value remaining gap:
 every hardening claim above (SSH preservation, rollback, idempotency,
-ACME restoration, config migration) is code-read/unit/fixture verified
-only, never exercised against a real systemd/firewalld/reboot lifecycle.
-Until then, pick one concrete supported-product defect/gap and fix it
-with minimum churn, running `deploy/lib/fast-gate.sh` after every change.
+ACME restoration, config migration, offline uninstall) is code-read/
+unit/fixture verified only, never exercised against a real
+systemd/firewalld/reboot lifecycle. Until then, pick one concrete
+supported-product defect/gap and fix it with minimum churn, running
+`deploy/lib/fast-gate.sh` after every change.

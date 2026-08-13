@@ -313,6 +313,13 @@ persist_source_tree() {
   fi
   log "installing a persistent copy of the vpn1 source to $PERSIST_DIR (for future updates/uninstall)..."
   mkdir -p "$PERSIST_DIR"
+  # Explicit, not left to umask: this tree is later run as root by
+  # /opt/vpn1/bin/vpn1-uninstall, which refuses to trust a copy that is
+  # not root-owned and non-group/world-writable — set that state
+  # correctly here rather than relying on whatever umask happened to be
+  # in effect.
+  chown root:root "$PERSIST_DIR"
+  chmod 0755 "$PERSIST_DIR"
   ( cd "$REPO_ROOT" && tar --exclude=target --exclude=.git -cf - . ) | ( cd "$PERSIST_DIR" && tar -xf - )
   REPO_ROOT="$PERSIST_DIR"
 }

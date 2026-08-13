@@ -98,6 +98,19 @@ echo "--- persistence: values survive re-sourcing (simulates a separate uninstal
 ) | grep -q PERSISTED_OK && ok "manifest values persist across a fresh process re-sourcing ownership.sh (as uninstall.sh does)" || fail "manifest values did not persist for a fresh reader"
 
 echo
+echo "--- ownership_path_is_safe(): refuses obviously unsafe manifest-sourced paths before destructive use ---"
+for good in "/root" "/opt/vpn1" "/home/someuser/.rustup-parent"; do
+  ownership_path_is_safe "$good" && ok "accepts safe absolute path '$good'" || fail "wrongly rejected safe path '$good'"
+done
+for bad in "" "/" "relative/path" "../etc" "/root/../.." "/a/../../etc"; do
+  if ownership_path_is_safe "$bad"; then
+    fail "wrongly accepted unsafe path '$bad'"
+  else
+    ok "rejects unsafe path '$bad'"
+  fi
+done
+
+echo
 if [ "$failures" -gt 0 ]; then
   echo "$failures test(s) FAILED"
   exit 1

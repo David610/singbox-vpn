@@ -99,7 +99,7 @@ jobs:
       - name: bash -n (syntax check every shipped script)
         run: |
           set -euo pipefail
-          for f in install.sh uninstall.sh deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh; do
+          for f in install.sh uninstall.sh bin/vpn1-uninstall deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
@@ -107,7 +107,7 @@ jobs:
         run: |
           sudo apt-get update -y >/dev/null
           sudo apt-get install -y shellcheck jq idn2 >/dev/null
-          shellcheck -S warning install.sh uninstall.sh deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
+          shellcheck -S warning install.sh uninstall.sh bin/vpn1-uninstall deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
       - name: vpn-benchmark outbound-discovery unit tests
         run: bash deploy/lib/tests/test-vpn-benchmark-lib.sh
       - name: vpn-benchmark set -e / discovery-call-site regression test

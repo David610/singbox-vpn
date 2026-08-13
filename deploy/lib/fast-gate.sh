@@ -32,7 +32,7 @@ SUPPORTED_CRATES=(admin subscription compat-config common)
 CARGO_PKG_ARGS=()
 for c in "${SUPPORTED_CRATES[@]}"; do CARGO_PKG_ARGS+=(-p "$c"); done
 
-SUPPORTED_SHELL_SCRIPTS=(install.sh uninstall.sh deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh)
+SUPPORTED_SHELL_SCRIPTS=(install.sh uninstall.sh bin/vpn1-uninstall deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh)
 
 SKIP_SINGBOX="${FAST_GATE_SKIP_SINGBOX:-0}"
 

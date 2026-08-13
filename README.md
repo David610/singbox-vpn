@@ -243,8 +243,8 @@ automatic rollback on failed health check).
 
 ### Uninstalling
 
-One command, no follow-up steps, no flags needed — removes everything
-vpn1 created (secrets, users, REALITY/Hysteria2 material, source tree,
+One command, no network access required — removes everything vpn1
+created (secrets, users, REALITY/Hysteria2 material, source tree,
 generated configs, binaries, the sing-box binary/LICENSE if vpn1
 installed it, firewall rules, certificates, kernel tuning, and anything
 else vpn1 touched) while leaving anything that already existed on the
@@ -253,7 +253,17 @@ toolchain, pre-existing certificates/users/firewall rules) untouched or
 restored to its prior state:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
+sudo /opt/vpn1/bin/vpn1-uninstall --yes
+```
+
+That path is installed by every normal install — no `curl`/GitHub
+access needed. `--yes` skips the interactive confirmation prompt
+(irreversible: it deletes live credentials/secrets, so an interactive
+run without `--yes` asks first). If `/opt/vpn1` is missing or damaged,
+an online fallback re-downloads and runs the same uninstaller:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
 Safe to run more than once — re-running after a successful uninstall

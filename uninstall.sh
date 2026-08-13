@@ -31,6 +31,7 @@ die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 
 CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
 
+PASSTHROUGH_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) VPN1_REPO="$2"; shift 2 ;;
@@ -44,12 +45,15 @@ vpn1 one-command bootstrap uninstaller.
   curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
 
 Removes EVERYTHING vpn1 created on this host, completely, by default —
-no other flags are needed. Options:
+no other flags are needed. Bootstrap-specific options:
   --repo owner/repo   uninstall a fork's deployment
   --ref branch-name   source branch to fetch (default: main)
+
+Everything else (e.g. --yes) is passed through unchanged to the real
+uninstaller, deploy/almalinux/uninstall.sh — see its own --help.
 USAGE
       exit 0 ;;
-    *) die "unknown argument: $1" ;;
+    *) PASSTHROUGH_ARGS+=("$1"); shift ;;
   esac
 done
 
@@ -60,10 +64,16 @@ command -v tar >/dev/null 2>&1 || die "tar is required but not found. Install ta
 # If a previous install left its own persistent copy at /opt/vpn1, prefer
 # it — it is guaranteed self-consistent with what was actually installed
 # (never a different version's uninstall logic operating on this
-# install's state), and works even with no network access at all.
-if [ -x /opt/vpn1/deploy/almalinux/uninstall.sh ]; then
+# install's state), and works even with no network access at all. This
+# online bootstrap is only a fallback for when that local copy is
+# missing — the stable, documented, offline entry point is
+# `sudo /opt/vpn1/bin/vpn1-uninstall --yes` directly.
+if [ -x /opt/vpn1/bin/vpn1-uninstall ]; then
   log "found the persistent vpn1 install at /opt/vpn1 — using its own uninstaller (no download needed)."
-  exec bash /opt/vpn1/deploy/almalinux/uninstall.sh
+  exec /opt/vpn1/bin/vpn1-uninstall "${PASSTHROUGH_ARGS[@]}"
+elif [ -x /opt/vpn1/deploy/almalinux/uninstall.sh ]; then
+  log "found the persistent vpn1 install at /opt/vpn1 (older layout, no bin/vpn1-uninstall) — using its own uninstaller (no download needed)."
+  exec bash /opt/vpn1/deploy/almalinux/uninstall.sh "${PASSTHROUGH_ARGS[@]}"
 fi
 
 log "no persistent install found at /opt/vpn1 — downloading vpn1 source to run its uninstaller (repo=$VPN1_REPO, ref=$VPN1_REF)..."
@@ -92,7 +102,7 @@ log "running uninstaller (removes everything vpn1 created — no further steps n
 echo
 
 set +e
-bash "$SRC_DIR/deploy/almalinux/uninstall.sh"
+bash "$SRC_DIR/deploy/almalinux/uninstall.sh" "${PASSTHROUGH_ARGS[@]}"
 rc=$?
 set -e
 exit "$rc"

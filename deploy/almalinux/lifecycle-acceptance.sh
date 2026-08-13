@@ -217,7 +217,7 @@ if ssh_run "sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox curl -fsSL http
 else
   pass "interrupted install aborted as expected"
 fi
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/uninstall.sh | bash" 2>/dev/null \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/uninstall.sh | bash -s -- --yes" 2>/dev/null \
   && ssh_run '[ ! -e /etc/vpn ] && [ ! -e /opt/vpn1 ]' 2>/dev/null; then
   pass "cleanup after interrupted install"
 else
@@ -226,7 +226,7 @@ fi
 
 section "11. offline uninstall (from the repaired install in stage 6, redone)"
 ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- --non-interactive" >/dev/null 2>&1 || true
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/uninstall.sh | bash"; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/uninstall.sh | bash -s -- --yes"; then
   pass "uninstall.sh"
 else
   fail_required "uninstall.sh"

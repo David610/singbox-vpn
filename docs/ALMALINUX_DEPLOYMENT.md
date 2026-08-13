@@ -451,11 +451,20 @@ sudo systemctl reload-or-restart sing-box
 
 ## Uninstall
 
-One command, no flags, from anywhere (does not require the repo to be
-cloned):
+Primary, offline path — installed by every normal install, no network
+access required:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
+sudo /opt/vpn1/bin/vpn1-uninstall --yes
+```
+
+`--yes` skips the interactive confirmation prompt (this is irreversible
+— it deletes live credentials/secrets — so a run without `--yes`, with a
+terminal attached, asks first). Online fallback, only needed if
+`/opt/vpn1` is missing or damaged:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
 This removes **everything** vpn1 created by default — `/etc/vpn`
@@ -471,13 +480,17 @@ toolchain (if vpn1 installed it), and vpn1's kernel network tuning
 existed on the host before vpn1 (nginx, certbot, firewalld/ufw, a
 pre-existing Rust toolchain, unrelated certificates, pre-existing users)
 is left alone or restored to its previous enabled/state, never deleted.
-Safe to run more than once. It prints a checklist at the end for the one
+Manifest-sourced values (certificate hostnames, the Rust toolchain path)
+are re-validated before any destructive use, so a corrupted ownership
+record is reported and left alone rather than acted on blindly. It
+refuses to run from a directory it does not itself control (not
+root-owned, or group/world-writable) as a defense-in-depth check. Safe
+to run more than once. It prints a checklist at the end for the one
 thing it genuinely cannot touch: your cloud provider's network-level
 firewall/security group, if you opened one for vpn1 there.
 
-If you already have the repo checked out, `deploy/almalinux/uninstall.sh`
-is the same script and works identically — the root `uninstall.sh` above
-is only a downloader that hands off to it.
+`deploy/almalinux/uninstall.sh` is the real implementation both entry
+points above hand off to — running it directly works identically.
 
 ## Acceptance test
 
