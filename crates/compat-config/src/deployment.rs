@@ -7,8 +7,26 @@ use crate::CompatError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Current on-disk schema version for `deployment.toml`. Every
+/// deployment.toml written before this field existed has no
+/// `schema_version` key at all, which `#[serde(default)]` reads as `0`
+/// ("legacy" — the only shape that ever existed, still fully loadable:
+/// nothing else about the shape has changed yet). A value greater than
+/// this constant means a NEWER vpn-admin wrote this file — an older
+/// binary cannot safely assume it still understands every field's
+/// meaning, so `DeploymentConfig::load` refuses it outright (see
+/// `validate`) rather than silently reinterpreting it.
+pub const DEPLOYMENT_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeploymentConfig {
+    /// On-disk schema version. `0` (the default when the key is absent)
+    /// means "legacy, pre-versioning" — `vpn-admin config migrate` stamps
+    /// it to `DEPLOYMENT_SCHEMA_VERSION` explicitly without touching any
+    /// other value. See `DEPLOYMENT_SCHEMA_VERSION`'s doc comment.
+    #[serde(default)]
+    pub schema_version: u32,
+
     /// Public hostname/IP clients connect the VLESS+REALITY and
     /// Hysteria2 listeners to.
     pub public_host: String,
@@ -150,6 +168,18 @@ impl DeploymentConfig {
     /// Structural checks that TOML deserialization alone can't express
     /// (field-value-shape defaults, not schema shape).
     pub fn validate(&self) -> Result<(), CompatError> {
+        // Fail closed on a schema newer than this binary understands —
+        // see DEPLOYMENT_SCHEMA_VERSION's doc comment. A version <=
+        // current (including the legacy default of 0) is always safe to
+        // load: nothing about the shape has changed since versioning was
+        // introduced, so there is nothing to reinterpret.
+        if self.schema_version > DEPLOYMENT_SCHEMA_VERSION {
+            return Err(CompatError::UnsupportedSchema {
+                what: "deployment.toml",
+                found: self.schema_version,
+                max_supported: DEPLOYMENT_SCHEMA_VERSION,
+            });
+        }
         if self.hysteria2.up_mbps.is_some() != self.hysteria2.down_mbps.is_some() {
             return Err(CompatError::Parse(
                 "[hysteria2] up_mbps and down_mbps must be set together (both, or neither) — \
@@ -208,6 +238,101 @@ impl DeploymentConfig {
     pub fn singbox_config_file(&self) -> PathBuf {
         self.state_dir.join("sing-box/config.json")
     }
+}
+
+/// Outcome of `migrate_deployment_toml`, reported by `vpn-admin config
+/// migrate` (see requirement: reinstall/update must explicitly report
+/// what it detected/did — never silent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeploymentMigrationOutcome {
+    /// `path` does not exist — nothing to migrate (fresh install).
+    Missing,
+    /// Already at `DEPLOYMENT_SCHEMA_VERSION` — no-op, safe to re-run.
+    AlreadyCurrent,
+    /// Migrated; the pre-migration file is at this path.
+    Migrated { backup_path: PathBuf },
+}
+
+/// Idempotent text-level migration: insert an explicit `schema_version =
+/// N` marker as the very first line if none is present yet. Deliberately
+/// a textual patch, not a full parse+reserialize round trip — TOML
+/// reserialization would reorder keys and drop comments, and this file
+/// "explicitly invites hand-editing" (see docs/ALMALINUX_DEPLOYMENT.md);
+/// operator formatting must survive byte-for-byte. Returns `None` if the
+/// file already has an explicit `schema_version` key anywhere (nothing
+/// to do).
+pub fn migrate_deployment_toml_text(original: &str) -> Option<String> {
+    let already_versioned = original
+        .lines()
+        .any(|l| l.trim_start().starts_with("schema_version"));
+    if already_versioned {
+        return None;
+    }
+    Some(format!(
+        "schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{original}"
+    ))
+}
+
+/// Migrate `deployment.toml` at `path` to `DEPLOYMENT_SCHEMA_VERSION`.
+/// Refuses (leaving the file untouched) if the original does not parse,
+/// or is already newer than this binary supports. Backs up before
+/// mutating, validates the migrated text reparses to a config that is
+/// identical to the original in every field except `schema_version`
+/// (operator settings preserved), then commits atomically.
+pub fn migrate_deployment_toml(path: &Path) -> Result<DeploymentMigrationOutcome, CompatError> {
+    if !path.exists() {
+        return Ok(DeploymentMigrationOutcome::Missing);
+    }
+    let original = std::fs::read_to_string(path).map_err(|e| CompatError::Io(e.to_string()))?;
+    let original_cfg: DeploymentConfig = toml::from_str(&original).map_err(|e| {
+        CompatError::Parse(format!(
+            "cannot migrate {path:?}: existing file does not parse ({e}); no changes made"
+        ))
+    })?;
+    // Also refuses a schema newer than this binary supports — never
+    // "migrate" forward from a file a future vpn-admin already wrote.
+    original_cfg.validate()?;
+
+    let Some(patched) = migrate_deployment_toml_text(&original) else {
+        return Ok(DeploymentMigrationOutcome::AlreadyCurrent);
+    };
+
+    let migrated_cfg: DeploymentConfig = toml::from_str(&patched).map_err(|e| {
+        CompatError::Parse(format!(
+            "migrated deployment.toml failed to reparse ({e}) — this is a bug, not applying"
+        ))
+    })?;
+    migrated_cfg.validate()?;
+    if migrated_cfg.schema_version != DEPLOYMENT_SCHEMA_VERSION {
+        return Err(CompatError::Parse(format!(
+            "migration produced schema_version {} (expected {DEPLOYMENT_SCHEMA_VERSION}) — refusing to apply",
+            migrated_cfg.schema_version
+        )));
+    }
+    // Every field except schema_version itself must be unchanged —
+    // compare via a schema_version-normalized JSON projection rather
+    // than requiring DeploymentConfig: PartialEq.
+    let mut original_normalized =
+        serde_json::to_value(&original_cfg).map_err(|e| CompatError::Parse(e.to_string()))?;
+    let mut migrated_normalized =
+        serde_json::to_value(&migrated_cfg).map_err(|e| CompatError::Parse(e.to_string()))?;
+    if let Some(obj) = original_normalized.as_object_mut() {
+        obj.remove("schema_version");
+    }
+    if let Some(obj) = migrated_normalized.as_object_mut() {
+        obj.remove("schema_version");
+    }
+    if original_normalized != migrated_normalized {
+        return Err(CompatError::Parse(
+            "migration would change a value other than schema_version — refusing to apply \
+             (this is a bug in migrate_deployment_toml_text)"
+                .to_string(),
+        ));
+    }
+
+    let backup_path = crate::migrate::backup_before_mutate(path)?;
+    crate::migrate::atomic_write(path, patched.as_bytes(), 0o644)?;
+    Ok(DeploymentMigrationOutcome::Migrated { backup_path })
 }
 
 #[cfg(test)]
@@ -315,5 +440,141 @@ listen_port = 443
         );
         let cfg: DeploymentConfig = toml::from_str(&toml_str).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    // --- schema versioning / migration ---
+
+    fn legacy_toml() -> String {
+        format!("{}\n[subscription]\nlisten_port = 9100\n", base_toml())
+    }
+
+    #[test]
+    fn missing_schema_version_defaults_to_zero_and_still_loads() {
+        let cfg: DeploymentConfig = toml::from_str(&legacy_toml()).unwrap();
+        assert_eq!(cfg.schema_version, 0);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn explicit_current_schema_version_loads() {
+        let toml_str = format!(
+            "schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{}",
+            legacy_toml()
+        );
+        let cfg: DeploymentConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(cfg.schema_version, DEPLOYMENT_SCHEMA_VERSION);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn future_schema_version_is_refused() {
+        let toml_str = format!("schema_version = 99\n{}", legacy_toml());
+        let cfg: DeploymentConfig = toml::from_str(&toml_str).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            CompatError::UnsupportedSchema { found: 99, .. }
+        ));
+    }
+
+    #[test]
+    fn migrate_text_inserts_marker_once_and_is_idempotent() {
+        let original = legacy_toml();
+        let patched = migrate_deployment_toml_text(&original).expect("should patch");
+        assert!(patched.starts_with("schema_version = 1\n"));
+        assert!(patched.ends_with(&original));
+        // idempotent: already-versioned text is untouched
+        assert_eq!(migrate_deployment_toml_text(&patched), None);
+    }
+
+    #[test]
+    fn migrate_deployment_toml_end_to_end_backs_up_migrates_preserves_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        let original = legacy_toml();
+        std::fs::write(&path, &original).unwrap();
+
+        let outcome = migrate_deployment_toml(&path).unwrap();
+        let backup_path = match outcome {
+            DeploymentMigrationOutcome::Migrated { backup_path } => backup_path,
+            other => panic!("expected Migrated, got {other:?}"),
+        };
+        assert!(backup_path.exists());
+        assert_eq!(std::fs::read_to_string(&backup_path).unwrap(), original);
+
+        let migrated_text = std::fs::read_to_string(&path).unwrap();
+        let migrated_cfg: DeploymentConfig = toml::from_str(&migrated_text).unwrap();
+        assert_eq!(migrated_cfg.schema_version, DEPLOYMENT_SCHEMA_VERSION);
+
+        let original_cfg: DeploymentConfig = toml::from_str(&original).unwrap();
+        assert_eq!(migrated_cfg.public_host, original_cfg.public_host);
+        assert_eq!(
+            migrated_cfg.reality.handshake_server,
+            original_cfg.reality.handshake_server
+        );
+        assert_eq!(
+            migrated_cfg.subscription.listen_port,
+            original_cfg.subscription.listen_port
+        );
+
+        // idempotent: running again on the already-migrated file is a no-op
+        let second = migrate_deployment_toml(&path).unwrap();
+        assert_eq!(second, DeploymentMigrationOutcome::AlreadyCurrent);
+    }
+
+    #[test]
+    fn migrate_deployment_toml_missing_file_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.toml");
+        assert_eq!(
+            migrate_deployment_toml(&path).unwrap(),
+            DeploymentMigrationOutcome::Missing
+        );
+    }
+
+    #[test]
+    fn migrate_deployment_toml_refuses_corrupted_input_and_leaves_it_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        let corrupted = "this is not valid = = toml [[[";
+        std::fs::write(&path, corrupted).unwrap();
+
+        let err = migrate_deployment_toml(&path).unwrap_err();
+        assert!(matches!(err, CompatError::Parse(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupted);
+    }
+
+    #[test]
+    fn migrate_deployment_toml_refuses_future_schema_and_leaves_it_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        let future = format!("schema_version = 99\n{}", legacy_toml());
+        std::fs::write(&path, &future).unwrap();
+
+        let err = migrate_deployment_toml(&path).unwrap_err();
+        assert!(matches!(
+            err,
+            CompatError::UnsupportedSchema { found: 99, .. }
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), future);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrate_deployment_toml_backup_is_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        std::fs::write(&path, legacy_toml()).unwrap();
+        let outcome = migrate_deployment_toml(&path).unwrap();
+        let backup_path = match outcome {
+            DeploymentMigrationOutcome::Migrated { backup_path } => backup_path,
+            other => panic!("expected Migrated, got {other:?}"),
+        };
+        let mode = std::fs::metadata(&backup_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }

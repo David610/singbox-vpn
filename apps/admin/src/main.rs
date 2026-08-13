@@ -185,6 +185,29 @@ enum Commands {
     HysteriaObfsRotate,
     #[command(subcommand)]
     User(UserCommands),
+    #[command(subcommand)]
+    Config(ConfigCommands),
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Read-only: report the on-disk schema state of deployment.toml and
+    /// users.json — FRESH/CURRENT (nothing to do), MIGRATION_REQUIRED
+    /// (legacy schema found, recoverable via `config migrate`), or
+    /// INVALID (corrupted, or a schema newer than this binary supports —
+    /// needs a backup restore or a newer vpn-admin). Never changes
+    /// anything. Exit code: 0 = FRESH/CURRENT, 2 = MIGRATION_REQUIRED,
+    /// 3 = INVALID.
+    Validate,
+    /// Migrate deployment.toml/users.json to the schema this vpn-admin
+    /// understands: backs up the original (mode 0600) before touching
+    /// anything, validates the migrated state (including a real
+    /// render-config + `sing-box check` when a REALITY key and sing-box
+    /// binary are already present), and only then commits atomically.
+    /// Idempotent — safe to re-run; a no-op if already current. Refuses
+    /// (leaving all state untouched) on corrupted input or a schema
+    /// newer than this binary supports.
+    Migrate,
 }
 
 #[derive(Subcommand)]
@@ -270,6 +293,7 @@ fn command_mutates_state(cmd: &Commands) -> bool {
             | Commands::Doctor { .. }
             | Commands::User(UserCommands::List)
             | Commands::User(UserCommands::Subscription { .. })
+            | Commands::Config(ConfigCommands::Validate)
     )
 }
 
@@ -315,6 +339,8 @@ fn main() -> Result<()> {
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
+        Commands::Config(ConfigCommands::Validate) => cmd_config_validate(&cfg, &cli.config),
+        Commands::Config(ConfigCommands::Migrate) => cmd_config_migrate(&cfg, &cli.config),
         Commands::User(UserCommands::Create {
             name,
             expires_at,
@@ -1465,6 +1491,136 @@ fn cmd_render_config(cfg: &DeploymentConfig, require_applied: bool) -> Result<()
              reconciliation."
         );
     }
+    Ok(())
+}
+
+/// Read-only report of `deployment.toml`/`users.json`'s on-disk schema
+/// state. `cfg` was already successfully loaded by `main()` before this
+/// runs — a deployment.toml with a schema_version newer than this binary
+/// supports never reaches here at all (`DeploymentConfig::load` already
+/// refused it with a clear error; that IS the "INVALID" outcome for
+/// deployment.toml, just surfaced earlier in the call chain rather than
+/// through this command's own formatting).
+///
+/// Exit code doubles as the machine-readable "what mode did this
+/// detect" signal `deploy/almalinux/update.sh`/`install.sh` act on:
+/// 0 = nothing to do (FRESH or CURRENT), 2 = MIGRATION_REQUIRED (legacy
+/// schema found, run `config migrate`), 3 = INVALID (corrupted or
+/// unsupported-future state — needs a backup restore or a newer
+/// vpn-admin, not something `config migrate` can fix).
+fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) -> Result<()> {
+    use compat_config::deployment::DEPLOYMENT_SCHEMA_VERSION;
+    use compat_config::store::UsersSchemaState;
+
+    let mut invalid = false;
+    let mut migration_required = false;
+
+    if cfg.schema_version == 0 {
+        println!("deployment.toml ({config_path:?}): LEGACY (no schema_version marker)");
+        migration_required = true;
+    } else {
+        println!(
+            "deployment.toml ({config_path:?}): CURRENT (schema_version {DEPLOYMENT_SCHEMA_VERSION})"
+        );
+    }
+
+    let users_path = cfg.users_file();
+    match store::detect_users_schema(&users_path) {
+        UsersSchemaState::Missing => {
+            println!("users.json ({users_path:?}): MISSING (fresh install, no users yet)")
+        }
+        UsersSchemaState::Current => {
+            println!("users.json ({users_path:?}): CURRENT")
+        }
+        UsersSchemaState::Legacy => {
+            println!("users.json ({users_path:?}): LEGACY (pre-versioning bare-array format)");
+            migration_required = true;
+        }
+        UsersSchemaState::Future(found) => {
+            println!(
+                "users.json ({users_path:?}): INVALID (schema_version {found} is newer than this vpn-admin supports)"
+            );
+            invalid = true;
+        }
+        UsersSchemaState::Corrupted(msg) => {
+            println!("users.json ({users_path:?}): INVALID (corrupted: {msg})");
+            invalid = true;
+        }
+    }
+
+    if invalid {
+        println!("MODE: INVALID");
+        println!("Needs manual intervention: restore from a backup (see `vpn-admin restore`), or install a vpn-admin new enough to understand this state. `config migrate` cannot fix this — it only moves forward.");
+        std::process::exit(3);
+    }
+    if migration_required {
+        println!("MODE: MIGRATION_REQUIRED");
+        println!("Run `vpn-admin config migrate` to normalize the state above.");
+        std::process::exit(2);
+    }
+    println!("MODE: OK");
+    Ok(())
+}
+
+/// Migrate `deployment.toml`/`users.json` to the schema this vpn-admin
+/// understands. See `ConfigCommands::Migrate`'s doc comment for the
+/// backup/validate/commit contract.
+fn cmd_config_migrate(cfg: &DeploymentConfig, config_path: &std::path::Path) -> Result<()> {
+    use compat_config::deployment::{migrate_deployment_toml, DeploymentMigrationOutcome};
+    use compat_config::store::{migrate_users, UsersMigrationOutcome};
+
+    match migrate_deployment_toml(config_path)
+        .with_context(|| format!("migrating {config_path:?}"))?
+    {
+        DeploymentMigrationOutcome::Missing => {
+            println!("deployment.toml ({config_path:?}): missing, nothing to migrate.")
+        }
+        DeploymentMigrationOutcome::AlreadyCurrent => {
+            println!("deployment.toml ({config_path:?}): already current, no changes made.")
+        }
+        DeploymentMigrationOutcome::Migrated { backup_path } => {
+            println!(
+                "deployment.toml ({config_path:?}): migrated. Pre-migration backup: {backup_path:?}"
+            );
+        }
+    }
+
+    let users_path = cfg.users_file();
+    match migrate_users(&users_path).with_context(|| format!("migrating {users_path:?}"))? {
+        UsersMigrationOutcome::Missing => {
+            println!("users.json ({users_path:?}): missing, nothing to migrate.")
+        }
+        UsersMigrationOutcome::AlreadyCurrent => {
+            println!("users.json ({users_path:?}): already current, no changes made.")
+        }
+        UsersMigrationOutcome::Migrated { backup_path } => {
+            println!(
+                "users.json ({users_path:?}): migrated. Pre-migration backup: {backup_path:?}"
+            );
+        }
+    }
+
+    // Requirement: validate any generated sing-box configuration
+    // affected by the migration. Re-reads deployment.toml fresh (the
+    // in-memory `cfg` predates the migration above) so this reflects
+    // what a subsequent command will actually load; reuses the same
+    // validate-then-apply path every other mutating command goes
+    // through (SingBoxBackend::validate via render_and_apply_singbox_config)
+    // rather than a second, bespoke check.
+    let reloaded = DeploymentConfig::load(config_path)
+        .with_context(|| format!("reloading {config_path:?} after migration"))?;
+    match regenerate_singbox_config(&reloaded, false) {
+        Ok(_) => println!("sing-box config re-validated against migrated state: OK."),
+        Err(e) => {
+            println!(
+                "warning: could not re-validate the sing-box config against migrated state: {e} \
+                 (this is expected if sing-box/REALITY keys are not set up yet, e.g. before the \
+                 first `vpn-admin init`)"
+            );
+        }
+    }
+
+    println!("MODE: OK (migration complete)");
     Ok(())
 }
 
@@ -4936,7 +5092,11 @@ fn cmd_restore(
     let users_path = staging.path().join("users/users.json");
     let restored_users: Vec<CompatUser> = if users_path.exists() {
         let bytes = std::fs::read(&users_path).context("reading restored users.json")?;
-        serde_json::from_slice(&bytes)
+        // Understands both the current versioned envelope and the legacy
+        // pre-versioning bare-array shape — a backup taken before `vpn-admin
+        // config migrate`/an upgrade is exactly as restorable as one taken
+        // after (see store::parse_users_bytes's doc comment).
+        store::parse_users_bytes(&bytes)
             .context("restored users.json is not valid — refusing to restore")?
     } else {
         bail!("archive does not contain users/users.json — refusing to restore");

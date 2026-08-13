@@ -187,6 +187,32 @@ mv -f "$BIN_DIR/vpn-benchmark-lib.sh.update-new" "$BIN_DIR/vpn-benchmark-lib.sh"
 log "reloading systemd unit definitions..."
 systemctl daemon-reload
 
+# Explicit install-mode report + persistent-state schema check
+# (requirement: reinstall/update must explicitly report which mode it
+# detected — never silent). update.sh only ever runs against an existing
+# deployment, so this is always UPGRADE or, if the schema is already
+# current, a no-op re-run of the same version.
+log "install mode: UPGRADE (checking persistent state schema before rendering)..."
+validate_output=""
+validate_rc=0
+validate_output="$("$BIN_DIR/vpn-admin" --config /etc/vpn/deployment.toml config validate 2>&1)" || validate_rc=$?
+case "$validate_rc" in
+  0)
+    log "persistent state schema: current, no migration needed."
+    ;;
+  2)
+    log "persistent state schema: MIGRATION REQUIRED. Migrating now (backup taken automatically before any change)..."
+    echo "$validate_output"
+    "$BIN_DIR/vpn-admin" --config /etc/vpn/deployment.toml config migrate \
+      || die "persistent state migration failed — see output above. Rolling back to the previous working binaries/config; nothing live was changed by this step."
+    log "persistent state schema: migration complete."
+    ;;
+  *)
+    echo "$validate_output" >&2
+    die "persistent state is INVALID/unsupported (status $validate_rc) — see output above. Rolling back to the previous working binaries/config. This is not something update.sh can fix automatically: restore from a backup (/etc/vpn/backups, or /etc/vpn/compat/**/*.pre-migration-*.bak)."
+    ;;
+esac
+
 log "rendering current authoritative users/REALITY state with new tooling..."
 VPN1_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
   "$BIN_DIR/vpn-admin" --config /etc/vpn/deployment.toml render-config

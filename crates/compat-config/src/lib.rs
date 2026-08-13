@@ -9,6 +9,7 @@
 
 pub mod credentials;
 pub mod deployment;
+pub mod migrate;
 pub mod model;
 pub mod ownership;
 pub mod render;
@@ -34,4 +35,14 @@ pub enum CompatError {
     WrongTransportForEndpoint,
     #[error("user not found")]
     UserNotFound,
+    #[error(
+        "{what} schema version {found} is newer than this vpn-admin supports (max {max_supported}) — \
+         refusing to load it: an older binary cannot safely assume it still understands every \
+         field. Upgrade vpn-admin, or restore a compatible backup."
+    )]
+    UnsupportedSchema {
+        what: &'static str,
+        found: u32,
+        max_supported: u32,
+    },
 }

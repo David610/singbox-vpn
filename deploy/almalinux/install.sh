@@ -801,6 +801,52 @@ binaries_stage() {
   fetch_release_binaries || build_binaries_from_source
 }
 
+# Explicit install-mode report + persistent-state schema check
+# (requirement: reinstall/update must explicitly report which mode it
+# detected — never silent). Runs right after binaries_stage, once
+# vpn-admin exists, and before reality_keys_stage renders/touches
+# deployment.toml. A no-op on a truly fresh install: deployment.toml
+# does not exist yet at this point (render_deployment_toml runs later,
+# in reality_keys_stage), so `config validate` reports MISSING/OK.
+check_state_schema() {
+  if [ "$IS_FRESH_INSTALL" -eq 1 ]; then
+    log "install mode: FRESH (no existing deployment detected)."
+    return
+  fi
+  local prior_version="unknown"
+  if [ -f /var/lib/vpn1/install-state.json ]; then
+    prior_version="$(grep -o '"vpn1_version"[[:space:]]*:[[:space:]]*"[^"]*"' /var/lib/vpn1/install-state.json | sed -E 's/.*"([^"]*)"$/\1/')"
+  fi
+  local this_version="${VPN1_VERSION:-main}"
+  if [ "$prior_version" = "$this_version" ]; then
+    log "install mode: REPAIR (existing deployment already at $this_version)."
+  else
+    log "install mode: UPGRADE (existing deployment at ${prior_version:-unknown} -> $this_version)."
+  fi
+
+  if [ ! -f "$DEPLOYMENT_TOML" ]; then
+    return 0
+  fi
+  local validate_output="" validate_rc=0
+  validate_output="$("$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config validate 2>&1)" || validate_rc=$?
+  case "$validate_rc" in
+    0)
+      log "persistent state schema: current, no migration needed."
+      ;;
+    2)
+      log "persistent state schema: MIGRATION REQUIRED. Migrating now (backup taken automatically before any change)..."
+      echo "$validate_output"
+      "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config migrate \
+        || die "persistent state migration failed — see output above. Nothing live was changed by this step; the previous state remains in place. Re-run once the cause is fixed, or restore a backup under /etc/vpn/compat/**/*.pre-migration-*.bak."
+      log "persistent state schema: migration complete."
+      ;;
+    *)
+      echo "$validate_output" >&2
+      die "persistent state is INVALID/unsupported (status $validate_rc) — see output above. This is not something a repair/upgrade re-run can fix automatically: restore from a backup (/etc/vpn/backups, or /etc/vpn/compat/**/*.pre-migration-*.bak), or install a vpn-admin new enough to understand this state."
+      ;;
+  esac
+}
+
 # ---------------------------------------------------------------------
 # [5] sing-box installation
 # ---------------------------------------------------------------------
@@ -1838,6 +1884,7 @@ main() {
   packages_stage
   host_config_stage
   binaries_stage
+  check_state_schema
   singbox_install_stage
   lifecycle_gate_abort_hook install_singbox
   systemd_stage

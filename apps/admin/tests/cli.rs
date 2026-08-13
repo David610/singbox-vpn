@@ -2007,3 +2007,247 @@ fn restore_rejects_a_fifo_entry_without_hanging() {
         "restore did not fail promptly on a FIFO entry"
     );
 }
+
+// --- config validate / config migrate (persistent-state schema versioning) ---
+
+#[test]
+fn config_validate_reports_migration_required_on_fresh_legacy_deployment_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+
+    // write_deployment_toml() writes the legacy (no schema_version) shape
+    // and no users.json exists yet — MIGRATION_REQUIRED (for the config
+    // file) even though users.json itself is just MISSING/fresh.
+    let output = admin(dir.path(), &cfg_path)
+        .args(["config", "validate"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("LEGACY"));
+    assert!(stdout.contains("MISSING"));
+    assert!(stdout.contains("MODE: MIGRATION_REQUIRED"));
+}
+
+#[test]
+fn config_migrate_is_idempotent_and_validate_reports_ok_afterward() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+
+    admin(dir.path(), &cfg_path)
+        .args(["config", "migrate"])
+        .assert()
+        .success();
+
+    admin(dir.path(), &cfg_path)
+        .args(["config", "validate"])
+        .assert()
+        .code(0)
+        .stdout(predicates::str::contains("MODE: OK"));
+
+    // Re-running migrate on already-current state is a no-op, not an error.
+    admin(dir.path(), &cfg_path)
+        .args(["config", "migrate"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("already current"));
+
+    let toml_text = std::fs::read_to_string(&cfg_path).unwrap();
+    assert!(toml_text.starts_with("schema_version = 1"));
+    // operator settings preserved
+    assert!(toml_text.contains(r#"public_host = "vpn.example.com""#));
+}
+
+#[test]
+fn config_migrate_preserves_existing_users_and_backs_up_users_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+
+    admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "erin"])
+        .assert()
+        .success();
+
+    // Simulate a pre-versioning deployment: overwrite users.json with the
+    // legacy bare-array shape containing the same user.
+    let users_path = state_dir.join("users/users.json");
+    let current: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&users_path).unwrap()).unwrap();
+    let legacy_array = current["users"].clone();
+    std::fs::write(
+        &users_path,
+        serde_json::to_vec_pretty(&legacy_array).unwrap(),
+    )
+    .unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .args(["config", "migrate"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("migrated. Pre-migration backup"));
+
+    // Backup exists with the pre-migration (legacy) content.
+    let backups: Vec<_> = std::fs::read_dir(state_dir.join("users"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".pre-migration-"))
+        .collect();
+    assert_eq!(backups.len(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(backups[0].path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // The user is still present and unchanged after migration.
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("erin"));
+}
+
+#[test]
+fn config_validate_reports_invalid_on_corrupted_users_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(state_dir.join("users")).unwrap();
+    std::fs::write(state_dir.join("users/users.json"), b"{not valid json").unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .args(["config", "validate"])
+        .assert()
+        .code(3)
+        .stdout(predicates::str::contains("MODE: INVALID"));
+}
+
+#[test]
+fn config_migrate_refuses_corrupted_users_json_and_leaves_it_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(state_dir.join("users")).unwrap();
+    let users_path = state_dir.join("users/users.json");
+    std::fs::write(&users_path, b"{not valid json").unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .args(["config", "migrate"])
+        .assert()
+        .failure();
+
+    assert_eq!(std::fs::read(&users_path).unwrap(), b"{not valid json");
+}
+
+#[test]
+fn config_validate_reports_invalid_on_future_users_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(state_dir.join("users")).unwrap();
+    std::fs::write(
+        state_dir.join("users/users.json"),
+        br#"{"schema_version": 99, "users": []}"#,
+    )
+    .unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .args(["config", "validate"])
+        .assert()
+        .code(3)
+        .stdout(predicates::str::contains("MODE: INVALID"));
+}
+
+#[test]
+fn config_validate_reports_invalid_on_future_deployment_toml_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let mut toml_text = std::fs::read_to_string(&cfg_path).unwrap();
+    toml_text = format!("schema_version = 99\n{toml_text}");
+    std::fs::write(&cfg_path, toml_text).unwrap();
+
+    // The whole binary refuses at cfg load (before any subcommand runs) —
+    // still a clear, non-zero, "no system changes made" failure.
+    admin(dir.path(), &cfg_path)
+        .args(["config", "validate"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("schema version 99"));
+}
+
+#[test]
+fn command_mutates_state_check_does_not_block_config_validate_concurrently() {
+    // config validate is read-only and must not require/hold the state
+    // lock — a quick smoke test that it succeeds even given a plausible
+    // legacy deployment (this is mostly a compile-time guarantee via
+    // command_mutates_state()'s match arm, exercised here for regression
+    // safety against that match arm silently changing).
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    admin(dir.path(), &cfg_path)
+        .args(["config", "validate"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn backup_then_restore_round_trips_the_current_versioned_users_envelope() {
+    // Regression test: cmd_restore() used to parse users/users.json with
+    // a raw serde_json::from_slice::<Vec<CompatUser>>, which only ever
+    // understood the legacy bare-array shape. Once save_users_atomic()
+    // started writing the versioned envelope ({"schema_version":
+    // 1,"users":[...]}), a backup taken from any current deployment
+    // would fail to restore. Fixed by routing through
+    // store::parse_users_bytes (the same tolerant parser load_users()
+    // uses). This test proves a backup of CURRENT-format state restores.
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let state_dir = dir.path().join("state");
+
+    std::fs::create_dir_all(state_dir.join("reality")).unwrap();
+    std::fs::write(state_dir.join("reality/private.key"), REALITY_PRIVATE_A).unwrap();
+    std::fs::write(state_dir.join("reality/public.key"), REALITY_PUBLIC_A).unwrap();
+    std::fs::write(state_dir.join("reality/short_id.txt"), "deadbeef").unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "erin"])
+        .assert()
+        .success();
+
+    // Confirm the live file really is the current versioned envelope
+    // (not the legacy shape) before backing it up.
+    let users_path = state_dir.join("users/users.json");
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&users_path).unwrap()).unwrap();
+    assert_eq!(raw["schema_version"], 1);
+
+    let backup_path = dir.path().join("backup.tar");
+    admin(dir.path(), &cfg_path)
+        .args(["backup", "--output"])
+        .arg(&backup_path)
+        .assert()
+        .success();
+
+    std::fs::remove_file(&users_path).unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .arg("restore")
+        .arg(&backup_path)
+        .assert()
+        .success();
+
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("erin"));
+}
