@@ -246,6 +246,82 @@ else
   fail "release.yml does not build x86_64-unknown-linux-gnu"
 fi
 
+echo
+echo "--- static: release.yml publishes a checksum-manifested source archive (vpn1-src.tar.gz) ---"
+RELEASE_YML="$REPO_ROOT/.github/workflows/release.yml"
+if grep -q 'git archive --format=tar.gz --prefix=vpn1-src/ -o vpn1-src.tar.gz' "$RELEASE_YML"; then
+  ok "release.yml packages a deterministic vpn1-src.tar.gz via git archive"
+else
+  fail "release.yml no longer builds vpn1-src.tar.gz — bootstrap install.sh's release-source checksum verification has nothing to verify against"
+fi
+if grep -q 'sha256sum vpn1-src.tar.gz > vpn1-src.tar.gz.sha256' "$RELEASE_YML"; then
+  ok "release.yml computes vpn1-src.tar.gz.sha256, folded into the published SHA256SUMS by the publish job's existing 'cat ./*.tar.gz.sha256' step"
+else
+  fail "release.yml no longer computes a checksum for vpn1-src.tar.gz"
+fi
+
+echo
+echo "--- static: bootstrap install.sh verifies the release source archive checksum for a pinned VPN1_VERSION, never falls through unverified ---"
+if grep -q 'download_verified_source_release()' "$BOOTSTRAP_SH"; then
+  ok "install.sh has a dedicated checksum-verifying downloader for pinned releases"
+else
+  fail "install.sh no longer has download_verified_source_release()"
+fi
+for needle in \
+  'could not download release source archive' \
+  'SHA256SUMS checksum manifest could not be downloaded' \
+  'has no well-formed entry for vpn1-src.tar.gz' \
+  'checksum verification failed for vpn1-src.tar.gz'
+do
+  if grep -qF "$needle" "$BOOTSTRAP_SH"; then
+    ok "install.sh fails closed (die) on: $needle"
+  else
+    fail "install.sh is missing the fail-closed guard for: $needle"
+  fi
+done
+if grep -q 'download_verified_source_release "\$VPN1_VERSION" "\$tarball"' "$BOOTSTRAP_SH"; then
+  ok "download_source() routes any pinned VPN1_VERSION through the checksum-verifying downloader"
+else
+  fail "download_source() no longer routes pinned installs through checksum verification"
+fi
+
+echo
+echo "--- functional: SHA256SUMS entry parsing/verification (same grep+sha256sum -c mechanism download_verified_source_release() uses) ---"
+TMPDIR_SRC_TEST="$(mktemp -d)"
+echo -n "fixture source archive bytes" > "$TMPDIR_SRC_TEST/vpn1-src.tar.gz"
+real_sha="$(sha256sum "$TMPDIR_SRC_TEST/vpn1-src.tar.gz" | awk '{print $1}')"
+{
+  echo "deadbeef00000000000000000000000000000000000000000000000000000000  vpn1-x86_64-unknown-linux-gnu.tar.gz"
+  echo "$real_sha  vpn1-src.tar.gz"
+} > "$TMPDIR_SRC_TEST/SHA256SUMS"
+if ( cd "$TMPDIR_SRC_TEST" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) >/dev/null 2>&1; then
+  ok "a correct vpn1-src.tar.gz entry in a multi-asset SHA256SUMS verifies successfully"
+else
+  fail "a correct vpn1-src.tar.gz entry unexpectedly failed to verify"
+fi
+echo -n "tampered bytes" > "$TMPDIR_SRC_TEST/vpn1-src.tar.gz"
+if ! ( cd "$TMPDIR_SRC_TEST" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) >/dev/null 2>&1; then
+  ok "a tampered/mismatched vpn1-src.tar.gz is correctly rejected"
+else
+  fail "a tampered vpn1-src.tar.gz unexpectedly verified"
+fi
+rm -f "$TMPDIR_SRC_TEST/SHA256SUMS"
+echo "not a valid checksum manifest line" > "$TMPDIR_SRC_TEST/SHA256SUMS"
+if ! grep -qE '^[0-9a-f]{64}  vpn1-src\.tar\.gz$' "$TMPDIR_SRC_TEST/SHA256SUMS"; then
+  ok "a malformed SHA256SUMS (no well-formed vpn1-src.tar.gz entry) is correctly rejected by the same pattern install.sh uses"
+else
+  fail "malformed-SHA256SUMS detection pattern unexpectedly matched"
+fi
+rm -rf "$TMPDIR_SRC_TEST"
+
+echo
+echo "--- static: VPN1_CHANNEL=dev branch-source path remains explicitly documented as unverified/dev-only, not silently equivalent to a verified install ---"
+if grep -q 'UNVERIFIED vpn1 branch source' "$BOOTSTRAP_SH"; then
+  ok "install.sh labels the branch-source download path as unverified at the point it runs, not just in --help text"
+else
+  fail "install.sh no longer labels the branch-source download as unverified"
+fi
+
 if [ "$failures" -eq 0 ]; then
   echo
   echo "all release-reproducibility tests passed"

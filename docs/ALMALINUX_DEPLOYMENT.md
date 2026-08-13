@@ -57,19 +57,34 @@ curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
   | sudo REALITY_HANDSHAKE_SERVER=www.google.com bash
 ```
 
-That command resolves the latest tagged release, downloads this repo at
-that exact immutable tag, auto-detects your public IP, issues a real
-(non-self-signed) TLS certificate automatically via
-[sslip.io](https://sslip.io) + certbot, and runs everything below for
-you. `fetch_release_binaries()` in `deploy/almalinux/install.sh` prefers
-a prebuilt, checksum-verified release binary for your exact
-version/architecture and only falls back to building from that same
-exact-tag source (via `rustup` + `cargo build`) when no matching release
-asset exists — source and binaries are always the same immutable
-version either way. The bootstrap (`install.sh`) resolves this version
-BEFORE downloading anything: a production (default/stable-channel)
-install that finds no tagged release refuses to run rather than
-silently falling back to mutable branch source.
+That command resolves the latest tagged release, downloads the source
+archive `release.yml` published for that exact tag, verifies it against
+that release's `SHA256SUMS` manifest (refusing to extract/run anything
+if the asset, manifest, or checksum don't match — see
+`download_verified_source_release()` in the top-level `install.sh`),
+auto-detects your public IP, issues a real (non-self-signed) TLS
+certificate automatically via [sslip.io](https://sslip.io) + certbot,
+and runs everything below for you. `fetch_release_binaries()` in
+`deploy/almalinux/install.sh` prefers a prebuilt, checksum-verified
+release binary for your exact version/architecture and only falls back
+to building from that same exact-tag source (via `rustup` + `cargo
+build`) when no matching release asset exists — source and binaries are
+always the same immutable, checksum-verified version either way. The
+bootstrap (`install.sh`) resolves this version BEFORE downloading
+anything: a production (default/stable-channel) install that finds no
+tagged release refuses to run rather than silently falling back to
+mutable, unverified branch source.
+
+**Trust boundary, stated exactly**: the very first `curl install.sh |
+sudo bash` fetch is plain HTTPS from `raw.githubusercontent.com` with no
+extra signature — that step's trust is "HTTPS + GitHub account
+security," same as any curl-pipe-to-shell installer, and this doc does
+not claim more than that. What the checksum verification above adds is
+SHA-256 integrity checking of the release payload once a tag is
+resolved: it catches a corrupted or tampered-in-transit download, not a
+compromise of the GitHub release itself (someone who can edit/replace a
+release could republish a matching archive+checksum pair together). No
+code-signing infrastructure is implemented for v1.0.
 
 **As of this writing, no `vX.Y.Z` tag has ever been pushed to this repo,
 so the plain `curl | sudo bash` command above currently refuses to run**

@@ -13,6 +13,29 @@
 # the directory name, supports the RHEL and Debian OS families — see
 # deploy/lib/os.sh).
 #
+# TRUST BOUNDARY (read this before assuming more than it says): the
+# initial `curl this-file | sudo bash` step itself is fetched over plain
+# HTTPS from raw.githubusercontent.com with no additional signature —
+# that step's trust is "HTTPS + GitHub account security", the same as
+# any curl-pipe-to-shell installer, and this script does not claim
+# otherwise. What IS verified: once a pinned release (VPN1_VERSION, or
+# the latest tag auto-resolved in the default stable channel) is
+# selected, its SOURCE ARCHIVE is downloaded from that release's GitHub
+# Release assets and checksum-verified against a SHA256SUMS manifest
+# published by `.github/workflows/release.yml` for that exact tag before
+# it is extracted or executed — see download_verified_source_release()
+# below. This is SHA-256 integrity verification, not cryptographic
+# signing: it protects against a corrupted/tampered-in-transit download
+# or a codeload mirror serving different bytes than the release, not
+# against someone who has compromised the GitHub release itself (who
+# could republish both the archive and its checksum together). No
+# signing infrastructure is implemented for this checkpoint.
+# VPN1_CHANNEL=dev (unpinned branch source, no VPN1_VERSION resolved)
+# remains intentionally weaker: it downloads a live branch tarball via
+# codeload with NO checksum verification at all, because a branch has no
+# stable checksum to verify against. That path is explicitly documented
+# as development/testing only, never for a production install.
+#
 # Supported overrides (all optional):
 #   VPN1_VERSION=v1.2.3   pin to a specific tagged release/source ref
 #   VPN1_REPO=owner/repo  install from a fork
@@ -95,12 +118,16 @@ Installer options (passed through to deploy/almalinux/install.sh):
 
 By default this installer resolves the latest STABLE tagged release and
 installs source + binaries from that exact tag together (never a mix of
-main-branch source with a different release's binaries). If no tagged
-release exists yet, the default channel REFUSES to fall back to branch
-source — pin one with --version once available. Set VPN1_CHANNEL=dev to
-explicitly track '--ref' (default: main) instead — intended for
-development/testing only, not production VPS installs; this is the ONLY
-way to install unpinned branch source.
+main-branch source with a different release's binaries); the source
+archive is downloaded from that release and checksum-verified against
+its published SHA256SUMS before extraction (see the trust-boundary note
+at the top of this file — this is SHA-256 integrity verification, not
+cryptographic signing). If no tagged release exists yet, the default
+channel REFUSES to fall back to branch source — pin one with --version
+once available. Set VPN1_CHANNEL=dev to explicitly track '--ref'
+(default: main) instead — intended for development/testing only, not
+production VPS installs; this downloads UNVERIFIED branch source with no
+checksum check — this is the ONLY way to install unpinned branch source.
 
 Environment overrides: VPN1_VERSION, VPN1_REPO, VPN1_REF, VPN1_CHANNEL, PUBLIC_HOST, SUBSCRIPTION_HOST, REALITY_HANDSHAKE_SERVER
 USAGE
@@ -136,31 +163,55 @@ trap cleanup EXIT
 trap 'die "interrupted"' INT TERM
 
 # ---------------------------------------------------------------------
-# resolve what to download: a tagged release archive if VPN1_VERSION is
-# set (or a real release exists), otherwise the branch source archive.
-# GitHub's codeload tarballs work for any public branch/tag without
-# needing git installed, and without needing to clone.
+# Download and SHA-256-verify the source archive published for a pinned
+# release tag by .github/workflows/release.yml (asset "vpn1-src.tar.gz"
+# + a "SHA256SUMS" manifest covering it, alongside the prebuilt-binary
+# archives). Fails closed (die) on: missing asset, missing/unreadable
+# SHA256SUMS, a SHA256SUMS with no well-formed entry for this asset, or
+# a checksum mismatch — never falls through to extracting/executing an
+# unverified download. A version mismatch (wrong tag entirely) cannot
+# silently occur because the URL itself is scoped to $version: GitHub
+# 404s if that tag has no matching release/asset, which curl -f turns
+# into a hard failure below.
+# ---------------------------------------------------------------------
+download_verified_source_release() {
+  local version="$1" tarball="$2"
+  local base_url="https://github.com/$VPN1_REPO/releases/download/$version"
+  local sums="$TMPDIR/SHA256SUMS"
+  log "downloading vpn1 $version release source archive + checksum manifest..."
+  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$base_url/vpn1-src.tar.gz" \
+    || die "could not download release source archive 'vpn1-src.tar.gz' for $version from $VPN1_REPO. Check that this release exists and was published by .github/workflows/release.yml (which includes this asset)."
+  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$sums" "$base_url/SHA256SUMS" \
+    || die "release $version was found but its SHA256SUMS checksum manifest could not be downloaded — refusing to install an unverified source archive."
+  grep -qE '^[0-9a-f]{64}  vpn1-src\.tar\.gz$' "$sums" \
+    || die "SHA256SUMS for $version has no well-formed entry for vpn1-src.tar.gz (malformed or unexpected checksum manifest) — refusing to install an unverified source archive."
+  ( cd "$TMPDIR" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) \
+    || die "checksum verification failed for vpn1-src.tar.gz against $version's published SHA256SUMS — refusing to extract/execute an unverified source archive."
+  log "source archive checksum verified against release SHA256SUMS."
+}
+
+# ---------------------------------------------------------------------
+# resolve what to download: a checksum-verified release source archive
+# if VPN1_VERSION is pinned (see download_verified_source_release()
+# above), otherwise an UNVERIFIED branch source tarball (VPN1_CHANNEL=dev
+# only — see the top-of-file trust-boundary note). GitHub's codeload
+# tarballs work for any public branch without needing git installed.
 # ---------------------------------------------------------------------
 download_source() {
   local ref="$VPN1_REF" url tarball="$TMPDIR/vpn1-src.tar.gz"
   if [ -n "$VPN1_VERSION" ]; then
-    ref="$VPN1_VERSION"
-  fi
-  url="https://codeload.github.com/$VPN1_REPO/tar.gz/refs/heads/$ref"
-  if [ -n "$VPN1_VERSION" ]; then
-    url="https://codeload.github.com/$VPN1_REPO/tar.gz/refs/tags/$VPN1_VERSION"
-  fi
-  log "downloading vpn1 source (ref=$ref)..."
-  if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$url"; then
-    if [ -n "$VPN1_VERSION" ]; then
-      die "could not download source for ref '$VPN1_VERSION' from $VPN1_REPO. Check the version exists and try again."
-    fi
-    die "could not download source from $url. Check network connectivity and that $VPN1_REPO/$ref exists."
+    download_verified_source_release "$VPN1_VERSION" "$tarball"
+  else
+    url="https://codeload.github.com/$VPN1_REPO/tar.gz/refs/heads/$ref"
+    log "downloading UNVERIFIED vpn1 branch source (ref=$ref, VPN1_CHANNEL=dev — no checksum verification, development/testing only)..."
+    curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$url" \
+      || die "could not download source from $url. Check network connectivity and that $VPN1_REPO/$ref exists."
   fi
   log "extracting..."
   tar -xzf "$tarball" -C "$TMPDIR" || die "failed to extract downloaded source archive."
-  # codeload archives extract to a single top-level dir named
-  # "<repo>-<ref-without-slashes>" — find it rather than hardcoding.
+  # Both archive shapes (codeload's "<repo>-<ref>", and release.yml's
+  # "vpn1-src/") extract to a single top-level directory — find it
+  # rather than hardcoding either name.
   local extracted
   extracted="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
   [ -n "$extracted" ] || die "extracted archive did not contain the expected repository directory."

@@ -62,9 +62,16 @@ for the split ingress/egress topology and other variations.
 ## Quickstart: Hiddify-compatible mode (production)
 
 Follow these steps **in order** on a fresh, supported VPS (root/sudo
-access, public IPv4). Skipping straight to "run the installer" without
-step 1 is fine too — you'll just get an auto-assigned hostname instead
-of your own domain.
+access, public IPv4). A custom domain is the default/recommended path —
+the installer will not silently invent one for you.
+
+Skipping step 1 works only when you run the command yourself in a real
+interactive terminal: with no `--domain`, the installer prompts on
+`/dev/tty` and pressing Enter opts into an auto-assigned `<ip>.sslip.io`
+hostname instead. In any non-interactive context (automation, cloud-init,
+`--non-interactive`, or no TTY at all) the installer refuses to guess and
+exits with an error unless you pass `--allow-ip-hostname` explicitly —
+see the trade-offs below before choosing that flag.
 
 ### 1. (Optional) Point your own domain at the VPS
 
@@ -88,9 +95,11 @@ installer:
   `dig +short vpn.example.com` (or `getent hosts vpn.example.com`)
   should return the VPS's IP.
 
-Skip this step to get a zero-touch install with an auto-assigned
-`sslip.io` hostname instead (no DNS setup required, real TLS cert
-issued automatically either way).
+Skip this step in an interactive terminal to be prompted for one, with
+Enter opting into an auto-assigned `sslip.io` hostname instead (no DNS
+setup required, real TLS cert issued automatically either way). Running
+the installer non-interactively with no domain requires the explicit
+`--allow-ip-hostname` flag — see step 2.
 
 ### 2. Run the installer
 
@@ -100,23 +109,33 @@ curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
 ```
 
 `REALITY_HANDSHAKE_SERVER` is explicit because REALITY decoys are an
-external protocol dependency, not a safe universal default. The installer
-runs a real authenticated sing-box round trip and refuses completion if the
-selected endpoint is incompatible; `www.microsoft.com` is known to exceed
-the pinned sing-box/utls 8192-byte handshake budget and must not be used.
-`www.google.com` and `www.cloudflare.com` are the recommended defaults —
-both serve a compact TLS 1.3 certificate flight well inside that budget
-and are both effectively unblockable at internet scale, which also makes
-them good REALITY decoys for censorship-resistance: a censor blocking the
-decoy's SNI would also break a huge amount of unrelated traffic through
-the same CDN/provider.
+external protocol dependency, not a safe universal default: the target
+must actually run a TLS 1.3 server whose handshake fits within the
+pinned sing-box/utls implementation's record budget, and no target
+guarantees censorship resistance. The installer runs a real
+authenticated sing-box round trip and refuses completion if the selected
+endpoint is protocol-incompatible; `www.microsoft.com` is known to
+exceed the pinned sing-box/utls 8192-byte handshake budget and must not
+be used. `www.google.com` and `www.cloudflare.com` are commonly used
+starting points because they reliably serve a compact TLS 1.3
+certificate flight within that budget — this is a statement about
+handshake/protocol compatibility, not a claim that either is
+unblockable or that using them makes this deployment resistant to a
+specific censor. Target suitability can vary by network and country and
+has not been measured against any real censorship regime by this
+project; the installer's protocol self-test only proves local
+protocol compatibility, not real-world blocking resistance. VPS IP/ASN
+blocking remains a hard single-node failure mode regardless of which
+handshake target is chosen — see `docs/COMPATIBILITY_SECURITY_REVIEW.md`.
 The command resolves the latest tagged release, downloads its immutable
-vpn1 source, and detects your OS/architecture. It prefers a prebuilt,
-checksum-verified release binary for your exact version/arch, falling
-back to installing a Rust toolchain and building from that same
+vpn1 source (checksum-verified against that release's published
+`SHA256SUMS` before extraction — see the trust-boundary note at the top
+of `install.sh`), and detects your OS/architecture. It prefers a
+prebuilt, checksum-verified release binary for your exact version/arch,
+falling back to installing a Rust toolchain and building from that same
 exact-tag source when no matching release asset exists — either way,
-source and binaries always come from one immutable, self-consistent
-version. **As of this writing no `vX.Y.Z` tag has ever been pushed to
+source and binaries always come from one immutable, checksum-verified,
+self-consistent version. **As of this writing no `vX.Y.Z` tag has ever been pushed to
 this repo, so the plain command above currently refuses to run** (a
 production install must pin an immutable release, never mutable branch
 source — see below for the explicit development-only escape hatch).

@@ -108,6 +108,30 @@ jobs:
             vpn1-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
 
+      # Checksum-verified source payload (docs re: install.sh's bootstrap
+      # release-integrity gap): the top-level install.sh bootstrap
+      # downloads a source archive before it has any prebuilt binary to
+      # check — an unauthenticated `codeload.github.com` tag tarball is
+      # not itself a verified release artifact. Built once here (one
+      # matrix leg only, content doesn't depend on target arch) so the
+      # bootstrap has a checksum-manifested asset to verify against for
+      # any pinned VPN1_VERSION install.
+      - name: Package source archive
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --prefix=vpn1-src/ -o vpn1-src.tar.gz HEAD
+          sha256sum vpn1-src.tar.gz > vpn1-src.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        with:
+          name: vpn1-src
+          path: |
+            vpn1-src.tar.gz
+            vpn1-src.tar.gz.sha256
+          if-no-files-found: error
+
   publish:
     needs: build
     runs-on: ubuntu-latest
