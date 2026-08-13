@@ -118,18 +118,58 @@ pub fn derive_reality_public_key(private_key: &str) -> Result<String, String> {
     Ok(URL_SAFE_NO_PAD.encode(public))
 }
 
+/// Validate only the public key's own encoding (base64url-no-pad, 32
+/// bytes) — no private key required. This is the canonical shape check
+/// reused everywhere a REALITY public key needs to be validated: by
+/// `validate_reality_keypair` below (which layers the cryptographic
+/// keypair-correspondence check on top) and, standalone, by anything
+/// that only ever has the public half — `services/subscription`, by
+/// design, never has the private key (see `deployment.rs`'s doc comment
+/// on `reality_public_key_file`), so it cannot run the full keypair
+/// check and must not skip validation entirely just because it can't.
+pub fn validate_reality_public_key_shape(public_key: &str) -> Result<(), String> {
+    if public_key.trim().is_empty() {
+        return Err("REALITY public key is empty".into());
+    }
+    let decoded = URL_SAFE_NO_PAD
+        .decode(public_key.trim())
+        .map_err(|e| format!("REALITY public key is not valid base64url without padding: {e}"))?;
+    if decoded.len() != 32 {
+        return Err(format!(
+            "REALITY public key decodes to {} bytes; X25519 requires exactly 32",
+            decoded.len()
+        ));
+    }
+    Ok(())
+}
+
+/// A REALITY short_id must be 0-8 hex digits per the sing-box spec; a
+/// real deployment always writes exactly 8 (`generate_short_id`), so an
+/// empty or malformed value on disk indicates corruption, not a
+/// legitimate configuration choice, and callers that need a working
+/// short_id (as opposed to sing-box's own more permissive parser) should
+/// treat it as invalid.
+pub fn validate_reality_short_id(short_id: &str) -> Result<(), String> {
+    let trimmed = short_id.trim();
+    if trimmed.is_empty() {
+        return Err("REALITY short_id is empty".into());
+    }
+    if trimmed.len() > 8 {
+        return Err(format!(
+            "REALITY short_id is {} hex digits; sing-box allows at most 8",
+            trimmed.len()
+        ));
+    }
+    if !trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("REALITY short_id {trimmed:?} is not valid hex"));
+    }
+    Ok(())
+}
+
 /// Validate both the public-key encoding and its cryptographic
 /// correspondence to the private key.
 pub fn validate_reality_keypair(private_key: &str, public_key: &str) -> Result<(), String> {
-    let supplied = URL_SAFE_NO_PAD
-        .decode(public_key.trim())
-        .map_err(|e| format!("REALITY public key is not valid base64url without padding: {e}"))?;
-    if supplied.len() != 32 {
-        return Err(format!(
-            "REALITY public key decodes to {} bytes; X25519 requires exactly 32",
-            supplied.len()
-        ));
-    }
+    validate_reality_public_key_shape(public_key)?;
     let derived = derive_reality_public_key(private_key)?;
     if derived
         .as_bytes()
@@ -237,5 +277,54 @@ mod tests {
         assert!(validate_reality_keypair(private, other_public).is_err());
         assert!(validate_reality_keypair("not-base64!", other_public).is_err());
         assert!(validate_reality_keypair(private, "short").is_err());
+    }
+
+    #[test]
+    fn public_key_shape_validation_accepts_a_real_key_and_rejects_bad_ones() {
+        let good = "pOCSkrZRwni5dyxWn1-puxPZBrRqtoyd-dwrRAn4ogk";
+        assert!(validate_reality_public_key_shape(good).is_ok());
+        assert!(
+            validate_reality_public_key_shape("").is_err(),
+            "empty public key must be rejected"
+        );
+        assert!(
+            validate_reality_public_key_shape("   ").is_err(),
+            "whitespace-only public key must be rejected"
+        );
+        assert!(
+            validate_reality_public_key_shape("not valid base64!!!").is_err(),
+            "malformed base64 must be rejected"
+        );
+        assert!(
+            validate_reality_public_key_shape("dG9vc2hvcnQ").is_err(),
+            "wrong decoded length (not 32 bytes) must be rejected"
+        );
+    }
+
+    #[test]
+    fn short_id_validation_accepts_generated_ids_and_rejects_bad_ones() {
+        for _ in 0..8 {
+            assert!(validate_reality_short_id(&generate_short_id()).is_ok());
+        }
+        assert!(
+            validate_reality_short_id("").is_err(),
+            "empty short_id must be rejected"
+        );
+        assert!(
+            validate_reality_short_id("   ").is_err(),
+            "whitespace-only short_id must be rejected"
+        );
+        assert!(
+            validate_reality_short_id("zzzzzzzz").is_err(),
+            "non-hex characters must be rejected"
+        );
+        assert!(
+            validate_reality_short_id("123456789").is_err(),
+            "more than 8 hex digits must be rejected"
+        );
+        assert!(
+            validate_reality_short_id("deadbeef").is_ok(),
+            "a well-formed 8-hex-digit short_id must be accepted"
+        );
     }
 }

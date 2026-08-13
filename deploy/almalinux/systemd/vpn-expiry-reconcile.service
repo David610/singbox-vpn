@@ -5,7 +5,15 @@ After=sing-box.service
 [Service]
 Type=oneshot
 User=root
-ExecStart=/usr/local/bin/vpn --config /etc/vpn/deployment.toml render-config
+# --require-applied: on a real deployment, every degraded-apply
+# condition (missing sing-box binary, systemctl unavailable, unit not
+# installed, reload failure) is a genuine regression, not an expected
+# dev/CI condition — this reconciler is the only thing keeping expired
+# users' authorization in sync with the live server, so a reconcile
+# that silently fails to apply must fail this unit (and so be visible
+# in `systemctl status`/the journal and `vpn doctor`) rather than
+# report success.
+ExecStart=/usr/local/bin/vpn --config /etc/vpn/deployment.toml render-config --require-applied
 
 # The admin binary must atomically rewrite the sing-box config and ask
 # systemd to reload it. Keep the service short-lived and otherwise tight.

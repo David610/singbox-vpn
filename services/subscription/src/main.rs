@@ -26,10 +26,32 @@ async fn main() -> Result<()> {
         .context("reality public key missing — run `vpn-admin init` on the server first")?
         .trim()
         .to_string();
+    // This service caches `public_key`/`short_id` in AppState for its
+    // entire process lifetime (never rereads them — see AppState's doc
+    // comment) — so a corrupt/empty file here doesn't just make ONE
+    // request fail, it makes every subscription this process ever
+    // serves silently unusable (a `vless://...&pbk=&sid=...` URI at a
+    // real HTTP 200) until the process is restarted. Reuse the same
+    // canonical shape checks `vpn-admin init`/`doctor`/`restore` already
+    // use, rather than trusting these files just because they exist —
+    // refuse to start at all instead of binding and serving broken
+    // subscriptions.
+    compat_config::credentials::validate_reality_public_key_shape(&public_key)
+        .map_err(anyhow::Error::msg)
+        .context(
+            "reality public key is present but invalid — refusing to start and serve broken \
+             subscriptions; run `vpn-admin doctor` to diagnose",
+        )?;
     let short_id = std::fs::read_to_string(cfg.reality_dir().join("short_id.txt"))
         .context("reality short_id missing — run `vpn-admin init` on the server first")?
         .trim()
         .to_string();
+    compat_config::credentials::validate_reality_short_id(&short_id)
+        .map_err(anyhow::Error::msg)
+        .context(
+            "reality short_id is present but invalid — refusing to start and serve broken \
+             subscriptions; run `vpn-admin doctor` to diagnose",
+        )?;
     // Optional: absent on deployments that predate obfuscation support or
     // that were never rotated to enable it (see `hysteria_obfs_password_file`'s
     // doc comment) — obfuscation simply stays off, never a startup failure.

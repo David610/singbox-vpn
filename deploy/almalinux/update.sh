@@ -193,15 +193,58 @@ VPN1_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
 
 log "restarting services..."
 systemctl restart vpn-subscription
-# `reload-or-restart` on a unit with no ExecReload (sing-box.service has
-# none) falls back to a full restart — required, not merely sufficient,
-# to pick up a unit-file-only change like Nice=, since that is applied
-# at process exec time and a config-only "reload" inside sing-box itself
-# would never touch it.
-systemctl reload-or-restart sing-box
+
+# sing-box.service has no ExecReload=, so any restart of it is a full
+# process restart that drops every live VLESS+REALITY/Hysteria2
+# connection. render-config above already reloaded/restarted sing-box
+# if its rendered config actually changed (apps/admin's own no-op fast
+# path — render_and_apply_singbox_config's target_already_matches
+# check). Unconditionally restarting again here — as this script used
+# to — guaranteed a connection-dropping restart on every update even
+# when sing-box had nothing new to pick up. The one case render-config
+# cannot see or handle itself is the sing-box.service UNIT FILE
+# changing (e.g. the Nice= priority tweak) independent of config
+# content — that only takes effect at process exec time, never via
+# sing-box's own config reload, so it still needs an explicit restart.
+singbox_config_changed=1
+if [ -f "$BACKUP_DIR/config.json" ] && [ -f /etc/vpn/compat/sing-box/config.json ] \
+    && cmp -s "$BACKUP_DIR/config.json" /etc/vpn/compat/sing-box/config.json; then
+  singbox_config_changed=0
+fi
+singbox_unit_changed=1
+if [ -f "$BACKUP_DIR/systemd/sing-box.service" ] \
+    && cmp -s "$BACKUP_DIR/systemd/sing-box.service" "$SYSTEMD_DIR/sing-box.service"; then
+  singbox_unit_changed=0
+fi
+if [ "$singbox_config_changed" -eq 0 ] && [ "$singbox_unit_changed" -eq 1 ]; then
+  log "sing-box.service unit file changed (config content did not); restarting to pick it up..."
+  systemctl reload-or-restart sing-box
+elif [ "$singbox_config_changed" -eq 1 ]; then
+  log "sing-box config changed; render-config above already reloaded/restarted it."
+else
+  log "sing-box config and unit file unchanged; not restarting (keeps live connections up)."
+fi
 
 log "running health check..."
 /usr/local/bin/vpn-health-check
+
+# Health check alone is L1-L3 (process/config-syntax/TLS) only — it
+# cannot see REALITY key material disagreeing between what sing-box
+# enforces and what vpn-subscription advertises, and it cannot see a
+# syntactically-valid-but-functionally-broken REALITY config, both of
+# which install.sh's own acceptance gate already blocks on. An update
+# is exactly as capable of introducing that class of regression as an
+# install is, so it must be held to the same bar before being allowed
+# to commit — see install.sh's acceptance_stage for the precedent this
+# mirrors.
+log "verifying real protocol handshake..."
+doctor_output=""
+doctor_rc=0
+doctor_output="$("$BIN_DIR/vpn" --config /etc/vpn/deployment.toml doctor --protocol --require-protocol 2>&1)" || doctor_rc=$?
+if [ "$doctor_rc" -ne 0 ]; then
+  echo "$doctor_output" >&2
+  die "post-update protocol acceptance check failed (status $doctor_rc) — see output above. Rolling back to the previous working binaries/config."
+fi
 
 committed=1
 trap - ERR INT TERM EXIT
