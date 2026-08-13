@@ -21,7 +21,8 @@ v1.0 — see `deploy/local/run-dev-slice.sh` for its dev-only entry point.
 - Update/repair/render: `deploy/almalinux/update.sh`, `render-config.sh`,
   `health-check.sh`, `acceptance-test.sh`, `certbot-deploy-hook.sh`.
 - Shared shell libs: `deploy/lib/*.sh` (os detection, ownership, preflight,
-  perf-tuning, secret-logging check).
+  perf-tuning, secret-logging check) plus `deploy/lib/versions.env` (the
+  one authoritative sing-box version/checksum/arch source).
 - Rust crates in the supported dependency closure: `crates/common`,
   `crates/compat-config`, `apps/admin`, `services/subscription`.
 - Templates: `deploy/almalinux/templates/*.template`.
@@ -66,9 +67,34 @@ checkpoint if it becomes a real bottleneck.
   covering shell syntax/shellcheck, secret-logging check, supported-crate
   fmt/clippy/test, all `deploy/lib/tests/*.sh` fixtures, and a real
   render-config + `sing-box check` against the same pinned version/hash
-  `install.sh` uses (extracted from `install.sh` at run time, never
+  `install.sh` uses (sourced from `deploy/lib/versions.env`, never
   hand-duplicated). VERIFIED-TEST (executed; see Blockers for the one
   known failing subset).
+- Made production installs reproducible (Prompt 3): added
+  `deploy/lib/versions.env` as the ONE authoritative source for
+  `SINGBOX_VERSION`/`SINGBOX_SHA256_AMD64`/`SINGBOX_SHA256_ARM64`/
+  `SUPPORTED_ARCH`; `deploy/almalinux/install.sh`, `.github/workflows/ci.yml`
+  (`singbox-validate`), and `deploy/lib/fast-gate.sh` all source/load that
+  one file now (no more hand-duplicated constants). Fixed the bootstrap
+  `install.sh`'s `resolve_version()`: the default (stable) channel now
+  `die()`s if no tagged release exists, instead of silently warning and
+  falling back to mutable branch source — `VPN1_CHANNEL=dev` is now the
+  ONLY way to install unpinned branch source, with visibly different
+  messaging. Added `sing_box_version_pinned`/`sing_box_sha256_pinned`/
+  `arch` to the install-state manifest (`/var/lib/vpn1/install-state.json`)
+  for reproducibility diagnosis. Verified (code reading, not new code)
+  that checksum verification/fail-closed archive-layout checks/OS-arch
+  rejection/offline-uninstaller persistence already existed and needed no
+  change. Updated README.md/`docs/ALMALINUX_DEPLOYMENT.md` to describe
+  the new fail-closed default (this repo has no tag yet, so the plain
+  `curl | sudo bash` one-liner currently refuses to run until either a
+  release is tagged or `VPN1_CHANNEL=dev` is passed explicitly — this is
+  intentional, not a regression). New test:
+  `deploy/lib/tests/test-release-reproducibility.sh` (39 checks: single-
+  source drift, valid/invalid checksum, immutable-release resolution,
+  branch-fallback refusal, unsupported OS/arch rejection, archive-layout
+  rejection, offline-uninstaller presence). VERIFIED-TEST (executed, all
+  pass).
 - Added `deploy/almalinux/lifecycle-acceptance.sh`: the canonical
   DESTRUCTIVE lifecycle gate for a disposable AlmaLinux 9 host over SSH
   (install/SSH/reboot/repair/update/user-lifecycle/protocol/interrupted-
@@ -138,6 +164,9 @@ cargo test --locked -p compat-config --test reality_interop \
 
 ## Next logical checkpoint
 
-Prompt 3: pick one concrete supported-product defect or gap (not a new
-feature) and fix it with minimum churn, using `deploy/lib/fast-gate.sh`
-after every change instead of re-inventing ad-hoc checks.
+Prompt 4: push the first real `vX.Y.Z` release tag (a manual, human,
+one-time operational action — see `docs/ALMALINUX_DEPLOYMENT.md`) so the
+default `curl | sudo bash` one-liner has something to resolve, then
+re-verify a real prebuilt-binary install path end to end. Until then,
+pick one concrete supported-product defect/gap and fix it with minimum
+churn, using `deploy/lib/fast-gate.sh` after every change.

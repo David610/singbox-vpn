@@ -57,34 +57,37 @@ curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
   | sudo REALITY_HANDSHAKE_SERVER=www.google.com bash
 ```
 
-That command downloads this repo, auto-detects your public IP, issues a
-real (non-self-signed) TLS certificate automatically via
+That command resolves the latest tagged release, downloads this repo at
+that exact immutable tag, auto-detects your public IP, issues a real
+(non-self-signed) TLS certificate automatically via
 [sslip.io](https://sslip.io) + certbot, and runs everything below for
-you. `fetch_release_binaries()` in `install.sh` prefers a prebuilt,
-checksum-verified release binary for your exact version/architecture and
-only falls back to installing a Rust toolchain (via `rustup`) and running
-`cargo build` when no matching release asset exists.
+you. `fetch_release_binaries()` in `deploy/almalinux/install.sh` prefers
+a prebuilt, checksum-verified release binary for your exact
+version/architecture and only falls back to building from that same
+exact-tag source (via `rustup` + `cargo build`) when no matching release
+asset exists — source and binaries are always the same immutable
+version either way. The bootstrap (`install.sh`) resolves this version
+BEFORE downloading anything: a production (default/stable-channel)
+install that finds no tagged release refuses to run rather than
+silently falling back to mutable branch source.
 
 **As of this writing, no `vX.Y.Z` tag has ever been pushed to this repo,
-so every `curl | sudo bash` install today takes the source-build fallback
-path unconditionally** — there is no prebuilt binary to fall back *from*
-yet. That means, until someone actually pushes a real release tag and its
-`.github/workflows/release.yml` build completes, every install: downloads
-and installs a Rust toolchain if one isn't already present, compiles
-`vpn-admin`/`vpn-subscription-svc` from source (slower — several minutes
-on a small VPS instead of seconds, and needs meaningfully more RAM/CPU
-during the build than the prebuilt path does), and takes the extra
-network round-trip to fetch the rustup installer. Publishing the first
-tagged release is a manual, human, one-time operational action (`git tag
-vX.Y.Z && git push --tags`, or an equivalent GitHub release) — no code
-change in this repository can complete that step by itself, and none has
-been attempted here. `release.yml`'s packaging/checksum logic has been
-reviewed and is exercised by `deploy/lib/tests/test-release-archive-contract.sh`,
-but "the fast path is wired up correctly" and "the fast path has actually
-been used by a real install" are two different claims; only the first is
-true today. The rest of this document describes what that one-liner does
-internally, and how to run every stage manually if you want full control
-(your own domain, hand-provisioned certs, etc).
+so the plain `curl | sudo bash` command above currently refuses to run**
+with an error explaining the two options: pin `--version vX.Y.Z` once a
+release exists, or explicitly opt into unpinned branch-source
+development mode with `VPN1_CHANNEL=dev` (never for a real deployment —
+see the top-level README's Quickstart for the exact command). Publishing
+the first tagged release is a manual, human, one-time operational action
+(`git tag vX.Y.Z && git push --tags`, or an equivalent GitHub release) —
+no code change in this repository can complete that step by itself, and
+none has been attempted here. `release.yml`'s packaging/checksum logic
+has been reviewed and is exercised by
+`deploy/lib/tests/test-release-archive-contract.sh`, but "the fast path
+is wired up correctly" and "the fast path has actually been used by a
+real install" are two different claims; only the first is true today.
+The rest of this document describes what that one-liner does internally,
+and how to run every stage manually if you want full control (your own
+domain, hand-provisioned certs, etc).
 `REALITY_HANDSHAKE_SERVER` has no universal safe default: the example is
 only a starting selection, and installation succeeds only after the real
 sing-box protocol acceptance test returns application data. Do not use

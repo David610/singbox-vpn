@@ -98,12 +98,12 @@ else
   step "real sing-box render + check (same pinned version as install.sh)"
   # Extracted from install.sh at run time (not hand-duplicated) so this
   # gate can never silently drift from the version/checksum the real
-  # installer ships — see install.sh's own "MUST update these in the
-  # same commit" comment next to SINGBOX_VERSION/SINGBOX_SHA256_AMD64.
-  SINGBOX_VERSION="$(grep -m1 '^SINGBOX_VERSION=' deploy/almalinux/install.sh | sed -E 's/^SINGBOX_VERSION="([^"]+)"$/\1/')"
-  SINGBOX_SHA256_AMD64="$(grep -m1 '^SINGBOX_SHA256_AMD64=' deploy/almalinux/install.sh | sed -E 's/^SINGBOX_SHA256_AMD64="([^"]+)"$/\1/')"
-  if [ -z "$SINGBOX_VERSION" ] || [ -z "$SINGBOX_SHA256_AMD64" ]; then
-    fail "could not extract SINGBOX_VERSION/SINGBOX_SHA256_AMD64 from install.sh"
+  # installer ships — deploy/lib/versions.env is the single authoritative
+  # source install.sh and CI's singbox-validate job also read.
+  # shellcheck source=/dev/null
+  . deploy/lib/versions.env
+  if [ -z "${SINGBOX_VERSION:-}" ] || [ -z "${SINGBOX_SHA256_AMD64:-}" ]; then
+    fail "SINGBOX_VERSION/SINGBOX_SHA256_AMD64 missing from deploy/lib/versions.env"
   else
     GATE_TMP="$(mktemp -d)"
     SINGBOX_BIN="$GATE_TMP/sing-box"

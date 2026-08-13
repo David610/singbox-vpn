@@ -32,17 +32,11 @@ DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
 SUBSCRIPTION_BACKEND_PORT="$(awk '/^\[subscription\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*listen_port[[:space:]]*=/{gsub(/[^0-9]/,"",$0); print; exit}' "$DEPLOYMENT_TOML" 2>/dev/null || true)"
 : "${SUBSCRIPTION_BACKEND_PORT:=9100}"
 BIN_DIR="/usr/local/bin"
-SINGBOX_VERSION="1.13.18"
-# Pinned expected SHA256 for the exact release assets fetched by
-# install_singbox() below, for the architectures vpn1 supports. sing-box
-# does not publish a detached checksums.txt for every release (confirmed:
-# neither v1.13.14 nor v1.13.18 has one) — these values were computed by
-# hand from the real asset bytes downloaded directly from the URLs below
-# (and re-verified with a second independent download before pinning),
-# and are the trusted-comparison target when upstream doesn't provide its
-# own checksums file (docs/FINAL_PRODUCTION_AUDIT.md P0-8). Bumping
-# SINGBOX_VERSION MUST update these in the same commit, or install_singbox
-# will correctly refuse to proceed rather than silently skip verification.
+# Single authoritative source for SINGBOX_VERSION/SINGBOX_SHA256_AMD64/
+# SINGBOX_SHA256_ARM64/SUPPORTED_ARCH — see deploy/lib/versions.env's own
+# header. Never redefine these values here; edit that file instead so
+# install.sh, CI's singbox-validate job, and deploy/lib/fast-gate.sh
+# cannot drift apart.
 #
 # 1.13.14 -> 1.13.18 change audit (docs/PERFORMANCE_OPTIMIZATION_PLAN.md
 # has the full write-up): no REALITY changes, no Hysteria2/vless/reality
@@ -52,8 +46,13 @@ SINGBOX_VERSION="1.13.18"
 # Hysteria2 reliability), one unrelated AnyTLS privacy fix. No known
 # regressions found for this range. v1.13.17 does not exist as a stable
 # release (SagerNet went 1.13.16 -> 1.13.18 directly).
-SINGBOX_SHA256_AMD64="d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
-SINGBOX_SHA256_ARM64="a894f6152cade4a2c9d062762d54dea0c1aee673ab4759e0829e19cace932719"
+VERSIONS_ENV="$REPO_ROOT/deploy/lib/versions.env"
+[ -f "$VERSIONS_ENV" ] || { echo "[install] ERROR: missing $VERSIONS_ENV — cannot resolve pinned sing-box version/checksums." >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$VERSIONS_ENV"
+for v in SINGBOX_VERSION SINGBOX_SHA256_AMD64 SINGBOX_SHA256_ARM64 SUPPORTED_ARCH; do
+  [ -n "${!v:-}" ] || { echo "[install] ERROR: $v missing from $VERSIONS_ENV." >&2; exit 1; }
+done
 SINGBOX_BIN="$BIN_DIR/sing-box"
 NGINX_CONF="/etc/nginx/conf.d/vpn-subscription.conf"
 VPN1_VERSION="${VPN1_VERSION:-}"
@@ -1728,11 +1727,19 @@ write_install_state_manifest() {
   local singbox_version
   singbox_version="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
   local vpn1_version="${VPN1_VERSION:-main}"
+  local pinned_singbox_sha256=""
+  case "$ARCH" in
+    amd64) pinned_singbox_sha256="$SINGBOX_SHA256_AMD64" ;;
+    arm64) pinned_singbox_sha256="$SINGBOX_SHA256_ARM64" ;;
+  esac
   cat > "$manifest.tmp" <<EOF
 {
   "vpn1_version": "$vpn1_version",
   "vpn1_repo": "$VPN1_RELEASE_REPO",
   "sing_box_version": "$singbox_version",
+  "sing_box_version_pinned": "$SINGBOX_VERSION",
+  "sing_box_sha256_pinned": "$pinned_singbox_sha256",
+  "arch": "$ARCH",
   "installed_at_unix": $(date +%s),
   "public_host": "$PUBLIC_HOST",
   "subscription_host": "${SUBSCRIPTION_HOST:-$PUBLIC_HOST}",

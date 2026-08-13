@@ -110,23 +110,35 @@ and are both effectively unblockable at internet scale, which also makes
 them good REALITY decoys for censorship-resistance: a censor blocking the
 decoy's SNI would also break a huge amount of unrelated traffic through
 the same CDN/provider.
-The command downloads the vpn1 source and detects your OS/architecture.
-It prefers a prebuilt, checksum-verified release binary for your exact
-version/arch, falling back to installing a Rust toolchain and building
-from source when no matching release asset exists — **as of this
-writing no `vX.Y.Z` tag has ever been pushed to this repo, so every
-install today takes that slower source-build fallback** (a Rust
-toolchain download plus several minutes of compilation, and more
-RAM/CPU than the prebuilt path needs). Publishing the first tagged
-release is a manual operational step outside this codebase — see
-`docs/ALMALINUX_DEPLOYMENT.md` for details; a code change alone cannot
-complete it. Once that happens, the installer continues,
-installs dependencies, auto-detects your server's public IP, issues a
-real TLS certificate for it automatically (via [sslip.io](https://sslip.io)
-+ certbot — no domain needed), stands up VLESS+REALITY and Hysteria2
-behind `sing-box`, configures the firewall and SELinux (RHEL family),
-enables everything under systemd, creates a `default` user, and prints
-a ready-to-import subscription URL with a terminal QR code.
+The command resolves the latest tagged release, downloads its immutable
+vpn1 source, and detects your OS/architecture. It prefers a prebuilt,
+checksum-verified release binary for your exact version/arch, falling
+back to installing a Rust toolchain and building from that same
+exact-tag source when no matching release asset exists — either way,
+source and binaries always come from one immutable, self-consistent
+version. **As of this writing no `vX.Y.Z` tag has ever been pushed to
+this repo, so the plain command above currently refuses to run** (a
+production install must pin an immutable release, never mutable branch
+source — see below for the explicit development-only escape hatch).
+Publishing the first tagged release is a manual operational step outside
+this codebase — see `docs/ALMALINUX_DEPLOYMENT.md` for details; a code
+change alone cannot complete it. Once a release exists, the installer
+continues, installs dependencies, auto-detects your server's public IP,
+issues a real TLS certificate for it automatically (via
+[sslip.io](https://sslip.io) + certbot — no domain needed), stands up
+VLESS+REALITY and Hysteria2 behind `sing-box`, configures the firewall
+and SELinux (RHEL family), enables everything under systemd, creates a
+`default` user, and prints a ready-to-import subscription URL with a
+terminal QR code.
+
+**Before the first tag exists**, install from branch source explicitly
+with `VPN1_CHANNEL=dev` — this is intentionally NOT reproducible/pinned
+and is for development/testing only, never a real deployment:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
+  | sudo VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com bash
+```
 
 If you set up a domain in step 1, pass it explicitly instead of
 auto-detecting (the installer also prompts for one interactively if

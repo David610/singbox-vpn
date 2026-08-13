@@ -95,9 +95,12 @@ Installer options (passed through to deploy/almalinux/install.sh):
 
 By default this installer resolves the latest STABLE tagged release and
 installs source + binaries from that exact tag together (never a mix of
-main-branch source with a different release's binaries). Set
-VPN1_CHANNEL=dev to explicitly track '--ref' (default: main) instead —
-intended for development/testing only, not production VPS installs.
+main-branch source with a different release's binaries). If no tagged
+release exists yet, the default channel REFUSES to fall back to branch
+source — pin one with --version once available. Set VPN1_CHANNEL=dev to
+explicitly track '--ref' (default: main) instead — intended for
+development/testing only, not production VPS installs; this is the ONLY
+way to install unpinned branch source.
 
 Environment overrides: VPN1_VERSION, VPN1_REPO, VPN1_REF, VPN1_CHANNEL, PUBLIC_HOST, SUBSCRIPTION_HOST, REALITY_HANDSHAKE_SERVER
 USAGE
@@ -196,9 +199,13 @@ resolve_version() {
   if [ -n "$latest_tag" ]; then
     VPN1_VERSION="$latest_tag"
     log "resolved stable release: $VPN1_VERSION — source and binaries will both come from this exact tag."
-  else
-    warn "no tagged release found for $VPN1_REPO yet — falling back to '$VPN1_REF' (dev channel behavior). Once a release is tagged, plain 'curl | sudo bash' will automatically start using it; pass VPN1_CHANNEL=dev explicitly to silence this warning and always track main."
+    return
   fi
+  # No tagged release exists yet: the default (stable) channel must NOT
+  # silently install unpinned, mutable branch source in production — that
+  # would make "curl | sudo bash" non-reproducible with no indication to
+  # the operator. Refuse and require an explicit choice instead.
+  die "no tagged release found for $VPN1_REPO — refusing to install unpinned '$VPN1_REF' branch source in the default (stable) channel. Either pin an exact release once one exists (--version vX.Y.Z), or explicitly opt into development/test mode with VPN1_CHANNEL=dev (tracks '$VPN1_REF' directly — NOT a reproducible/immutable install, do not use this for a real deployment)."
 }
 
 resolve_version
