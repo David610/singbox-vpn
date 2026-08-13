@@ -38,6 +38,31 @@ has not been run against a real AlmaLinux host/Android client — see
   with an executed test (unlike the native stack's
   `tests/failure_independence.rs`) because this sandbox cannot run real
   sing-box/network-namespace tests. Documented gap, not claimed solved.
+  `render.rs`'s
+  `hysteria2_unavailable_reality_only_profile_remains_fully_usable` test
+  closes a narrower, structural slice of this: it asserts that a
+  rendered subscription still contains a fully usable REALITY outbound,
+  selector, and route when a caller simply omits the Hysteria2 endpoint
+  (modeling "Hysteria2 is unavailable" at the render layer). This is
+  **not** a real UDP-blocked network test — no packets are sent, no
+  sing-box process runs — it only proves the generated *profile* doesn't
+  become broken/unusable when one transport is missing from it. The real
+  network-level gap above is unchanged.
+- **UDP/443 blocked or throttled?** Some networks/ISPs block or
+  rate-limit UDP outright (including for reasons unrelated to
+  censorship, e.g. carrier NAT/QoS policies) — Hysteria2 depends on
+  UDP being usable at all, not just "not specifically blocked". This is
+  why Hysteria2 stays an optional secondary transport (`docs/
+  SUPPORTED_PRODUCT.md`) and is never the sole or default transport.
+- **REALITY handshake target ("decoy")** — choosing a well-known site
+  for `REALITY_HANDSHAKE_SERVER` is camouflage against passive/naive
+  inspection, not a guarantee. It does not make the connection
+  invisible, does not make it indistinguishable from real traffic to an
+  active adversary doing timing/volume analysis, and does not carry any
+  country-specific promise — see `docs/ALMALINUX_DEPLOYMENT.md`'s
+  selection guidance (no universal safe default; validated against the
+  live REALITY protocol acceptance test, not assumed safe). There is no
+  hardcoded default handshake target in this codebase.
 
 ## As an active censor probing the endpoint
 
@@ -151,6 +176,40 @@ has not been run against a real AlmaLinux host/Android client — see
 - **What happens if sing-box crashes?** `Restart=on-failure` +
   `RestartSec=2` in `sing-box.service`; `vpn-health-check` will report
   `sing-box service FAIL` until it recovers or an operator intervenes.
+
+## As a censor blocking the VPS's IP/ASN or the subscription domain
+
+This is the hard failure domain a single-VPS deployment cannot design
+its way out of, and v1.0 does not try to:
+
+- **IP/ASN blocking.** REALITY and Hysteria2 both terminate on the same
+  VPS IP. Blocking that one IP (or the whole hosting ASN, a common
+  escalation) takes down **both** transports at once — the two
+  protocols are only independent against protocol-specific detection
+  (SNI blocking, UDP blocking), not against an IP-level block. `urltest`
+  client-side selection (`docs/CLIENT_PROTOCOL_BEHAVIOR.md`) cannot help
+  here: it picks between endpoints that are both unreachable.
+- **Subscription domain/IP blocking.** If the subscription HTTPS
+  hostname (or its IP) is blocked separately from the REALITY/Hysteria2
+  listeners, clients can't fetch or refresh their profile even if the
+  VPN transports themselves are still reachable. `vpn-admin user links`
+  (added this session) is the out-of-band answer: it prints the raw
+  `vless://`/`hysteria2://` URIs directly from server-side key material
+  over SSH, with no dependency on the subscription host/port at all, so
+  an admin can relay a working profile through any other channel when
+  the subscription domain specifically is what's down.
+- **What v1.0 does NOT do about full-VPS/IP blocking.** No multi-node
+  control plane, no automatic failover VPS, no fleet/rendezvous system —
+  see `docs/RECOVERY.md` for the deliberately manual recovery procedure
+  (fresh VPS + fresh domain + fresh credentials + manual redistribution).
+  This is a real, accepted limitation of a `<=10`-user single-VPS
+  deployment, not a solved problem.
+- **Real-world effectiveness is unmeasured.** None of the claims above
+  (or elsewhere in this document) about what a specific censor in a
+  specific country actually does have been tested against a real
+  network in that country — see `docs/DEVICE_ACCEPTANCE_TESTS.md`'s
+  Telegram-specific matrix, which stays "not yet tested" until someone
+  runs it on a real connection.
 
 ## Remaining gaps (not fixed this session, documented not hidden)
 

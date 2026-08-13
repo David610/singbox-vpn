@@ -238,6 +238,22 @@ enum UserCommands {
     Qr {
         user_id: String,
     },
+    /// Print this user's VLESS+REALITY and Hysteria2 connection URIs
+    /// directly (`vless://...`, `hysteria2://...`), computed from the
+    /// server's own key material with no dependency on the subscription
+    /// HTTP service or its hostname. Out-of-band recovery path for when
+    /// the subscription domain/IP is blocked, rate-limited, or simply
+    /// down but the REALITY/Hysteria2 listeners themselves still work:
+    /// run this over SSH and relay the printed URIs to the user through
+    /// any other channel (paste, QR, etc). Read-only — unlike `qr`/
+    /// `rotate-token`, it does not mint a new subscription token or
+    /// change any credential.
+    Links {
+        user_id: String,
+        /// Print a terminal QR code for each URI as well.
+        #[arg(long)]
+        qr: bool,
+    },
     Enable {
         user_id: String,
     },
@@ -349,6 +365,7 @@ fn main() -> Result<()> {
         }) => cmd_user_create(&cfg, &name, expires_at, qr, json),
         Commands::User(UserCommands::List) => cmd_user_list(&cfg),
         Commands::User(UserCommands::Qr { user_id }) => cmd_user_qr(&cfg, &user_id),
+        Commands::User(UserCommands::Links { user_id, qr }) => cmd_user_links(&cfg, &user_id, qr),
         Commands::User(UserCommands::Enable { user_id }) => {
             cmd_user_set_enabled(&cfg, &user_id, true)
         }
@@ -1855,6 +1872,63 @@ fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     );
     println!();
     cmd_user_rotate_token(cfg, id, true)
+}
+
+/// `vpn-admin user links ID`: out-of-band recovery path (see the
+/// `UserCommands::Links` doc comment). Builds the same
+/// `standard_endpoints()` the subscription service and doctor L4 check
+/// use, then renders this user's VLESS+REALITY / Hysteria2 URIs
+/// directly — no HTTP fetch, no `subscription_host`/`subscription.
+/// public_port` involved at all, so it keeps working even if the
+/// subscription domain itself is what's blocked.
+fn cmd_user_links(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
+    let users = store::load_users(&cfg.users_file())?;
+    let user = users
+        .iter()
+        .find(|u| u.id == id)
+        .ok_or_else(|| anyhow::anyhow!("no such user: {id}"))?;
+    if !user.enabled {
+        println!("WARNING: user {id} is disabled — these URIs will not authenticate.");
+        println!();
+    }
+
+    let reality = load_reality_params(cfg)?;
+    let hysteria = load_hysteria_params(cfg);
+    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
+    let endpoints = compat_config::render::standard_endpoints(
+        &cfg.public_host,
+        cfg.reality.listen_port,
+        cfg.hysteria2.listen_port,
+        &reality.public_key_hex,
+        &short_id,
+        &reality.handshake_server,
+        hysteria.obfs_password.as_ref().map(|s| s.expose()),
+    );
+
+    println!("Out-of-band connection URIs for {id} (subscription service NOT required):");
+    println!();
+    for endpoint in &endpoints {
+        let uri = match endpoint.transport {
+            compat_config::model::CompatTransport::VlessReality => {
+                compat_config::render::render_vless_reality_uri(user, endpoint)?
+            }
+            compat_config::model::CompatTransport::Hysteria2 => {
+                compat_config::render::render_hysteria2_uri(user, endpoint)?
+            }
+        };
+        println!("{}:", endpoint.label);
+        println!("  {uri}");
+        if qr {
+            print_qr(&uri)?;
+        }
+        println!();
+    }
+    println!(
+        "Paste one of the URIs above directly into Hiddify (Add profile -> paste config), or \
+         relay it to the user through any channel other than the subscription URL. This does \
+         not rotate or change any credential."
+    );
+    Ok(())
 }
 
 /// Common rotate-and-apply flow: mutate the user in-place via `mutate`,
@@ -5645,6 +5719,95 @@ mod udp_probe_tests {
         );
         assert_eq!(found[0].0, existing);
         assert_eq!(found[0].1, "sing-box 1.13.14");
+    }
+
+    /// Task 8: deterministic doctor coverage for a missing/invalid/expired
+    /// Hysteria2 TLS certificate — one of the concrete failure cases the
+    /// task's requirement 8 lists. Shells out to the real `openssl`/`date`
+    /// binaries `cert_expiry_days` itself uses, rather than mocking them,
+    /// so this actually exercises the same code path doctor runs.
+    #[test]
+    fn cert_expiry_days_returns_none_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(cert_expiry_days(&dir.path().join("does-not-exist.pem")).is_none());
+    }
+
+    #[test]
+    fn cert_expiry_days_reports_negative_days_for_an_already_expired_cert() {
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("expired.csr");
+        let key_path = dir.path().join("expired.key");
+        let cert_path = dir.path().join("expired.pem");
+        // `req -x509 -days` rejects negative values outright — build a CSR
+        // first, then self-sign it via `x509 -req -days -1`, which backdates
+        // notAfter to yesterday and so reliably produces an already-expired
+        // certificate regardless of what "today" is when this test runs.
+        let status = std::process::Command::new("openssl")
+            .args([
+                "req",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-subj",
+                "/CN=expired.example.com",
+                "-keyout",
+            ])
+            .arg(&key_path)
+            .arg("-out")
+            .arg(&csr_path)
+            .status()
+            .expect("openssl must be available to run this test");
+        assert!(status.success(), "openssl failed to generate a test CSR");
+        let status = std::process::Command::new("openssl")
+            .args(["x509", "-req", "-in"])
+            .arg(&csr_path)
+            .args(["-signkey"])
+            .arg(&key_path)
+            .args(["-days", "-1", "-out"])
+            .arg(&cert_path)
+            .status()
+            .expect("openssl must be available to run this test");
+        assert!(status.success(), "openssl failed to self-sign a test cert");
+
+        let result = cert_expiry_days(&cert_path).expect("file exists, must return Some");
+        let days = result.expect("valid cert, openssl/date parsing must succeed");
+        assert!(
+            days < 0,
+            "cert self-signed with -days -1 must report negative days remaining, got {days}"
+        );
+    }
+
+    #[test]
+    fn cert_expiry_days_reports_positive_days_for_a_freshly_issued_cert() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("fresh.pem");
+        let key_path = dir.path().join("fresh.key");
+        let status = std::process::Command::new("openssl")
+            .args([
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "90",
+                "-subj",
+                "/CN=fresh.example.com",
+                "-keyout",
+            ])
+            .arg(&key_path)
+            .arg("-out")
+            .arg(&cert_path)
+            .status()
+            .expect("openssl must be available to run this test");
+        assert!(status.success(), "openssl failed to generate a test cert");
+
+        let result = cert_expiry_days(&cert_path).expect("file exists, must return Some");
+        let days = result.expect("valid cert, openssl/date parsing must succeed");
+        assert!(
+            days > 0 && days <= 90,
+            "cert issued with -days 90 must report a small positive days remaining, got {days}"
+        );
     }
 
     #[test]

@@ -666,6 +666,44 @@ fn user_qr_rotates_token_and_warns_it_is_new() {
     assert!(stdout.contains("New Hiddify subscription URL for"));
 }
 
+/// `user links` is the out-of-band recovery path for a blocked/down
+/// subscription domain (Task 8, requirement 7): it must print raw
+/// `vless://`/`hysteria2://` URIs with no `https://<subscription_host>`
+/// anywhere in the output, and must not mint a new subscription token
+/// (unlike `qr`/`rotate-token`).
+#[test]
+fn user_links_prints_raw_uris_independent_of_subscription_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path)
+        .args(["init"])
+        .assert()
+        .success();
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "erin"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let user_id = stdout
+        .lines()
+        .skip_while(|l| *l != "User ID:")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "links", &user_id])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("vless://"));
+    assert!(stdout.contains("hysteria2://"));
+    assert!(!stdout.contains("sub.example.com"));
+    assert!(stdout.contains("does not rotate or change any credential"));
+}
+
 /// Regression test for a real user-confusion bug this investigation
 /// found: `rotate-token` claimed the user's already-imported
 /// REALITY/Hysteria2 profile "must re-import" the new URL, implying

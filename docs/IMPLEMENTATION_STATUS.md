@@ -175,6 +175,51 @@ plumbing for a runner-minutes-only win; deferred.
    available this session; see Remaining UNVERIFIED in the final report
    for this checkpoint.
 
+8. **Censorship-resilience/recovery honesty audit** (this checkpoint):
+   read REALITY/Hysteria2 defaults, `urltest`/selector behavior, doctor's
+   L1-L6 layer classification, subscription delivery path, and
+   `docs/COMPATIBILITY_SECURITY_REVIEW.md`/`docs/ALMALINUX_DEPLOYMENT.md`
+   against 9 censorship-resilience/single-VPS requirements — most were
+   already correctly implemented and honestly documented (no hardcoded
+   REALITY decoy default, `urltest` already described as availability/
+   latency-only, doctor already reports actionable per-layer messages
+   like "Hysteria2 TLS certificate not present" rather than generic
+   "unhealthy"). Found and fixed one real gap: **no out-of-band
+   subscription-recovery path existed** — every prior way to get a
+   client its connection details (`user create`, `user qr`,
+   `rotate-token`) always built a `https://<subscription_host>/...` URL,
+   so a blocked/down subscription domain left an admin with no way to
+   hand a working profile to a user even though the REALITY/Hysteria2
+   listeners themselves were still fine. Fixed with the smallest
+   possible addition: new read-only `vpn-admin user links <id>` prints
+   the user's `vless://`/`hysteria2://` URIs directly from server-side
+   key material (same `standard_endpoints()`/render functions the
+   subscription service and doctor L4 check already use) — no HTTP
+   fetch, no `subscription_host` involved, does not rotate any
+   credential. New `crates/compat-config/src/render.rs` test
+   (`hysteria2_unavailable_reality_only_profile_remains_fully_usable`)
+   structurally asserts a rendered profile stays fully usable when the
+   Hysteria2 endpoint is simply absent — explicitly scoped in its doc
+   comment as render-layer-only, not a real network/UDP-blocked test;
+   `docs/COMPATIBILITY_SECURITY_REVIEW.md` updated to describe exactly
+   what this does and doesn't prove. New `docs/RECOVERY.md`: the single
+   documented v1.0 disaster-recovery procedure (fresh VPS + fresh domain
+   + fresh credentials + manual out-of-band redistribution + old-VPS
+   retirement) — explicitly not backup/restore automation or multi-node
+   failover. New `apps/admin`/`crates/compat-config` tests: `user links`
+   CLI test (asserts raw URIs present, subscription host string absent),
+   3 `cert_expiry_days` unit tests (missing file, expired cert via
+   `openssl x509 -req -days -1`, freshly-issued cert) covering the
+   cert-expiry doctor path that had no test before. `docs/
+   COMPATIBILITY_SECURITY_REVIEW.md` gained a new "As a censor blocking
+   the VPS's IP/ASN or the subscription domain" section stating plainly
+   that IP/ASN blocking takes down both transports at once (protocol
+   independence is not IP independence) and that this is an accepted,
+   documented v1.0 limitation, not something client-side `urltest`
+   selection or this checkpoint's fixes solve. No new orchestration/
+   monitoring/multi-node code was added — `user links` reuses existing
+   render functions and existing key material only.
+
 ## Blockers
 
 - `cargo test -p admin --test cli` has 5 failures **only when run as
@@ -212,13 +257,18 @@ bash deploy/lib/fast-gate.sh
 vpn-admin --config /etc/vpn/deployment.toml config validate
 vpn-admin --config /etc/vpn/deployment.toml config migrate
 
-# offline uninstall (new this checkpoint) — no network access needed
+# offline uninstall — no network access needed
 sudo /opt/vpn1/bin/vpn1-uninstall --yes
+
+# out-of-band recovery (new this checkpoint) — no subscription domain needed
+vpn-admin user links <user_id>
 ```
+
+See `docs/RECOVERY.md` for the full disaster-recovery procedure.
 
 ## Next logical checkpoint
 
-Prompt 8: push the first real `vX.Y.Z` release tag, then run
+Prompt 9: push the first real `vX.Y.Z` release tag, then run
 `deploy/almalinux/lifecycle-acceptance.sh` against a real disposable
 AlmaLinux 9 host AND, on that same host, work through
 `docs/DEVICE_ACCEPTANCE_TESTS.md`'s matrix with at least one real Hiddify
