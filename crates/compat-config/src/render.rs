@@ -446,6 +446,27 @@ mod tests {
         assert!(!json_str.to_lowercase().contains("private_key"));
     }
 
+    /// docs/CLIENT_PROTOCOL_BEHAVIOR.md's DNS statement depends on this
+    /// staying true: the generated subscription must never silently
+    /// start expressing DNS/routing opinions it can't actually enforce
+    /// or verify (the client app owns that entirely). Lock it in so a
+    /// future change can't add a `dns` block without deliberately
+    /// updating that doc's claims.
+    #[test]
+    fn client_subscription_has_no_dns_block_and_no_inbounds() {
+        let doc =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        assert!(
+            doc.get("dns").is_none(),
+            "generated subscription must not claim to control DNS — see docs/CLIENT_PROTOCOL_BEHAVIOR.md"
+        );
+        assert!(
+            doc.get("inbounds").is_none(),
+            "generated subscription must not define a TUN/inbound — full-device tunneling is entirely client-controlled, see docs/CLIENT_PROTOCOL_BEHAVIOR.md"
+        );
+    }
+
     #[test]
     fn route_final_points_at_manual_selector_not_urltest() {
         let doc =
@@ -495,6 +516,49 @@ mod tests {
             .find(|o| o["type"] == "selector")
             .expect("selector outbound present");
         assert_eq!(selector["default"], "Germany - Hysteria2");
+    }
+
+    /// docs/COMPATIBILITY_SECURITY_REVIEW.md's "As a DPI/censor" section
+    /// names this exact scenario ("UDP blocked entirely? Hysteria2 fails;
+    /// VLESS+REALITY (TCP/443) keeps working") as a documented but
+    /// previously untested claim — this is the structural-level proof
+    /// that's actually achievable without real network/namespace testing
+    /// (not available in this environment): a profile with Hysteria2
+    /// entirely absent (modeling "Hysteria2 is unreachable on this
+    /// network, only REALITY endpoints remain in a filtered/reduced
+    /// endpoint set") still produces a complete, valid, REALITY-default
+    /// profile — the profile does not become unusable just because one
+    /// transport is gone. This does NOT prove real UDP blocking on a
+    /// real network leaves REALITY reachable — that remains an open
+    /// manual test (see docs/DEVICE_ACCEPTANCE_TESTS.md's IPv4/IPv6 and
+    /// network-switch rows) — it proves the config-generation layer
+    /// never conflates "one transport unavailable" with "whole profile
+    /// broken".
+    #[test]
+    fn hysteria2_unavailable_reality_only_profile_remains_fully_usable() {
+        let doc = render_singbox_client_subscription(&user(), &[reality_endpoint()]).unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let types: Vec<&str> = outbounds
+            .iter()
+            .map(|o| o["type"].as_str().unwrap())
+            .collect();
+        assert!(types.contains(&"vless"), "REALITY outbound still present");
+        assert!(
+            !types.contains(&"hysteria2"),
+            "no hysteria2 outbound when it's genuinely not offered"
+        );
+        let selector = outbounds
+            .iter()
+            .find(|o| o["type"] == "selector")
+            .expect("selector outbound present even with only one transport");
+        assert_eq!(
+            selector["default"], "Germany - Reality",
+            "REALITY remains the deterministic default with no other transport in play"
+        );
+        assert_eq!(
+            doc["route"]["final"], "select",
+            "route still points at a usable selector, not an empty/broken group"
+        );
     }
 
     #[test]

@@ -99,7 +99,7 @@ jobs:
       - name: bash -n (syntax check every shipped script)
         run: |
           set -euo pipefail
-          for f in install.sh uninstall.sh deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh; do
+          for f in install.sh uninstall.sh bin/vpn1-uninstall deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
@@ -107,7 +107,7 @@ jobs:
         run: |
           sudo apt-get update -y >/dev/null
           sudo apt-get install -y shellcheck jq idn2 >/dev/null
-          shellcheck -S warning install.sh uninstall.sh deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
+          shellcheck -S warning install.sh uninstall.sh bin/vpn1-uninstall deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
       - name: vpn-benchmark outbound-discovery unit tests
         run: bash deploy/lib/tests/test-vpn-benchmark-lib.sh
       - name: vpn-benchmark set -e / discovery-call-site regression test
@@ -162,17 +162,18 @@ jobs:
     # `|| true` anywhere in this job.
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      SINGBOX_VERSION: "1.13.18"
-      # Kept in lockstep with deploy/almalinux/install.sh's
-      # SINGBOX_SHA256_AMD64 — same reasoning: this is the checked-in
-      # trusted digest used when upstream doesn't publish its own
-      # checksums.txt for this release (docs/FINAL_PRODUCTION_AUDIT.md P0-8).
-      SINGBOX_SHA256_AMD64: "d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # deploy/lib/versions.env is the single authoritative source for
+      # SINGBOX_VERSION/SINGBOX_SHA256_AMD64/SINGBOX_SHA256_ARM64/
+      # SUPPORTED_ARCH — install.sh and deploy/lib/fast-gate.sh read the
+      # same file, so this job cannot silently drift from what a real
+      # install actually pins.
+      - name: Load pinned versions (deploy/lib/versions.env)
+        run: grep -vE '^\s*(#|$)' deploy/lib/versions.env >> "$GITHUB_ENV"
 
       - name: Download pinned sing-box release
         run: |

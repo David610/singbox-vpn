@@ -138,6 +138,11 @@ run_manifest_flow() {
     FIREWALL_BACKEND="firewalld"
     # shellcheck disable=SC2034
     OS_FAMILY="rhel"
+    # Likewise ARCH is normally set by detect_arch() (preflight_stage) —
+    # write_install_state_manifest() now also records it (and the
+    # matching pinned sing-box checksum) for reproducibility diagnosis.
+    # shellcheck disable=SC2034
+    ARCH="amd64"
 
     # 1. Before start_stage-equivalent: no manifest, fresh install.
     if existing_install_present; then

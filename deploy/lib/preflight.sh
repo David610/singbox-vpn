@@ -134,12 +134,13 @@ preflight_check_port_free() {
 # method is inconclusive (e.g. sshd not installed as a systemd unit
 # named `sshd`/`ssh`).
 preflight_detect_ssh_port() {
+  local sshd_config_file="${SSHD_CONFIG_FILE:-/etc/ssh/sshd_config}"
   local port=""
   if command -v sshd >/dev/null 2>&1; then
     port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
   fi
-  if [ -z "$port" ] && [ -f /etc/ssh/sshd_config ]; then
-    port="$(awk 'tolower($1)=="port"{print $2; exit}' /etc/ssh/sshd_config 2>/dev/null)"
+  if [ -z "$port" ] && [ -f "$sshd_config_file" ]; then
+    port="$(awk 'tolower($1)=="port"{print $2; exit}' "$sshd_config_file" 2>/dev/null)"
   fi
   if [ -z "$port" ] && command -v ss >/dev/null 2>&1; then
     port="$(ss -H -lntp 2>/dev/null | grep -E 'sshd|"ssh"' | head -n1 | sed -E 's/.*:([0-9]+)[[:space:]].*/\1/')"

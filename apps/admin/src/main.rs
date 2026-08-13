@@ -185,6 +185,29 @@ enum Commands {
     HysteriaObfsRotate,
     #[command(subcommand)]
     User(UserCommands),
+    #[command(subcommand)]
+    Config(ConfigCommands),
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Read-only: report the on-disk schema state of deployment.toml and
+    /// users.json — FRESH/CURRENT (nothing to do), MIGRATION_REQUIRED
+    /// (legacy schema found, recoverable via `config migrate`), or
+    /// INVALID (corrupted, or a schema newer than this binary supports —
+    /// needs a backup restore or a newer vpn-admin). Never changes
+    /// anything. Exit code: 0 = FRESH/CURRENT, 2 = MIGRATION_REQUIRED,
+    /// 3 = INVALID.
+    Validate,
+    /// Migrate deployment.toml/users.json to the schema this vpn-admin
+    /// understands: backs up the original (mode 0600) before touching
+    /// anything, validates the migrated state (including a real
+    /// render-config + `sing-box check` when a REALITY key and sing-box
+    /// binary are already present), and only then commits atomically.
+    /// Idempotent — safe to re-run; a no-op if already current. Refuses
+    /// (leaving all state untouched) on corrupted input or a schema
+    /// newer than this binary supports.
+    Migrate,
 }
 
 #[derive(Subcommand)]
@@ -214,6 +237,22 @@ enum UserCommands {
     /// URL stops working.
     Qr {
         user_id: String,
+    },
+    /// Print this user's VLESS+REALITY and Hysteria2 connection URIs
+    /// directly (`vless://...`, `hysteria2://...`), computed from the
+    /// server's own key material with no dependency on the subscription
+    /// HTTP service or its hostname. Out-of-band recovery path for when
+    /// the subscription domain/IP is blocked, rate-limited, or simply
+    /// down but the REALITY/Hysteria2 listeners themselves still work:
+    /// run this over SSH and relay the printed URIs to the user through
+    /// any other channel (paste, QR, etc). Read-only — unlike `qr`/
+    /// `rotate-token`, it does not mint a new subscription token or
+    /// change any credential.
+    Links {
+        user_id: String,
+        /// Print a terminal QR code for each URI as well.
+        #[arg(long)]
+        qr: bool,
     },
     Enable {
         user_id: String,
@@ -270,6 +309,7 @@ fn command_mutates_state(cmd: &Commands) -> bool {
             | Commands::Doctor { .. }
             | Commands::User(UserCommands::List)
             | Commands::User(UserCommands::Subscription { .. })
+            | Commands::Config(ConfigCommands::Validate)
     )
 }
 
@@ -315,6 +355,8 @@ fn main() -> Result<()> {
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
+        Commands::Config(ConfigCommands::Validate) => cmd_config_validate(&cfg, &cli.config),
+        Commands::Config(ConfigCommands::Migrate) => cmd_config_migrate(&cfg, &cli.config),
         Commands::User(UserCommands::Create {
             name,
             expires_at,
@@ -323,6 +365,7 @@ fn main() -> Result<()> {
         }) => cmd_user_create(&cfg, &name, expires_at, qr, json),
         Commands::User(UserCommands::List) => cmd_user_list(&cfg),
         Commands::User(UserCommands::Qr { user_id }) => cmd_user_qr(&cfg, &user_id),
+        Commands::User(UserCommands::Links { user_id, qr }) => cmd_user_links(&cfg, &user_id, qr),
         Commands::User(UserCommands::Enable { user_id }) => {
             cmd_user_set_enabled(&cfg, &user_id, true)
         }
@@ -1468,6 +1511,136 @@ fn cmd_render_config(cfg: &DeploymentConfig, require_applied: bool) -> Result<()
     Ok(())
 }
 
+/// Read-only report of `deployment.toml`/`users.json`'s on-disk schema
+/// state. `cfg` was already successfully loaded by `main()` before this
+/// runs — a deployment.toml with a schema_version newer than this binary
+/// supports never reaches here at all (`DeploymentConfig::load` already
+/// refused it with a clear error; that IS the "INVALID" outcome for
+/// deployment.toml, just surfaced earlier in the call chain rather than
+/// through this command's own formatting).
+///
+/// Exit code doubles as the machine-readable "what mode did this
+/// detect" signal `deploy/almalinux/update.sh`/`install.sh` act on:
+/// 0 = nothing to do (FRESH or CURRENT), 2 = MIGRATION_REQUIRED (legacy
+/// schema found, run `config migrate`), 3 = INVALID (corrupted or
+/// unsupported-future state — needs a backup restore or a newer
+/// vpn-admin, not something `config migrate` can fix).
+fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) -> Result<()> {
+    use compat_config::deployment::DEPLOYMENT_SCHEMA_VERSION;
+    use compat_config::store::UsersSchemaState;
+
+    let mut invalid = false;
+    let mut migration_required = false;
+
+    if cfg.schema_version == 0 {
+        println!("deployment.toml ({config_path:?}): LEGACY (no schema_version marker)");
+        migration_required = true;
+    } else {
+        println!(
+            "deployment.toml ({config_path:?}): CURRENT (schema_version {DEPLOYMENT_SCHEMA_VERSION})"
+        );
+    }
+
+    let users_path = cfg.users_file();
+    match store::detect_users_schema(&users_path) {
+        UsersSchemaState::Missing => {
+            println!("users.json ({users_path:?}): MISSING (fresh install, no users yet)")
+        }
+        UsersSchemaState::Current => {
+            println!("users.json ({users_path:?}): CURRENT")
+        }
+        UsersSchemaState::Legacy => {
+            println!("users.json ({users_path:?}): LEGACY (pre-versioning bare-array format)");
+            migration_required = true;
+        }
+        UsersSchemaState::Future(found) => {
+            println!(
+                "users.json ({users_path:?}): INVALID (schema_version {found} is newer than this vpn-admin supports)"
+            );
+            invalid = true;
+        }
+        UsersSchemaState::Corrupted(msg) => {
+            println!("users.json ({users_path:?}): INVALID (corrupted: {msg})");
+            invalid = true;
+        }
+    }
+
+    if invalid {
+        println!("MODE: INVALID");
+        println!("Needs manual intervention: restore from a backup (see `vpn-admin restore`), or install a vpn-admin new enough to understand this state. `config migrate` cannot fix this — it only moves forward.");
+        std::process::exit(3);
+    }
+    if migration_required {
+        println!("MODE: MIGRATION_REQUIRED");
+        println!("Run `vpn-admin config migrate` to normalize the state above.");
+        std::process::exit(2);
+    }
+    println!("MODE: OK");
+    Ok(())
+}
+
+/// Migrate `deployment.toml`/`users.json` to the schema this vpn-admin
+/// understands. See `ConfigCommands::Migrate`'s doc comment for the
+/// backup/validate/commit contract.
+fn cmd_config_migrate(cfg: &DeploymentConfig, config_path: &std::path::Path) -> Result<()> {
+    use compat_config::deployment::{migrate_deployment_toml, DeploymentMigrationOutcome};
+    use compat_config::store::{migrate_users, UsersMigrationOutcome};
+
+    match migrate_deployment_toml(config_path)
+        .with_context(|| format!("migrating {config_path:?}"))?
+    {
+        DeploymentMigrationOutcome::Missing => {
+            println!("deployment.toml ({config_path:?}): missing, nothing to migrate.")
+        }
+        DeploymentMigrationOutcome::AlreadyCurrent => {
+            println!("deployment.toml ({config_path:?}): already current, no changes made.")
+        }
+        DeploymentMigrationOutcome::Migrated { backup_path } => {
+            println!(
+                "deployment.toml ({config_path:?}): migrated. Pre-migration backup: {backup_path:?}"
+            );
+        }
+    }
+
+    let users_path = cfg.users_file();
+    match migrate_users(&users_path).with_context(|| format!("migrating {users_path:?}"))? {
+        UsersMigrationOutcome::Missing => {
+            println!("users.json ({users_path:?}): missing, nothing to migrate.")
+        }
+        UsersMigrationOutcome::AlreadyCurrent => {
+            println!("users.json ({users_path:?}): already current, no changes made.")
+        }
+        UsersMigrationOutcome::Migrated { backup_path } => {
+            println!(
+                "users.json ({users_path:?}): migrated. Pre-migration backup: {backup_path:?}"
+            );
+        }
+    }
+
+    // Requirement: validate any generated sing-box configuration
+    // affected by the migration. Re-reads deployment.toml fresh (the
+    // in-memory `cfg` predates the migration above) so this reflects
+    // what a subsequent command will actually load; reuses the same
+    // validate-then-apply path every other mutating command goes
+    // through (SingBoxBackend::validate via render_and_apply_singbox_config)
+    // rather than a second, bespoke check.
+    let reloaded = DeploymentConfig::load(config_path)
+        .with_context(|| format!("reloading {config_path:?} after migration"))?;
+    match regenerate_singbox_config(&reloaded, false) {
+        Ok(_) => println!("sing-box config re-validated against migrated state: OK."),
+        Err(e) => {
+            println!(
+                "warning: could not re-validate the sing-box config against migrated state: {e} \
+                 (this is expected if sing-box/REALITY keys are not set up yet, e.g. before the \
+                 first `vpn-admin init`)"
+            );
+        }
+    }
+
+    println!("MODE: OK (migration complete)");
+    Ok(())
+}
+
 /// The URL printed/QR-encoded and explicitly labeled "Hiddify
 /// subscription URL" everywhere in this CLI. It MUST carry
 /// `?format=hiddify` explicitly: a bare `/sub/<token>` (no `format`
@@ -1699,6 +1872,63 @@ fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     );
     println!();
     cmd_user_rotate_token(cfg, id, true)
+}
+
+/// `vpn-admin user links ID`: out-of-band recovery path (see the
+/// `UserCommands::Links` doc comment). Builds the same
+/// `standard_endpoints()` the subscription service and doctor L4 check
+/// use, then renders this user's VLESS+REALITY / Hysteria2 URIs
+/// directly — no HTTP fetch, no `subscription_host`/`subscription.
+/// public_port` involved at all, so it keeps working even if the
+/// subscription domain itself is what's blocked.
+fn cmd_user_links(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
+    let users = store::load_users(&cfg.users_file())?;
+    let user = users
+        .iter()
+        .find(|u| u.id == id)
+        .ok_or_else(|| anyhow::anyhow!("no such user: {id}"))?;
+    if !user.enabled {
+        println!("WARNING: user {id} is disabled — these URIs will not authenticate.");
+        println!();
+    }
+
+    let reality = load_reality_params(cfg)?;
+    let hysteria = load_hysteria_params(cfg);
+    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
+    let endpoints = compat_config::render::standard_endpoints(
+        &cfg.public_host,
+        cfg.reality.listen_port,
+        cfg.hysteria2.listen_port,
+        &reality.public_key_hex,
+        &short_id,
+        &reality.handshake_server,
+        hysteria.obfs_password.as_ref().map(|s| s.expose()),
+    );
+
+    println!("Out-of-band connection URIs for {id} (subscription service NOT required):");
+    println!();
+    for endpoint in &endpoints {
+        let uri = match endpoint.transport {
+            compat_config::model::CompatTransport::VlessReality => {
+                compat_config::render::render_vless_reality_uri(user, endpoint)?
+            }
+            compat_config::model::CompatTransport::Hysteria2 => {
+                compat_config::render::render_hysteria2_uri(user, endpoint)?
+            }
+        };
+        println!("{}:", endpoint.label);
+        println!("  {uri}");
+        if qr {
+            print_qr(&uri)?;
+        }
+        println!();
+    }
+    println!(
+        "Paste one of the URIs above directly into Hiddify (Add profile -> paste config), or \
+         relay it to the user through any channel other than the subscription URL. This does \
+         not rotate or change any credential."
+    );
+    Ok(())
 }
 
 /// Common rotate-and-apply flow: mutate the user in-place via `mutate`,
@@ -4936,7 +5166,11 @@ fn cmd_restore(
     let users_path = staging.path().join("users/users.json");
     let restored_users: Vec<CompatUser> = if users_path.exists() {
         let bytes = std::fs::read(&users_path).context("reading restored users.json")?;
-        serde_json::from_slice(&bytes)
+        // Understands both the current versioned envelope and the legacy
+        // pre-versioning bare-array shape — a backup taken before `vpn-admin
+        // config migrate`/an upgrade is exactly as restorable as one taken
+        // after (see store::parse_users_bytes's doc comment).
+        store::parse_users_bytes(&bytes)
             .context("restored users.json is not valid — refusing to restore")?
     } else {
         bail!("archive does not contain users/users.json — refusing to restore");
@@ -5485,6 +5719,95 @@ mod udp_probe_tests {
         );
         assert_eq!(found[0].0, existing);
         assert_eq!(found[0].1, "sing-box 1.13.14");
+    }
+
+    /// Task 8: deterministic doctor coverage for a missing/invalid/expired
+    /// Hysteria2 TLS certificate — one of the concrete failure cases the
+    /// task's requirement 8 lists. Shells out to the real `openssl`/`date`
+    /// binaries `cert_expiry_days` itself uses, rather than mocking them,
+    /// so this actually exercises the same code path doctor runs.
+    #[test]
+    fn cert_expiry_days_returns_none_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(cert_expiry_days(&dir.path().join("does-not-exist.pem")).is_none());
+    }
+
+    #[test]
+    fn cert_expiry_days_reports_negative_days_for_an_already_expired_cert() {
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("expired.csr");
+        let key_path = dir.path().join("expired.key");
+        let cert_path = dir.path().join("expired.pem");
+        // `req -x509 -days` rejects negative values outright — build a CSR
+        // first, then self-sign it via `x509 -req -days -1`, which backdates
+        // notAfter to yesterday and so reliably produces an already-expired
+        // certificate regardless of what "today" is when this test runs.
+        let status = std::process::Command::new("openssl")
+            .args([
+                "req",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-subj",
+                "/CN=expired.example.com",
+                "-keyout",
+            ])
+            .arg(&key_path)
+            .arg("-out")
+            .arg(&csr_path)
+            .status()
+            .expect("openssl must be available to run this test");
+        assert!(status.success(), "openssl failed to generate a test CSR");
+        let status = std::process::Command::new("openssl")
+            .args(["x509", "-req", "-in"])
+            .arg(&csr_path)
+            .args(["-signkey"])
+            .arg(&key_path)
+            .args(["-days", "-1", "-out"])
+            .arg(&cert_path)
+            .status()
+            .expect("openssl must be available to run this test");
+        assert!(status.success(), "openssl failed to self-sign a test cert");
+
+        let result = cert_expiry_days(&cert_path).expect("file exists, must return Some");
+        let days = result.expect("valid cert, openssl/date parsing must succeed");
+        assert!(
+            days < 0,
+            "cert self-signed with -days -1 must report negative days remaining, got {days}"
+        );
+    }
+
+    #[test]
+    fn cert_expiry_days_reports_positive_days_for_a_freshly_issued_cert() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("fresh.pem");
+        let key_path = dir.path().join("fresh.key");
+        let status = std::process::Command::new("openssl")
+            .args([
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "90",
+                "-subj",
+                "/CN=fresh.example.com",
+                "-keyout",
+            ])
+            .arg(&key_path)
+            .arg("-out")
+            .arg(&cert_path)
+            .status()
+            .expect("openssl must be available to run this test");
+        assert!(status.success(), "openssl failed to generate a test cert");
+
+        let result = cert_expiry_days(&cert_path).expect("file exists, must return Some");
+        let days = result.expect("valid cert, openssl/date parsing must succeed");
+        assert!(
+            days > 0 && days <= 90,
+            "cert issued with -days 90 must report a small positive days remaining, got {days}"
+        );
     }
 
     #[test]

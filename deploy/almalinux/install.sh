@@ -32,17 +32,11 @@ DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
 SUBSCRIPTION_BACKEND_PORT="$(awk '/^\[subscription\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*listen_port[[:space:]]*=/{gsub(/[^0-9]/,"",$0); print; exit}' "$DEPLOYMENT_TOML" 2>/dev/null || true)"
 : "${SUBSCRIPTION_BACKEND_PORT:=9100}"
 BIN_DIR="/usr/local/bin"
-SINGBOX_VERSION="1.13.18"
-# Pinned expected SHA256 for the exact release assets fetched by
-# install_singbox() below, for the architectures vpn1 supports. sing-box
-# does not publish a detached checksums.txt for every release (confirmed:
-# neither v1.13.14 nor v1.13.18 has one) — these values were computed by
-# hand from the real asset bytes downloaded directly from the URLs below
-# (and re-verified with a second independent download before pinning),
-# and are the trusted-comparison target when upstream doesn't provide its
-# own checksums file (docs/FINAL_PRODUCTION_AUDIT.md P0-8). Bumping
-# SINGBOX_VERSION MUST update these in the same commit, or install_singbox
-# will correctly refuse to proceed rather than silently skip verification.
+# Single authoritative source for SINGBOX_VERSION/SINGBOX_SHA256_AMD64/
+# SINGBOX_SHA256_ARM64/SUPPORTED_ARCH — see deploy/lib/versions.env's own
+# header. Never redefine these values here; edit that file instead so
+# install.sh, CI's singbox-validate job, and deploy/lib/fast-gate.sh
+# cannot drift apart.
 #
 # 1.13.14 -> 1.13.18 change audit (docs/PERFORMANCE_OPTIMIZATION_PLAN.md
 # has the full write-up): no REALITY changes, no Hysteria2/vless/reality
@@ -52,8 +46,13 @@ SINGBOX_VERSION="1.13.18"
 # Hysteria2 reliability), one unrelated AnyTLS privacy fix. No known
 # regressions found for this range. v1.13.17 does not exist as a stable
 # release (SagerNet went 1.13.16 -> 1.13.18 directly).
-SINGBOX_SHA256_AMD64="d34d987ed6ae39ca3760269264fb502b867e5477db45518c829b07776245c495"
-SINGBOX_SHA256_ARM64="a894f6152cade4a2c9d062762d54dea0c1aee673ab4759e0829e19cace932719"
+VERSIONS_ENV="$REPO_ROOT/deploy/lib/versions.env"
+[ -f "$VERSIONS_ENV" ] || { echo "[install] ERROR: missing $VERSIONS_ENV — cannot resolve pinned sing-box version/checksums." >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$VERSIONS_ENV"
+for v in SINGBOX_VERSION SINGBOX_SHA256_AMD64 SINGBOX_SHA256_ARM64 SUPPORTED_ARCH; do
+  [ -n "${!v:-}" ] || { echo "[install] ERROR: $v missing from $VERSIONS_ENV." >&2; exit 1; }
+done
 SINGBOX_BIN="$BIN_DIR/sing-box"
 NGINX_CONF="/etc/nginx/conf.d/vpn-subscription.conf"
 VPN1_VERSION="${VPN1_VERSION:-}"
@@ -105,6 +104,10 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # zero-argument invocation never requires any of these.
 # ---------------------------------------------------------------------
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
+# Custom domain is the default (docs/SUPPORTED_PRODUCT.md): the
+# IP-derived sslip.io convenience hostname is opt-in only, never a
+# silent non-interactive default. See resolve_host_config().
+ALLOW_IP_HOSTNAME="${VPN1_ALLOW_IP_HOSTNAME:-0}"
 # Set definitively inside preflight_stage once existing_install_present()
 # has actually been checked. Defaults to 0 (repair) so that IF the
 # on_fatal_error trap somehow fires before preflight_stage reaches that
@@ -133,6 +136,18 @@ Optional flags (all have environment-variable equivalents):
                                     required value (e.g. the REALITY decoy)
                                     is missing. Implied automatically when no
                                     TTY is attached.
+  --allow-ip-hostname              same as VPN1_ALLOW_IP_HOSTNAME=1. A custom
+                                    domain (--domain) is the default for a
+                                    real deployment; this explicitly opts
+                                    into the IP-derived sslip.io convenience
+                                    hostname instead when no --domain is
+                                    given AND no interactive prompt is
+                                    possible (e.g. --non-interactive
+                                    automation). An interactive run without
+                                    --domain still just prompts, and pressing
+                                    Enter to skip is itself the opt-in — this
+                                    flag is only needed when no prompt can be
+                                    shown at all.
   -h, --help                       show this message and exit
 USAGE
 }
@@ -147,6 +162,7 @@ parse_cli_args() {
       --subscription-port) SUBSCRIPTION_PORT="$2"; shift 2 ;;
       --subscription-port=*) SUBSCRIPTION_PORT="${1#*=}"; shift ;;
       --non-interactive) NONINTERACTIVE=1; shift ;;
+      --allow-ip-hostname) ALLOW_IP_HOSTNAME=1; shift ;;
       -h|--help) print_install_help; exit 0 ;;
       *) die "unknown argument: $1 (see --help)" ;;
     esac
@@ -297,6 +313,13 @@ persist_source_tree() {
   fi
   log "installing a persistent copy of the vpn1 source to $PERSIST_DIR (for future updates/uninstall)..."
   mkdir -p "$PERSIST_DIR"
+  # Explicit, not left to umask: this tree is later run as root by
+  # /opt/vpn1/bin/vpn1-uninstall, which refuses to trust a copy that is
+  # not root-owned and non-group/world-writable — set that state
+  # correctly here rather than relying on whatever umask happened to be
+  # in effect.
+  chown root:root "$PERSIST_DIR"
+  chmod 0755 "$PERSIST_DIR"
   ( cd "$REPO_ROOT" && tar --exclude=target --exclude=.git -cf - . ) | ( cd "$PERSIST_DIR" && tar -xf - )
   REPO_ROOT="$PERSIST_DIR"
 }
@@ -576,27 +599,39 @@ resolve_host_config() {
     return
   fi
 
-  local operator_supplied=0
+  local operator_supplied=0 prompted_and_skipped=0
   if [ -n "${PUBLIC_HOST:-}" ]; then
     operator_supplied=1
     PUBLIC_HOST="$(derive_punycode_host "$PUBLIC_HOST")"
-  elif [ "$NONINTERACTIVE" -ne 1 ]; then
+  elif [ "$NONINTERACTIVE" -ne 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     local prompted
     prompted="$(prompt_for_public_host)" || prompted=""
     if [ -n "$prompted" ]; then
       PUBLIC_HOST="$prompted"
       operator_supplied=1
+    else
+      # Prompt was shown and the operator explicitly chose to skip it
+      # (pressed Enter) — that IS the required explicit opt-in for the
+      # IP-derived hostname; --allow-ip-hostname/VPN1_ALLOW_IP_HOSTNAME
+      # exists for invocations where no prompt could be shown at all.
+      prompted_and_skipped=1
     fi
   fi
 
   if [ "$operator_supplied" -eq 1 ]; then
     log "using operator-supplied PUBLIC_HOST=$PUBLIC_HOST"
   else
+    # Custom domain is the default (docs/SUPPORTED_PRODUCT.md); the
+    # IP-derived sslip.io convenience hostname must never be a SILENT
+    # default when no interactive prompt could ask the operator first.
+    if [ "$prompted_and_skipped" -ne 1 ] && [ "$ALLOW_IP_HOSTNAME" -ne 1 ]; then
+      die "no PUBLIC_HOST/--domain given, and no interactive terminal available to ask. A custom domain is the default for a real deployment — pass --domain your.domain.com (or PUBLIC_HOST=...). To explicitly opt into the IP-derived sslip.io convenience hostname instead, pass --allow-ip-hostname (or VPN1_ALLOW_IP_HOSTNAME=1). Trade-offs: the hostname and its certificate are tied to this server's CURRENT public IP and break if that IP ever changes; it is a shared third-party domain (sslip.io) you do not control; and it is a more recognizable/fingerprintable naming pattern to a censor than a personal domain."
+    fi
     log "no PUBLIC_HOST set — detecting public IP for zero-touch install..."
     PUBLIC_IP="$(preflight_detect_public_ip)" || die "could not auto-detect this server's public IP. Re-run with PUBLIC_HOST=your.domain.com (or --domain your.domain.com) set explicitly."
     log "detected public IP: $PUBLIC_IP"
     PUBLIC_HOST="$(derive_auto_host "$PUBLIC_IP")"
-    log "auto-assigned hostname: $PUBLIC_HOST (resolves to $PUBLIC_IP via sslip.io, no DNS setup needed)"
+    log "auto-assigned hostname: $PUBLIC_HOST (resolves to $PUBLIC_IP via sslip.io, no DNS setup needed). Trade-offs: tied to this server's current IP (breaks on IP change), a shared third-party domain you do not control, and a more recognizable naming pattern to a censor than a personal domain. Use --domain your.domain.com for a real deployment."
   fi
   SUBSCRIPTION_HOST="$(derive_punycode_host "${SUBSCRIPTION_HOST:-$PUBLIC_HOST}")"
   preflight_validate_hostname "$PUBLIC_HOST" "PUBLIC_HOST" || die "invalid PUBLIC_HOST — refusing to interpolate it into deployment.toml/nginx config."
@@ -800,6 +835,52 @@ build_binaries_from_source() {
 binaries_stage() {
   stage 4 "vpn1 binaries"
   fetch_release_binaries || build_binaries_from_source
+}
+
+# Explicit install-mode report + persistent-state schema check
+# (requirement: reinstall/update must explicitly report which mode it
+# detected — never silent). Runs right after binaries_stage, once
+# vpn-admin exists, and before reality_keys_stage renders/touches
+# deployment.toml. A no-op on a truly fresh install: deployment.toml
+# does not exist yet at this point (render_deployment_toml runs later,
+# in reality_keys_stage), so `config validate` reports MISSING/OK.
+check_state_schema() {
+  if [ "$IS_FRESH_INSTALL" -eq 1 ]; then
+    log "install mode: FRESH (no existing deployment detected)."
+    return
+  fi
+  local prior_version="unknown"
+  if [ -f /var/lib/vpn1/install-state.json ]; then
+    prior_version="$(grep -o '"vpn1_version"[[:space:]]*:[[:space:]]*"[^"]*"' /var/lib/vpn1/install-state.json | sed -E 's/.*"([^"]*)"$/\1/')"
+  fi
+  local this_version="${VPN1_VERSION:-main}"
+  if [ "$prior_version" = "$this_version" ]; then
+    log "install mode: REPAIR (existing deployment already at $this_version)."
+  else
+    log "install mode: UPGRADE (existing deployment at ${prior_version:-unknown} -> $this_version)."
+  fi
+
+  if [ ! -f "$DEPLOYMENT_TOML" ]; then
+    return 0
+  fi
+  local validate_output="" validate_rc=0
+  validate_output="$("$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config validate 2>&1)" || validate_rc=$?
+  case "$validate_rc" in
+    0)
+      log "persistent state schema: current, no migration needed."
+      ;;
+    2)
+      log "persistent state schema: MIGRATION REQUIRED. Migrating now (backup taken automatically before any change)..."
+      echo "$validate_output"
+      "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config migrate \
+        || die "persistent state migration failed — see output above. Nothing live was changed by this step; the previous state remains in place. Re-run once the cause is fixed, or restore a backup under /etc/vpn/compat/**/*.pre-migration-*.bak."
+      log "persistent state schema: migration complete."
+      ;;
+    *)
+      echo "$validate_output" >&2
+      die "persistent state is INVALID/unsupported (status $validate_rc) — see output above. This is not something a repair/upgrade re-run can fix automatically: restore from a backup (/etc/vpn/backups, or /etc/vpn/compat/**/*.pre-migration-*.bak), or install a vpn-admin new enough to understand this state."
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------
@@ -1728,11 +1809,19 @@ write_install_state_manifest() {
   local singbox_version
   singbox_version="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
   local vpn1_version="${VPN1_VERSION:-main}"
+  local pinned_singbox_sha256=""
+  case "$ARCH" in
+    amd64) pinned_singbox_sha256="$SINGBOX_SHA256_AMD64" ;;
+    arm64) pinned_singbox_sha256="$SINGBOX_SHA256_ARM64" ;;
+  esac
   cat > "$manifest.tmp" <<EOF
 {
   "vpn1_version": "$vpn1_version",
   "vpn1_repo": "$VPN1_RELEASE_REPO",
   "sing_box_version": "$singbox_version",
+  "sing_box_version_pinned": "$SINGBOX_VERSION",
+  "sing_box_sha256_pinned": "$pinned_singbox_sha256",
+  "arch": "$ARCH",
   "installed_at_unix": $(date +%s),
   "public_host": "$PUBLIC_HOST",
   "subscription_host": "${SUBSCRIPTION_HOST:-$PUBLIC_HOST}",
@@ -1811,13 +1900,29 @@ Documentation:
 BANNER
 }
 
+
+# Failure-injection testability hook (deploy/almalinux/lifecycle-acceptance.sh
+# stage 10, "failed/interrupted install cleanup"): when
+# VPN1_LIFECYCLE_GATE_ABORT_AFTER=<stage-name> is set, abort right after
+# that stage completes, so the destructive lifecycle gate can
+# deterministically exercise "install died partway through, does
+# uninstall still clean up completely" without relying on a real,
+# unreproducible mid-install crash. Unset in every real install path
+# (bootstrap install.sh never sets it) — a no-op there.
+lifecycle_gate_abort_hook() {
+  [ "${VPN1_LIFECYCLE_GATE_ABORT_AFTER:-}" = "$1" ] || return 0
+  die "VPN1_LIFECYCLE_GATE_ABORT_AFTER=$1 — deliberately aborting for lifecycle-gate testing."
+}
+
 main() {
   parse_cli_args "$@"
   preflight_stage
   packages_stage
   host_config_stage
   binaries_stage
+  check_state_schema
   singbox_install_stage
+  lifecycle_gate_abort_hook install_singbox
   systemd_stage
   users_groups_stage
   directories_stage

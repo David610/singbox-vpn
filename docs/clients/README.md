@@ -23,7 +23,12 @@ the subscription URL/QR carries everything the client needs.
 See `docs/DEVICE_ACCEPTANCE_TESTS.md` for the honest per-platform
 validation status (none of these have been tested against a real device
 in this development environment — see that document for exactly what
-that means and how to run the test yourself).
+that means and how to run the test yourself), and
+`docs/CLIENT_PROTOCOL_BEHAVIOR.md` for what the generated
+subscription/server config does and does not control (full-device
+tunneling, DNS, IPv4/IPv6, UDP/TCP, failover) — those facts apply the
+same way across every client below and are documented once, not
+repeated per platform.
 
 UI label names below reflect the Hiddify app's publicly documented
 behavior at the time this was written; Hiddify updates its UI

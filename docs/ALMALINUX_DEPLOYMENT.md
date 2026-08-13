@@ -57,34 +57,52 @@ curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
   | sudo REALITY_HANDSHAKE_SERVER=www.google.com bash
 ```
 
-That command downloads this repo, auto-detects your public IP, issues a
-real (non-self-signed) TLS certificate automatically via
-[sslip.io](https://sslip.io) + certbot, and runs everything below for
-you. `fetch_release_binaries()` in `install.sh` prefers a prebuilt,
-checksum-verified release binary for your exact version/architecture and
-only falls back to installing a Rust toolchain (via `rustup`) and running
-`cargo build` when no matching release asset exists.
+That command resolves the latest tagged release, downloads the source
+archive `release.yml` published for that exact tag, verifies it against
+that release's `SHA256SUMS` manifest (refusing to extract/run anything
+if the asset, manifest, or checksum don't match — see
+`download_verified_source_release()` in the top-level `install.sh`),
+auto-detects your public IP, issues a real (non-self-signed) TLS
+certificate automatically via [sslip.io](https://sslip.io) + certbot,
+and runs everything below for you. `fetch_release_binaries()` in
+`deploy/almalinux/install.sh` prefers a prebuilt, checksum-verified
+release binary for your exact version/architecture and only falls back
+to building from that same exact-tag source (via `rustup` + `cargo
+build`) when no matching release asset exists — source and binaries are
+always the same immutable, checksum-verified version either way. The
+bootstrap (`install.sh`) resolves this version BEFORE downloading
+anything: a production (default/stable-channel) install that finds no
+tagged release refuses to run rather than silently falling back to
+mutable, unverified branch source.
+
+**Trust boundary, stated exactly**: the very first `curl install.sh |
+sudo bash` fetch is plain HTTPS from `raw.githubusercontent.com` with no
+extra signature — that step's trust is "HTTPS + GitHub account
+security," same as any curl-pipe-to-shell installer, and this doc does
+not claim more than that. What the checksum verification above adds is
+SHA-256 integrity checking of the release payload once a tag is
+resolved: it catches a corrupted or tampered-in-transit download, not a
+compromise of the GitHub release itself (someone who can edit/replace a
+release could republish a matching archive+checksum pair together). No
+code-signing infrastructure is implemented for v1.0.
 
 **As of this writing, no `vX.Y.Z` tag has ever been pushed to this repo,
-so every `curl | sudo bash` install today takes the source-build fallback
-path unconditionally** — there is no prebuilt binary to fall back *from*
-yet. That means, until someone actually pushes a real release tag and its
-`.github/workflows/release.yml` build completes, every install: downloads
-and installs a Rust toolchain if one isn't already present, compiles
-`vpn-admin`/`vpn-subscription-svc` from source (slower — several minutes
-on a small VPS instead of seconds, and needs meaningfully more RAM/CPU
-during the build than the prebuilt path does), and takes the extra
-network round-trip to fetch the rustup installer. Publishing the first
-tagged release is a manual, human, one-time operational action (`git tag
-vX.Y.Z && git push --tags`, or an equivalent GitHub release) — no code
-change in this repository can complete that step by itself, and none has
-been attempted here. `release.yml`'s packaging/checksum logic has been
-reviewed and is exercised by `deploy/lib/tests/test-release-archive-contract.sh`,
-but "the fast path is wired up correctly" and "the fast path has actually
-been used by a real install" are two different claims; only the first is
-true today. The rest of this document describes what that one-liner does
-internally, and how to run every stage manually if you want full control
-(your own domain, hand-provisioned certs, etc).
+so the plain `curl | sudo bash` command above currently refuses to run**
+with an error explaining the two options: pin `--version vX.Y.Z` once a
+release exists, or explicitly opt into unpinned branch-source
+development mode with `VPN1_CHANNEL=dev` (never for a real deployment —
+see the top-level README's Quickstart for the exact command). Publishing
+the first tagged release is a manual, human, one-time operational action
+(`git tag vX.Y.Z && git push --tags`, or an equivalent GitHub release) —
+no code change in this repository can complete that step by itself, and
+none has been attempted here. `release.yml`'s packaging/checksum logic
+has been reviewed and is exercised by
+`deploy/lib/tests/test-release-archive-contract.sh`, but "the fast path
+is wired up correctly" and "the fast path has actually been used by a
+real install" are two different claims; only the first is true today.
+The rest of this document describes what that one-liner does internally,
+and how to run every stage manually if you want full control (your own
+domain, hand-provisioned certs, etc).
 `REALITY_HANDSHAKE_SERVER` has no universal safe default: the example is
 only a starting selection, and installation succeeds only after the real
 sing-box protocol acceptance test returns application data. Do not use
@@ -448,11 +466,20 @@ sudo systemctl reload-or-restart sing-box
 
 ## Uninstall
 
-One command, no flags, from anywhere (does not require the repo to be
-cloned):
+Primary, offline path — installed by every normal install, no network
+access required:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
+sudo /opt/vpn1/bin/vpn1-uninstall --yes
+```
+
+`--yes` skips the interactive confirmation prompt (this is irreversible
+— it deletes live credentials/secrets — so a run without `--yes`, with a
+terminal attached, asks first). Online fallback, only needed if
+`/opt/vpn1` is missing or damaged:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
 This removes **everything** vpn1 created by default — `/etc/vpn`
@@ -468,13 +495,17 @@ toolchain (if vpn1 installed it), and vpn1's kernel network tuning
 existed on the host before vpn1 (nginx, certbot, firewalld/ufw, a
 pre-existing Rust toolchain, unrelated certificates, pre-existing users)
 is left alone or restored to its previous enabled/state, never deleted.
-Safe to run more than once. It prints a checklist at the end for the one
+Manifest-sourced values (certificate hostnames, the Rust toolchain path)
+are re-validated before any destructive use, so a corrupted ownership
+record is reported and left alone rather than acted on blindly. It
+refuses to run from a directory it does not itself control (not
+root-owned, or group/world-writable) as a defense-in-depth check. Safe
+to run more than once. It prints a checklist at the end for the one
 thing it genuinely cannot touch: your cloud provider's network-level
 firewall/security group, if you opened one for vpn1 there.
 
-If you already have the repo checked out, `deploy/almalinux/uninstall.sh`
-is the same script and works identically — the root `uninstall.sh` above
-is only a downloader that hands off to it.
+`deploy/almalinux/uninstall.sh` is the real implementation both entry
+points above hand off to — running it directly works identically.
 
 ## Acceptance test
 

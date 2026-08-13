@@ -43,7 +43,7 @@ if [ "$unsafe" -eq 1 ]; then
 fi
 
 echo "--- first run: uninstall.sh on a never-installed host ---"
-out1="$("$UNINSTALL_SH" 2>&1)"
+out1="$("$UNINSTALL_SH" --yes 2>&1)"
 rc1=$?
 if [ "$rc1" -eq 0 ]; then
   ok "first run exits 0"
@@ -58,7 +58,7 @@ fi
 
 echo
 echo "--- second run: re-running uninstall.sh after a successful (no-op) uninstall ---"
-out2="$("$UNINSTALL_SH" 2>&1)"
+out2="$("$UNINSTALL_SH" --yes 2>&1)"
 rc2=$?
 if [ "$rc2" -eq 0 ]; then
   ok "second run exits 0 (idempotent)"

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Stable, offline, local entry point for uninstalling vpn1:
+#
+#   sudo /opt/vpn1/bin/vpn1-uninstall --yes
+#
+# This is a thin wrapper: install.sh's persist_source_tree() copies this
+# entire repository (this file included) to /opt/vpn1, so this path
+# exists on every normally installed host with no network access
+# required. It execs the real implementation at
+# deploy/almalinux/uninstall.sh, relative to its own location — never a
+# hardcoded /opt/vpn1 path — so it also works when run from a manually
+# placed/cloned copy of the source tree.
+#
+# The real safety checks (root-controlled-execution verification,
+# confirmation prompt / --yes, ownership-aware cleanup) live in
+# deploy/almalinux/uninstall.sh itself, not here, so they apply
+# identically no matter which entry point is used.
+set -Eeuo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REAL_UNINSTALL="$SELF_DIR/../deploy/almalinux/uninstall.sh"
+
+[ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
+[ -x "$REAL_UNINSTALL" ] || {
+  echo "ERROR: $REAL_UNINSTALL not found or not executable — this copy of vpn1 at $SELF_DIR/.. looks incomplete." >&2
+  echo "As a last resort: curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash" >&2
+  exit 1
+}
+
+exec bash "$REAL_UNINSTALL" "$@"

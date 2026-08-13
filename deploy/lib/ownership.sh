@@ -87,3 +87,26 @@ ownership_set_baseline_once() {
   fi
   ownership_set "$key" "$value"
 }
+
+# Refuse to treat a manifest-sourced value as a safe destructive-cleanup
+# path (uninstall.sh's own use of e.g. RUSTUP_HOME_DIR) unless it is a
+# non-empty absolute path, is not "/" itself, and contains no ".."
+# component. This is deliberately conservative — it is NOT a general
+# canonicalization/symlink-safety check, only a defense against a
+# corrupted or hand-edited ownership.env turning a bounded, suffixed
+# `rm -rf "$value/some-subdir"` into something unbounded. Callers still
+# suffix a fixed subdirectory themselves; this only validates the
+# manifest-supplied prefix.
+ownership_path_is_safe() {
+  local path="$1"
+  [ -n "$path" ] || return 1
+  case "$path" in
+    /) return 1 ;;
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "/$path/" in
+    */../*) return 1 ;;
+  esac
+  return 0
+}

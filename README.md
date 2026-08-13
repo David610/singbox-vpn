@@ -62,9 +62,16 @@ for the split ingress/egress topology and other variations.
 ## Quickstart: Hiddify-compatible mode (production)
 
 Follow these steps **in order** on a fresh, supported VPS (root/sudo
-access, public IPv4). Skipping straight to "run the installer" without
-step 1 is fine too — you'll just get an auto-assigned hostname instead
-of your own domain.
+access, public IPv4). A custom domain is the default/recommended path —
+the installer will not silently invent one for you.
+
+Skipping step 1 works only when you run the command yourself in a real
+interactive terminal: with no `--domain`, the installer prompts on
+`/dev/tty` and pressing Enter opts into an auto-assigned `<ip>.sslip.io`
+hostname instead. In any non-interactive context (automation, cloud-init,
+`--non-interactive`, or no TTY at all) the installer refuses to guess and
+exits with an error unless you pass `--allow-ip-hostname` explicitly —
+see the trade-offs below before choosing that flag.
 
 ### 1. (Optional) Point your own domain at the VPS
 
@@ -88,9 +95,11 @@ installer:
   `dig +short vpn.example.com` (or `getent hosts vpn.example.com`)
   should return the VPS's IP.
 
-Skip this step to get a zero-touch install with an auto-assigned
-`sslip.io` hostname instead (no DNS setup required, real TLS cert
-issued automatically either way).
+Skip this step in an interactive terminal to be prompted for one, with
+Enter opting into an auto-assigned `sslip.io` hostname instead (no DNS
+setup required, real TLS cert issued automatically either way). Running
+the installer non-interactively with no domain requires the explicit
+`--allow-ip-hostname` flag — see step 2.
 
 ### 2. Run the installer
 
@@ -100,33 +109,55 @@ curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
 ```
 
 `REALITY_HANDSHAKE_SERVER` is explicit because REALITY decoys are an
-external protocol dependency, not a safe universal default. The installer
-runs a real authenticated sing-box round trip and refuses completion if the
-selected endpoint is incompatible; `www.microsoft.com` is known to exceed
-the pinned sing-box/utls 8192-byte handshake budget and must not be used.
-`www.google.com` and `www.cloudflare.com` are the recommended defaults —
-both serve a compact TLS 1.3 certificate flight well inside that budget
-and are both effectively unblockable at internet scale, which also makes
-them good REALITY decoys for censorship-resistance: a censor blocking the
-decoy's SNI would also break a huge amount of unrelated traffic through
-the same CDN/provider.
-The command downloads the vpn1 source and detects your OS/architecture.
-It prefers a prebuilt, checksum-verified release binary for your exact
-version/arch, falling back to installing a Rust toolchain and building
-from source when no matching release asset exists — **as of this
-writing no `vX.Y.Z` tag has ever been pushed to this repo, so every
-install today takes that slower source-build fallback** (a Rust
-toolchain download plus several minutes of compilation, and more
-RAM/CPU than the prebuilt path needs). Publishing the first tagged
-release is a manual operational step outside this codebase — see
-`docs/ALMALINUX_DEPLOYMENT.md` for details; a code change alone cannot
-complete it. Once that happens, the installer continues,
-installs dependencies, auto-detects your server's public IP, issues a
-real TLS certificate for it automatically (via [sslip.io](https://sslip.io)
-+ certbot — no domain needed), stands up VLESS+REALITY and Hysteria2
-behind `sing-box`, configures the firewall and SELinux (RHEL family),
-enables everything under systemd, creates a `default` user, and prints
-a ready-to-import subscription URL with a terminal QR code.
+external protocol dependency, not a safe universal default: the target
+must actually run a TLS 1.3 server whose handshake fits within the
+pinned sing-box/utls implementation's record budget, and no target
+guarantees censorship resistance. The installer runs a real
+authenticated sing-box round trip and refuses completion if the selected
+endpoint is protocol-incompatible; `www.microsoft.com` is known to
+exceed the pinned sing-box/utls 8192-byte handshake budget and must not
+be used. `www.google.com` and `www.cloudflare.com` are commonly used
+starting points because they reliably serve a compact TLS 1.3
+certificate flight within that budget — this is a statement about
+handshake/protocol compatibility, not a claim that either is
+unblockable or that using them makes this deployment resistant to a
+specific censor. Target suitability can vary by network and country and
+has not been measured against any real censorship regime by this
+project; the installer's protocol self-test only proves local
+protocol compatibility, not real-world blocking resistance. VPS IP/ASN
+blocking remains a hard single-node failure mode regardless of which
+handshake target is chosen — see `docs/COMPATIBILITY_SECURITY_REVIEW.md`.
+The command resolves the latest tagged release, downloads its immutable
+vpn1 source (checksum-verified against that release's published
+`SHA256SUMS` before extraction — see the trust-boundary note at the top
+of `install.sh`), and detects your OS/architecture. It prefers a
+prebuilt, checksum-verified release binary for your exact version/arch,
+falling back to installing a Rust toolchain and building from that same
+exact-tag source when no matching release asset exists — either way,
+source and binaries always come from one immutable, checksum-verified,
+self-consistent version. **As of this writing no `vX.Y.Z` tag has ever been pushed to
+this repo, so the plain command above currently refuses to run** (a
+production install must pin an immutable release, never mutable branch
+source — see below for the explicit development-only escape hatch).
+Publishing the first tagged release is a manual operational step outside
+this codebase — see `docs/ALMALINUX_DEPLOYMENT.md` for details; a code
+change alone cannot complete it. Once a release exists, the installer
+continues, installs dependencies, auto-detects your server's public IP,
+issues a real TLS certificate for it automatically (via
+[sslip.io](https://sslip.io) + certbot — no domain needed), stands up
+VLESS+REALITY and Hysteria2 behind `sing-box`, configures the firewall
+and SELinux (RHEL family), enables everything under systemd, creates a
+`default` user, and prints a ready-to-import subscription URL with a
+terminal QR code.
+
+**Before the first tag exists**, install from branch source explicitly
+with `VPN1_CHANNEL=dev` — this is intentionally NOT reproducible/pinned
+and is for development/testing only, never a real deployment:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
+  | sudo VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com bash
+```
 
 If you set up a domain in step 1, pass it explicitly instead of
 auto-detecting (the installer also prompts for one interactively if
@@ -231,8 +262,8 @@ automatic rollback on failed health check).
 
 ### Uninstalling
 
-One command, no follow-up steps, no flags needed — removes everything
-vpn1 created (secrets, users, REALITY/Hysteria2 material, source tree,
+One command, no network access required — removes everything vpn1
+created (secrets, users, REALITY/Hysteria2 material, source tree,
 generated configs, binaries, the sing-box binary/LICENSE if vpn1
 installed it, firewall rules, certificates, kernel tuning, and anything
 else vpn1 touched) while leaving anything that already existed on the
@@ -241,7 +272,17 @@ toolchain, pre-existing certificates/users/firewall rules) untouched or
 restored to its prior state:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
+sudo /opt/vpn1/bin/vpn1-uninstall --yes
+```
+
+That path is installed by every normal install — no `curl`/GitHub
+access needed. `--yes` skips the interactive confirmation prompt
+(irreversible: it deletes live credentials/secrets, so an interactive
+run without `--yes` asks first). If `/opt/vpn1` is missing or damaged,
+an online fallback re-downloads and runs the same uninstaller:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
 Safe to run more than once — re-running after a successful uninstall

@@ -33,26 +33,94 @@ die() { echo "[uninstall] ERROR: $*" >&2; exit 1; }
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/ownership.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/preflight.sh"
+
+# This script (and everything it execs, e.g. vpn-admin) runs as root
+# and is normally reached via the stable /opt/vpn1/bin/vpn1-uninstall
+# entry point — refuse to trust a copy that is not itself root-controlled.
+# This is a local-tampering defense-in-depth check, not a full integrity
+# guarantee (a fully malicious replacement of this very file could
+# remove the check too) — it catches the more likely failure mode of a
+# loosened directory permission (e.g. a misconfigured umask at install
+# time) rather than deliberate compromise.
+assert_root_controlled_path() {
+  local path="$1" label="$2" owner mode group_digit other_digit
+  [ -e "$path" ] || return 0
+  owner="$(stat -c '%u' "$path" 2>/dev/null || echo -1)"
+  mode="$(stat -c '%a' "$path" 2>/dev/null || echo 000)"
+  [ "$owner" = "0" ] || die "refusing to run: $label ($path) is not owned by root (uid $owner) — this must be root-controlled before running an uninstaller that deletes state as root."
+  # Check the write bit (value 2) of the GROUP and OTHER octal digits
+  # independently — a trailing-character-only check (e.g. `*[2367]`)
+  # misses modes like 775 (group write set, other=5 not matching), which
+  # is a real, common mode for a shared group, not just a hypothetical.
+  group_digit="${mode: -2:1}"
+  other_digit="${mode: -1:1}"
+  if [ $(( group_digit & 2 )) -ne 0 ] || [ $(( other_digit & 2 )) -ne 0 ]; then
+    die "refusing to run: $label ($path) is group- or world-writable (mode $mode) — this must not be writable by anyone but root before running an uninstaller that deletes state as root."
+  fi
+}
+# Only enforced for the canonical persistent-install location this check
+# exists to protect (reached via the untrusted "look for /opt/vpn1"
+# fallback in bin/vpn1-uninstall / the online bootstrap) — NOT for an
+# operator/CI explicitly invoking this exact script from a git checkout,
+# dev clone, or test sandbox. Those are already an explicit, trusted
+# invocation with no path-discovery ambiguity to defend against, and
+# routinely are not root-owned (e.g. a CI runner checks out the repo as
+# an unprivileged user, then re-invokes this script via sudo).
+if [ "$REPO_ROOT" = "/opt/vpn1" ]; then
+  assert_root_controlled_path "$REPO_ROOT" "vpn1 install directory"
+  assert_root_controlled_path "${BASH_SOURCE[0]}" "this uninstaller script"
+fi
 
 STATE_DIR_ROOT="/var/lib/vpn1"
 FIREWALL_OWNERSHIP="$STATE_DIR_ROOT/firewall-owned.env"
 
+ASSUME_YES=0
 for arg in "$@"; do
   case "$arg" in
+    --yes) ASSUME_YES=1 ;;
     --purge-state|--purge-firewall)
       log "'$arg' is no longer needed — complete removal (including state and firewall rules) is now the default. Ignoring."
       ;;
     -h|--help)
       cat <<'USAGE'
 vpn1 uninstaller — removes EVERYTHING vpn1 created, completely, by
-default. No flags are required for a full removal.
+default. No other flags are required for a full removal.
 
+  sudo /opt/vpn1/bin/vpn1-uninstall --yes
+
+Options:
+  --yes   skip the interactive confirmation prompt (required when no
+          terminal is attached, e.g. non-interactive automation).
+
+Online fallback (only if the local copy at /opt/vpn1 is missing):
   curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
 USAGE
       exit 0 ;;
     *) die "unknown flag: $arg" ;;
   esac
 done
+
+# Irreversible and deletes user/credential state — require explicit
+# confirmation. --yes skips the prompt for scripted/automated use; an
+# interactive run without it must positively confirm on /dev/tty rather
+# than silently proceeding (this is a deletion of live user credentials
+# and REALITY/Hysteria2 secrets, not a reversible operation).
+if [ "$ASSUME_YES" -ne 1 ]; then
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    reply=""
+    printf '\nThis will completely remove vpn1 from this host: all users, credentials,\nREALITY/Hysteria2 secrets, generated config, and vpn1-owned firewall/\npackage/certificate state. This cannot be undone.\n' >/dev/tty
+    printf 'Continue? [y/N] ' >/dev/tty
+    IFS= read -r reply </dev/tty || reply=""
+    case "$reply" in
+      y|Y|yes|YES|Yes) ;;
+      *) die "aborted — nothing was changed. Re-run with --yes to skip this prompt." ;;
+    esac
+  else
+    die "no terminal attached to confirm this irreversible removal, and --yes was not given. Re-run with --yes (sudo /opt/vpn1/bin/vpn1-uninstall --yes) to proceed non-interactively."
+  fi
+fi
 
 REMOVED_ANYTHING=0
 note_removed() { REMOVED_ANYTHING=1; }
@@ -104,6 +172,13 @@ log "removing vpn1-issued certificates..."
 CERT_LINEAGES="$(ownership_list_get CERT_LINEAGES_CREATED_BY_VPN1)"
 if [ -n "$CERT_LINEAGES" ]; then
   for host in $CERT_LINEAGES; do
+    # Re-validate before using a manifest-sourced value destructively —
+    # a corrupted/hand-edited ownership.env must never turn into broad
+    # rm -rf behavior (requirement: refuse obviously unsafe entries).
+    if ! preflight_validate_hostname "$host" "CERT_LINEAGES_CREATED_BY_VPN1 entry" >/dev/null 2>&1; then
+      warn "skipping certificate-lineage removal for a manifest entry that is not a valid hostname ('$host') — leaving it untouched. This indicates a corrupted ownership record; the certificate must be checked/removed manually if it is actually vpn1's."
+      continue
+    fi
     if [ -d "/etc/letsencrypt/live/$host" ] || [ -f "/etc/letsencrypt/renewal/$host.conf" ]; then
       if command -v certbot >/dev/null 2>&1; then
         certbot delete --cert-name "$host" --non-interactive >/dev/null 2>&1 \
@@ -310,7 +385,9 @@ fi
 # ---------------------------------------------------------------------
 if ownership_is_marked RUSTUP_INSTALLED_BY_VPN1; then
   rustup_home="$(ownership_get RUSTUP_HOME_DIR "/root")"
-  if [ -d "$rustup_home/.rustup" ] || [ -d "$rustup_home/.cargo" ]; then
+  if ! ownership_path_is_safe "$rustup_home"; then
+    warn "RUSTUP_HOME_DIR in the ownership record ('$rustup_home') is not a safe absolute path — skipping Rust toolchain removal. This indicates a corrupted ownership record; check/remove it manually if it is actually vpn1's."
+  elif [ -d "$rustup_home/.rustup" ] || [ -d "$rustup_home/.cargo" ]; then
     log "removing the Rust toolchain vpn1 installed ($rustup_home/.rustup, $rustup_home/.cargo)..."
     rm -rf "$rustup_home/.rustup" "$rustup_home/.cargo"
     note_removed
