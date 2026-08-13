@@ -473,6 +473,41 @@ fn reality_rotate_replaces_public_key_and_succeeds() {
     );
 }
 
+/// Idempotency requirement: re-running `init` (no `--rotate`) against an
+/// already-initialized deployment must NOT regenerate the REALITY
+/// keypair. `fake_singbox`'s `generate` command deliberately returns a
+/// DIFFERENT keypair on its second invocation (used by the rotate test
+/// above) — if a plain re-run of `init` ever called `generate` a second
+/// time, this test would see the key change and fail.
+#[test]
+fn init_rerun_without_rotate_preserves_existing_reality_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    let priv_key_path = dir.path().join("state/reality/private.key");
+    let pub_key_path = dir.path().join("state/reality/public.key");
+    let priv_before = std::fs::read_to_string(&priv_key_path).unwrap();
+    let pub_before = std::fs::read_to_string(&pub_key_path).unwrap();
+
+    // Re-run twice — idempotency must hold across repeated re-runs, not
+    // just the first one.
+    for _ in 0..2 {
+        admin(dir.path(), &cfg_path).arg("init").assert().success();
+        let priv_after = std::fs::read_to_string(&priv_key_path).unwrap();
+        let pub_after = std::fs::read_to_string(&pub_key_path).unwrap();
+        assert_eq!(
+            priv_before, priv_after,
+            "re-running init without --rotate must not regenerate the REALITY private key"
+        );
+        assert_eq!(
+            pub_before, pub_after,
+            "re-running init without --rotate must not regenerate the REALITY public key"
+        );
+    }
+}
+
 /// docs/FINAL_PRODUCTION_AUDIT.md P0-5: if the candidate config fails
 /// `sing-box check`, rotation must fail LOUDLY and leave the previous
 /// REALITY key material completely unchanged — never half-rotated.

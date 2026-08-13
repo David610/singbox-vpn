@@ -27,7 +27,7 @@ v1.0 — see `deploy/local/run-dev-slice.sh` for its dev-only entry point.
 - Rust tests: `crates/compat-config/tests/*` + `src/**` unit tests
   (interop, decoy budget, deployment/store schema+migration),
   `apps/admin/tests/*`, `services/subscription/tests/*`.
-- Shell tests: `deploy/lib/tests/*.sh` (16 files).
+- Shell tests: `deploy/lib/tests/*.sh` (17 files).
 - CI gates (`.github/workflows/ci.yml`): `fmt`, `clippy`, `test`
   (workspace-wide — see Known CI scope note), `audit`, `docs`, `shell`,
   `secret-logging-check`, `license-check`, `singbox-validate` (real
@@ -47,53 +47,63 @@ plumbing for a runner-minutes-only win; deferred.
 
 ## Completed checkpoints
 
-1. v1.0 boundary + supported code surface documented
-   (`docs/SUPPORTED_PRODUCT.md`); no Hiddify/native-engine doc corrections
-   needed (already correctly scoped).
-2. Canonical FAST GATE (`deploy/lib/fast-gate.sh`) and DESTRUCTIVE
-   lifecycle gate (`deploy/almalinux/lifecycle-acceptance.sh`, SSH-only,
-   requires explicit `--i-understand-this-is-destructive`) added. One
-   tiny testability hook in install.sh (`VPN1_LIFECYCLE_GATE_ABORT_AFTER`,
-   no-op by default).
-3. Reproducible production installs: `deploy/lib/versions.env` is now the
-   ONE source for sing-box version/checksums/arch (install.sh, CI,
-   fast-gate.sh all read it). Bootstrap `install.sh`'s `resolve_version()`
-   now refuses (die) to fall back to mutable branch source in the default
-   channel when no release tag exists — `VPN1_CHANNEL=dev` is the only
-   explicit opt-in. Install-state manifest records pinned sing-box
-   version/checksum/arch. New test: `test-release-reproducibility.sh`.
-4. **Persistent state versioning/migration** (this checkpoint):
-   - `deployment.toml` gets `schema_version` (`#[serde(default)]` = 0 for
-     every pre-existing file — still fully loadable; a version newer than
-     `DEPLOYMENT_SCHEMA_VERSION` is refused at load, everywhere, fail-closed).
-   - `users.json` moves from a bare JSON array to a versioned envelope
-     `{"schema_version":1,"users":[...]}`. `load_users`/`parse_users_bytes`
-     tolerate both shapes (subscription service must keep working through
-     an upgrade window); only a genuinely newer-than-supported version is
-     refused. Every `save_users_atomic` now self-heals the format.
-   - New shared `crates/compat-config/src/migrate.rs`: backup (mode 0600)
-     + atomic-write primitives used by both formats' migration.
-   - New `vpn-admin config validate` (read-only; exit 0=OK, 2=MIGRATION_REQUIRED,
-     3=INVALID) and `vpn-admin config migrate` (backup -> migrate -> validate
-     incl. a real sing-box render+check when possible -> atomic commit;
-     idempotent; fail-closed on corrupted/future-schema input, leaving the
-     original untouched).
-   - `install.sh` (`check_state_schema`, between `binaries_stage` and
-     `reality_keys_stage`) and `update.sh` now explicitly report install
-     mode (FRESH/REPAIR/UPGRADE) and auto-run `config migrate` on
-     MIGRATION_REQUIRED, `die()` (rollback) on INVALID.
-   - Fixed `cmd_restore` (previously raw-parsed the legacy bare-array
-     shape only — would have rejected a backup taken from any
-     current-format deployment) to use the same tolerant parser.
-   - Found+fixed a real bug while testing: `check_state_schema`'s
-     no-deployment.toml early exit used a bare `[ -f ... ] || return`,
-     which returned the FAILED test's status (1) instead of success —
-     would have aborted a legitimate no-op under `set -e`. Now `return 0`.
-   - New tests: `crates/compat-config` unit tests (deployment.rs,
-     store.rs — schema load/migrate/backup/idempotency/corruption/future-
-     version, ~30 new cases), `apps/admin/tests/cli.rs` (9 new
-     `config_*`/restore-envelope cases), `deploy/lib/tests/test-state-schema-migration.sh`
-     (shell wiring, 15 checks). VERIFIED-TEST (all executed, all pass).
+1. v1.0 boundary + supported code surface documented (`docs/SUPPORTED_PRODUCT.md`).
+2. Canonical FAST GATE (`deploy/lib/fast-gate.sh`) + DESTRUCTIVE lifecycle
+   gate (`deploy/almalinux/lifecycle-acceptance.sh`, SSH-only, requires
+   `--i-understand-this-is-destructive`). One testability hook in
+   install.sh (`VPN1_LIFECYCLE_GATE_ABORT_AFTER`, no-op by default).
+3. Reproducible installs: `deploy/lib/versions.env` is the ONE source for
+   sing-box version/checksums/arch. Bootstrap `install.sh` refuses (die)
+   to fall back to mutable branch source when no release tag exists
+   (`VPN1_CHANNEL=dev` is the only explicit opt-in).
+4. Persistent state versioning/migration: `deployment.toml` gets
+   `schema_version`; `users.json` moves to a versioned envelope with a
+   tolerant reader (subscription service keeps working through an
+   upgrade window). New `vpn-admin config validate`/`config migrate`
+   (backup -> migrate -> validate -> atomic commit; idempotent;
+   fail-closed on corrupted/future-schema input). `install.sh`/`update.sh`
+   report FRESH/REPAIR/UPGRADE/MIGRATION_REQUIRED and auto-migrate.
+5. **Installer hardening audit** (this checkpoint): read every supported
+   installer stage against 13 hardening requirements (fresh/repair/
+   upgrade/incompatible-state classification, non-destructive preflight,
+   ownership capture, idempotency, rollback, SSH preservation, loopback-
+   only subscription backend, custom-domain default, REALITY handshake
+   validation, ACME/firewall restoration, sing-box render+check+real
+   protocol test, success-messaging honesty, systemd hardening). **11 of
+   13 were already correctly implemented** (VERIFIED-CODE by reading —
+   SSH port detection, ACME temp-port-80 ownership+restore+interrupt-safe
+   cleanup, systemd hardening directives, loopback `IPAddressAllow`,
+   REALITY handshake required-no-default, rollback-gated-on-fresh-install,
+   REALITY key idempotency via `vpn-admin init`'s rotate-gate, etc.) —
+   confirmed via new tests, not new code. **Found and fixed 2 real gaps**:
+   - Custom-domain-default (requirement 8) was NOT enforced: a
+     non-interactive install with no `--domain` and no TTY silently fell
+     back to the IP-derived sslip.io hostname with no opt-in required,
+     contradicting `docs/SUPPORTED_PRODUCT.md`'s own stated policy.
+     Fixed: `resolve_host_config()` now `die()`s with clear trade-off
+     messaging unless `--allow-ip-hostname`/`VPN1_ALLOW_IP_HOSTNAME=1` is
+     passed explicitly; an interactive prompt (pressing Enter to skip)
+     still counts as the explicit opt-in, so the documented human
+     Quickstart flow is unaffected. `deploy/almalinux/lifecycle-acceptance.sh`
+     updated to pass the new flag (it also had a latent, never-exercised
+     bug: its `--non-interactive` invocations never set
+     `REALITY_HANDSHAKE_SERVER`, which is mandatory in that mode — fixed
+     too, found only because this flag change forced re-reading that
+     code path).
+   - `preflight_detect_ssh_port()` had no fixture-testable seam
+     (hardcoded `/etc/ssh/sshd_config`); added
+     `SSHD_CONFIG_FILE="${SSHD_CONFIG_FILE:-/etc/ssh/sshd_config}"`
+     (same pattern as `os.sh`'s `OS_RELEASE_FILE`) — no behavior change,
+     makes non-default-SSH-port detection actually testable.
+   - Added a regression test proving `vpn-admin init` re-run (no
+     `--rotate`) never regenerates the REALITY keypair (idempotency),
+     using the existing `fake_singbox` fixture's deliberate
+     second-call-returns-a-different-key behavior as the trap.
+   - New test: `deploy/lib/tests/test-installer-hardening.sh` (18 checks:
+     SSH port fixture detection + fallback, firewall non-default-port
+     rules, firewall ownership-of-pre-existing-state ordering, ACME
+     temp-port-80 open/close/interrupt/nginx-restore, custom-domain-
+     default enforcement functional tests, REALITY init idempotency).
 
 ## Blockers
 
@@ -135,9 +145,11 @@ vpn-admin --config /etc/vpn/deployment.toml config migrate
 
 ## Next logical checkpoint
 
-Prompt 5: push the first real `vX.Y.Z` release tag so the default
-`curl | sudo bash` one-liner has something to resolve, then exercise
-`config migrate`/install-mode detection against a real disposable
-AlmaLinux 9 host via `lifecycle-acceptance.sh`. Until then, pick one
-concrete supported-product defect/gap and fix it with minimum churn,
-running `deploy/lib/fast-gate.sh` after every change.
+Prompt 6: push the first real `vX.Y.Z` release tag, then run
+`deploy/almalinux/lifecycle-acceptance.sh` against a real disposable
+AlmaLinux 9 host — this is now the single highest-value remaining gap:
+every hardening claim above (SSH preservation, rollback, idempotency,
+ACME restoration, config migration) is code-read/unit/fixture verified
+only, never exercised against a real systemd/firewalld/reboot lifecycle.
+Until then, pick one concrete supported-product defect/gap and fix it
+with minimum churn, running `deploy/lib/fast-gate.sh` after every change.

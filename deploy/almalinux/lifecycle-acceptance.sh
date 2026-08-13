@@ -135,7 +135,7 @@ ssh_baseline="$(ssh_run 'systemctl is-active sshd 2>/dev/null; ss -ltnp 2>/dev/n
 if [ -n "$ssh_baseline" ]; then pass "SSH baseline captured"; else fail "SSH baseline captured"; fi
 
 section "2. clean install"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev bash -s -- --non-interactive"; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- --non-interactive"; then
   pass "install.sh (clean)"
 else
   fail_required "install.sh (clean)"
@@ -170,7 +170,7 @@ else
 fi
 
 section "6. repair / idempotent re-run"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev bash -s -- --non-interactive"; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- --non-interactive"; then
   pass "install.sh (idempotent re-run)"
 else
   fail_required "install.sh (idempotent re-run)"
@@ -212,7 +212,7 @@ section "10. failed/interrupted install cleanup"
 # (a stage-name substring) to deliberately die mid-install, purely for this
 # gate — see install.sh's own comment at the check. Kept to exactly one
 # narrow hook, not a generic fault-injection framework.
-if ssh_run "sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev bash -s -- --non-interactive" ; then
+if ssh_run "sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- --non-interactive" ; then
   fail "interrupted install actually aborted" "(expected non-zero exit, got success)"
 else
   pass "interrupted install aborted as expected"
@@ -225,7 +225,7 @@ else
 fi
 
 section "11. offline uninstall (from the repaired install in stage 6, redone)"
-ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev bash -s -- --non-interactive" >/dev/null 2>&1 || true
+ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- --non-interactive" >/dev/null 2>&1 || true
 if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/uninstall.sh | bash"; then
   pass "uninstall.sh"
 else
@@ -243,7 +243,7 @@ else
 fi
 
 section "14. reinstall"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev bash -s -- --non-interactive"; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- --non-interactive"; then
   pass "reinstall after uninstall"
 else
   fail_required "reinstall after uninstall"

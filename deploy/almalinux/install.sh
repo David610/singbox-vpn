@@ -104,6 +104,10 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # zero-argument invocation never requires any of these.
 # ---------------------------------------------------------------------
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
+# Custom domain is the default (docs/SUPPORTED_PRODUCT.md): the
+# IP-derived sslip.io convenience hostname is opt-in only, never a
+# silent non-interactive default. See resolve_host_config().
+ALLOW_IP_HOSTNAME="${VPN1_ALLOW_IP_HOSTNAME:-0}"
 # Set definitively inside preflight_stage once existing_install_present()
 # has actually been checked. Defaults to 0 (repair) so that IF the
 # on_fatal_error trap somehow fires before preflight_stage reaches that
@@ -132,6 +136,18 @@ Optional flags (all have environment-variable equivalents):
                                     required value (e.g. the REALITY decoy)
                                     is missing. Implied automatically when no
                                     TTY is attached.
+  --allow-ip-hostname              same as VPN1_ALLOW_IP_HOSTNAME=1. A custom
+                                    domain (--domain) is the default for a
+                                    real deployment; this explicitly opts
+                                    into the IP-derived sslip.io convenience
+                                    hostname instead when no --domain is
+                                    given AND no interactive prompt is
+                                    possible (e.g. --non-interactive
+                                    automation). An interactive run without
+                                    --domain still just prompts, and pressing
+                                    Enter to skip is itself the opt-in — this
+                                    flag is only needed when no prompt can be
+                                    shown at all.
   -h, --help                       show this message and exit
 USAGE
 }
@@ -146,6 +162,7 @@ parse_cli_args() {
       --subscription-port) SUBSCRIPTION_PORT="$2"; shift 2 ;;
       --subscription-port=*) SUBSCRIPTION_PORT="${1#*=}"; shift ;;
       --non-interactive) NONINTERACTIVE=1; shift ;;
+      --allow-ip-hostname) ALLOW_IP_HOSTNAME=1; shift ;;
       -h|--help) print_install_help; exit 0 ;;
       *) die "unknown argument: $1 (see --help)" ;;
     esac
@@ -575,27 +592,39 @@ resolve_host_config() {
     return
   fi
 
-  local operator_supplied=0
+  local operator_supplied=0 prompted_and_skipped=0
   if [ -n "${PUBLIC_HOST:-}" ]; then
     operator_supplied=1
     PUBLIC_HOST="$(derive_punycode_host "$PUBLIC_HOST")"
-  elif [ "$NONINTERACTIVE" -ne 1 ]; then
+  elif [ "$NONINTERACTIVE" -ne 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     local prompted
     prompted="$(prompt_for_public_host)" || prompted=""
     if [ -n "$prompted" ]; then
       PUBLIC_HOST="$prompted"
       operator_supplied=1
+    else
+      # Prompt was shown and the operator explicitly chose to skip it
+      # (pressed Enter) — that IS the required explicit opt-in for the
+      # IP-derived hostname; --allow-ip-hostname/VPN1_ALLOW_IP_HOSTNAME
+      # exists for invocations where no prompt could be shown at all.
+      prompted_and_skipped=1
     fi
   fi
 
   if [ "$operator_supplied" -eq 1 ]; then
     log "using operator-supplied PUBLIC_HOST=$PUBLIC_HOST"
   else
+    # Custom domain is the default (docs/SUPPORTED_PRODUCT.md); the
+    # IP-derived sslip.io convenience hostname must never be a SILENT
+    # default when no interactive prompt could ask the operator first.
+    if [ "$prompted_and_skipped" -ne 1 ] && [ "$ALLOW_IP_HOSTNAME" -ne 1 ]; then
+      die "no PUBLIC_HOST/--domain given, and no interactive terminal available to ask. A custom domain is the default for a real deployment — pass --domain your.domain.com (or PUBLIC_HOST=...). To explicitly opt into the IP-derived sslip.io convenience hostname instead, pass --allow-ip-hostname (or VPN1_ALLOW_IP_HOSTNAME=1). Trade-offs: the hostname and its certificate are tied to this server's CURRENT public IP and break if that IP ever changes; it is a shared third-party domain (sslip.io) you do not control; and it is a more recognizable/fingerprintable naming pattern to a censor than a personal domain."
+    fi
     log "no PUBLIC_HOST set — detecting public IP for zero-touch install..."
     PUBLIC_IP="$(preflight_detect_public_ip)" || die "could not auto-detect this server's public IP. Re-run with PUBLIC_HOST=your.domain.com (or --domain your.domain.com) set explicitly."
     log "detected public IP: $PUBLIC_IP"
     PUBLIC_HOST="$(derive_auto_host "$PUBLIC_IP")"
-    log "auto-assigned hostname: $PUBLIC_HOST (resolves to $PUBLIC_IP via sslip.io, no DNS setup needed)"
+    log "auto-assigned hostname: $PUBLIC_HOST (resolves to $PUBLIC_IP via sslip.io, no DNS setup needed). Trade-offs: tied to this server's current IP (breaks on IP change), a shared third-party domain you do not control, and a more recognizable naming pattern to a censor than a personal domain. Use --domain your.domain.com for a real deployment."
   fi
   SUBSCRIPTION_HOST="$(derive_punycode_host "${SUBSCRIPTION_HOST:-$PUBLIC_HOST}")"
   preflight_validate_hostname "$PUBLIC_HOST" "PUBLIC_HOST" || die "invalid PUBLIC_HOST — refusing to interpolate it into deployment.toml/nginx config."
