@@ -173,7 +173,7 @@ jobs:
       # same file, so this job cannot silently drift from what a real
       # install actually pins.
       - name: Load pinned versions (deploy/lib/versions.env)
-        run: cat deploy/lib/versions.env >> "$GITHUB_ENV"
+        run: grep -vE '^\s*(#|$)' deploy/lib/versions.env >> "$GITHUB_ENV"
 
       - name: Download pinned sing-box release
         run: |

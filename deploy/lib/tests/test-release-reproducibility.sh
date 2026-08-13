@@ -53,6 +53,27 @@ if grep -q "deploy/lib/versions.env" "$CI_YML"; then ok "ci.yml loads deploy/lib
 if grep -q "deploy/lib/versions.env" "$FAST_GATE_SH"; then ok "fast-gate.sh sources deploy/lib/versions.env"; else fail "fast-gate.sh does not reference deploy/lib/versions.env"; fi
 
 echo
+echo "--- regression: ci.yml's \$GITHUB_ENV load of versions.env must filter comments/blank lines ---"
+# \$GITHUB_ENV's file-command format rejects any line that is not a bare
+# KEY=value (a comment line makes the whole step fail: "Invalid format").
+# versions.env is a human-documented file with a comment header — ci.yml
+# must never append it to \$GITHUB_ENV raw.
+ci_load_line="$(grep -n 'versions\.env.*GITHUB_ENV' "$CI_YML" || true)"
+if [ -z "$ci_load_line" ]; then
+  fail "could not find the ci.yml step that loads versions.env into \$GITHUB_ENV"
+elif echo "$ci_load_line" | grep -qE "^\s*[0-9]+:\s*run:\s*cat "; then
+  fail "ci.yml appends deploy/lib/versions.env to \$GITHUB_ENV with a raw 'cat' — this breaks on the file's own comment header (VERIFIED against a real CI run: 'Invalid format' on the first comment line)"
+else
+  ok "ci.yml filters comments/blank lines before appending versions.env to \$GITHUB_ENV"
+fi
+filtered="$(grep -vE '^\s*(#|$)' "$VERSIONS_ENV")"
+if echo "$filtered" | grep -qvE '^[A-Za-z_][A-Za-z0-9_]*='; then
+  fail "the comment/blank-line filter still leaves a non-KEY=value line: $(echo "$filtered" | grep -vE '^[A-Za-z_][A-Za-z0-9_]*=')"
+else
+  ok "filtering deploy/lib/versions.env with the same pattern ci.yml uses leaves only valid KEY=value lines"
+fi
+
+echo
 echo "--- static: install.sh dies closed if deploy/lib/versions.env is missing/incomplete ---"
 if grep -qE 'missing from \$VERSIONS_ENV' "$INSTALL_SH"; then
   ok "install.sh errors out on a missing required key from versions.env"

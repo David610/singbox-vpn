@@ -60,8 +60,18 @@ assert_root_controlled_path() {
     die "refusing to run: $label ($path) is group- or world-writable (mode $mode) — this must not be writable by anyone but root before running an uninstaller that deletes state as root."
   fi
 }
-assert_root_controlled_path "$REPO_ROOT" "vpn1 install directory"
-assert_root_controlled_path "${BASH_SOURCE[0]}" "this uninstaller script"
+# Only enforced for the canonical persistent-install location this check
+# exists to protect (reached via the untrusted "look for /opt/vpn1"
+# fallback in bin/vpn1-uninstall / the online bootstrap) — NOT for an
+# operator/CI explicitly invoking this exact script from a git checkout,
+# dev clone, or test sandbox. Those are already an explicit, trusted
+# invocation with no path-discovery ambiguity to defend against, and
+# routinely are not root-owned (e.g. a CI runner checks out the repo as
+# an unprivileged user, then re-invokes this script via sudo).
+if [ "$REPO_ROOT" = "/opt/vpn1" ]; then
+  assert_root_controlled_path "$REPO_ROOT" "vpn1 install directory"
+  assert_root_controlled_path "${BASH_SOURCE[0]}" "this uninstaller script"
+fi
 
 STATE_DIR_ROOT="/var/lib/vpn1"
 FIREWALL_OWNERSHIP="$STATE_DIR_ROOT/firewall-owned.env"
