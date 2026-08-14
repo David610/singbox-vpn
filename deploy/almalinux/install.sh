@@ -67,6 +67,15 @@ SUBSCRIPTION_BACKEND_OK=0
 SUBSCRIPTION_HTTPS_OK=0
 NGINX_OK=0
 FIREWALL_OK=0
+# Set only by verify_subscription_through_nginx() (stage 17) once the
+# real client-facing path (user -> vpn-subscription -> nginx HTTPS ->
+# renderer -> returned profile, fetched with real TLS verification) is
+# confirmed end-to-end — never inferred from the loopback backend
+# healthz alone (checkpoint-4 requirement). Only required for a fresh
+# install or a not-yet-accepted ("pending") retry — a repair of an
+# already-accepted installation does not re-mint a token/re-run this
+# check every time (see acceptance_stage).
+SUBSCRIPTION_FETCH_OK=0
 
 log() { echo "[install] $*"; }
 warn() { echo "[install] WARNING: $*" >&2; }
@@ -477,6 +486,20 @@ preflight_stage() {
   else
     log "no existing installation detected — this will be a fresh install."
     IS_FRESH_INSTALL=1
+  fi
+  # Captured HERE, before write_install_state_manifest("installing")
+  # below (and long before start_stage's own "pending" write) overwrites
+  # it — ensure_first_user (stage 17) needs to know whether a PRIOR run
+  # already reached "accepted" (a true repair: never auto-create/rotate
+  # a user) versus this being a genuinely fresh install or a retry of a
+  # not-yet-accepted ("pending") one (onboarding is still in progress:
+  # a default user may still need to be created/completed). Reading the
+  # manifest live at stage 17 would always see THIS run's own "pending"
+  # write from start_stage instead of the prior run's real state.
+  PRIOR_ACCEPTANCE_STATE="none"
+  if [ -f /var/lib/vpn1/install-state.json ]; then
+    PRIOR_ACCEPTANCE_STATE="$(grep -o '"acceptance"[[:space:]]*:[[:space:]]*"[^"]*"' /var/lib/vpn1/install-state.json | sed -E 's/.*"([^"]*)"$/\1/')"
+    [ -n "$PRIOR_ACCEPTANCE_STATE" ] || PRIOR_ACCEPTANCE_STATE="none"
   fi
   # ---------------------------------------------------------------
   # Rollback/ownership tracking must be active BEFORE the first
@@ -1397,7 +1420,14 @@ EOF
   log "Hysteria2 TLS cert/key present and valid: $cert"
 }
 
-# Same requirement for the subscription HTTPS vhost (nginx).
+# Same requirement for the subscription HTTPS vhost (nginx) — MANDATORY
+# for the normal (family/onboarding) installation, not a best-effort
+# extra (checkpoint-4 requirement): a "one command -> QR/subscription ->
+# Hiddify" product cannot silently degrade to a subscription-less
+# deployment and still call itself a success. There is no supported
+# advanced/manual opt-out of this in the current architecture, so none
+# is invented here — a certificate failure now stops the install with a
+# clear, actionable cause instead of continuing without nginx.
 require_subscription_tls() {
   local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
   local cert="/etc/letsencrypt/live/$host/fullchain.pem"
@@ -1406,11 +1436,32 @@ require_subscription_tls() {
     ensure_tls_material "$host" || true
   fi
   if [ ! -s "$cert" ] || [ ! -s "$key" ]; then
-    log "warning: subscription HTTPS certificate not found at $cert."
-    log "  Provision one with: certbot certonly --standalone -d $host --non-interactive --agree-tos -m admin@$host"
-    log "  The subscription vhost will NOT be enabled this run — see final status."
-    SUBSCRIPTION_TLS_READY=0
-    return
+    cat >&2 <<EOF
+[install] ERROR: [FAIL] subscription HTTPS certificate missing: $cert
+
+Automatic issuance (certbot HTTP-01) already failed above — see that
+output for the specific reason. In summary, ALL of the following must be
+true simultaneously for automatic issuance to succeed:
+  - DNS for ${host} resolves to this server's public IP.
+  - TCP/80 is reachable from the public internet, not just locally free.
+    vpn1 only manages the HOST firewall (firewalld/ufw) — a cloud
+    provider's separate network firewall/security group (AWS, GCP,
+    Azure, ...) may ALSO need an inbound TCP/80 rule; vpn1 cannot see or
+    change that layer. Test from a DIFFERENT machine:
+      curl -sS --max-time 5 http://${host}/ -o /dev/null -w '%{http_code}\n'
+  - certbot is installed and nothing else is holding TCP/80.
+
+Provision a certificate for ${host} manually once the above are confirmed:
+
+  certbot certonly --standalone -d ${host} \\
+    --non-interactive --agree-tos -m admin@${host}
+
+Then re-run install.sh. Subscription HTTPS is required for the normal
+vpn1 onboarding path (subscription URL -> Hiddify) — installation does
+not complete without it, and never silently falls back to a
+subscription-less deployment.
+EOF
+    exit 1
   fi
   SUBSCRIPTION_TLS_READY=1
   log "subscription HTTPS cert/key present: $cert"
@@ -1862,19 +1913,134 @@ FIRST_USER_QR_OUTPUT=""
 # capture that whole block for print_status to show, instead of a second
 # `--json` call (which would either skip the QR or, via `user qr`, mint
 # and invalidate a second token for no reason).
+#
+# Extracts the subscription URL from either `user create --qr`'s or
+# `user rotate-token --qr`'s human-readable output — the two commands
+# print different header text ("Hiddify subscription URL (this IS the
+# credential...):" vs. "New Hiddify subscription URL for {id}:") but
+# both end in "...ubscription URL...:" immediately followed by a
+# "  https://..." line, so one pattern covers both without needing a
+# second (fragile, format-specific) parser.
+extract_subscription_url() {
+  echo "$1" | grep -A1 -E 'ubscription URL.*:$' | grep -m1 -E '^  https://' | sed -e 's/^  //'
+}
+
+# Fresh-install vs. repair user-management semantics (checkpoint-4
+# requirement — these must stay distinct):
+#   - genuinely fresh, or a not-yet-accepted ("pending") retry of a
+#     fresh install: a usable default user is REQUIRED. If one already
+#     exists (from an earlier pending attempt) but this run has no raw
+#     token for it (raw tokens are never persisted — by design), mint a
+#     fresh subscription token for that SAME user via rotate-token
+#     (touches only the token, never VLESS/Hysteria2 credentials) so
+#     onboarding can still be completed and verified.
+#   - repair of an ALREADY-ACCEPTED install: user state is the
+#     operator's; never auto-create, rotate, or mint anything here, even
+#     if the user store is (deliberately) empty.
 ensure_first_user() {
-  local existing
+  local existing first_id
   existing="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user list 2>/dev/null | tail -n +2 | grep -c . || true)"
+
   if [ "${existing:-0}" -gt 0 ]; then
-    log "$existing existing user(s) found — not creating a default user (idempotent re-run)."
+    if [ "$PRIOR_ACCEPTANCE_STATE" = "accepted" ]; then
+      log "$existing existing user(s) found on an already-accepted deployment (repair) — user state is the operator's; not touching it."
+      return
+    fi
+    log "$existing existing user(s) found on a not-yet-accepted (pending) deployment — reusing the first one; minting a fresh subscription token for onboarding (rotate-token changes only the subscription token, never VLESS/Hysteria2 credentials)."
+    first_id="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user list 2>/dev/null | tail -n +2 | awk '{print $1; exit}')"
+    [ -n "$first_id" ] || die "[FAIL] a user was reported to exist but its ID could not be determined from 'vpn user list' output."
+    local out
+    out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user rotate-token "$first_id" --qr 2>&1)" \
+      || die "[FAIL] could not mint a subscription token for the existing pending-install user '$first_id'. Output:
+$out"
+    FIRST_USER_QR_OUTPUT="$out"
+    SUBSCRIPTION_URL="$(extract_subscription_url "$out")"
+    [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] a subscription token was minted for '$first_id' but no subscription URL could be extracted from its output — cannot complete onboarding verification."
     return
   fi
+
+  if [ "$PRIOR_ACCEPTANCE_STATE" = "accepted" ]; then
+    log "no users exist, but this is a REPAIR of an already-accepted installation — not auto-creating a user; the operator's (deliberately empty) user state is preserved. Create one explicitly with 'vpn user create --name NAME --qr' if intended."
+    return
+  fi
+
   log "creating initial VPN user '$DEFAULT_USER_NAME'..."
   local out
-  out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --qr 2>/dev/null)" \
-    || { warn "failed to auto-create the default user; run 'vpn user create --name default --qr' manually."; return; }
+  out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --qr 2>&1)" \
+    || die "[FAIL] initial user creation failed — a fresh install must produce at least one usable onboarding credential. Output:
+$out"
   FIRST_USER_QR_OUTPUT="$out"
-  SUBSCRIPTION_URL="$(echo "$out" | sed -n '/^Subscription:$/{n;p;}')"
+  SUBSCRIPTION_URL="$(extract_subscription_url "$out")"
+  [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] the initial user was created but no subscription URL could be extracted from its output — cannot complete onboarding verification."
+}
+
+# ---------------------------------------------------------------------
+# End-to-end subscription verification THROUGH nginx/TLS (checkpoint-4
+# requirement — the loopback backend answering /healthz is not
+# sufficient proof; the actual client-facing path is user state ->
+# vpn-subscription -> nginx HTTPS -> subscription renderer -> returned
+# profile). `--resolve HOST:PORT:127.0.0.1` sends the request to this
+# host while keeping curl's TLS verification (hostname/SAN + expiry,
+# via the system CA store — Let's Encrypt is trusted there) against the
+# REAL configured hostname, exactly as a real client would see it; no
+# `-k` is ever used here. The fetched body is cross-checked against the
+# CURRENT on-disk REALITY public key/short_id (the same values
+# vpn-subscription itself reads at render time) instead of a second,
+# duplicate profile parser — this both proves the profile is
+# well-formed AND that nginx is not serving something stale.
+verify_subscription_through_nginx() {
+  local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
+  local port="${SUBSCRIPTION_PORT:-8443}"
+  [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] no subscription URL is available for the initial user — cannot verify the subscription path end-to-end."
+  local pubkey short_id
+  pubkey="$(cat "$STATE_DIR/reality/public.key" 2>/dev/null || true)"
+  short_id="$(cat "$STATE_DIR/reality/short_id.txt" 2>/dev/null || true)"
+  [ -n "$pubkey" ] && [ -n "$short_id" ] \
+    || die "[FAIL] REALITY public key/short_id not found under $STATE_DIR/reality — cannot verify subscription content."
+
+  local body_file http_code curl_err
+  body_file="$(mktemp)"
+  curl_err="$(mktemp)"
+  if ! http_code="$(curl -sS --max-time 15 --resolve "${host}:${port}:127.0.0.1" \
+      -o "$body_file" -w '%{http_code}' "$SUBSCRIPTION_URL" 2>"$curl_err")"; then
+    local err_out
+    err_out="$(cat "$curl_err")"
+    rm -f "$body_file" "$curl_err"
+    die "[FAIL] local HTTPS subscription request through nginx failed (connection/TLS error) — a real client using https://$host:$port would fail the same way. curl error: $err_out"
+  fi
+  rm -f "$curl_err"
+
+  if [ "$http_code" != "200" ]; then
+    rm -f "$body_file"
+    die "[FAIL] local HTTPS subscription request through nginx returned HTTP $http_code (expected 200)."
+  fi
+  if [ ! -s "$body_file" ]; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx was empty."
+  fi
+  if ! grep -q '^vless://' "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx does not contain a vless:// entry — subscription profile render failed or is malformed."
+  fi
+  if ! grep -q "pbk=${pubkey}" "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx does not advertise the CURRENT REALITY public key — served content is stale or incoherent with the running server."
+  fi
+  if ! grep -q "sid=${short_id}" "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx does not advertise the CURRENT REALITY short_id — served content is stale or incoherent with the running server."
+  fi
+  if grep -qiE 'privatekey|private_key|private\.key' "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx appears to contain REALITY private-key material — refusing to accept installation. This should never happen; please report it."
+  fi
+  if [ "${HYSTERIA2_OK:-0}" -eq 1 ] && ! grep -q '^hysteria2://' "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] Hysteria2 is enabled and listening, but the subscription response through nginx has no hysteria2:// entry."
+  fi
+  rm -f "$body_file"
+  SUBSCRIPTION_FETCH_OK=1
+  log "subscription profile fetched and verified through nginx/TLS at https://$host:$port/sub/... (current REALITY key material confirmed, TLS hostname/expiry verified by curl without -k)."
 }
 
 acceptance_stage() {
@@ -1907,6 +2073,20 @@ $fail_lines"
     fi
   fi
   log "health check passed."
+
+  # Full client-facing subscription-through-nginx proof (checkpoint-4):
+  # required for a fresh install or a not-yet-accepted ("pending") retry
+  # — exactly the runs where ensure_first_user() above is expected to
+  # have produced a usable SUBSCRIPTION_URL. A repair of an
+  # ALREADY-ACCEPTED installation intentionally does not mint a new
+  # token (or touch user state at all) every re-run — doctor
+  # --protocol/L4 above already re-confirm the live protocol handshake
+  # and internal subscription-process coherence for that case.
+  if [ "$PRIOR_ACCEPTANCE_STATE" = "accepted" ]; then
+    log "repair of an already-accepted installation — skipping the subscription-through-nginx re-fetch (no new token was minted; doctor --protocol above already re-verified the live handshake/coherence)."
+  else
+    verify_subscription_through_nginx
+  fi
 }
 
 # ---------------------------------------------------------------------
@@ -1978,15 +2158,27 @@ EOF
 
 print_status() {
   stage 18 "summary"
-  write_install_state_manifest "accepted"
   # Never print a success banner claiming a component works when it
   # wasn't actually confirmed (docs/FINAL_PRODUCTION_AUDIT.md P0-14) —
   # these are the same booleans set at each stage's real confirmation
   # point above, re-checked here instead of trusting `set -e` alone to
-  # have caught every path.
-  [ "$VLESS_REALITY_OK" -eq 1 ] || die "internal: reached summary with VLESS+REALITY not confirmed — this should be unreachable (start_stage should have aborted first)."
-  [ "$HYSTERIA2_OK" -eq 1 ] || die "internal: reached summary with Hysteria2 not confirmed — this should be unreachable (start_stage should have aborted first)."
-  [ "$SUBSCRIPTION_BACKEND_OK" -eq 1 ] || die "internal: reached summary with subscription backend not confirmed — this should be unreachable (start_stage should have aborted first)."
+  # have caught every path. Checkpoint-4: subscription HTTPS/nginx and
+  # (for a fresh/pending-onboarding run) the full subscription-through-
+  # nginx fetch are now equally mandatory — the normal success banner is
+  # unreachable without them, same as the data plane/backend already were.
+  [ "$VLESS_REALITY_OK" -eq 1 ] || die "[FAIL] internal: reached summary with VLESS+REALITY not confirmed — this should be unreachable (start_stage should have aborted first)."
+  [ "$HYSTERIA2_OK" -eq 1 ] || die "[FAIL] internal: reached summary with Hysteria2 not confirmed — this should be unreachable (start_stage should have aborted first)."
+  [ "$SUBSCRIPTION_BACKEND_OK" -eq 1 ] || die "[FAIL] internal: reached summary with subscription backend not confirmed — this should be unreachable (start_stage should have aborted first)."
+  [ "$SUBSCRIPTION_HTTPS_OK" -eq 1 ] || die "[FAIL] internal: reached summary with subscription HTTPS not confirmed — this should be unreachable (require_subscription_tls should have aborted first)."
+  [ "$NGINX_OK" -eq 1 ] || die "[FAIL] internal: reached summary with nginx not confirmed active/bound — this should be unreachable (configure_nginx should have aborted first)."
+  if [ "$PRIOR_ACCEPTANCE_STATE" != "accepted" ]; then
+    [ "$SUBSCRIPTION_FETCH_OK" -eq 1 ] || die "[FAIL] internal: reached summary without the subscription-through-nginx fetch confirmed on a non-repair run — this should be unreachable (verify_subscription_through_nginx should have aborted first)."
+  fi
+
+  # Only NOW — after every server-side gate above has actually passed —
+  # does the manifest become "accepted" (checkpoint-4 requirement: never
+  # write "accepted" before the acceptance gate).
+  write_install_state_manifest "accepted"
 
   cat <<BANNER
 
@@ -1996,23 +2188,28 @@ print_status() {
 Server
   Address: ${PUBLIC_HOST}
   Status:  running
-Components (each independently confirmed, not inferred)
-  VLESS + REALITY (443/tcp)     $([ "$VLESS_REALITY_OK" -eq 1 ] && echo "✓ listening" || echo "✗")
-  Hysteria2 (443/udp)           $([ "$HYSTERIA2_OK" -eq 1 ] && echo "✓ listening" || echo "✗")
-  Subscription backend          $([ "$SUBSCRIPTION_BACKEND_OK" -eq 1 ] && echo "✓ healthy" || echo "✗")
-  Subscription HTTPS (nginx)    $([ "$NGINX_OK" -eq 1 ] && [ "$SUBSCRIPTION_HTTPS_OK" -eq 1 ] && echo "✓ configured" || echo "not configured — see stage 8/11 output above")
-  Firewall                      $([ "$FIREWALL_OK" -eq 1 ] && echo "✓ configured" || echo "✗")
-User
-  ${DEFAULT_USER_NAME}
+
+SERVER-SIDE VERIFIED
+  ✓ VLESS+REALITY service active, 443/tcp listener bound
+  ✓ Hysteria2 443/udp listener bound
+  ✓ REALITY protocol self-test (real sing-box handshake)
+  ✓ subscription backend healthy
+  ✓ subscription HTTPS/TLS (nginx, real cert/hostname verified)
+  $([ "$SUBSCRIPTION_FETCH_OK" -eq 1 ] && echo "✓ subscription profile fetched through nginx and matches current server state" || echo "- subscription profile re-fetch skipped this run (repair of an already-accepted install; not re-minting a token)")
+  ✓ firewall configured$([ "$FIREWALL_OK" -eq 1 ] || echo " (unconfirmed — see stage 13 output)")
 BANNER
   if [ -n "$FIRST_USER_QR_OUTPUT" ]; then
+    echo "CLIENT ONBOARDING"
     echo "$FIRST_USER_QR_OUTPUT"
-  elif [ -n "$SUBSCRIPTION_URL" ]; then
-    echo "Subscription URL"
-    echo "  $SUBSCRIPTION_URL"
-  else
-    echo "Subscription URL"
-    echo "  (not created automatically — run: vpn user create --name default --qr)"
+  elif [ "$PRIOR_ACCEPTANCE_STATE" = "accepted" ]; then
+    cat <<BANNER
+CLIENT ONBOARDING
+  Existing user(s) — unchanged by this repair.
+  Raw subscription tokens are never re-displayed (only their hash is
+  persisted). To get a usable subscription URL for a specific user:
+    vpn user rotate-token <user_id> --qr
+    vpn user list
+BANNER
   fi
   cat <<BANNER
 
@@ -2020,6 +2217,14 @@ Compatible clients
   Android / MagicOS: Hiddify
   iOS:                Hiddify
   Linux:              Hiddify / compatible sing-box client
+
+STILL UNVERIFIED (this local run cannot prove these — see docs/DEVICE_ACCEPTANCE_TESTS.md)
+  - cloud/provider network firewall (AWS/GCP/Azure Security Groups, etc.)
+    reachable from the public Internet
+  - Hiddify import / connection on a real device
+  - device VPN/TUN mode actually routing traffic
+  - DNS leak / IPv6 leak behavior
+  - restrictive-network or censorship-adversary behavior
 
 Management
   vpn status

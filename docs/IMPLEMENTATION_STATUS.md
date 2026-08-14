@@ -56,6 +56,80 @@ and `deploy/lib/fast-gate.sh` already scope to the supported crates only.
 Splitting the workspace-wide CI jobs would touch CI trust/release
 plumbing for a runner-minutes-only win; deferred.
 
+## Checkpoint 4 (strict fresh-install success semantics) — completed this session
+
+- **Subscription HTTPS is now mandatory, not best-effort**:
+  `require_subscription_tls()` used to warn and set
+  `SUBSCRIPTION_TLS_READY=0` on certificate failure, letting
+  `configure_nginx()` silently skip the vhost while the installer still
+  finished and printed the normal success banner. It now `exit 1`s with
+  the same actionable diagnosis `require_hysteria_tls()` already gave —
+  there is no supported advanced/manual opt-out in this architecture,
+  so none was invented.
+- **Initial user creation is now mandatory on a fresh/pending-onboarding
+  install, and correctly repair-safe**: `ensure_first_user()` used to
+  `warn` and continue on creation failure, and auto-created a default
+  user whenever the store was empty regardless of fresh vs. repair. It
+  now: (a) `die`s on creation failure for a fresh/not-yet-accepted
+  install (a fresh install must produce at least one usable onboarding
+  credential); (b) NEVER auto-creates or rotates anything on a repair of
+  an install whose manifest already reached `"accepted"`, even with zero
+  users (operator's user state is theirs); (c) on a pending-install
+  retry that already has a user from an earlier failed attempt, mints
+  ONLY a fresh subscription token via the existing `rotate-token` path
+  (raw tokens are never persisted, so a lost one needs a fresh mint) —
+  VLESS/Hysteria2 credentials are never touched. Distinguishing these
+  three cases needed a new `PRIOR_ACCEPTANCE_STATE` captured in
+  `preflight_stage`, before this run's own `write_install_state_manifest`
+  calls overwrite the prior value.
+- **New end-to-end subscription verification through nginx/TLS**:
+  `verify_subscription_through_nginx()` fetches the actual
+  `/sub/<token>?format=hiddify` URL for the onboarding user via
+  `curl --resolve HOST:PORT:127.0.0.1` against the real configured
+  hostname (real TLS hostname/expiry verification, never `-k`) and
+  cross-checks the response against the CURRENT on-disk REALITY public
+  key/short_id (reusing existing state files rather than a second
+  profile parser) — proving the client-facing path (user state ->
+  vpn-subscription -> nginx HTTPS -> renderer -> returned profile) is
+  live and current, not just that the loopback backend's `/healthz`
+  responds. Runs for a fresh/pending-onboarding install; a repair of an
+  already-accepted install does not re-mint a token to re-run it (that
+  duty is covered by `doctor --protocol`'s existing L4 live-process
+  coherence check on every run instead).
+- **`accepted` is written only after every server-side gate**:
+  `print_status()` now hard-gates on `SUBSCRIPTION_HTTPS_OK`, `NGINX_OK`,
+  and (for a non-repair run) `SUBSCRIPTION_FETCH_OK` — in addition to the
+  data-plane/backend gates that already existed — strictly BEFORE
+  `write_install_state_manifest "accepted"` runs (previously the write
+  happened first, then the gates were checked).
+- **Success banner now separates SERVER-SIDE VERIFIED from STILL
+  UNVERIFIED** (real device/network/provider-firewall properties) per
+  the checkpoint's evidence-boundary requirement — never claims
+  "production-ready" or similar from a local result.
+- Note: `deploy/almalinux/health-check.sh` already did a real
+  `curl --resolve` HTTPS request against the subscription vhost with the
+  real hostname (no `-k`) and `vpn-admin doctor`'s L4 checks already
+  included a live-process state-fingerprint comparison that catches a
+  stale `vpn-subscription` process — both pre-existing, correct, and
+  left unchanged; this checkpoint's new work is specifically the
+  profile-CONTENT verification through nginx and the mandatory-vs-
+  best-effort gating described above.
+- Hysteria2 has no "disabled" representation anywhere in the current
+  codebase (always rendered/required) — section 12's "explicitly
+  disabled must not be reported as failure" case does not apply; no such
+  mode was invented, per the checkpoint's own instruction not to add one
+  that doesn't already exist.
+- New test file `deploy/lib/tests/test-fresh-install-acceptance.sh`:
+  fail-closed TLS requirement, fresh/pending/repair user-management
+  branching (including the rotate-token-only recovery path) exercised
+  against a mocked `vpn` binary, `extract_subscription_url()` parsing
+  both `user create`'s and `user rotate-token`'s real (differently
+  worded) output, and gate-ordering (accepted-after-checks) checks.
+- **UNVERIFIED** (no disposable AlmaLinux 9 host available this
+  session): the new mandatory subscription-HTTPS/user/nginx-fetch gates
+  have not been exercised against a real cert/nginx/sing-box stack —
+  only via mocked functional tests and static ordering checks.
+
 ## Checkpoint 3 (transactional release-to-release updater) — completed this session
 
 - **Old model (replaced)**: `deploy/almalinux/update.sh` rebuilt
