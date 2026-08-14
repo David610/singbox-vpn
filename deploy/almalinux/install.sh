@@ -249,8 +249,17 @@ parse_cli_args() {
 # debugging.
 # ---------------------------------------------------------------------
 ROLLBACK_HANDLER_ACTIVE=0
+INSTALLER_ROOT_PID=$$
 on_fatal_error() {
   local exit_code="${1:-$?}" line="${2:-unknown}" function="${3:-main}" stage="${4:-unknown}"
+  # `set -E` inherits ERR into command substitutions and `( ... )`
+  # subshells. Handling there performs rollback in the child and then the
+  # parent handles the failed compound command a second time. Defer child
+  # failures to the root installer shell, where the same nonzero status
+  # triggers this trap exactly once.
+  if [ "${BASHPID:-$$}" != "$INSTALLER_ROOT_PID" ]; then
+    return "$exit_code"
+  fi
   if [ "$ROLLBACK_HANDLER_ACTIVE" -eq 1 ]; then
     return "$exit_code"
   fi
@@ -2305,22 +2314,38 @@ main() {
   packages_stage
   VPN1_STAGE=host-configuration
   host_config_stage
+  VPN1_STAGE=binaries
   binaries_stage
+  VPN1_STAGE=state-schema
   check_state_schema
+  VPN1_STAGE=sing-box-install
   singbox_install_stage
   lifecycle_gate_abort_hook install_singbox
+  VPN1_STAGE=systemd
   systemd_stage
+  VPN1_STAGE=users-groups
   users_groups_stage
+  VPN1_STAGE=directories
   directories_stage
+  VPN1_STAGE=certificates
   certificates_stage
+  VPN1_STAGE=reality-keys
   reality_keys_stage
+  VPN1_STAGE=server-config
   server_config_stage
+  VPN1_STAGE=nginx
   nginx_stage
+  VPN1_STAGE=performance-tuning
   perf_tuning_stage
+  VPN1_STAGE=firewall
   firewall_stage
+  VPN1_STAGE=selinux
   selinux_stage
+  VPN1_STAGE=service-start
   start_stage
+  VPN1_STAGE=acceptance
   acceptance_stage
+  VPN1_STAGE=status
   print_status
 }
 
