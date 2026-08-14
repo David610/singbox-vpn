@@ -98,6 +98,37 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/ownership.sh"
 
+# Installs $src to a FIXED, well-known destination path (a systemd unit,
+# a certbot renewal hook — anything named identically regardless of
+# who put it there) while tracking, via the ownership manifest, whether
+# something already occupied that exact path before vpn1 touched it. If
+# so, an exact byte-for-byte backup is taken ONCE (never overwritten by
+# a later repair re-run) so uninstall.sh can restore the precise
+# predecessor instead of guessing or silently adopting/discarding
+# another application's file (checkpoint-2 requirement: never silently
+# adopt another application's fixed-name resource).
+# $1 = source file to install, $2 = destination path, $3 = short KEY
+# (letters/digits/underscore only, unique per fixed path — used as both
+# the ownership-record key suffix and the backup filename), $4 = mode
+# (default 0644).
+install_fixed_path_with_ownership() {
+  local src="$1" dest="$2" key="$3" mode="${4:-0644}"
+  local backup_dir="/var/lib/vpn1/preexisting-backups"
+  local backup="$backup_dir/$key"
+  if [ -e "$dest" ]; then
+    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "1"
+    if [ "$(ownership_get "FIXEDPATH_${key}_BACKED_UP" "0")" != "1" ]; then
+      install -d -m 0700 "$backup_dir"
+      cp -a "$dest" "$backup"
+      ownership_set "FIXEDPATH_${key}_BACKUP" "$backup"
+      ownership_mark "FIXEDPATH_${key}_BACKED_UP"
+    fi
+  else
+    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "0"
+  fi
+  install -m "$mode" "$src" "$dest"
+}
+
 # ---------------------------------------------------------------------
 # CLI flags (all optional; env var equivalents also work, e.g. for
 # `curl | sudo bash -s -- --domain vpn.example.com`). The normal
@@ -1045,10 +1076,14 @@ singbox_install_stage() {
 # this early is safe.
 install_systemd_units() {
   log "installing systemd units..."
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.service" /etc/systemd/system/vpn-expiry-reconcile.service
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.timer" /etc/systemd/system/vpn-expiry-reconcile.timer
+  # Each is a FIXED path — install_fixed_path_with_ownership() backs up
+  # (once) and tracks whether something already occupied it before vpn1
+  # ever wrote here, so uninstall.sh can restore the exact predecessor
+  # rather than assume every file at these names is always vpn1's own.
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service SINGBOX_UNIT
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service VPNSUB_UNIT
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.service" /etc/systemd/system/vpn-expiry-reconcile.service EXPIRY_SVC_UNIT
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.timer" /etc/systemd/system/vpn-expiry-reconcile.timer EXPIRY_TIMER_UNIT
   systemctl daemon-reload
 }
 
@@ -1108,6 +1143,11 @@ users_groups_stage() {
 #   users/                  root:vpn-subscription 02750  (vpn-subscription only)
 #   sing-box/               root:sing-box   02750  (sing-box only)
 create_directories() {
+  # Recorded ONCE, before vpn1 ever touches /etc/vpn — the sole basis
+  # uninstall.sh uses to decide whether the whole directory is vpn1's to
+  # remove outright (checkpoint-2 requirement: never rm -rf a shared
+  # parent vpn1 did not prove it created).
+  ownership_set_baseline_once ETC_VPN_PRE_EXISTED "$([ -d /etc/vpn ] && echo 1 || echo 0)"
   install -d -m 0755 /etc/vpn
   install -d -m 02750 -o root -g vpn-compat "$STATE_DIR"
   install -d -m 02750 -o root -g vpn-compat "$STATE_DIR/reality"
@@ -1399,8 +1439,8 @@ create_hysteria_masquerade_placeholder() {
 install_certbot_renewal_hook() {
   command -v certbot >/dev/null 2>&1 || return 0
   install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
-  install -m 0755 "$REPO_ROOT/deploy/almalinux/certbot-deploy-hook.sh" \
-    /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/certbot-deploy-hook.sh" \
+    /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh CERTBOT_HOOK 0755
   log "installed certbot renewal deploy hook: /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh"
   local renewal_unit="" candidate
   for candidate in certbot.timer certbot-renew.timer snap.certbot.renew.timer; do
@@ -1571,6 +1611,20 @@ configure_nginx() {
   if [ -f "$NGINX_CONF" ]; then
     cp -a "$NGINX_CONF" "$nginx_backup"
     nginx_had_previous=1
+  fi
+  # Baseline-once (first install run only — a repair re-run also finds
+  # nginx_had_previous=1 because vpn1's OWN prior file is there, but that
+  # must never overwrite the true original answer): was this fixed path
+  # already occupied by something ELSE before vpn1 ever touched it, and
+  # if so, an exact one-time backup for uninstall.sh to restore later
+  # (checkpoint-2 requirement — same pattern as
+  # install_fixed_path_with_ownership()).
+  ownership_set_baseline_once "FIXEDPATH_NGINX_CONF_PRE_EXISTED" "$nginx_had_previous"
+  if [ "$nginx_had_previous" -eq 1 ] && [ "$(ownership_get "FIXEDPATH_NGINX_CONF_BACKED_UP" "0")" != "1" ]; then
+    install -d -m 0700 /var/lib/vpn1/preexisting-backups
+    cp -a "$NGINX_CONF" /var/lib/vpn1/preexisting-backups/NGINX_CONF
+    ownership_set "FIXEDPATH_NGINX_CONF_BACKUP" /var/lib/vpn1/preexisting-backups/NGINX_CONF
+    ownership_mark "FIXEDPATH_NGINX_CONF_BACKED_UP"
   fi
   ownership_set_baseline_once NGINX_PRE_ENABLED "$(systemctl is-enabled --quiet nginx 2>/dev/null && echo 1 || echo 0)"
   install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"

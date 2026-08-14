@@ -103,6 +103,80 @@ plumbing for a runner-minutes-only win; deferred.
   session): real custom-SSH-port lockout avoidance on a live host;
   `deploy/almalinux/lifecycle-acceptance.sh` was not run.
 
+## Checkpoint 2 (ownership-safe complete uninstall) — completed this session
+
+- **`/etc/vpn` is no longer blindly `rm -rf`'d**: install.sh now records
+  `ETC_VPN_PRE_EXISTED` before ever creating `/etc/vpn` (stage 8).
+  uninstall.sh's cleanup is now ownership-gated: `0` (vpn1 created the
+  whole tree) -> full removal; `1` (pre-existing) or unset/ambiguous
+  (pre-checkpoint-2 install, no record) -> remove only vpn1's own
+  entries (`deployment.toml`, `compat/`), preserving everything else —
+  defaulting to preservation whenever ownership can't be proven.
+- **Fixed-name system resources (systemd units, certbot renewal hook,
+  nginx vhost) are now ownership-tracked**: new
+  `install_fixed_path_with_ownership()` helper backs up (once) whatever
+  already occupied a fixed path before vpn1 wrote there, and records
+  whether it pre-existed. uninstall.sh's new `restore_or_remove_fixed_path()`
+  restores the exact backup when something pre-existed, removes the
+  file when vpn1 created it, and leaves it untouched (never guesses)
+  when no ownership record exists at all.
+- **Fixed a real ordering bug**: `OPT_VPN1_PRE_EXISTED` (and the new
+  fixed-path `PRE_EXISTED` facts) used to be read via `ownership_get`
+  *after* `$STATE_DIR_ROOT` (`/var/lib/vpn1`, where the manifest itself
+  lives) had already been `rm -rf`'d — silently returning the
+  "not pre-existing" default every time, so `/opt/vpn1` was ALWAYS
+  treated as vpn1-created (even on the rare host where it genuinely
+  pre-existed) and a correctly-restored pre-existing fixed path could
+  misreport as residue. Fixed by caching every such fact before that
+  removal.
+- **Truthful residue verification**: uninstall.sh now collects
+  `CRITICAL_RESIDUE` (active vpn1 services, running processes, live
+  secrets/credentials, vpn1 binaries, vpn1-owned firewall exposure
+  still open after removal was attempted, a vpn1-created `/opt/vpn1`
+  still present) separately from `NONCRITICAL_RESIDUE` (a package the
+  package manager refused to remove, a userdel/groupdel failure, an
+  ambiguous pre-existing fixed path left alone). Cleanup never aborts
+  on the first non-fatal failure (this script has no `-e`); the final
+  banner prints `UNINSTALL COMPLETE` only when `CRITICAL_RESIDUE` is
+  empty, `UNINSTALL INCOMPLETE` (nonzero exit) otherwise. Two
+  previously-fatal `die`s on a corrupted firewall-ownership record are
+  now `warn` + critical-residue entries so the rest of cleanup still runs.
+- **Package names validated before the package manager**: `PKGS_INSTALLED_BY_VPN1`
+  entries are filtered through `is_safe_pkg_name()` before `dnf remove`/
+  `apt-get remove`; anything not shaped like a real package name is
+  skipped and reported as non-critical residue instead of being passed
+  through.
+- **Legacy uninstall compatibility fixed**: the online bootstrap
+  (`uninstall.sh`) previously forwarded `--yes` unconditionally to a
+  local `/opt/vpn1/deploy/almalinux/uninstall.sh`. The actual
+  pre-`07f8b72` layout (real historical commit `d8a4c87`, verified via
+  `git show`) never had a `--yes` flag or any confirmation prompt at
+  all — it understood only `--purge-state`/`--purge-firewall` and
+  rejected any other flag outright, exactly the failure this was filed
+  about. New `run_legacy_uninstaller()` detects which interface the
+  local copy actually supports (via `grep`) and translates: drops the
+  meaningless `--yes` and adds `--purge-state --purge-firewall` for
+  that historical layout; forwards unchanged for the current one.
+- **Version-aware damaged-`/opt/vpn1` recovery**: when no local copy is
+  usable at all, the bootstrap now reads `/var/lib/vpn1/install-state.json`
+  for the exact installed `vpn1_repo`/`vpn1_version` and fetches that
+  immutable tag (`refs/tags/$VPN1_REF`) instead of the mutable `main`
+  branch, unless the operator passed an explicit `--ref` or no pinned
+  version was ever recorded (dev/unreleased install).
+- New test file `deploy/lib/tests/test-uninstall-ownership-checkpoint2.sh`:
+  `/etc/vpn` preservation with a sentinel file, fixed-path
+  restore/remove/ambiguous-preserve, package-name validation
+  (accept/reject), the `OPT_VPN1_PRE_EXISTED` ordering fix, and legacy
+  flag translation exercised against the **real** historical script
+  from `git show d8a4c87:deploy/almalinux/uninstall.sh` (not an
+  invented approximation).
+- **UNVERIFIED** (no disposable AlmaLinux 9 host available this
+  session): the canonical offline command
+  (`sudo /opt/vpn1/bin/vpn1-uninstall --yes`) has not been exercised
+  against a real install with real systemd/firewalld/SELinux/dnf state,
+  nor with outbound networking disabled to prove offline-completeness
+  for real.
+
 ## Completed checkpoints (one line each — see git log for detail)
 
 1. v1.0 boundary + supported code surface documented (`docs/SUPPORTED_PRODUCT.md`).

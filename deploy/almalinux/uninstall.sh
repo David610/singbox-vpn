@@ -76,6 +76,68 @@ fi
 STATE_DIR_ROOT="/var/lib/vpn1"
 FIREWALL_OWNERSHIP="$STATE_DIR_ROOT/firewall-owned.env"
 
+# ---------------------------------------------------------------------
+# Truthful completion (checkpoint 2): cleanup below keeps going after a
+# non-fatal step fails (this script deliberately has no `-e`) instead of
+# aborting on the first warning — but the final banner must never claim
+# "complete" while security/runtime-relevant vpn1 state is still on this
+# host. CRITICAL_RESIDUE items make the final exit status nonzero and
+# print "UNINSTALL INCOMPLETE"; NONCRITICAL_RESIDUE items (a package the
+# package manager refused to remove, an ambiguous pre-existing fixed
+# path left untouched, etc.) are reported but do not fail the run.
+# ---------------------------------------------------------------------
+CRITICAL_RESIDUE=()
+NONCRITICAL_RESIDUE=()
+
+# Restores or removes a FIXED-name system path vpn1 may have installed
+# over (a systemd unit, the certbot hook, the nginx vhost — anything
+# install.sh wrote via install_fixed_path_with_ownership(), or the
+# equivalent inline nginx tracking). $1 = the actual path on disk, $2 =
+# the ownership-record KEY used at install time. Restores the exact
+# pre-vpn1 backup when the path is known to have pre-existed vpn1;
+# removes it when vpn1 is known to have created it; and — for a
+# pre-checkpoint-2 install with no ownership record for this key at all
+# — defaults to LEAVING the path in place untouched rather than
+# guessing, since it might predate vpn1 and there is no way to prove
+# otherwise on such a host.
+restore_or_remove_fixed_path() {
+  local path="$1" key="$2"
+  [ -e "$path" ] || return 0
+  local pre_existed
+  pre_existed="$(ownership_get "FIXEDPATH_${key}_PRE_EXISTED" "")"
+  case "$pre_existed" in
+    0)
+      rm -f "$path"
+      note_removed
+      ;;
+    1)
+      local backup
+      backup="$(ownership_get "FIXEDPATH_${key}_BACKUP" "")"
+      if [ -n "$backup" ] && ownership_path_is_safe "$backup" && [ -f "$backup" ]; then
+        cp -a "$backup" "$path"
+        rm -f "$backup"
+        log "restored pre-existing $path to its state before vpn1 touched it."
+      else
+        warn "$path pre-existed vpn1 but no valid backup was recorded — leaving the current (vpn1-written) file in place rather than deleting something that predates vpn1. Inspect manually."
+        NONCRITICAL_RESIDUE+=("$path (pre-existing file could not be restored to its original content — vpn1's version left in place)")
+      fi
+      note_removed
+      ;;
+    *)
+      warn "cannot determine whether $path pre-existed vpn1 (no ownership record — likely a pre-checkpoint-2 install) — leaving it in place rather than guessing. Remove manually if you know it is vpn1's."
+      NONCRITICAL_RESIDUE+=("$path (ambiguous ownership — no record predates checkpoint 2 — left in place)")
+      ;;
+  esac
+}
+
+# Package names loaded from the ownership manifest must never reach the
+# package manager unvalidated (checkpoint-2 requirement): a corrupted or
+# hand-edited ownership.env must not be able to smuggle something
+# unexpected into `dnf remove`/`apt-get remove`'s argument list.
+is_safe_pkg_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]
+}
+
 ASSUME_YES=0
 for arg in "$@"; do
   case "$arg" in
@@ -133,13 +195,11 @@ for unit in sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer
   fi
 done
 
-log "removing vpn1 systemd units..."
-for f in sing-box.service vpn-subscription.service vpn-expiry-reconcile.service vpn-expiry-reconcile.timer; do
-  if [ -f "/etc/systemd/system/$f" ]; then
-    rm -f "/etc/systemd/system/$f"
-    note_removed
-  fi
-done
+log "removing/restoring vpn1 systemd units..."
+restore_or_remove_fixed_path /etc/systemd/system/sing-box.service SINGBOX_UNIT
+restore_or_remove_fixed_path /etc/systemd/system/vpn-subscription.service VPNSUB_UNIT
+restore_or_remove_fixed_path /etc/systemd/system/vpn-expiry-reconcile.service EXPIRY_SVC_UNIT
+restore_or_remove_fixed_path /etc/systemd/system/vpn-expiry-reconcile.timer EXPIRY_TIMER_UNIT
 systemctl daemon-reload
 systemctl reset-failed sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service >/dev/null 2>&1 || true
 
@@ -161,12 +221,13 @@ fi
 # on this host even after the rest of vpn1 is gone: its own guards would
 # still pass, so it would run and then fail trying to reload a unit this
 # script just deleted, making certbot report the whole renewal as failed
-# — including for certificates that have nothing to do with vpn1. Always
-# remove it, unconditionally.
-if [ -f /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh ]; then
-  rm -f /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh
-  note_removed
-fi
+# — including for certificates that have nothing to do with vpn1. In
+# every realistic case this fixed, vpn1-specific filename was created by
+# vpn1 (FIXEDPATH_CERTBOT_HOOK_PRE_EXISTED=0) and is simply removed; the
+# ownership-aware helper only preserves it in the (essentially
+# theoretical) case where something else already occupied this exact
+# path before vpn1 ever ran.
+restore_or_remove_fixed_path /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh CERTBOT_HOOK
 
 log "removing vpn1-issued certificates..."
 CERT_LINEAGES="$(ownership_list_get CERT_LINEAGES_CREATED_BY_VPN1)"
@@ -207,15 +268,13 @@ if command -v certbot >/dev/null 2>&1; then
   fi
 fi
 
-log "removing vpn1 nginx configuration..."
-if [ -f /etc/nginx/conf.d/vpn-subscription.conf ]; then
-  rm -f /etc/nginx/conf.d/vpn-subscription.conf
+log "removing/restoring vpn1 nginx configuration..."
+if [ -e /etc/nginx/conf.d/vpn-subscription.conf ]; then
+  restore_or_remove_fixed_path /etc/nginx/conf.d/vpn-subscription.conf NGINX_CONF
   rm -f /etc/nginx/conf.d/vpn-subscription.conf.install-bak /etc/nginx/conf.d/vpn-subscription.conf.tmp
-  note_removed
   if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
     systemctl reload nginx 2>/dev/null || true
   fi
-  log "removed /etc/nginx/conf.d/vpn-subscription.conf."
 fi
 if command -v nginx >/dev/null 2>&1 && [ "$(ownership_get NGINX_PRE_INSTALLED "1")" = "0" ]; then
   # vpn1 installed nginx on an otherwise-clean host — restore its prior
@@ -270,16 +329,23 @@ if [ -f "$FIREWALL_OWNERSHIP" ]; then
   owned_443_tcp=0
   owned_443_udp=0
   owned_subscription_tcp=0
+  firewall_record_valid=1
   # shellcheck disable=SC1090
   . "$FIREWALL_OWNERSHIP"
   case "$owned_443_tcp:$owned_443_udp:$owned_subscription_tcp" in
     0:0:0|0:0:1|0:1:0|0:1:1|1:0:0|1:0:1|1:1:0|1:1:1) ;;
-    *) die "invalid vpn1 firewall ownership record at $FIREWALL_OWNERSHIP" ;;
+    *)
+      warn "invalid vpn1 firewall ownership record at $FIREWALL_OWNERSHIP — cannot safely determine which rules are vpn1's. Leaving the record and firewall untouched rather than guessing; continuing with the rest of cleanup."
+      firewall_record_valid=0
+      ;;
   esac
-  if [ "$owned_subscription_tcp" -eq 1 ] && ! [[ "$subscription_port" =~ ^[0-9]+$ ]]; then
-    die "invalid subscription port in vpn1 firewall ownership record"
+  if [ "$firewall_record_valid" -eq 1 ] && [ "$owned_subscription_tcp" -eq 1 ] && ! [[ "$subscription_port" =~ ^[0-9]+$ ]]; then
+    warn "invalid subscription port in vpn1 firewall ownership record — cannot safely remove that rule. Leaving the record and firewall untouched rather than guessing; continuing with the rest of cleanup."
+    firewall_record_valid=0
   fi
-  if [ "${firewall_backend:-}" = "firewalld" ] && command -v firewall-cmd >/dev/null 2>&1; then
+  if [ "$firewall_record_valid" -ne 1 ]; then
+    CRITICAL_RESIDUE+=("vpn1 firewall ownership record at $FIREWALL_OWNERSHIP is corrupted/ambiguous — vpn1-owned firewall rules (if any) could not be safely identified for removal; inspect $FIREWALL_OWNERSHIP and the host firewall manually.")
+  elif [ "${firewall_backend:-}" = "firewalld" ] && command -v firewall-cmd >/dev/null 2>&1; then
     if [[ "$firewall_zone" =~ ^[A-Za-z0-9_.-]+$ ]]; then
       reload_needed=0
       if [ "${owned_443_tcp:-0}" -eq 1 ]; then firewall-cmd --zone="$firewall_zone" --permanent --remove-port=443/tcp >/dev/null 2>&1 && reload_needed=1; fi
@@ -293,9 +359,22 @@ if [ -f "$FIREWALL_OWNERSHIP" ]; then
       if [ "$reload_needed" -eq 1 ] && ! firewall-cmd --reload >/dev/null 2>&1; then
         warn "firewall-cmd --reload failed after removing vpn1's rules — rules may not be fully applied until the next reload/reboot."
       fi
+      # Verify the removal actually took effect (checkpoint-2 residue
+      # check: exposure vpn1 introduced must actually be gone, not just
+      # "a removal command was attempted").
+      if [ "${owned_443_tcp:-0}" -eq 1 ] && firewall-cmd --zone="$firewall_zone" --query-port=443/tcp >/dev/null 2>&1; then
+        CRITICAL_RESIDUE+=("firewalld still allows 443/tcp (vpn1-owned rule) after removal was attempted")
+      fi
+      if [ "${owned_443_udp:-0}" -eq 1 ] && firewall-cmd --zone="$firewall_zone" --query-port=443/udp >/dev/null 2>&1; then
+        CRITICAL_RESIDUE+=("firewalld still allows 443/udp (vpn1-owned rule) after removal was attempted")
+      fi
+      if [ "${owned_subscription_tcp:-0}" -eq 1 ] && firewall-cmd --zone="$firewall_zone" --query-port="${subscription_port}/tcp" >/dev/null 2>&1; then
+        CRITICAL_RESIDUE+=("firewalld still allows ${subscription_port}/tcp (vpn1-owned subscription rule) after removal was attempted")
+      fi
       note_removed
     else
       warn "invalid firewalld zone in ownership record — skipping firewalld rule removal."
+      CRITICAL_RESIDUE+=("vpn1 firewall ownership record names an invalid firewalld zone — vpn1-owned rules (if any) could not be removed; inspect the host firewall manually.")
     fi
   elif [ "${firewall_backend:-}" = "ufw" ] && command -v ufw >/dev/null 2>&1; then
     [ "${owned_443_tcp:-0}" -eq 1 ] && { ufw delete allow 443/tcp >/dev/null 2>&1 || true; }
@@ -309,9 +388,18 @@ if [ -f "$FIREWALL_OWNERSHIP" ]; then
     # window), so this is always safe to attempt.
     ufw status 2>/dev/null | grep -Eq '^80/tcp[[:space:]]+ALLOW' \
       && { ufw delete allow 80/tcp >/dev/null 2>&1 || true; log "removed a leftover ACME TCP/80 rule."; }
+    if [ "${owned_443_tcp:-0}" -eq 1 ] && ufw status 2>/dev/null | grep -Eq '^443/tcp[[:space:]]+ALLOW'; then
+      CRITICAL_RESIDUE+=("ufw still allows 443/tcp (vpn1-owned rule) after removal was attempted")
+    fi
+    if [ "${owned_443_udp:-0}" -eq 1 ] && ufw status 2>/dev/null | grep -Eq '^443/udp[[:space:]]+ALLOW'; then
+      CRITICAL_RESIDUE+=("ufw still allows 443/udp (vpn1-owned rule) after removal was attempted")
+    fi
+    if [ "${owned_subscription_tcp:-0}" -eq 1 ] && ufw status 2>/dev/null | grep -Eq "^${subscription_port}/tcp[[:space:]]+ALLOW"; then
+      CRITICAL_RESIDUE+=("ufw still allows ${subscription_port}/tcp (vpn1-owned subscription rule) after removal was attempted")
+    fi
     note_removed
   fi
-  rm -f "$FIREWALL_OWNERSHIP"
+  [ "$firewall_record_valid" -eq 1 ] && rm -f "$FIREWALL_OWNERSHIP"
 else
   log "no vpn1 firewall ownership record found — either firewall rules were never added, or this uninstall already ran."
 fi
@@ -367,15 +455,24 @@ fi
 # ---------------------------------------------------------------------
 log "removing vpn1-created service accounts..."
 if ownership_is_marked USER_SINGBOX_CREATED && id sing-box >/dev/null 2>&1; then
-  userdel sing-box >/dev/null 2>&1 || warn "could not remove user 'sing-box'."
+  if ! userdel sing-box >/dev/null 2>&1; then
+    warn "could not remove user 'sing-box'."
+    NONCRITICAL_RESIDUE+=("system user 'sing-box' (vpn1-created) could not be removed — likely still has a running process; retry after 'pkill -u sing-box'")
+  fi
   note_removed
 fi
 if ownership_is_marked USER_VPNSUB_CREATED && id vpn-subscription >/dev/null 2>&1; then
-  userdel vpn-subscription >/dev/null 2>&1 || warn "could not remove user 'vpn-subscription'."
+  if ! userdel vpn-subscription >/dev/null 2>&1; then
+    warn "could not remove user 'vpn-subscription'."
+    NONCRITICAL_RESIDUE+=("system user 'vpn-subscription' (vpn1-created) could not be removed — likely still has a running process; retry after 'pkill -u vpn-subscription'")
+  fi
   note_removed
 fi
 if ownership_is_marked GROUP_VPNCOMPAT_CREATED && getent group vpn-compat >/dev/null 2>&1; then
-  groupdel vpn-compat >/dev/null 2>&1 || warn "could not remove group 'vpn-compat' (a pre-existing user may still be a member)."
+  if ! groupdel vpn-compat >/dev/null 2>&1; then
+    warn "could not remove group 'vpn-compat' (a pre-existing user may still be a member)."
+    NONCRITICAL_RESIDUE+=("group 'vpn-compat' (vpn1-created) could not be removed")
+  fi
   note_removed
 fi
 
@@ -402,16 +499,31 @@ fi
 # the package manager will report that and this continues rather than
 # forcing removal.
 # ---------------------------------------------------------------------
-pkgs_owned="$(ownership_list_get PKGS_INSTALLED_BY_VPN1)"
+pkgs_owned_raw="$(ownership_list_get PKGS_INSTALLED_BY_VPN1)"
+pkgs_owned=""
+for pkg in $pkgs_owned_raw; do
+  if is_safe_pkg_name "$pkg"; then
+    pkgs_owned="${pkgs_owned:+$pkgs_owned }$pkg"
+  else
+    warn "skipping invalid/unsafe package name in ownership record: '$pkg' — this indicates a corrupted ownership.env; check/remove it manually if it is actually vpn1's."
+    NONCRITICAL_RESIDUE+=("ownership record contained an invalid package name ('$pkg') — skipped, not passed to the package manager")
+  fi
+done
 if [ -n "$pkgs_owned" ]; then
   log "removing packages vpn1 installed that were not present before: $pkgs_owned"
   if command -v dnf >/dev/null 2>&1; then
     # shellcheck disable=SC2086
-    dnf remove -y $pkgs_owned >/dev/null 2>&1 || warn "some vpn1-installed packages could not be removed automatically (likely still depended on by something else) — leaving them; check with: dnf list installed $pkgs_owned"
+    if ! dnf remove -y $pkgs_owned >/dev/null 2>&1; then
+      warn "some vpn1-installed packages could not be removed automatically (likely still depended on by something else) — leaving them; check with: dnf list installed $pkgs_owned"
+      NONCRITICAL_RESIDUE+=("package(s) vpn1 installed could not be removed (dnf refused, likely a dependency of unrelated software): $pkgs_owned")
+    fi
   elif command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     # shellcheck disable=SC2086
-    apt-get remove -y $pkgs_owned >/dev/null 2>&1 || warn "some vpn1-installed packages could not be removed automatically — leaving them; check with: dpkg -l $pkgs_owned"
+    if ! apt-get remove -y $pkgs_owned >/dev/null 2>&1; then
+      warn "some vpn1-installed packages could not be removed automatically — leaving them; check with: dpkg -l $pkgs_owned"
+      NONCRITICAL_RESIDUE+=("package(s) vpn1 installed could not be removed (apt-get refused, likely a dependency of unrelated software): $pkgs_owned")
+    fi
   fi
   note_removed
 else
@@ -424,11 +536,72 @@ fi
 # Hysteria2 secrets and user credentials is the whole point of a
 # COMPLETE uninstall, not an opt-in extra).
 # ---------------------------------------------------------------------
+# /etc/vpn is a SHARED PARENT, not a resource vpn1 can prove it created
+# by its mere existence — checkpoint-2 requirement: never rm -rf a
+# shared parent without proven ownership. ETC_VPN_PRE_EXISTED (recorded
+# once, before install.sh's create_directories() ever touched it) is the
+# only basis for the decision:
+#   0 (vpn1 created the whole tree)   -> rm -rf the entire directory.
+#   1 (something else already had it) -> remove only vpn1's own known
+#                                          children (deployment.toml,
+#                                          the compat/ state tree),
+#                                          leaving everything else
+#                                          untouched.
+#   unset (pre-checkpoint-2 install,
+#          no record either way)      -> default to preservation: same
+#                                          vpn1-only-children removal as
+#                                          the pre-existing case, never
+#                                          the blind rm -rf.
 if [ -d /etc/vpn ]; then
-  log "removing /etc/vpn (REALITY private key, Hysteria2 material, all user credentials, deployment.toml)..."
-  rm -rf /etc/vpn
-  note_removed
+  etc_vpn_pre_existed="$(ownership_get ETC_VPN_PRE_EXISTED "")"
+  case "$etc_vpn_pre_existed" in
+    0)
+      log "removing /etc/vpn (vpn1 created this directory; contains the REALITY private key, Hysteria2 material, all user credentials, deployment.toml)..."
+      rm -rf /etc/vpn
+      note_removed
+      ;;
+    1)
+      log "/etc/vpn pre-existed before vpn1 — removing only vpn1's own entries (deployment.toml, compat/), preserving everything else..."
+      [ -e /etc/vpn/deployment.toml ] && { rm -f /etc/vpn/deployment.toml; note_removed; }
+      [ -e /etc/vpn/compat ] && { rm -rf /etc/vpn/compat; note_removed; }
+      if [ -n "$(ls -A /etc/vpn 2>/dev/null)" ]; then
+        log "/etc/vpn still contains non-vpn1 content that pre-dated vpn1 — left in place, as intended."
+      fi
+      ;;
+    *)
+      warn "cannot determine whether /etc/vpn pre-existed vpn1 (no ownership record — this host predates checkpoint 2's ownership tracking) — defaulting to preservation: removing only vpn1's known entries (deployment.toml, compat/), never the directory itself."
+      [ -e /etc/vpn/deployment.toml ] && { rm -f /etc/vpn/deployment.toml; note_removed; }
+      [ -e /etc/vpn/compat ] && { rm -rf /etc/vpn/compat; note_removed; }
+      if [ -n "$(ls -A /etc/vpn 2>/dev/null)" ]; then
+        NONCRITICAL_RESIDUE+=("/etc/vpn still exists with ambiguous ownership (pre-checkpoint-2 install) — preserved rather than guessed at; review manually")
+      fi
+      ;;
+  esac
 fi
+# Read every ownership fact the rest of this script (including the
+# residue check below) still needs BEFORE the manifest itself (under
+# $STATE_DIR_ROOT) is removed a few lines down — reading any of these
+# AFTER deleting $STATE_DIR_ROOT would silently get back only
+# ownership_get's default value (the file is gone), which previously
+# made /opt/vpn1 ALWAYS look "not pre-existing" (and so always get
+# deleted, even on the rare host where it genuinely pre-existed vpn1 —
+# e.g. an operator's own clone placed there before ever running
+# install.sh) and would make a correctly-RESTORED pre-existing fixed
+# path (systemd unit/nginx conf) look like unexplained residue instead
+# of the intended, successfully-restored end state. Cache everything
+# needed first instead.
+opt_vpn1_pre_existed="$(ownership_get OPT_VPN1_PRE_EXISTED "0")"
+declare -A vpn1_unit_keys=(
+  [/etc/systemd/system/sing-box.service]=SINGBOX_UNIT
+  [/etc/systemd/system/vpn-subscription.service]=VPNSUB_UNIT
+  [/etc/systemd/system/vpn-expiry-reconcile.service]=EXPIRY_SVC_UNIT
+  [/etc/systemd/system/vpn-expiry-reconcile.timer]=EXPIRY_TIMER_UNIT
+)
+declare -A vpn1_unit_pre_existed
+for unit_path in "${!vpn1_unit_keys[@]}"; do
+  vpn1_unit_pre_existed[$unit_path]="$(ownership_get "FIXEDPATH_${vpn1_unit_keys[$unit_path]}_PRE_EXISTED" "0")"
+done
+
 if [ -d "$STATE_DIR_ROOT" ]; then
   log "removing vpn1 state under $STATE_DIR_ROOT..."
   rm -rf "$STATE_DIR_ROOT"
@@ -442,7 +615,7 @@ rm -f /tmp/vpn1-sysctl-system.out /tmp/vpn1-sysctl-rollback.out /run/lock/vpn1-i
 # any of it, so removing the directory out from under the running
 # process is safe; nothing below this point reads from $REPO_ROOT again.
 if [ -d /opt/vpn1 ]; then
-  if [ "$(ownership_get OPT_VPN1_PRE_EXISTED "0")" = "1" ]; then
+  if [ "$opt_vpn1_pre_existed" = "1" ]; then
     log "/opt/vpn1 pre-existed before vpn1 (unexpected — leaving it in place; inspect it manually if this is unexpected)."
   else
     log "removing /opt/vpn1 (persistent vpn1 source tree)..."
@@ -451,10 +624,61 @@ if [ -d /opt/vpn1 ]; then
   fi
 fi
 
-if [ "$REMOVED_ANYTHING" -eq 1 ]; then
-  log "uninstall complete — vpn1 and everything it created have been removed."
+# ---------------------------------------------------------------------
+# Residue verification (checkpoint 2): the single authoritative check
+# that decides whether this run may honestly claim "complete". Runs
+# AFTER all cleanup above has been attempted (this script never aborts
+# on the first non-fatal failure — see CRITICAL_RESIDUE/
+# NONCRITICAL_RESIDUE above) so one early problem never hides the rest
+# of the report. Only security/runtime-relevant vpn1 state (active
+# services, live secrets/credentials, vpn1 binaries, vpn1-owned
+# firewall exposure, a vpn1-created /opt/vpn1 that should be gone) makes
+# the run print INCOMPLETE and exit nonzero; everything else already
+# collected above (a package the package manager refused to remove, an
+# ambiguous pre-existing fixed path left alone, a userdel that failed)
+# is reported as non-critical and does not change the exit status.
+# ---------------------------------------------------------------------
+for unit in sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service; do
+  systemctl is-active --quiet "$unit" 2>/dev/null && CRITICAL_RESIDUE+=("$unit is still active")
+done
+for unit_path in "${!vpn1_unit_keys[@]}"; do
+  if [ -e "$unit_path" ] && [ "${vpn1_unit_pre_existed[$unit_path]}" = "0" ]; then
+    CRITICAL_RESIDUE+=("$unit_path still present (vpn1-created)")
+  fi
+done
+pgrep -x sing-box >/dev/null 2>&1 && CRITICAL_RESIDUE+=("a sing-box process is still running")
+pgrep -f 'vpn-subscription-svc' >/dev/null 2>&1 && CRITICAL_RESIDUE+=("a vpn-subscription-svc process is still running")
+for f in vpn-admin vpn vpn-subscription-svc; do
+  [ -e "/usr/local/bin/$f" ] && CRITICAL_RESIDUE+=("/usr/local/bin/$f still present")
+done
+[ -e /etc/vpn/deployment.toml ] && CRITICAL_RESIDUE+=("/etc/vpn/deployment.toml still present")
+[ -e /etc/vpn/compat/reality/private.key ] && CRITICAL_RESIDUE+=("REALITY private key still present (/etc/vpn/compat/reality/private.key)")
+[ -e /etc/vpn/compat/reality/hysteria_obfs_password.txt ] && CRITICAL_RESIDUE+=("Hysteria2 obfuscation credential still present")
+[ -d /etc/vpn/compat/users ] && [ -n "$(ls -A /etc/vpn/compat/users 2>/dev/null)" ] && CRITICAL_RESIDUE+=("/etc/vpn/compat/users still contains user credential files")
+[ -e "$FIREWALL_OWNERSHIP" ] && CRITICAL_RESIDUE+=("vpn1 firewall ownership record still present at $FIREWALL_OWNERSHIP")
+if [ -d /opt/vpn1 ] && [ "$opt_vpn1_pre_existed" != "1" ]; then
+  CRITICAL_RESIDUE+=("/opt/vpn1 still present (vpn1-created)")
+fi
+
+if [ "${#CRITICAL_RESIDUE[@]}" -eq 0 ]; then
+  if [ "$REMOVED_ANYTHING" -eq 1 ]; then
+    log "UNINSTALL COMPLETE — vpn1 and everything it created have been removed."
+  else
+    log "UNINSTALL COMPLETE — nothing to remove (vpn1 is not installed, or was already fully uninstalled)."
+  fi
+  final_rc=0
 else
-  log "nothing to remove — vpn1 is not installed (or was already fully uninstalled)."
+  echo "[uninstall] UNINSTALL INCOMPLETE — manual cleanup required. Critical vpn1 state remains:" >&2
+  for item in "${CRITICAL_RESIDUE[@]}"; do
+    echo "[uninstall]   - $item" >&2
+  done
+  final_rc=1
+fi
+if [ "${#NONCRITICAL_RESIDUE[@]}" -gt 0 ]; then
+  log "Non-critical items left behind (safe to ignore, or clean up manually):"
+  for item in "${NONCRITICAL_RESIDUE[@]}"; do
+    log "  - $item"
+  done
 fi
 
 cat <<'BANNER'
@@ -469,3 +693,5 @@ restored above. If you opened inbound rules there specifically for
 vpn1 (443/tcp, 443/udp, the subscription port), remove them in that
 provider's console/CLI yourself.
 BANNER
+
+exit "$final_rc"

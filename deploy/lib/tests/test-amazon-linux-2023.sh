@@ -162,6 +162,16 @@ if [ -z "$RECORD_PKG_OWNERSHIP_RHEL_BODY" ]; then
   echo "FAIL: could not extract record_package_ownership_rhel() from $INSTALL_SH — has it been renamed/moved?"
   failures=$((failures + 1))
 fi
+# install_dependencies_rhel() also calls activate_firewalld_ssh_safe()
+# (checkpoint 1: replaces a bare 'systemctl enable --now firewalld' with
+# an SSH-safe activation) — also real production code, extracted the
+# same way, and stubbed with a fake $SSH_PORT/firewall-cmd below rather
+# than reimplemented.
+ACTIVATE_FIREWALLD_SSH_SAFE_BODY="$(sed -n '/^activate_firewalld_ssh_safe() {/,/^}/p' "$INSTALL_SH")"
+if [ -z "$ACTIVATE_FIREWALLD_SSH_SAFE_BODY" ]; then
+  echo "FAIL: could not extract activate_firewalld_ssh_safe() from $INSTALL_SH — has it been renamed/moved?"
+  failures=$((failures + 1))
+fi
 
 run_install_dependencies_rhel() {
   local curl_present="$1" # "yes" or "no"
@@ -195,7 +205,12 @@ run_install_dependencies_rhel() {
       fi
     }
     systemctl() { :; }
+    # shellcheck disable=SC2034 # read by activate_firewalld_ssh_safe()
+    SSH_PORT=22
+    firewall-cmd() { echo "default"; }
+    export -f firewall-cmd 2>/dev/null || true
     eval "$RECORD_PKG_OWNERSHIP_RHEL_BODY"
+    eval "$ACTIVATE_FIREWALLD_SSH_SAFE_BODY"
     eval "$INSTALL_DEPS_RHEL_BODY"
     install_dependencies_rhel
     cat "$DNF_CALLS_FILE"
