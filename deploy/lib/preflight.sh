@@ -130,9 +130,16 @@ preflight_check_port_free() {
 # default-deny firewall (docs/FINAL_PRODUCTION_AUDIT.md P0-10). Does NOT
 # assume 22 — checks, in order: sshd's own effective config (`sshd -T`),
 # static sshd_config `Port` directives, then a live listener owned by
-# sshd. Falls back to 22 with a loud warning only if every detection
-# method is inconclusive (e.g. sshd not installed as a systemd unit
-# named `sshd`/`ssh`).
+# sshd.
+#
+# FAIL-CLOSED (checkpoint-1 requirement): if every detection method is
+# inconclusive, this prints NOTHING and returns 1 — it never guesses 22.
+# A caller about to activate/enable/reload a host firewall MUST treat a
+# non-zero return here as fatal (die before touching the firewall), not
+# as "assume 22 and continue". Use preflight_resolve_ssh_port() below
+# instead of calling this directly — it also honours an explicit
+# operator override for the case where detection is genuinely
+# impossible.
 preflight_detect_ssh_port() {
   local sshd_config_file="${SSHD_CONFIG_FILE:-/etc/ssh/sshd_config}"
   local port=""
@@ -146,15 +153,34 @@ preflight_detect_ssh_port() {
     port="$(ss -H -lntp 2>/dev/null | grep -E 'sshd|"ssh"' | head -n1 | sed -E 's/.*:([0-9]+)[[:space:]].*/\1/')"
   fi
   if [ -z "$port" ]; then
-    echo "22"
     return 1
   fi
   if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-    echo "22"
     return 1
   fi
   echo "$port"
   return 0
+}
+
+# Canonical single entry point for resolving the SSH port that must
+# survive any firewall activation/reload — every caller (install.sh,
+# firewall.sh, firewall-ufw.sh) uses this, never its own copy of the
+# detect-or-fallback logic. Precedence:
+#   1. an explicit operator override, VPN1_SSH_PORT (set by install.sh's
+#      --ssh-port/VPN1_SSH_PORT from a positively-known value, or by an
+#      operator invoking firewall.sh/firewall-ufw.sh directly);
+#   2. automatic detection (preflight_detect_ssh_port).
+# Returns 1 with nothing printed if neither yields a valid port — the
+# caller must fail closed (refuse to activate/modify the firewall)
+# rather than default to 22.
+preflight_resolve_ssh_port() {
+  local override="${VPN1_SSH_PORT:-}"
+  if [ -n "$override" ]; then
+    preflight_validate_port "$override" "--ssh-port/VPN1_SSH_PORT" || return 1
+    echo "$override"
+    return 0
+  fi
+  preflight_detect_ssh_port
 }
 
 # Validate a value before it is ever interpolated into a TOML file,

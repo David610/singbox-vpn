@@ -67,6 +67,15 @@ SUBSCRIPTION_BACKEND_OK=0
 SUBSCRIPTION_HTTPS_OK=0
 NGINX_OK=0
 FIREWALL_OK=0
+# Set only by verify_subscription_through_nginx() (stage 17) once the
+# real client-facing path (user -> vpn-subscription -> nginx HTTPS ->
+# renderer -> returned profile, fetched with real TLS verification) is
+# confirmed end-to-end — never inferred from the loopback backend
+# healthz alone (checkpoint-4 requirement). Only required for a fresh
+# install or a not-yet-accepted ("pending") retry — a repair of an
+# already-accepted installation does not re-mint a token/re-run this
+# check every time (see acceptance_stage).
+SUBSCRIPTION_FETCH_OK=0
 
 log() { echo "[install] $*"; }
 warn() { echo "[install] WARNING: $*" >&2; }
@@ -98,6 +107,37 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/ownership.sh"
 
+# Installs $src to a FIXED, well-known destination path (a systemd unit,
+# a certbot renewal hook — anything named identically regardless of
+# who put it there) while tracking, via the ownership manifest, whether
+# something already occupied that exact path before vpn1 touched it. If
+# so, an exact byte-for-byte backup is taken ONCE (never overwritten by
+# a later repair re-run) so uninstall.sh can restore the precise
+# predecessor instead of guessing or silently adopting/discarding
+# another application's file (checkpoint-2 requirement: never silently
+# adopt another application's fixed-name resource).
+# $1 = source file to install, $2 = destination path, $3 = short KEY
+# (letters/digits/underscore only, unique per fixed path — used as both
+# the ownership-record key suffix and the backup filename), $4 = mode
+# (default 0644).
+install_fixed_path_with_ownership() {
+  local src="$1" dest="$2" key="$3" mode="${4:-0644}"
+  local backup_dir="/var/lib/vpn1/preexisting-backups"
+  local backup="$backup_dir/$key"
+  if [ -e "$dest" ]; then
+    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "1"
+    if [ "$(ownership_get "FIXEDPATH_${key}_BACKED_UP" "0")" != "1" ]; then
+      install -d -m 0700 "$backup_dir"
+      cp -a "$dest" "$backup"
+      ownership_set "FIXEDPATH_${key}_BACKUP" "$backup"
+      ownership_mark "FIXEDPATH_${key}_BACKED_UP"
+    fi
+  else
+    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "0"
+  fi
+  install -m "$mode" "$src" "$dest"
+}
+
 # ---------------------------------------------------------------------
 # CLI flags (all optional; env var equivalents also work, e.g. for
 # `curl | sudo bash -s -- --domain vpn.example.com`). The normal
@@ -108,6 +148,11 @@ NONINTERACTIVE="${NONINTERACTIVE:-0}"
 # IP-derived sslip.io convenience hostname is opt-in only, never a
 # silent non-interactive default. See resolve_host_config().
 ALLOW_IP_HOSTNAME="${VPN1_ALLOW_IP_HOSTNAME:-0}"
+# Explicit operator override for the SSH port used by
+# preflight_resolve_ssh_port() (deploy/lib/preflight.sh) — required
+# whenever automatic detection is inconclusive; see resolve_ssh_port()
+# below. Left empty by default so detection runs first.
+VPN1_SSH_PORT="${VPN1_SSH_PORT:-}"
 # Set definitively inside preflight_stage once existing_install_present()
 # has actually been checked. Defaults to 0 (repair) so that IF the
 # on_fatal_error trap somehow fires before preflight_stage reaches that
@@ -131,6 +176,14 @@ Optional flags (all have environment-variable equivalents):
                                     Required in non-interactive mode — there
                                     is no safe default.
   --subscription-port PORT         same as SUBSCRIPTION_PORT (default 8443)
+  --ssh-port PORT                  same as VPN1_SSH_PORT; explicitly declares
+                                    the port sshd listens on when vpn1 cannot
+                                    positively auto-detect it. Required
+                                    whenever detection is inconclusive — vpn1
+                                    refuses to activate/modify the host
+                                    firewall (and thus never packages_stage's
+                                    firewalld activation) without a confirmed
+                                    SSH port. Never assume 22.
   --non-interactive                never prompt on /dev/tty; fail fast with
                                     a precise error instead of blocking if a
                                     required value (e.g. the REALITY decoy)
@@ -161,6 +214,8 @@ parse_cli_args() {
       --reality-handshake-server=*) REALITY_HANDSHAKE_SERVER="${1#*=}"; shift ;;
       --subscription-port) SUBSCRIPTION_PORT="$2"; shift 2 ;;
       --subscription-port=*) SUBSCRIPTION_PORT="${1#*=}"; shift ;;
+      --ssh-port) VPN1_SSH_PORT="$2"; shift 2 ;;
+      --ssh-port=*) VPN1_SSH_PORT="${1#*=}"; shift ;;
       --non-interactive) NONINTERACTIVE=1; shift ;;
       --allow-ip-hostname) ALLOW_IP_HOSTNAME=1; shift ;;
       -h|--help) print_install_help; exit 0 ;;
@@ -240,6 +295,23 @@ existing_install_present() {
   # foreign sing-box binary or an interrupted partial install must not make
   # us skip conflict checks and overwrite another service.
   [ -f /var/lib/vpn1/install-state.json ]
+}
+
+# Positively determine (or accept an explicit operator override for) the
+# SSH port that must remain reachable through any firewall
+# activation/reload. Runs in stage 1, before packages_stage ever
+# installs/enables firewalld — checkpoint-1 requirement: vpn1 must not
+# activate or meaningfully change a host firewall until this is known.
+# Fails closed (die, zero host mutation) rather than assuming 22 when
+# detection is inconclusive and no override was supplied.
+resolve_ssh_port() {
+  SSH_PORT="$(preflight_resolve_ssh_port)" || die "could not positively determine the SSH port sshd listens on (checked sshd -T, sshd_config, and live listeners — all inconclusive), and no explicit override was supplied. vpn1 refuses to activate or modify the host firewall without a confirmed SSH port — doing so could lock you out of this server. Re-run with --ssh-port <port> (or VPN1_SSH_PORT=<port>) set to sshd's real listening port. Nothing has been mutated on this host yet."
+  export SSH_PORT
+  # Propagate the already-confirmed value as the canonical override for
+  # firewall.sh/firewall-ufw.sh (invoked as subprocesses later, in
+  # firewall_stage) so they reuse this exact resolution instead of
+  # re-running detection independently and potentially drifting from it.
+  export VPN1_SSH_PORT="$SSH_PORT"
 }
 
 # The subscription HTTPS port is operator-configurable (SUBSCRIPTION_PORT,
@@ -402,6 +474,12 @@ preflight_stage() {
   preflight_check_connectivity "https://github.com"
   preflight_check_dns "github.com"
   check_ports_free
+  # Positively determine the SSH port BEFORE packages_stage ever
+  # installs/activates firewalld — see resolve_ssh_port() above. Purely
+  # read-only (detection) or a validated operator-supplied value; no
+  # host mutation happens here.
+  resolve_ssh_port
+  log "confirmed SSH port: $SSH_PORT — will remain allowed through any firewall activation vpn1 performs."
   if existing_install_present; then
     log "existing vpn1 installation detected at $DEPLOYMENT_TOML — this run will UPGRADE/REPAIR in place, preserving users and keys."
     IS_FRESH_INSTALL=0
@@ -409,6 +487,32 @@ preflight_stage() {
     log "no existing installation detected — this will be a fresh install."
     IS_FRESH_INSTALL=1
   fi
+  # Captured HERE, before write_install_state_manifest("installing")
+  # below (and long before start_stage's own "pending" write) overwrites
+  # it — ensure_first_user (stage 17) needs to know whether a PRIOR run
+  # already reached "accepted" (a true repair: never auto-create/rotate
+  # a user) versus this being a genuinely fresh install or a retry of a
+  # not-yet-accepted ("pending") one (onboarding is still in progress:
+  # a default user may still need to be created/completed). Reading the
+  # manifest live at stage 17 would always see THIS run's own "pending"
+  # write from start_stage instead of the prior run's real state.
+  PRIOR_ACCEPTANCE_STATE="none"
+  if [ -f /var/lib/vpn1/install-state.json ]; then
+    PRIOR_ACCEPTANCE_STATE="$(grep -o '"acceptance"[[:space:]]*:[[:space:]]*"[^"]*"' /var/lib/vpn1/install-state.json | sed -E 's/.*"([^"]*)"$/\1/')"
+    [ -n "$PRIOR_ACCEPTANCE_STATE" ] || PRIOR_ACCEPTANCE_STATE="none"
+  fi
+  # ---------------------------------------------------------------
+  # Rollback/ownership tracking must be active BEFORE the first
+  # persistent host mutation (checkpoint-1 requirement) — mark/baseline
+  # HERE, before persist_source_tree/install_idn_support below, which are
+  # the first two mutations this script performs. Previously these were
+  # marked only after persist_source_tree and install_idn_support had
+  # already run, so a failure inside either of them looked like "nothing
+  # was mutated yet" to on_fatal_error's rollback trap and left that
+  # mutation stranded on disk instead of being rolled back.
+  # ---------------------------------------------------------------
+  ownership_mark INSTALL_ATTEMPTED
+  ownership_set_baseline_once OPT_VPN1_PRE_EXISTED "$OPT_VPN1_PRE_EXISTED"
   persist_source_tree
   # ---------------------------------------------------------------
   # Collect and validate EVERY required operator input and fatal
@@ -424,8 +528,6 @@ preflight_stage() {
   install_idn_support
   resolve_host_config
   resolve_reality_handshake_server
-  ownership_mark INSTALL_ATTEMPTED
-  ownership_set_baseline_once OPT_VPN1_PRE_EXISTED "$OPT_VPN1_PRE_EXISTED"
   # Write the install-state manifest NOW (acceptance="installing"), not
   # only at the very end — a fatal failure at ANY later stage still
   # leaves repo_root/public_host/subscription_host/firewall_backend on
@@ -483,7 +585,43 @@ install_dependencies_rhel() {
   ownership_set_baseline_once FIREWALLD_PRE_ENABLED "$(systemctl is-enabled --quiet firewalld 2>/dev/null && echo 1 || echo 0)"
   record_package_ownership_rhel "${pkgs[@]}"
   dnf install -y --setopt=install_weak_deps=False "${pkgs[@]}" >/dev/null
-  systemctl enable --now firewalld >/dev/null
+  activate_firewalld_ssh_safe
+}
+
+# Activates firewalld with the confirmed SSH port ($SSH_PORT, resolved in
+# preflight_stage — stage 1 — before this ever runs) explicitly allowed
+# as part of the SAME activation sequence, never as a bare `systemctl
+# enable --now firewalld` followed later by an SSH-allow rule. That
+# ordering (which this replaces) let firewalld go active with only its
+# distro-default rules — which permit the `ssh` **service**, i.e. port 22
+# only — well before firewall_stage (previously stage 14) got around to
+# allowing a custom sshd port, closing an active SSH session or new
+# connections to it in between.
+#
+# If firewalld was already active before vpn1 touched this host, its
+# existing configuration is left completely alone here (checkpoint-1
+# requirement: preserve pre-existing firewall state, never re-activate
+# or flush it) — firewall_stage (deploy/almalinux/firewall.sh) still adds
+# vpn1's own rules on top of it later, unchanged.
+activate_firewalld_ssh_safe() {
+  if systemctl is-active --quiet firewalld 2>/dev/null; then
+    log "firewalld is already active on this host — preserving its existing configuration as-is, not re-activating it."
+    return
+  fi
+  : "${SSH_PORT:?activate_firewalld_ssh_safe called before SSH_PORT was resolved in preflight_stage — refusing to activate the firewall.}"
+  log "activating firewalld with SSH port ${SSH_PORT}/tcp explicitly allowed as part of this same activation..."
+  systemctl start firewalld
+  local zone
+  zone="$(firewall-cmd --get-default-zone)"
+  firewall-cmd --zone="$zone" --add-service=ssh >/dev/null 2>&1 || true
+  firewall-cmd --zone="$zone" --permanent --add-service=ssh >/dev/null 2>&1 || true
+  if [ "$SSH_PORT" != "22" ]; then
+    firewall-cmd --zone="$zone" --add-port="${SSH_PORT}/tcp" >/dev/null 2>&1
+    firewall-cmd --zone="$zone" --permanent --add-port="${SSH_PORT}/tcp" >/dev/null 2>&1
+  fi
+  firewall-cmd --reload >/dev/null 2>&1
+  systemctl enable firewalld >/dev/null
+  log "firewalld active on zone '$zone'; SSH port ${SSH_PORT}/tcp confirmed allowed before any further firewall changes."
 }
 
 install_dependencies_debian() {
@@ -961,10 +1099,14 @@ singbox_install_stage() {
 # this early is safe.
 install_systemd_units() {
   log "installing systemd units..."
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.service" /etc/systemd/system/vpn-expiry-reconcile.service
-  install -m 0644 "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.timer" /etc/systemd/system/vpn-expiry-reconcile.timer
+  # Each is a FIXED path — install_fixed_path_with_ownership() backs up
+  # (once) and tracks whether something already occupied it before vpn1
+  # ever wrote here, so uninstall.sh can restore the exact predecessor
+  # rather than assume every file at these names is always vpn1's own.
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service SINGBOX_UNIT
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service VPNSUB_UNIT
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.service" /etc/systemd/system/vpn-expiry-reconcile.service EXPIRY_SVC_UNIT
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.timer" /etc/systemd/system/vpn-expiry-reconcile.timer EXPIRY_TIMER_UNIT
   systemctl daemon-reload
 }
 
@@ -1024,6 +1166,11 @@ users_groups_stage() {
 #   users/                  root:vpn-subscription 02750  (vpn-subscription only)
 #   sing-box/               root:sing-box   02750  (sing-box only)
 create_directories() {
+  # Recorded ONCE, before vpn1 ever touches /etc/vpn — the sole basis
+  # uninstall.sh uses to decide whether the whole directory is vpn1's to
+  # remove outright (checkpoint-2 requirement: never rm -rf a shared
+  # parent vpn1 did not prove it created).
+  ownership_set_baseline_once ETC_VPN_PRE_EXISTED "$([ -d /etc/vpn ] && echo 1 || echo 0)"
   install -d -m 0755 /etc/vpn
   install -d -m 02750 -o root -g vpn-compat "$STATE_DIR"
   install -d -m 02750 -o root -g vpn-compat "$STATE_DIR/reality"
@@ -1061,11 +1208,13 @@ directories_stage() {
 # remove EXACTLY that rule again afterwards — never touching any
 # pre-existing firewall rule vpn1 did not add itself
 # (docs/FINAL_PRODUCTION_AUDIT.md P0-9). firewalld/ufw are already
-# enabled by packages_stage (stage 2) with distro-default deny rules by
-# the time this runs, and vpn1's own permanent rules (443/tcp+udp plus
+# active by the time this runs — packages_stage (stage 2) activates
+# firewalld itself, but only via activate_firewalld_ssh_safe(), which
+# allows the confirmed SSH port as part of that same activation (see its
+# comment) — and vpn1's own permanent rules (443/tcp+udp plus
 # SUBSCRIPTION_PORT, never 80) aren't added until firewall_stage (stage
-# 13) — so without
-# this, certbot's challenge has no way to receive inbound traffic.
+# 14) — so without this, certbot's challenge has no way to receive
+# inbound traffic.
 TEMP_PORT80_ADDED=0
 firewall_open_port_80_temp() {
   TEMP_PORT80_ADDED=0
@@ -1271,7 +1420,14 @@ EOF
   log "Hysteria2 TLS cert/key present and valid: $cert"
 }
 
-# Same requirement for the subscription HTTPS vhost (nginx).
+# Same requirement for the subscription HTTPS vhost (nginx) — MANDATORY
+# for the normal (family/onboarding) installation, not a best-effort
+# extra (checkpoint-4 requirement): a "one command -> QR/subscription ->
+# Hiddify" product cannot silently degrade to a subscription-less
+# deployment and still call itself a success. There is no supported
+# advanced/manual opt-out of this in the current architecture, so none
+# is invented here — a certificate failure now stops the install with a
+# clear, actionable cause instead of continuing without nginx.
 require_subscription_tls() {
   local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
   local cert="/etc/letsencrypt/live/$host/fullchain.pem"
@@ -1280,11 +1436,32 @@ require_subscription_tls() {
     ensure_tls_material "$host" || true
   fi
   if [ ! -s "$cert" ] || [ ! -s "$key" ]; then
-    log "warning: subscription HTTPS certificate not found at $cert."
-    log "  Provision one with: certbot certonly --standalone -d $host --non-interactive --agree-tos -m admin@$host"
-    log "  The subscription vhost will NOT be enabled this run — see final status."
-    SUBSCRIPTION_TLS_READY=0
-    return
+    cat >&2 <<EOF
+[install] ERROR: [FAIL] subscription HTTPS certificate missing: $cert
+
+Automatic issuance (certbot HTTP-01) already failed above — see that
+output for the specific reason. In summary, ALL of the following must be
+true simultaneously for automatic issuance to succeed:
+  - DNS for ${host} resolves to this server's public IP.
+  - TCP/80 is reachable from the public internet, not just locally free.
+    vpn1 only manages the HOST firewall (firewalld/ufw) — a cloud
+    provider's separate network firewall/security group (AWS, GCP,
+    Azure, ...) may ALSO need an inbound TCP/80 rule; vpn1 cannot see or
+    change that layer. Test from a DIFFERENT machine:
+      curl -sS --max-time 5 http://${host}/ -o /dev/null -w '%{http_code}\n'
+  - certbot is installed and nothing else is holding TCP/80.
+
+Provision a certificate for ${host} manually once the above are confirmed:
+
+  certbot certonly --standalone -d ${host} \\
+    --non-interactive --agree-tos -m admin@${host}
+
+Then re-run install.sh. Subscription HTTPS is required for the normal
+vpn1 onboarding path (subscription URL -> Hiddify) — installation does
+not complete without it, and never silently falls back to a
+subscription-less deployment.
+EOF
+    exit 1
   fi
   SUBSCRIPTION_TLS_READY=1
   log "subscription HTTPS cert/key present: $cert"
@@ -1313,8 +1490,8 @@ create_hysteria_masquerade_placeholder() {
 install_certbot_renewal_hook() {
   command -v certbot >/dev/null 2>&1 || return 0
   install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
-  install -m 0755 "$REPO_ROOT/deploy/almalinux/certbot-deploy-hook.sh" \
-    /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/certbot-deploy-hook.sh" \
+    /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh CERTBOT_HOOK 0755
   log "installed certbot renewal deploy hook: /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh"
   local renewal_unit="" candidate
   for candidate in certbot.timer certbot-renew.timer snap.certbot.renew.timer; do
@@ -1485,6 +1662,20 @@ configure_nginx() {
   if [ -f "$NGINX_CONF" ]; then
     cp -a "$NGINX_CONF" "$nginx_backup"
     nginx_had_previous=1
+  fi
+  # Baseline-once (first install run only — a repair re-run also finds
+  # nginx_had_previous=1 because vpn1's OWN prior file is there, but that
+  # must never overwrite the true original answer): was this fixed path
+  # already occupied by something ELSE before vpn1 ever touched it, and
+  # if so, an exact one-time backup for uninstall.sh to restore later
+  # (checkpoint-2 requirement — same pattern as
+  # install_fixed_path_with_ownership()).
+  ownership_set_baseline_once "FIXEDPATH_NGINX_CONF_PRE_EXISTED" "$nginx_had_previous"
+  if [ "$nginx_had_previous" -eq 1 ] && [ "$(ownership_get "FIXEDPATH_NGINX_CONF_BACKED_UP" "0")" != "1" ]; then
+    install -d -m 0700 /var/lib/vpn1/preexisting-backups
+    cp -a "$NGINX_CONF" /var/lib/vpn1/preexisting-backups/NGINX_CONF
+    ownership_set "FIXEDPATH_NGINX_CONF_BACKUP" /var/lib/vpn1/preexisting-backups/NGINX_CONF
+    ownership_mark "FIXEDPATH_NGINX_CONF_BACKED_UP"
   fi
   ownership_set_baseline_once NGINX_PRE_ENABLED "$(systemctl is-enabled --quiet nginx 2>/dev/null && echo 1 || echo 0)"
   install -m 0644 "$NGINX_CONF.tmp" "$NGINX_CONF"
@@ -1722,19 +1913,134 @@ FIRST_USER_QR_OUTPUT=""
 # capture that whole block for print_status to show, instead of a second
 # `--json` call (which would either skip the QR or, via `user qr`, mint
 # and invalidate a second token for no reason).
+#
+# Extracts the subscription URL from either `user create --qr`'s or
+# `user rotate-token --qr`'s human-readable output — the two commands
+# print different header text ("Hiddify subscription URL (this IS the
+# credential...):" vs. "New Hiddify subscription URL for {id}:") but
+# both end in "...ubscription URL...:" immediately followed by a
+# "  https://..." line, so one pattern covers both without needing a
+# second (fragile, format-specific) parser.
+extract_subscription_url() {
+  echo "$1" | grep -A1 -E 'ubscription URL.*:$' | grep -m1 -E '^  https://' | sed -e 's/^  //'
+}
+
+# Fresh-install vs. repair user-management semantics (checkpoint-4
+# requirement — these must stay distinct):
+#   - genuinely fresh, or a not-yet-accepted ("pending") retry of a
+#     fresh install: a usable default user is REQUIRED. If one already
+#     exists (from an earlier pending attempt) but this run has no raw
+#     token for it (raw tokens are never persisted — by design), mint a
+#     fresh subscription token for that SAME user via rotate-token
+#     (touches only the token, never VLESS/Hysteria2 credentials) so
+#     onboarding can still be completed and verified.
+#   - repair of an ALREADY-ACCEPTED install: user state is the
+#     operator's; never auto-create, rotate, or mint anything here, even
+#     if the user store is (deliberately) empty.
 ensure_first_user() {
-  local existing
+  local existing first_id
   existing="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user list 2>/dev/null | tail -n +2 | grep -c . || true)"
+
   if [ "${existing:-0}" -gt 0 ]; then
-    log "$existing existing user(s) found — not creating a default user (idempotent re-run)."
+    if [ "$PRIOR_ACCEPTANCE_STATE" = "accepted" ]; then
+      log "$existing existing user(s) found on an already-accepted deployment (repair) — user state is the operator's; not touching it."
+      return
+    fi
+    log "$existing existing user(s) found on a not-yet-accepted (pending) deployment — reusing the first one; minting a fresh subscription token for onboarding (rotate-token changes only the subscription token, never VLESS/Hysteria2 credentials)."
+    first_id="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user list 2>/dev/null | tail -n +2 | awk '{print $1; exit}')"
+    [ -n "$first_id" ] || die "[FAIL] a user was reported to exist but its ID could not be determined from 'vpn user list' output."
+    local out
+    out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user rotate-token "$first_id" --qr 2>&1)" \
+      || die "[FAIL] could not mint a subscription token for the existing pending-install user '$first_id'. Output:
+$out"
+    FIRST_USER_QR_OUTPUT="$out"
+    SUBSCRIPTION_URL="$(extract_subscription_url "$out")"
+    [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] a subscription token was minted for '$first_id' but no subscription URL could be extracted from its output — cannot complete onboarding verification."
     return
   fi
+
+  if [ "$PRIOR_ACCEPTANCE_STATE" = "accepted" ]; then
+    log "no users exist, but this is a REPAIR of an already-accepted installation — not auto-creating a user; the operator's (deliberately empty) user state is preserved. Create one explicitly with 'vpn user create --name NAME --qr' if intended."
+    return
+  fi
+
   log "creating initial VPN user '$DEFAULT_USER_NAME'..."
   local out
-  out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --qr 2>/dev/null)" \
-    || { warn "failed to auto-create the default user; run 'vpn user create --name default --qr' manually."; return; }
+  out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --qr 2>&1)" \
+    || die "[FAIL] initial user creation failed — a fresh install must produce at least one usable onboarding credential. Output:
+$out"
   FIRST_USER_QR_OUTPUT="$out"
-  SUBSCRIPTION_URL="$(echo "$out" | sed -n '/^Subscription:$/{n;p;}')"
+  SUBSCRIPTION_URL="$(extract_subscription_url "$out")"
+  [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] the initial user was created but no subscription URL could be extracted from its output — cannot complete onboarding verification."
+}
+
+# ---------------------------------------------------------------------
+# End-to-end subscription verification THROUGH nginx/TLS (checkpoint-4
+# requirement — the loopback backend answering /healthz is not
+# sufficient proof; the actual client-facing path is user state ->
+# vpn-subscription -> nginx HTTPS -> subscription renderer -> returned
+# profile). `--resolve HOST:PORT:127.0.0.1` sends the request to this
+# host while keeping curl's TLS verification (hostname/SAN + expiry,
+# via the system CA store — Let's Encrypt is trusted there) against the
+# REAL configured hostname, exactly as a real client would see it; no
+# `-k` is ever used here. The fetched body is cross-checked against the
+# CURRENT on-disk REALITY public key/short_id (the same values
+# vpn-subscription itself reads at render time) instead of a second,
+# duplicate profile parser — this both proves the profile is
+# well-formed AND that nginx is not serving something stale.
+verify_subscription_through_nginx() {
+  local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
+  local port="${SUBSCRIPTION_PORT:-8443}"
+  [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] no subscription URL is available for the initial user — cannot verify the subscription path end-to-end."
+  local pubkey short_id
+  pubkey="$(cat "$STATE_DIR/reality/public.key" 2>/dev/null || true)"
+  short_id="$(cat "$STATE_DIR/reality/short_id.txt" 2>/dev/null || true)"
+  [ -n "$pubkey" ] && [ -n "$short_id" ] \
+    || die "[FAIL] REALITY public key/short_id not found under $STATE_DIR/reality — cannot verify subscription content."
+
+  local body_file http_code curl_err
+  body_file="$(mktemp)"
+  curl_err="$(mktemp)"
+  if ! http_code="$(curl -sS --max-time 15 --resolve "${host}:${port}:127.0.0.1" \
+      -o "$body_file" -w '%{http_code}' "$SUBSCRIPTION_URL" 2>"$curl_err")"; then
+    local err_out
+    err_out="$(cat "$curl_err")"
+    rm -f "$body_file" "$curl_err"
+    die "[FAIL] local HTTPS subscription request through nginx failed (connection/TLS error) — a real client using https://$host:$port would fail the same way. curl error: $err_out"
+  fi
+  rm -f "$curl_err"
+
+  if [ "$http_code" != "200" ]; then
+    rm -f "$body_file"
+    die "[FAIL] local HTTPS subscription request through nginx returned HTTP $http_code (expected 200)."
+  fi
+  if [ ! -s "$body_file" ]; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx was empty."
+  fi
+  if ! grep -q '^vless://' "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx does not contain a vless:// entry — subscription profile render failed or is malformed."
+  fi
+  if ! grep -q "pbk=${pubkey}" "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx does not advertise the CURRENT REALITY public key — served content is stale or incoherent with the running server."
+  fi
+  if ! grep -q "sid=${short_id}" "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx does not advertise the CURRENT REALITY short_id — served content is stale or incoherent with the running server."
+  fi
+  if grep -qiE 'privatekey|private_key|private\.key' "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] subscription response through nginx appears to contain REALITY private-key material — refusing to accept installation. This should never happen; please report it."
+  fi
+  if [ "${HYSTERIA2_OK:-0}" -eq 1 ] && ! grep -q '^hysteria2://' "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] Hysteria2 is enabled and listening, but the subscription response through nginx has no hysteria2:// entry."
+  fi
+  rm -f "$body_file"
+  SUBSCRIPTION_FETCH_OK=1
+  log "subscription profile fetched and verified through nginx/TLS at https://$host:$port/sub/... (current REALITY key material confirmed, TLS hostname/expiry verified by curl without -k)."
 }
 
 acceptance_stage() {
@@ -1767,6 +2073,20 @@ $fail_lines"
     fi
   fi
   log "health check passed."
+
+  # Full client-facing subscription-through-nginx proof (checkpoint-4):
+  # required for a fresh install or a not-yet-accepted ("pending") retry
+  # — exactly the runs where ensure_first_user() above is expected to
+  # have produced a usable SUBSCRIPTION_URL. A repair of an
+  # ALREADY-ACCEPTED installation intentionally does not mint a new
+  # token (or touch user state at all) every re-run — doctor
+  # --protocol/L4 above already re-confirm the live protocol handshake
+  # and internal subscription-process coherence for that case.
+  if [ "$PRIOR_ACCEPTANCE_STATE" = "accepted" ]; then
+    log "repair of an already-accepted installation — skipping the subscription-through-nginx re-fetch (no new token was minted; doctor --protocol above already re-verified the live handshake/coherence)."
+  else
+    verify_subscription_through_nginx
+  fi
 }
 
 # ---------------------------------------------------------------------
@@ -1838,15 +2158,27 @@ EOF
 
 print_status() {
   stage 18 "summary"
-  write_install_state_manifest "accepted"
   # Never print a success banner claiming a component works when it
   # wasn't actually confirmed (docs/FINAL_PRODUCTION_AUDIT.md P0-14) —
   # these are the same booleans set at each stage's real confirmation
   # point above, re-checked here instead of trusting `set -e` alone to
-  # have caught every path.
-  [ "$VLESS_REALITY_OK" -eq 1 ] || die "internal: reached summary with VLESS+REALITY not confirmed — this should be unreachable (start_stage should have aborted first)."
-  [ "$HYSTERIA2_OK" -eq 1 ] || die "internal: reached summary with Hysteria2 not confirmed — this should be unreachable (start_stage should have aborted first)."
-  [ "$SUBSCRIPTION_BACKEND_OK" -eq 1 ] || die "internal: reached summary with subscription backend not confirmed — this should be unreachable (start_stage should have aborted first)."
+  # have caught every path. Checkpoint-4: subscription HTTPS/nginx and
+  # (for a fresh/pending-onboarding run) the full subscription-through-
+  # nginx fetch are now equally mandatory — the normal success banner is
+  # unreachable without them, same as the data plane/backend already were.
+  [ "$VLESS_REALITY_OK" -eq 1 ] || die "[FAIL] internal: reached summary with VLESS+REALITY not confirmed — this should be unreachable (start_stage should have aborted first)."
+  [ "$HYSTERIA2_OK" -eq 1 ] || die "[FAIL] internal: reached summary with Hysteria2 not confirmed — this should be unreachable (start_stage should have aborted first)."
+  [ "$SUBSCRIPTION_BACKEND_OK" -eq 1 ] || die "[FAIL] internal: reached summary with subscription backend not confirmed — this should be unreachable (start_stage should have aborted first)."
+  [ "$SUBSCRIPTION_HTTPS_OK" -eq 1 ] || die "[FAIL] internal: reached summary with subscription HTTPS not confirmed — this should be unreachable (require_subscription_tls should have aborted first)."
+  [ "$NGINX_OK" -eq 1 ] || die "[FAIL] internal: reached summary with nginx not confirmed active/bound — this should be unreachable (configure_nginx should have aborted first)."
+  if [ "$PRIOR_ACCEPTANCE_STATE" != "accepted" ]; then
+    [ "$SUBSCRIPTION_FETCH_OK" -eq 1 ] || die "[FAIL] internal: reached summary without the subscription-through-nginx fetch confirmed on a non-repair run — this should be unreachable (verify_subscription_through_nginx should have aborted first)."
+  fi
+
+  # Only NOW — after every server-side gate above has actually passed —
+  # does the manifest become "accepted" (checkpoint-4 requirement: never
+  # write "accepted" before the acceptance gate).
+  write_install_state_manifest "accepted"
 
   cat <<BANNER
 
@@ -1856,23 +2188,28 @@ print_status() {
 Server
   Address: ${PUBLIC_HOST}
   Status:  running
-Components (each independently confirmed, not inferred)
-  VLESS + REALITY (443/tcp)     $([ "$VLESS_REALITY_OK" -eq 1 ] && echo "✓ listening" || echo "✗")
-  Hysteria2 (443/udp)           $([ "$HYSTERIA2_OK" -eq 1 ] && echo "✓ listening" || echo "✗")
-  Subscription backend          $([ "$SUBSCRIPTION_BACKEND_OK" -eq 1 ] && echo "✓ healthy" || echo "✗")
-  Subscription HTTPS (nginx)    $([ "$NGINX_OK" -eq 1 ] && [ "$SUBSCRIPTION_HTTPS_OK" -eq 1 ] && echo "✓ configured" || echo "not configured — see stage 8/11 output above")
-  Firewall                      $([ "$FIREWALL_OK" -eq 1 ] && echo "✓ configured" || echo "✗")
-User
-  ${DEFAULT_USER_NAME}
+
+SERVER-SIDE VERIFIED
+  ✓ VLESS+REALITY service active, 443/tcp listener bound
+  ✓ Hysteria2 443/udp listener bound
+  ✓ REALITY protocol self-test (real sing-box handshake)
+  ✓ subscription backend healthy
+  ✓ subscription HTTPS/TLS (nginx, real cert/hostname verified)
+  $([ "$SUBSCRIPTION_FETCH_OK" -eq 1 ] && echo "✓ subscription profile fetched through nginx and matches current server state" || echo "- subscription profile re-fetch skipped this run (repair of an already-accepted install; not re-minting a token)")
+  ✓ firewall configured$([ "$FIREWALL_OK" -eq 1 ] || echo " (unconfirmed — see stage 13 output)")
 BANNER
   if [ -n "$FIRST_USER_QR_OUTPUT" ]; then
+    echo "CLIENT ONBOARDING"
     echo "$FIRST_USER_QR_OUTPUT"
-  elif [ -n "$SUBSCRIPTION_URL" ]; then
-    echo "Subscription URL"
-    echo "  $SUBSCRIPTION_URL"
-  else
-    echo "Subscription URL"
-    echo "  (not created automatically — run: vpn user create --name default --qr)"
+  elif [ "$PRIOR_ACCEPTANCE_STATE" = "accepted" ]; then
+    cat <<BANNER
+CLIENT ONBOARDING
+  Existing user(s) — unchanged by this repair.
+  Raw subscription tokens are never re-displayed (only their hash is
+  persisted). To get a usable subscription URL for a specific user:
+    vpn user rotate-token <user_id> --qr
+    vpn user list
+BANNER
   fi
   cat <<BANNER
 
@@ -1880,6 +2217,14 @@ Compatible clients
   Android / MagicOS: Hiddify
   iOS:                Hiddify
   Linux:              Hiddify / compatible sing-box client
+
+STILL UNVERIFIED (this local run cannot prove these — see docs/DEVICE_ACCEPTANCE_TESTS.md)
+  - cloud/provider network firewall (AWS/GCP/Azure Security Groups, etc.)
+    reachable from the public Internet
+  - Hiddify import / connection on a real device
+  - device VPN/TUN mode actually routing traffic
+  - DNS leak / IPv6 leak behavior
+  - restrictive-network or censorship-adversary behavior
 
 Management
   vpn status

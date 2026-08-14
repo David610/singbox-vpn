@@ -159,6 +159,28 @@ else
 fi
 
 echo
+echo "--- static: ownership tracking (INSTALL_ATTEMPTED/OPT_VPN1_PRE_EXISTED baseline) is marked BEFORE the first persistent mutation (persist_source_tree/install_idn_support) ---"
+preflight_body2="$(sed -n '/^preflight_stage() {/,/^}/p' "$INSTALL_SH")"
+mark_line="$(echo "$preflight_body2" | grep -n '^\s*ownership_mark INSTALL_ATTEMPTED\s*$' | head -n1 | cut -d: -f1)"
+persist_line="$(echo "$preflight_body2" | grep -n '^\s*persist_source_tree\s*$' | head -n1 | cut -d: -f1)"
+idn_line="$(echo "$preflight_body2" | grep -n '^\s*install_idn_support\s*$' | head -n1 | cut -d: -f1)"
+if [ -n "$mark_line" ] && [ -n "$persist_line" ] && [ -n "$idn_line" ] \
+    && [ "$mark_line" -lt "$persist_line" ] && [ "$mark_line" -lt "$idn_line" ]; then
+  ok "ownership_mark INSTALL_ATTEMPTED runs before persist_source_tree and install_idn_support (the first two host mutations) — a failure inside either is now rolled back"
+else
+  fail "ownership_mark INSTALL_ATTEMPTED does not run before the first host mutations (mark=$mark_line persist=$persist_line idn=$idn_line)"
+fi
+
+echo
+echo "--- static: the SSH port is resolved in preflight_stage before packages_stage (and thus before firewalld is ever touched) ---"
+ssh_resolve_line="$(echo "$preflight_body2" | grep -n '^\s*resolve_ssh_port\s*$' | head -n1 | cut -d: -f1)"
+if [ -n "$ssh_resolve_line" ] && [ -n "$mark_line" ] && [ "$ssh_resolve_line" -lt "$mark_line" ]; then
+  ok "resolve_ssh_port() runs early in preflight_stage, before any mutation-tracking/mutation begins"
+else
+  fail "resolve_ssh_port() does not run early enough in preflight_stage (resolve=$ssh_resolve_line mark=$mark_line)"
+fi
+
+echo
 if [ "$failures" -gt 0 ]; then
   echo "$failures test(s) FAILED"
   exit 1

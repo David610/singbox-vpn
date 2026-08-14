@@ -27,28 +27,52 @@ else
   fail "update.sh does not call 'doctor --protocol --require-protocol' — an update could commit a syntactically-valid but functionally-broken REALITY config"
 fi
 
-# The doctor call must happen strictly before `committed=1` (a `die`
-# after that point no longer triggers the rollback trap) and strictly
-# after the health check + service restarts (nothing to verify a
-# handshake against before then).
-doctor_line="$(grep -n 'doctor --protocol --require-protocol' "$UPDATE_SH" | head -1 | cut -d: -f1)"
-committed_line="$(grep -n '^committed=1$' "$UPDATE_SH" | tail -1 | cut -d: -f1)"
-health_check_line="$(grep -n '/usr/local/bin/vpn-health-check$' "$UPDATE_SH" | tail -1 | cut -d: -f1)"
-if [ -n "$doctor_line" ] && [ -n "$committed_line" ] && [ "$doctor_line" -lt "$committed_line" ]; then
-  ok "protocol acceptance check runs before the transaction commits (rollback still armed)"
+# update.sh now has two structurally separate code paths — the explicit
+# --dev-rebuild/VPN1_CHANNEL=dev escape hatch, and the default
+# production release-to-release path — each with its OWN doctor/
+# health-check/committed=1 sequence. Check each occurrence's ordering
+# against its own nearest-preceding health-check/committed line rather
+# than assuming a single linear script.
+doctor_lines="$(grep -n 'doctor --protocol --require-protocol' "$UPDATE_SH" | cut -d: -f1)"
+committed_lines="$(grep -n '^committed=1$' "$UPDATE_SH" | cut -d: -f1)"
+health_check_lines="$(grep -n '/usr/local/bin/vpn-health-check$' "$UPDATE_SH" | cut -d: -f1)"
+[ -n "$doctor_lines" ] || fail "update.sh has no 'doctor --protocol --require-protocol' occurrence to check ordering for"
+
+all_before_committed_ok=1
+all_after_health_check_ok=1
+while IFS= read -r doctor_line; do
+  [ -z "$doctor_line" ] && continue
+  # nearest committed=1 AFTER this doctor call
+  next_committed="$(echo "$committed_lines" | awk -v d="$doctor_line" '$1 > d {print; exit}')"
+  [ -n "$next_committed" ] || { all_before_committed_ok=0; continue; }
+  # nearest health-check line BEFORE this doctor call
+  prev_health="$(echo "$health_check_lines" | awk -v d="$doctor_line" '$1 < d {v=$1} END{print v}')"
+  [ -n "$prev_health" ] || { all_after_health_check_ok=0; continue; }
+done <<EOF
+$doctor_lines
+EOF
+if [ "$all_before_committed_ok" -eq 1 ]; then
+  ok "every protocol acceptance check runs before its path's transaction commits (rollback still armed)"
 else
-  fail "protocol acceptance check does not clearly run before 'committed=1' — a failed handshake might not trigger rollback"
+  fail "some protocol acceptance check does not clearly run before its path's 'committed=1' — a failed handshake might not trigger rollback"
 fi
-if [ -n "$doctor_line" ] && [ -n "$health_check_line" ] && [ "$health_check_line" -lt "$doctor_line" ]; then
-  ok "protocol acceptance check runs after the health check and service restarts"
+if [ "$all_after_health_check_ok" -eq 1 ]; then
+  ok "every protocol acceptance check runs after a preceding health check"
 else
-  fail "protocol acceptance check does not clearly run after the health check"
+  fail "some protocol acceptance check does not clearly run after a preceding health check"
 fi
 
 # On failure it must go through `die` (which the existing EXIT trap
-# turns into a rollback), not a bare `exit`.
-doctor_block="$(sed -n "${doctor_line},+6p" "$UPDATE_SH" 2>/dev/null || true)"
-if echo "$doctor_block" | grep -q 'die "post-update protocol acceptance'; then
+# turns into a rollback), not a bare `exit`. Check every occurrence.
+die_after_every_doctor_call=1
+while IFS= read -r doctor_line; do
+  [ -z "$doctor_line" ] && continue
+  doctor_block="$(sed -n "${doctor_line},+6p" "$UPDATE_SH" 2>/dev/null || true)"
+  echo "$doctor_block" | grep -q 'die "post-update protocol acceptance' || die_after_every_doctor_call=0
+done <<EOF
+$doctor_lines
+EOF
+if [ "$die_after_every_doctor_call" -eq 1 ]; then
   ok "protocol acceptance failure calls die() (reuses the existing rollback trap, not a new mechanism)"
 else
   fail "protocol acceptance failure does not clearly call die() — rollback may not trigger"

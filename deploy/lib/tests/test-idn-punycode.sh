@@ -103,6 +103,22 @@ if command -v idn2 >/dev/null 2>&1 || command -v idn >/dev/null 2>&1; then
 fi
 
 echo
+echo "--- static: on the supported AlmaLinux 9 (rhel family) path, install_idn_support() installs a real IDN converter (libidn2) BEFORE resolve_host_config() ever normalizes an operator-supplied domain ---"
+if grep -q 'rhel) pkg="libidn2"' "$INSTALL_SH"; then
+  ok "install_idn_support() installs libidn2 for OS_FAMILY=rhel (AlmaLinux 9's family)"
+else
+  fail "install_idn_support() no longer installs libidn2 for the rhel family — Unicode domains on AlmaLinux 9 would silently have no converter available"
+fi
+preflight_body="$(sed -n '/^preflight_stage() {/,/^}/p' "$INSTALL_SH")"
+idn_line="$(echo "$preflight_body" | grep -n '^\s*install_idn_support\s*$' | head -n1 | cut -d: -f1)"
+host_line="$(echo "$preflight_body" | grep -n '^\s*resolve_host_config\s*$' | head -n1 | cut -d: -f1)"
+if [ -n "$idn_line" ] && [ -n "$host_line" ] && [ "$idn_line" -lt "$host_line" ]; then
+  ok "install_idn_support() runs before resolve_host_config() in preflight_stage — the converter is available before it is needed"
+else
+  fail "install_idn_support() does not run before resolve_host_config() (idn=$idn_line host=$host_line)"
+fi
+
+echo
 if [ "$failures" -gt 0 ]; then
   echo "$failures test(s) FAILED"
   exit 1

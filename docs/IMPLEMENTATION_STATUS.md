@@ -56,6 +56,345 @@ and `deploy/lib/fast-gate.sh` already scope to the supported crates only.
 Splitting the workspace-wide CI jobs would touch CI trust/release
 plumbing for a runner-minutes-only win; deferred.
 
+## Checkpoint 5 (repair/harden the destructive lifecycle acceptance harness) — completed this session
+
+`deploy/almalinux/lifecycle-acceptance.sh` had six real defects making a
+PASS from it untrustworthy; all six are fixed, none by wording changes:
+
+- **Failure-injection env var reached `curl`, not the installer**: stage
+  10 used `sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=... curl | bash` — `sudo`
+  scoped the var to `curl`'s own exec, never to `bash` on the other side
+  of the pipe. Fixed by moving the var to the `bash` side (matching the
+  pattern already correct in every other stage), and added an assertion
+  that partial `/opt/vpn1`/`/etc/vpn` state exists after the "abort"
+  (proof the hook fired mid-install, not that curl/SSH merely failed).
+- **"Offline uninstall" downloaded code from GitHub**: every uninstall
+  call in the harness used `curl .../uninstall.sh | bash`. Now uses
+  `sudo /opt/vpn1/bin/vpn1-uninstall --yes` exclusively (stages 10 and
+  11), with a best-effort `iptables REJECT` to `github.com`/
+  `raw.githubusercontent.com` around the offline-uninstall call as
+  additional proof of no outbound dependency.
+- **SSH testing assumed port 22**: added `--ssh-port`, threaded through
+  to `install.sh --ssh-port`, used in `SSH_OPTS`, and the baseline check
+  now greps the configured port instead of a hardcoded `:22`.
+- **Update never proved the version changed**: the update stage now
+  captures `install-state.json` before/after and `fail_required`s if
+  they're identical — a same-checkout rebuild can no longer be reported
+  as a real update.
+- **Cleanup was checked only superficially**: uninstall residue is now
+  compared against a sanitized pre-install host baseline (services,
+  units, listeners, accounts, nginx/certbot-hook presence, locks) instead
+  of two path checks.
+- **Command failures were swallowed / client-vs-host properties
+  conflated**: unguarded `ssh_run` command substitutions that could abort
+  the whole script under `set -e` are now `|| true`-guarded so one probe
+  failing doesn't hide the rest of the report; the existing client/device
+  exclusion (Hiddify/iOS/Android/MagicOS — Checkpoint 8) is preserved
+  and now explicitly reported as `UNVERIFIED` rather than just a comment.
+- **Reboot only checked `health-check.sh`**: now independently verifies
+  sshd, sing-box, vpn-subscription, nginx, a vpn1 timer, the 443
+  listener, `install-state.json`, and `vpn-admin doctor --protocol`.
+
+New: a `VPN1_LIFECYCLE_GATE_ABORT_AFTER` hook was added to `update.sh`
+(mirroring `install.sh`'s existing one), fired after SWITCH/migration
+begins, enabling a real failed-update-rollback stage (7b) that asserts
+sshd/sing-box/vpn-subscription/protocol/`install-state.json` are restored
+to their pre-update values. `PASS`/`FAIL`/`UNVERIFIED` are now tracked as
+three distinct outcomes; the exit summary prints exactly `LIFECYCLE GATE:
+PASS` or `LIFECYCLE GATE: FAIL`, and a non-zero UNVERIFIED count is
+called out so a PASS is never read as full v1.0 release readiness.
+
+12 new fixture/regression tests were added
+(`deploy/lib/tests/test-lifecycle-acceptance-harness.sh`, run against the
+real script with a mocked `ssh`/`sleep` recording every invocation — not
+comment-grepping) proving: destructive opt-in is required; `--host` is
+required; localhost/production-host targets are refused; a non-numeric
+`--ssh-port` is rejected; SSH is invoked with the configured port, not a
+hardcoded 22, and `install.sh` receives `--ssh-port`; the abort-hook env
+var reaches the `bash` side of the pipe (regression guard against the
+fixed bug reappearing); offline uninstall uses the local binary, not
+`curl | bash`; a no-op update is detected and failed; a required-stage
+failure can never produce `LIFECYCLE GATE: PASS`; UNVERIFIED items are
+reported distinctly from PASS/FAIL. A second fixture test
+(`deploy/lib/tests/test-update-release-fixture-verification.sh`) extracts
+`update.sh`'s real checksum-verification lines (not a reimplementation)
+and exercises them against two distinct local fixture releases with
+immutable version IDs, separate content, and real sha256 checksums,
+proving the verification contract is fail-closed against tampering and
+malformed manifests — marked `VERIFIED-TEST`; a real GitHub release A->B
+transition remains `UNVERIFIED` until a first tagged release exists.
+
+**Real execution status**: the harness itself was repaired and its logic
+proven with fixture tests in this sandbox (no disposable AlmaLinux 9 host
+available here, and no destructive opt-in context established, so the
+real destructive lifecycle was correctly NOT run automatically per this
+checkpoint's own instructions). Actually running it against a real
+disposable host remains `UNVERIFIED`, same as before this checkpoint —
+this checkpoint fixed the harness's trustworthiness, not the fact that it
+still needs to be run for real.
+
+## Checkpoint 4 (strict fresh-install success semantics) — completed this session
+
+- **Subscription HTTPS is now mandatory, not best-effort**:
+  `require_subscription_tls()` used to warn and set
+  `SUBSCRIPTION_TLS_READY=0` on certificate failure, letting
+  `configure_nginx()` silently skip the vhost while the installer still
+  finished and printed the normal success banner. It now `exit 1`s with
+  the same actionable diagnosis `require_hysteria_tls()` already gave —
+  there is no supported advanced/manual opt-out in this architecture,
+  so none was invented.
+- **Initial user creation is now mandatory on a fresh/pending-onboarding
+  install, and correctly repair-safe**: `ensure_first_user()` used to
+  `warn` and continue on creation failure, and auto-created a default
+  user whenever the store was empty regardless of fresh vs. repair. It
+  now: (a) `die`s on creation failure for a fresh/not-yet-accepted
+  install (a fresh install must produce at least one usable onboarding
+  credential); (b) NEVER auto-creates or rotates anything on a repair of
+  an install whose manifest already reached `"accepted"`, even with zero
+  users (operator's user state is theirs); (c) on a pending-install
+  retry that already has a user from an earlier failed attempt, mints
+  ONLY a fresh subscription token via the existing `rotate-token` path
+  (raw tokens are never persisted, so a lost one needs a fresh mint) —
+  VLESS/Hysteria2 credentials are never touched. Distinguishing these
+  three cases needed a new `PRIOR_ACCEPTANCE_STATE` captured in
+  `preflight_stage`, before this run's own `write_install_state_manifest`
+  calls overwrite the prior value.
+- **New end-to-end subscription verification through nginx/TLS**:
+  `verify_subscription_through_nginx()` fetches the actual
+  `/sub/<token>?format=hiddify` URL for the onboarding user via
+  `curl --resolve HOST:PORT:127.0.0.1` against the real configured
+  hostname (real TLS hostname/expiry verification, never `-k`) and
+  cross-checks the response against the CURRENT on-disk REALITY public
+  key/short_id (reusing existing state files rather than a second
+  profile parser) — proving the client-facing path (user state ->
+  vpn-subscription -> nginx HTTPS -> renderer -> returned profile) is
+  live and current, not just that the loopback backend's `/healthz`
+  responds. Runs for a fresh/pending-onboarding install; a repair of an
+  already-accepted install does not re-mint a token to re-run it (that
+  duty is covered by `doctor --protocol`'s existing L4 live-process
+  coherence check on every run instead).
+- **`accepted` is written only after every server-side gate**:
+  `print_status()` now hard-gates on `SUBSCRIPTION_HTTPS_OK`, `NGINX_OK`,
+  and (for a non-repair run) `SUBSCRIPTION_FETCH_OK` — in addition to the
+  data-plane/backend gates that already existed — strictly BEFORE
+  `write_install_state_manifest "accepted"` runs (previously the write
+  happened first, then the gates were checked).
+- **Success banner now separates SERVER-SIDE VERIFIED from STILL
+  UNVERIFIED** (real device/network/provider-firewall properties) per
+  the checkpoint's evidence-boundary requirement — never claims
+  "production-ready" or similar from a local result.
+- Note: `deploy/almalinux/health-check.sh` already did a real
+  `curl --resolve` HTTPS request against the subscription vhost with the
+  real hostname (no `-k`) and `vpn-admin doctor`'s L4 checks already
+  included a live-process state-fingerprint comparison that catches a
+  stale `vpn-subscription` process — both pre-existing, correct, and
+  left unchanged; this checkpoint's new work is specifically the
+  profile-CONTENT verification through nginx and the mandatory-vs-
+  best-effort gating described above.
+- Hysteria2 has no "disabled" representation anywhere in the current
+  codebase (always rendered/required) — section 12's "explicitly
+  disabled must not be reported as failure" case does not apply; no such
+  mode was invented, per the checkpoint's own instruction not to add one
+  that doesn't already exist.
+- New test file `deploy/lib/tests/test-fresh-install-acceptance.sh`:
+  fail-closed TLS requirement, fresh/pending/repair user-management
+  branching (including the rotate-token-only recovery path) exercised
+  against a mocked `vpn` binary, `extract_subscription_url()` parsing
+  both `user create`'s and `user rotate-token`'s real (differently
+  worded) output, and gate-ordering (accepted-after-checks) checks.
+- **UNVERIFIED** (no disposable AlmaLinux 9 host available this
+  session): the new mandatory subscription-HTTPS/user/nginx-fetch gates
+  have not been exercised against a real cert/nginx/sing-box stack —
+  only via mocked functional tests and static ordering checks.
+
+## Checkpoint 3 (transactional release-to-release updater) — completed this session
+
+- **Old model (replaced)**: `deploy/almalinux/update.sh` rebuilt
+  whatever source happened to be checked out at `/opt/vpn1` via
+  `cargo build`, unconditionally required Cargo/Rust, never resolved or
+  fetched a target release, never touched the sing-box binary, and
+  never wrote the install-state manifest (so `vpn1_version` went stale
+  after every update).
+- **New model**: `deploy/almalinux/update.sh --version vX.Y.Z` (or
+  `--latest` / `--repair`) is a real STAGE -> PREPARE -> SWITCH ->
+  ACTIVATE -> VERIFY -> COMMIT transaction. Production path requires no
+  Cargo/Rust: it downloads and SHA-256-verifies the target release's
+  source archive (reusing `install.sh`'s bootstrap trust model) and
+  prebuilt binaries (reusing `fetch_release_binaries()`'s asset/
+  checksum contract) into a staging directory under `/opt`, and fails
+  closed with "Nothing live has been changed" if either is missing or
+  fails verification — never a silent fallback to a source build.
+  sing-box is staged/verified and swapped too, only when the target
+  release pins a different version. `--dev-rebuild` (or
+  `VPN1_CHANNEL=dev`) is the explicit, structurally separate escape
+  hatch that keeps the old Cargo-rebuild-from-local-source behavior for
+  development/testing.
+- Source tree swap is an atomic same-filesystem rename
+  (`/opt/vpn1` <-> a staged/previous directory under `/opt`), not an
+  in-place overwrite — the previous release stays fully intact until
+  SWITCH, and rollback renames it straight back.
+- `install-state.json` is only rewritten at COMMIT, strictly after
+  `doctor --protocol --require-protocol` passes — a failed update never
+  updates the authoritative version record.
+- Rollback restores binaries, systemd units, helper scripts, the
+  sing-box binary (if changed), and the previous `/opt/vpn1` source
+  tree, then re-renders (never rewinds) `users.json`/REALITY material
+  with the restored tooling, and reports exactly one of `UPDATE FAILED —
+  PREVIOUS RELEASE RESTORED AND VERIFIED` or `UPDATE FAILED — ROLLBACK
+  ALSO FAILED` (never a bare "update failed").
+- Interrupted-transaction detection: a `TRANSACTION_MARKER` written in
+  PREPARE (before the first live mutation) makes a subsequent
+  invocation refuse with precise recovery instructions instead of
+  starting a new update on top of unknown state; a stale
+  `/opt/.vpn1-update-staging.*`/`/opt/.vpn1-prev-*` directory left by a
+  killed prior run is detected the same way.
+- Same-version requests exit cleanly ("Already at vX.Y.Z...") with zero
+  mutation unless `--repair` is given; `--repair` re-fetches and
+  re-verifies the *currently recorded* release's own material rather
+  than resolving a different version.
+- Transaction-only backups/staging directories are removed on
+  successful commit (never a permanent backup product) and reused
+  (never blindly overwritten) if a prior interrupted transaction is
+  detected first.
+- `deploy/almalinux/lifecycle-acceptance.sh`'s `--update-to-ref` path
+  fixed to actually invoke `update.sh --dev-rebuild` (the old
+  `VPN1_REF=...` env var it passed was silently ignored by update.sh —
+  a genuine tagged-release A->B lifecycle run remains a separate,
+  UNVERIFIED gap pending a first real release, see below).
+- New test file `deploy/lib/tests/test-update-transactional.sh`;
+  extended `test-update-conditional-restart.sh` and
+  `test-state-schema-migration.sh` for the new two-code-path
+  (production/dev-rebuild) structure. All static/source-inspection —
+  update.sh itself needs root/systemd/a real deployment/network access,
+  the same constraint the pre-existing update.sh tests already had.
+- **UNVERIFIED** (no disposable AlmaLinux 9 host, no tagged release
+  published this session): a real release A -> B production update has
+  never been executed end-to-end; every failure-injection scenario
+  listed in the checkpoint spec is verified only by static/structural
+  inspection of the transaction ordering, not by actually killing the
+  process mid-transaction against a live host.
+
+## Checkpoint 1 (SSH/firewall/rollback safety) — completed this session
+
+- **SSH/firewall ordering fixed**: firewalld used to be activated
+  (`systemctl enable --now firewalld`) in `packages_stage` with only its
+  distro-default rules (which cover the `ssh` **service**, i.e. port 22
+  only), 12 stages before `firewall_stage` added a custom sshd port —
+  an active window where a custom-port SSH session/new connections
+  could be locked out. Fixed: `activate_firewalld_ssh_safe()`
+  (`deploy/almalinux/install.sh`) starts firewalld and adds the
+  confirmed SSH port's allow rule(s) as one atomic sequence, and never
+  touches an already-active firewalld's existing configuration.
+  `deploy/almalinux/firewall.sh` (also independently invocable) applies
+  the same ordering when run standalone.
+- **SSH port detection now fails closed**: `preflight_detect_ssh_port()`
+  (`deploy/lib/preflight.sh`) no longer falls back to 22 when `sshd -T`/
+  `sshd_config`/live-listener detection is all inconclusive — it returns
+  1 with nothing printed. New canonical `preflight_resolve_ssh_port()`
+  is the single implementation used by `install.sh`, `firewall.sh`, and
+  `firewall-ufw.sh`; it accepts an explicit `VPN1_SSH_PORT` override
+  (`install.sh --ssh-port PORT` / `VPN1_SSH_PORT=`), validated via
+  `preflight_validate_port`. Inconclusive detection with no override now
+  `die`s before any firewall mutation, naming the fix.
+- **Rollback ownership tracking now starts before the first mutation**:
+  `ownership_mark INSTALL_ATTEMPTED` / `ownership_set_baseline_once
+  OPT_VPN1_PRE_EXISTED` used to run AFTER `persist_source_tree` (creates
+  `/opt/vpn1`) and `install_idn_support` (installs `libidn2` on RHEL) —
+  a failure inside either mutation looked like "nothing mutated yet" to
+  `on_fatal_error`'s rollback trap and left it stranded. Both now run
+  before those two calls in `preflight_stage`.
+- IDN normalization (`чёрт.com` -> `xn--p1aen4b.com`) re-verified
+  end-to-end with a real `idn2` binary installed in the dev sandbox
+  (`deploy/lib/tests/test-idn-punycode.sh`) — `install_idn_support()`
+  (installs `libidn2` for the RHEL family) already ran before
+  `resolve_host_config()` in `preflight_stage`; added static regression
+  coverage for that ordering plus the rhel-family package name.
+- New/extended tests (`deploy/lib/tests/test-installer-hardening.sh`,
+  `test-preflight-ordering.sh`, `test-idn-punycode.sh`): SSH detection
+  on port 22/2222 (mocked `sshd -T`), fixture `sshd_config`, fail-closed
+  with no override, explicit-override accept/reject, listener-fallback
+  code path (structural — real match needs a real `sshd` process,
+  UNVERIFIED), firewall.sh/firewall-ufw.sh fail-closed + canonical-call
+  checks, `activate_firewalld_ssh_safe()` ordering/preservation checks,
+  ownership-mark-before-first-mutation ordering.
+- **UNVERIFIED** (no disposable AlmaLinux 9 host available this
+  session): real custom-SSH-port lockout avoidance on a live host;
+  `deploy/almalinux/lifecycle-acceptance.sh` was not run.
+
+## Checkpoint 2 (ownership-safe complete uninstall) — completed this session
+
+- **`/etc/vpn` is no longer blindly `rm -rf`'d**: install.sh now records
+  `ETC_VPN_PRE_EXISTED` before ever creating `/etc/vpn` (stage 8).
+  uninstall.sh's cleanup is now ownership-gated: `0` (vpn1 created the
+  whole tree) -> full removal; `1` (pre-existing) or unset/ambiguous
+  (pre-checkpoint-2 install, no record) -> remove only vpn1's own
+  entries (`deployment.toml`, `compat/`), preserving everything else —
+  defaulting to preservation whenever ownership can't be proven.
+- **Fixed-name system resources (systemd units, certbot renewal hook,
+  nginx vhost) are now ownership-tracked**: new
+  `install_fixed_path_with_ownership()` helper backs up (once) whatever
+  already occupied a fixed path before vpn1 wrote there, and records
+  whether it pre-existed. uninstall.sh's new `restore_or_remove_fixed_path()`
+  restores the exact backup when something pre-existed, removes the
+  file when vpn1 created it, and leaves it untouched (never guesses)
+  when no ownership record exists at all.
+- **Fixed a real ordering bug**: `OPT_VPN1_PRE_EXISTED` (and the new
+  fixed-path `PRE_EXISTED` facts) used to be read via `ownership_get`
+  *after* `$STATE_DIR_ROOT` (`/var/lib/vpn1`, where the manifest itself
+  lives) had already been `rm -rf`'d — silently returning the
+  "not pre-existing" default every time, so `/opt/vpn1` was ALWAYS
+  treated as vpn1-created (even on the rare host where it genuinely
+  pre-existed) and a correctly-restored pre-existing fixed path could
+  misreport as residue. Fixed by caching every such fact before that
+  removal.
+- **Truthful residue verification**: uninstall.sh now collects
+  `CRITICAL_RESIDUE` (active vpn1 services, running processes, live
+  secrets/credentials, vpn1 binaries, vpn1-owned firewall exposure
+  still open after removal was attempted, a vpn1-created `/opt/vpn1`
+  still present) separately from `NONCRITICAL_RESIDUE` (a package the
+  package manager refused to remove, a userdel/groupdel failure, an
+  ambiguous pre-existing fixed path left alone). Cleanup never aborts
+  on the first non-fatal failure (this script has no `-e`); the final
+  banner prints `UNINSTALL COMPLETE` only when `CRITICAL_RESIDUE` is
+  empty, `UNINSTALL INCOMPLETE` (nonzero exit) otherwise. Two
+  previously-fatal `die`s on a corrupted firewall-ownership record are
+  now `warn` + critical-residue entries so the rest of cleanup still runs.
+- **Package names validated before the package manager**: `PKGS_INSTALLED_BY_VPN1`
+  entries are filtered through `is_safe_pkg_name()` before `dnf remove`/
+  `apt-get remove`; anything not shaped like a real package name is
+  skipped and reported as non-critical residue instead of being passed
+  through.
+- **Legacy uninstall compatibility fixed**: the online bootstrap
+  (`uninstall.sh`) previously forwarded `--yes` unconditionally to a
+  local `/opt/vpn1/deploy/almalinux/uninstall.sh`. The actual
+  pre-`07f8b72` layout (real historical commit `d8a4c87`, verified via
+  `git show`) never had a `--yes` flag or any confirmation prompt at
+  all — it understood only `--purge-state`/`--purge-firewall` and
+  rejected any other flag outright, exactly the failure this was filed
+  about. New `run_legacy_uninstaller()` detects which interface the
+  local copy actually supports (via `grep`) and translates: drops the
+  meaningless `--yes` and adds `--purge-state --purge-firewall` for
+  that historical layout; forwards unchanged for the current one.
+- **Version-aware damaged-`/opt/vpn1` recovery**: when no local copy is
+  usable at all, the bootstrap now reads `/var/lib/vpn1/install-state.json`
+  for the exact installed `vpn1_repo`/`vpn1_version` and fetches that
+  immutable tag (`refs/tags/$VPN1_REF`) instead of the mutable `main`
+  branch, unless the operator passed an explicit `--ref` or no pinned
+  version was ever recorded (dev/unreleased install).
+- New test file `deploy/lib/tests/test-uninstall-ownership-checkpoint2.sh`:
+  `/etc/vpn` preservation with a sentinel file, fixed-path
+  restore/remove/ambiguous-preserve, package-name validation
+  (accept/reject), the `OPT_VPN1_PRE_EXISTED` ordering fix, and legacy
+  flag translation exercised against the **real** historical script
+  from `git show d8a4c87:deploy/almalinux/uninstall.sh` (not an
+  invented approximation).
+- **UNVERIFIED** (no disposable AlmaLinux 9 host available this
+  session): the canonical offline command
+  (`sudo /opt/vpn1/bin/vpn1-uninstall --yes`) has not been exercised
+  against a real install with real systemd/firewalld/SELinux/dnf state,
+  nor with outbound networking disabled to prove offline-completeness
+  for real.
+
 ## Completed checkpoints (one line each — see git log for detail)
 
 1. v1.0 boundary + supported code surface documented (`docs/SUPPORTED_PRODUCT.md`).
@@ -84,9 +423,14 @@ plumbing for a runner-minutes-only win; deferred.
 - Real VLESS+REALITY / Hysteria2 connectivity from an actual Hiddify
   client on a real device.
 - Full clean-VPS install -> update -> migrate -> rollback -> uninstall
-  lifecycle, including SSH-preservation, on real AlmaLinux 9 (no
-  disposable host available this session — `lifecycle-acceptance.sh` not
-  executed).
+  lifecycle, including SSH-preservation and non-default-SSH-port
+  survival, on real AlmaLinux 9 (no disposable host available this
+  session — `lifecycle-acceptance.sh` was repaired and its own logic
+  fixture-tested this checkpoint, but not run against a real host; see
+  Checkpoint 5).
+- Certificate renewal (`certbot renew --dry-run`) on a real host — the
+  harness now attempts it and reports the real result or `UNVERIFIED` if
+  provider conditions prevent it, but this has not actually run.
 - A real tagged release has never been published — the checksum-verified
   bootstrap path (checkpoint 9) is fixture/unit-tested, not exercised
   against a real GitHub Release.
@@ -99,12 +443,26 @@ plumbing for a runner-minutes-only win; deferred.
 # FAST GATE — one command, run after every change (see Blockers re: root)
 bash deploy/lib/fast-gate.sh
 
-# DESTRUCTIVE lifecycle gate — disposable AlmaLinux 9 host ONLY, over SSH
+# DESTRUCTIVE lifecycle gate — DISPOSABLE ALMALINUX 9 HOST ONLY, over SSH.
+# Prerequisites: passwordless-sudo SSH access to a throwaway AlmaLinux 9
+# x86_64 VM/VPS you can afford to wipe and reboot; it must NOT be your
+# configured production host (the script refuses that, and refuses
+# localhost/no --host, by construction). Optional --ssh-port exercises a
+# non-default SSH port end-to-end instead of assuming 22; optional
+# --update-to-ref exercises update.sh's --dev-rebuild transactional path
+# (a real tagged-release A->B transition remains UNVERIFIED until a first
+# GitHub release exists — see Important UNVERIFIED items below).
 ./deploy/almalinux/lifecycle-acceptance.sh \
-  --host root@DISPOSABLE-HOST --i-understand-this-is-destructive
+  --host root@DISPOSABLE-HOST --i-understand-this-is-destructive \
+  [--ssh-port 2222] [--update-to-ref BRANCH]
 
 # offline uninstall — no network access needed
 sudo /opt/vpn1/bin/vpn1-uninstall --yes
+
+# production update — transactional, checksum-verified, no Cargo/Rust required
+sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z
+sudo /opt/vpn1/deploy/almalinux/update.sh --latest      # resolve latest stable tag
+sudo /opt/vpn1/deploy/almalinux/update.sh --repair       # reconcile the current release, no version change
 
 # out-of-band recovery — no subscription domain needed
 vpn-admin user links <user_id>
