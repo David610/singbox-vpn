@@ -51,16 +51,27 @@ echo
 echo "--- ownership_get: missing key returns the default, not an error ---"
 [ "$(ownership_get NO_SUCH_KEY "fallback")" = "fallback" ] && ok "missing key returns default" || fail "missing key did not return default"
 [ -z "$(ownership_get NO_SUCH_KEY)" ] && ok "missing key with no default returns empty" || fail "missing key with no default did not return empty"
+[ "$(ownership_is_marked NO_SUCH_KEY)" = "0" ] && ok "missing mark returns 0 with success status" || fail "missing mark result/status is wrong"
+[ -z "$(ownership_list_get NO_SUCH_KEY)" ] && ok "missing list returns empty with success status" || fail "missing list result/status is wrong"
+
+echo "--- empty manifest: every optional read is safe under set -Eeuo pipefail ---"
+: > "$OWNERSHIP_FILE"
+strict_out="$(
+  set -Eeuo pipefail
+  printf '%s|%s|%s' "$(ownership_get MISSING fallback)" "$(ownership_is_marked MISSING)" "$(ownership_list_get MISSING)"
+)"
+[ "$strict_out" = "fallback|0|" ] && ok "empty manifest optional reads return defaults without aborting" || fail "empty manifest strict read returned '$strict_out'"
+ownership_set "TEST_KEY" "world"
 
 echo
 echo "--- ownership_mark / ownership_is_marked: boolean facts ---"
-if ownership_is_marked USER_SINGBOX_CREATED; then
+if [ "$(ownership_is_marked USER_SINGBOX_CREATED)" = "1" ]; then
   fail "USER_SINGBOX_CREATED reported marked before it was ever set"
 else
   ok "unset boolean fact correctly reports as not marked"
 fi
 ownership_mark USER_SINGBOX_CREATED
-ownership_is_marked USER_SINGBOX_CREATED && ok "marked boolean fact reports as marked" || fail "ownership_mark did not take effect"
+[ "$(ownership_is_marked USER_SINGBOX_CREATED)" = "1" ] && ok "marked boolean fact reports as marked" || fail "ownership_mark did not take effect"
 
 echo
 echo "--- ownership_list_add / ownership_list_get: de-duplicated space-separated list ---"
@@ -93,7 +104,7 @@ echo "--- persistence: values survive re-sourcing (simulates a separate uninstal
   # shellcheck source=/dev/null
   . "$OWNERSHIP_SH"
   [ "$(ownership_get TEST_KEY)" = "world" ] || { echo "FAIL: value did not persist across a fresh source of ownership.sh"; exit 1; }
-  ownership_is_marked USER_SINGBOX_CREATED || { echo "FAIL: boolean fact did not persist across a fresh source of ownership.sh"; exit 1; }
+  [ "$(ownership_is_marked USER_SINGBOX_CREATED)" = "1" ] || { echo "FAIL: boolean fact did not persist across a fresh source of ownership.sh"; exit 1; }
   echo "PERSISTED_OK"
 ) | grep -q PERSISTED_OK && ok "manifest values persist across a fresh process re-sourcing ownership.sh (as uninstall.sh does)" || fail "manifest values did not persist for a fresh reader"
 

@@ -232,8 +232,10 @@ if [ -x "$REPO_ROOT/uninstall.sh" ] && [ -x "$REPO_ROOT/deploy/almalinux/uninsta
 else
   fail "uninstall.sh / deploy/almalinux/uninstall.sh missing or not executable"
 fi
-if grep -q 'PERSIST_DIR="/opt/vpn1"' "$INSTALL_SH" && grep -qE 'mkdir -p "\$PERSIST_DIR"' "$INSTALL_SH"; then
-  ok "persisted copy is created by mkdir as root (install.sh requires root — id -u check) — root-owned by construction, no separate chown needed"
+if grep -q 'PERSIST_DIR="/opt/vpn1"' "$INSTALL_SH" \
+    && grep -q 'chown -R root:root "\$stage"' "$INSTALL_SH" \
+    && grep -q 'chmod -R go-w "\$stage"' "$INSTALL_SH"; then
+  ok "persistent source is staged, then normalized root-owned and non-group/world-writable after extraction"
 else
   fail "PERSIST_DIR creation logic changed unexpectedly"
 fi

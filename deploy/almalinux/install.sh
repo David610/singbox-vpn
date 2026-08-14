@@ -248,15 +248,21 @@ parse_cli_args() {
 # (fresh installs included) and leave the partial install in place for
 # debugging.
 # ---------------------------------------------------------------------
+ROLLBACK_HANDLER_ACTIVE=0
 on_fatal_error() {
-  local exit_code=$?
+  local exit_code="${1:-$?}" line="${2:-unknown}" function="${3:-main}" stage="${4:-unknown}"
+  if [ "$ROLLBACK_HANDLER_ACTIVE" -eq 1 ]; then
+    return "$exit_code"
+  fi
+  ROLLBACK_HANDLER_ACTIVE=1
   trap - ERR
-  echo "[install] ERROR: installation failed (exit $exit_code)." >&2
+  set +e
+  echo "[install] ERROR: installation failed: stage=$stage function=$function line=$line operation=stage-command exit=$exit_code (command text suppressed to protect secrets)." >&2
   if [ "${VPN1_NO_AUTO_ROLLBACK:-0}" -eq 1 ] 2>/dev/null; then
     echo "[install] VPN1_NO_AUTO_ROLLBACK=1 set — leaving the host as-is for inspection. Run '$REPO_ROOT/deploy/almalinux/uninstall.sh' to remove everything vpn1 created so far." >&2
     exit "$exit_code"
   fi
-  if ! ownership_is_marked INSTALL_ATTEMPTED; then
+  if [ "$(ownership_is_marked INSTALL_ATTEMPTED)" != "1" ]; then
     # Nothing was mutated yet (failure happened before stage 1 finished
     # resolving input) — nothing to roll back.
     exit "$exit_code"
@@ -278,14 +284,17 @@ on_fatal_error() {
   fi
   echo "[install] this was a FRESH install (nothing existed before this run) — rolling back everything vpn1 created during this failed attempt..." >&2
   if [ -x "$REPO_ROOT/deploy/almalinux/uninstall.sh" ]; then
-    bash "$REPO_ROOT/deploy/almalinux/uninstall.sh" \
-      || echo "[install] WARNING: automatic rollback itself hit an error — inspect the host and re-run '$REPO_ROOT/deploy/almalinux/uninstall.sh' manually." >&2
+    local rollback_rc=0
+    bash "$REPO_ROOT/deploy/almalinux/uninstall.sh" --yes || rollback_rc=$?
+    if [ "$rollback_rc" -ne 0 ]; then
+      echo "[install] WARNING: automatic rollback failed once (exit $rollback_rc); original install exit remains $exit_code. Inspect residue and re-run '$REPO_ROOT/deploy/almalinux/uninstall.sh --yes' manually." >&2
+    fi
   else
     echo "[install] WARNING: could not find uninstall.sh to auto-rollback; run it manually once available." >&2
   fi
   exit "$exit_code"
 }
-trap on_fatal_error ERR
+trap 'on_fatal_error $? "${LINENO:-unknown}" "${FUNCNAME[0]:-main}" "${VPN1_STAGE:-initialization}"' ERR
 
 # ---------------------------------------------------------------------
 # [1] preflight
@@ -384,15 +393,35 @@ persist_source_tree() {
     return
   fi
   log "installing a persistent copy of the vpn1 source to $PERSIST_DIR (for future updates/uninstall)..."
-  mkdir -p "$PERSIST_DIR"
-  # Explicit, not left to umask: this tree is later run as root by
-  # /opt/vpn1/bin/vpn1-uninstall, which refuses to trust a copy that is
-  # not root-owned and non-group/world-writable — set that state
-  # correctly here rather than relying on whatever umask happened to be
-  # in effect.
-  chown root:root "$PERSIST_DIR"
-  chmod 0755 "$PERSIST_DIR"
-  ( cd "$REPO_ROOT" && tar --exclude=target --exclude=.git -cf - . ) | ( cd "$PERSIST_DIR" && tar -xf - )
+  local parent stage backup="" bad
+  parent="$(dirname "$PERSIST_DIR")"
+  install -d -o root -g root -m 0755 "$parent"
+  stage="$(mktemp -d "$parent/.vpn1-source.XXXXXX")"
+  # Extract first, then normalize metadata restored by tar. chmod go-w
+  # deliberately preserves every executable bit from the source.
+  if ! ( cd "$REPO_ROOT" && tar --exclude=target --exclude=.git -cf - . ) | ( cd "$stage" && tar -xf - ); then
+    rm -rf "$stage"
+    return 1
+  fi
+  chown -R root:root "$stage"
+  chmod -R go-w "$stage"
+  bad="$(find "$stage" \( ! -user root -o -perm /022 \) -print -quit)"
+  if [ -n "$bad" ]; then
+    echo "[install] ERROR: persisted source trust validation failed at a sanitized relative path." >&2
+    rm -rf "$stage"
+    return 1
+  fi
+  if [ -e "$PERSIST_DIR" ]; then
+    backup="$(mktemp -d "$parent/.vpn1-previous.XXXXXX")"
+    rmdir "$backup"
+    mv "$PERSIST_DIR" "$backup"
+  fi
+  if ! mv "$stage" "$PERSIST_DIR"; then
+    [ -n "$backup" ] && mv "$backup" "$PERSIST_DIR"
+    rm -rf "$stage"
+    return 1
+  fi
+  [ -z "$backup" ] || rm -rf "$backup"
   REPO_ROOT="$PERSIST_DIR"
 }
 
@@ -2261,8 +2290,11 @@ lifecycle_gate_abort_hook() {
 
 main() {
   parse_cli_args "$@"
+  VPN1_STAGE=preflight
   preflight_stage
+  VPN1_STAGE=packages
   packages_stage
+  VPN1_STAGE=host-configuration
   host_config_stage
   binaries_stage
   check_state_schema
