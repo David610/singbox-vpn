@@ -9,7 +9,6 @@ set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 
 command -v firewall-cmd >/dev/null 2>&1 || { echo "firewalld not installed" >&2; exit 1; }
-systemctl is-active --quiet firewalld || systemctl start firewalld
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 log() { echo "[firewall] $*"; }
@@ -20,6 +19,29 @@ die() { echo "[firewall] ERROR: $*" >&2; exit 1; }
 
 SUBSCRIPTION_PORT="${SUBSCRIPTION_PORT:-8443}"
 preflight_validate_port "$SUBSCRIPTION_PORT" "SUBSCRIPTION_PORT" || die "invalid SUBSCRIPTION_PORT."
+
+# Never assume SSH is on 22 (docs/FINAL_PRODUCTION_AUDIT.md P0-10):
+# `--add-service=ssh` only covers the well-known port 22, so a custom
+# sshd port must be added explicitly BEFORE this firewall goes
+# effectively default-deny, or the operator's current session gets
+# locked out. preflight_resolve_ssh_port() (deploy/lib/preflight.sh) is
+# the single canonical implementation shared with install.sh/
+# firewall-ufw.sh: it honours an explicit SSH_PORT/--ssh-port override
+# and otherwise auto-detects. FAILS CLOSED (checkpoint-1 requirement):
+# if detection is inconclusive and no override was supplied, this
+# refuses to touch the firewall at all rather than falling back to 22.
+# Resolved BEFORE firewalld is ever started below — this script is also
+# callable standalone (not only via install.sh, which already activates
+# firewalld SSH-safely in packages_stage), so the same ordering
+# guarantee has to hold here too.
+SSH_PORT="$(preflight_resolve_ssh_port)" || die "could not positively determine the real SSH port (checked sshd -T, sshd_config, and live listeners — all inconclusive), and no SSH_PORT override was supplied. Refusing to activate/reload the firewall — re-run with SSH_PORT=<port> set to sshd's real listening port (install.sh's --ssh-port does this for you)."
+log "confirmed SSH port: $SSH_PORT"
+
+FIREWALLD_WAS_INACTIVE=0
+systemctl is-active --quiet firewalld || FIREWALLD_WAS_INACTIVE=1
+if [ "$FIREWALLD_WAS_INACTIVE" -eq 1 ]; then
+  systemctl start firewalld
+fi
 
 ZONE="$(firewall-cmd --get-default-zone)"
 OWNERSHIP_STATE="/var/lib/vpn1/firewall-owned.env"
@@ -36,14 +58,12 @@ if [ -f "$OWNERSHIP_STATE" ]; then
   fi
 fi
 
-# Never assume SSH is on 22 (docs/FINAL_PRODUCTION_AUDIT.md P0-10):
-# `--add-service=ssh` only covers the well-known port 22, so a custom
-# sshd port must be added explicitly BEFORE this firewall goes
-# effectively default-deny, or the operator's current session gets
-# locked out.
-SSH_PORT="$(preflight_detect_ssh_port)" || warn "could not positively detect the real SSH port; falling back to 22. If sshd listens on a different port, this firewall change may lock you out — verify before disconnecting."
-log "detected SSH port: $SSH_PORT"
-
+# The very first firewall-cmd calls after a fresh activation above must
+# be the SSH-allow rules — before anything else touches this zone.
+firewall-cmd --zone="$ZONE" --add-service=ssh >/dev/null 2>&1 || true
+if [ "$SSH_PORT" != "22" ]; then
+  firewall-cmd --zone="$ZONE" --add-port="${SSH_PORT}/tcp" >/dev/null 2>&1 || true
+fi
 firewall-cmd --zone="$ZONE" --permanent --add-service=ssh
 if [ "$SSH_PORT" != "22" ]; then
   firewall-cmd --zone="$ZONE" --permanent --add-port="${SSH_PORT}/tcp"

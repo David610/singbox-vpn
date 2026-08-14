@@ -56,6 +56,53 @@ and `deploy/lib/fast-gate.sh` already scope to the supported crates only.
 Splitting the workspace-wide CI jobs would touch CI trust/release
 plumbing for a runner-minutes-only win; deferred.
 
+## Checkpoint 1 (SSH/firewall/rollback safety) — completed this session
+
+- **SSH/firewall ordering fixed**: firewalld used to be activated
+  (`systemctl enable --now firewalld`) in `packages_stage` with only its
+  distro-default rules (which cover the `ssh` **service**, i.e. port 22
+  only), 12 stages before `firewall_stage` added a custom sshd port —
+  an active window where a custom-port SSH session/new connections
+  could be locked out. Fixed: `activate_firewalld_ssh_safe()`
+  (`deploy/almalinux/install.sh`) starts firewalld and adds the
+  confirmed SSH port's allow rule(s) as one atomic sequence, and never
+  touches an already-active firewalld's existing configuration.
+  `deploy/almalinux/firewall.sh` (also independently invocable) applies
+  the same ordering when run standalone.
+- **SSH port detection now fails closed**: `preflight_detect_ssh_port()`
+  (`deploy/lib/preflight.sh`) no longer falls back to 22 when `sshd -T`/
+  `sshd_config`/live-listener detection is all inconclusive — it returns
+  1 with nothing printed. New canonical `preflight_resolve_ssh_port()`
+  is the single implementation used by `install.sh`, `firewall.sh`, and
+  `firewall-ufw.sh`; it accepts an explicit `VPN1_SSH_PORT` override
+  (`install.sh --ssh-port PORT` / `VPN1_SSH_PORT=`), validated via
+  `preflight_validate_port`. Inconclusive detection with no override now
+  `die`s before any firewall mutation, naming the fix.
+- **Rollback ownership tracking now starts before the first mutation**:
+  `ownership_mark INSTALL_ATTEMPTED` / `ownership_set_baseline_once
+  OPT_VPN1_PRE_EXISTED` used to run AFTER `persist_source_tree` (creates
+  `/opt/vpn1`) and `install_idn_support` (installs `libidn2` on RHEL) —
+  a failure inside either mutation looked like "nothing mutated yet" to
+  `on_fatal_error`'s rollback trap and left it stranded. Both now run
+  before those two calls in `preflight_stage`.
+- IDN normalization (`чёрт.com` -> `xn--p1aen4b.com`) re-verified
+  end-to-end with a real `idn2` binary installed in the dev sandbox
+  (`deploy/lib/tests/test-idn-punycode.sh`) — `install_idn_support()`
+  (installs `libidn2` for the RHEL family) already ran before
+  `resolve_host_config()` in `preflight_stage`; added static regression
+  coverage for that ordering plus the rhel-family package name.
+- New/extended tests (`deploy/lib/tests/test-installer-hardening.sh`,
+  `test-preflight-ordering.sh`, `test-idn-punycode.sh`): SSH detection
+  on port 22/2222 (mocked `sshd -T`), fixture `sshd_config`, fail-closed
+  with no override, explicit-override accept/reject, listener-fallback
+  code path (structural — real match needs a real `sshd` process,
+  UNVERIFIED), firewall.sh/firewall-ufw.sh fail-closed + canonical-call
+  checks, `activate_firewalld_ssh_safe()` ordering/preservation checks,
+  ownership-mark-before-first-mutation ordering.
+- **UNVERIFIED** (no disposable AlmaLinux 9 host available this
+  session): real custom-SSH-port lockout avoidance on a live host;
+  `deploy/almalinux/lifecycle-acceptance.sh` was not run.
+
 ## Completed checkpoints (one line each — see git log for detail)
 
 1. v1.0 boundary + supported code surface documented (`docs/SUPPORTED_PRODUCT.md`).

@@ -35,9 +35,15 @@ fi
 
 # Never let this script be the reason SSH access is lost. Don't assume
 # port 22 (docs/FINAL_PRODUCTION_AUDIT.md P0-10): `ufw allow OpenSSH`
-# only covers the well-known port 22.
-SSH_PORT="$(preflight_detect_ssh_port)" || warn "could not positively detect the real SSH port; falling back to 22. If sshd listens on a different port, this firewall change may lock you out — verify before disconnecting."
-log "detected SSH port: $SSH_PORT"
+# only covers the well-known port 22. preflight_resolve_ssh_port()
+# (deploy/lib/preflight.sh) is the single canonical implementation
+# shared with install.sh/firewall.sh: it honours an explicit
+# SSH_PORT/--ssh-port override and otherwise auto-detects. FAILS CLOSED
+# (checkpoint-1 requirement): if detection is inconclusive and no
+# override was supplied, this refuses to touch the firewall at all
+# rather than falling back to 22.
+SSH_PORT="$(preflight_resolve_ssh_port)" || die "could not positively determine the real SSH port (checked sshd -T, sshd_config, and live listeners — all inconclusive), and no SSH_PORT override was supplied. Refusing to enable/reload the firewall — re-run with SSH_PORT=<port> set to sshd's real listening port (install.sh's --ssh-port does this for you)."
+log "confirmed SSH port: $SSH_PORT"
 ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null
 if [ "$SSH_PORT" != "22" ]; then
   ufw allow "${SSH_PORT}/tcp" >/dev/null

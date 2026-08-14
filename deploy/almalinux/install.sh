@@ -108,6 +108,11 @@ NONINTERACTIVE="${NONINTERACTIVE:-0}"
 # IP-derived sslip.io convenience hostname is opt-in only, never a
 # silent non-interactive default. See resolve_host_config().
 ALLOW_IP_HOSTNAME="${VPN1_ALLOW_IP_HOSTNAME:-0}"
+# Explicit operator override for the SSH port used by
+# preflight_resolve_ssh_port() (deploy/lib/preflight.sh) — required
+# whenever automatic detection is inconclusive; see resolve_ssh_port()
+# below. Left empty by default so detection runs first.
+VPN1_SSH_PORT="${VPN1_SSH_PORT:-}"
 # Set definitively inside preflight_stage once existing_install_present()
 # has actually been checked. Defaults to 0 (repair) so that IF the
 # on_fatal_error trap somehow fires before preflight_stage reaches that
@@ -131,6 +136,14 @@ Optional flags (all have environment-variable equivalents):
                                     Required in non-interactive mode — there
                                     is no safe default.
   --subscription-port PORT         same as SUBSCRIPTION_PORT (default 8443)
+  --ssh-port PORT                  same as VPN1_SSH_PORT; explicitly declares
+                                    the port sshd listens on when vpn1 cannot
+                                    positively auto-detect it. Required
+                                    whenever detection is inconclusive — vpn1
+                                    refuses to activate/modify the host
+                                    firewall (and thus never packages_stage's
+                                    firewalld activation) without a confirmed
+                                    SSH port. Never assume 22.
   --non-interactive                never prompt on /dev/tty; fail fast with
                                     a precise error instead of blocking if a
                                     required value (e.g. the REALITY decoy)
@@ -161,6 +174,8 @@ parse_cli_args() {
       --reality-handshake-server=*) REALITY_HANDSHAKE_SERVER="${1#*=}"; shift ;;
       --subscription-port) SUBSCRIPTION_PORT="$2"; shift 2 ;;
       --subscription-port=*) SUBSCRIPTION_PORT="${1#*=}"; shift ;;
+      --ssh-port) VPN1_SSH_PORT="$2"; shift 2 ;;
+      --ssh-port=*) VPN1_SSH_PORT="${1#*=}"; shift ;;
       --non-interactive) NONINTERACTIVE=1; shift ;;
       --allow-ip-hostname) ALLOW_IP_HOSTNAME=1; shift ;;
       -h|--help) print_install_help; exit 0 ;;
@@ -240,6 +255,23 @@ existing_install_present() {
   # foreign sing-box binary or an interrupted partial install must not make
   # us skip conflict checks and overwrite another service.
   [ -f /var/lib/vpn1/install-state.json ]
+}
+
+# Positively determine (or accept an explicit operator override for) the
+# SSH port that must remain reachable through any firewall
+# activation/reload. Runs in stage 1, before packages_stage ever
+# installs/enables firewalld — checkpoint-1 requirement: vpn1 must not
+# activate or meaningfully change a host firewall until this is known.
+# Fails closed (die, zero host mutation) rather than assuming 22 when
+# detection is inconclusive and no override was supplied.
+resolve_ssh_port() {
+  SSH_PORT="$(preflight_resolve_ssh_port)" || die "could not positively determine the SSH port sshd listens on (checked sshd -T, sshd_config, and live listeners — all inconclusive), and no explicit override was supplied. vpn1 refuses to activate or modify the host firewall without a confirmed SSH port — doing so could lock you out of this server. Re-run with --ssh-port <port> (or VPN1_SSH_PORT=<port>) set to sshd's real listening port. Nothing has been mutated on this host yet."
+  export SSH_PORT
+  # Propagate the already-confirmed value as the canonical override for
+  # firewall.sh/firewall-ufw.sh (invoked as subprocesses later, in
+  # firewall_stage) so they reuse this exact resolution instead of
+  # re-running detection independently and potentially drifting from it.
+  export VPN1_SSH_PORT="$SSH_PORT"
 }
 
 # The subscription HTTPS port is operator-configurable (SUBSCRIPTION_PORT,
@@ -402,6 +434,12 @@ preflight_stage() {
   preflight_check_connectivity "https://github.com"
   preflight_check_dns "github.com"
   check_ports_free
+  # Positively determine the SSH port BEFORE packages_stage ever
+  # installs/activates firewalld — see resolve_ssh_port() above. Purely
+  # read-only (detection) or a validated operator-supplied value; no
+  # host mutation happens here.
+  resolve_ssh_port
+  log "confirmed SSH port: $SSH_PORT — will remain allowed through any firewall activation vpn1 performs."
   if existing_install_present; then
     log "existing vpn1 installation detected at $DEPLOYMENT_TOML — this run will UPGRADE/REPAIR in place, preserving users and keys."
     IS_FRESH_INSTALL=0
@@ -409,6 +447,18 @@ preflight_stage() {
     log "no existing installation detected — this will be a fresh install."
     IS_FRESH_INSTALL=1
   fi
+  # ---------------------------------------------------------------
+  # Rollback/ownership tracking must be active BEFORE the first
+  # persistent host mutation (checkpoint-1 requirement) — mark/baseline
+  # HERE, before persist_source_tree/install_idn_support below, which are
+  # the first two mutations this script performs. Previously these were
+  # marked only after persist_source_tree and install_idn_support had
+  # already run, so a failure inside either of them looked like "nothing
+  # was mutated yet" to on_fatal_error's rollback trap and left that
+  # mutation stranded on disk instead of being rolled back.
+  # ---------------------------------------------------------------
+  ownership_mark INSTALL_ATTEMPTED
+  ownership_set_baseline_once OPT_VPN1_PRE_EXISTED "$OPT_VPN1_PRE_EXISTED"
   persist_source_tree
   # ---------------------------------------------------------------
   # Collect and validate EVERY required operator input and fatal
@@ -424,8 +474,6 @@ preflight_stage() {
   install_idn_support
   resolve_host_config
   resolve_reality_handshake_server
-  ownership_mark INSTALL_ATTEMPTED
-  ownership_set_baseline_once OPT_VPN1_PRE_EXISTED "$OPT_VPN1_PRE_EXISTED"
   # Write the install-state manifest NOW (acceptance="installing"), not
   # only at the very end — a fatal failure at ANY later stage still
   # leaves repo_root/public_host/subscription_host/firewall_backend on
@@ -483,7 +531,43 @@ install_dependencies_rhel() {
   ownership_set_baseline_once FIREWALLD_PRE_ENABLED "$(systemctl is-enabled --quiet firewalld 2>/dev/null && echo 1 || echo 0)"
   record_package_ownership_rhel "${pkgs[@]}"
   dnf install -y --setopt=install_weak_deps=False "${pkgs[@]}" >/dev/null
-  systemctl enable --now firewalld >/dev/null
+  activate_firewalld_ssh_safe
+}
+
+# Activates firewalld with the confirmed SSH port ($SSH_PORT, resolved in
+# preflight_stage — stage 1 — before this ever runs) explicitly allowed
+# as part of the SAME activation sequence, never as a bare `systemctl
+# enable --now firewalld` followed later by an SSH-allow rule. That
+# ordering (which this replaces) let firewalld go active with only its
+# distro-default rules — which permit the `ssh` **service**, i.e. port 22
+# only — well before firewall_stage (previously stage 14) got around to
+# allowing a custom sshd port, closing an active SSH session or new
+# connections to it in between.
+#
+# If firewalld was already active before vpn1 touched this host, its
+# existing configuration is left completely alone here (checkpoint-1
+# requirement: preserve pre-existing firewall state, never re-activate
+# or flush it) — firewall_stage (deploy/almalinux/firewall.sh) still adds
+# vpn1's own rules on top of it later, unchanged.
+activate_firewalld_ssh_safe() {
+  if systemctl is-active --quiet firewalld 2>/dev/null; then
+    log "firewalld is already active on this host — preserving its existing configuration as-is, not re-activating it."
+    return
+  fi
+  : "${SSH_PORT:?activate_firewalld_ssh_safe called before SSH_PORT was resolved in preflight_stage — refusing to activate the firewall.}"
+  log "activating firewalld with SSH port ${SSH_PORT}/tcp explicitly allowed as part of this same activation..."
+  systemctl start firewalld
+  local zone
+  zone="$(firewall-cmd --get-default-zone)"
+  firewall-cmd --zone="$zone" --add-service=ssh >/dev/null 2>&1 || true
+  firewall-cmd --zone="$zone" --permanent --add-service=ssh >/dev/null 2>&1 || true
+  if [ "$SSH_PORT" != "22" ]; then
+    firewall-cmd --zone="$zone" --add-port="${SSH_PORT}/tcp" >/dev/null 2>&1
+    firewall-cmd --zone="$zone" --permanent --add-port="${SSH_PORT}/tcp" >/dev/null 2>&1
+  fi
+  firewall-cmd --reload >/dev/null 2>&1
+  systemctl enable firewalld >/dev/null
+  log "firewalld active on zone '$zone'; SSH port ${SSH_PORT}/tcp confirmed allowed before any further firewall changes."
 }
 
 install_dependencies_debian() {
@@ -1061,11 +1145,13 @@ directories_stage() {
 # remove EXACTLY that rule again afterwards — never touching any
 # pre-existing firewall rule vpn1 did not add itself
 # (docs/FINAL_PRODUCTION_AUDIT.md P0-9). firewalld/ufw are already
-# enabled by packages_stage (stage 2) with distro-default deny rules by
-# the time this runs, and vpn1's own permanent rules (443/tcp+udp plus
+# active by the time this runs — packages_stage (stage 2) activates
+# firewalld itself, but only via activate_firewalld_ssh_safe(), which
+# allows the confirmed SSH port as part of that same activation (see its
+# comment) — and vpn1's own permanent rules (443/tcp+udp plus
 # SUBSCRIPTION_PORT, never 80) aren't added until firewall_stage (stage
-# 13) — so without
-# this, certbot's challenge has no way to receive inbound traffic.
+# 14) — so without this, certbot's challenge has no way to receive
+# inbound traffic.
 TEMP_PORT80_ADDED=0
 firewall_open_port_80_temp() {
   TEMP_PORT80_ADDED=0

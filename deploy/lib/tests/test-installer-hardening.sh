@@ -50,7 +50,33 @@ else
 fi
 
 echo
-echo "--- functional: preflight_detect_ssh_port() falls back to 22 (with rc=1) when nothing is detectable ---"
+echo "--- functional: preflight_detect_ssh_port() prefers 'sshd -T' (effective config) — mocked for port 22 and port 2222 ---"
+MOCK_BIN_DIR="$TMPDIR_TEST/mockbin"
+mkdir -p "$MOCK_BIN_DIR"
+for want_port in 22 2222; do
+  cat > "$MOCK_BIN_DIR/sshd" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = "-T" ] && echo "port $want_port"
+EOF
+  chmod +x "$MOCK_BIN_DIR/sshd"
+  port_out=""
+  rc=0
+  port_out="$(
+    PATH="$MOCK_BIN_DIR:$PATH"
+    # shellcheck disable=SC1090
+    . "$PREFLIGHT_SH"
+    SSHD_CONFIG_FILE="$TMPDIR_TEST/does-not-exist-config"
+    preflight_detect_ssh_port
+  )" || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$port_out" = "$want_port" ]; then
+    ok "preflight_detect_ssh_port() reads port $want_port from a mocked 'sshd -T'"
+  else
+    fail "preflight_detect_ssh_port() did not read mocked 'sshd -T' port $want_port (rc=$rc, got '$port_out')"
+  fi
+done
+
+echo
+echo "--- functional: preflight_detect_ssh_port() FAILS CLOSED (rc=1, nothing printed) when nothing is detectable — no fallback to 22 ---"
 rc=0
 port_out="$(
   # shellcheck disable=SC1090
@@ -58,27 +84,141 @@ port_out="$(
   SSHD_CONFIG_FILE="$TMPDIR_TEST/does-not-exist"
   preflight_detect_ssh_port
 )" || rc=$?
-if [ "$rc" -eq 1 ] && [ "$port_out" = "22" ]; then
-  ok "preflight_detect_ssh_port() falls back to 22 with rc=1 (loud, not silent) when undetectable"
+if [ "$rc" -eq 1 ] && [ -z "$port_out" ]; then
+  ok "preflight_detect_ssh_port() fails closed (rc=1, no port printed) when undetectable — never guesses 22"
 else
-  fail "preflight_detect_ssh_port() fallback behavior changed (rc=$rc, got '$port_out')"
+  fail "preflight_detect_ssh_port() fail-closed behavior changed (rc=$rc, got '$port_out')"
 fi
 
 echo
-echo "--- static: firewall.sh/firewall-ufw.sh both call preflight_detect_ssh_port() and never hardcode 22 as the only rule ---"
+echo "--- functional: preflight_resolve_ssh_port() also fails closed when detection is inconclusive and no override is given ---"
+rc=0
+port_out="$(
+  # shellcheck disable=SC1090
+  . "$PREFLIGHT_SH"
+  SSHD_CONFIG_FILE="$TMPDIR_TEST/does-not-exist"
+  unset VPN1_SSH_PORT
+  preflight_resolve_ssh_port
+)" || rc=$?
+if [ "$rc" -ne 0 ] && [ -z "$port_out" ]; then
+  ok "preflight_resolve_ssh_port() fails closed with no override and inconclusive detection"
+else
+  fail "preflight_resolve_ssh_port() did not fail closed (rc=$rc, got '$port_out')"
+fi
+
+echo
+echo "--- functional: preflight_resolve_ssh_port() honours an explicit VPN1_SSH_PORT override even when detection would fail ---"
+rc=0
+port_out="$(
+  # shellcheck disable=SC1090
+  . "$PREFLIGHT_SH"
+  SSHD_CONFIG_FILE="$TMPDIR_TEST/does-not-exist"
+  VPN1_SSH_PORT="2222"
+  preflight_resolve_ssh_port
+)" || rc=$?
+if [ "$rc" -eq 0 ] && [ "$port_out" = "2222" ]; then
+  ok "preflight_resolve_ssh_port() uses the explicit VPN1_SSH_PORT override"
+else
+  fail "preflight_resolve_ssh_port() did not honour the override (rc=$rc, got '$port_out')"
+fi
+
+echo
+echo "--- functional: preflight_resolve_ssh_port() rejects an invalid VPN1_SSH_PORT override ---"
+for bad in "0" "70000" "notaport" "22; rm -rf /"; do
+  rc=0
+  port_out="$(
+    # shellcheck disable=SC1090
+    . "$PREFLIGHT_SH"
+    VPN1_SSH_PORT="$bad"
+    preflight_resolve_ssh_port
+  )" 2>/dev/null || rc=$?
+  if [ "$rc" -ne 0 ] && [ -z "$port_out" ]; then
+    ok "preflight_resolve_ssh_port() rejects invalid override '$bad'"
+  else
+    fail "preflight_resolve_ssh_port() accepted invalid override '$bad' (rc=$rc, got '$port_out')"
+  fi
+done
+
+echo
+echo "--- static: preflight_detect_ssh_port() has a third (listener) fallback that greps 'ss' output for an sshd/ssh-owned socket ---"
+# The listener fallback needs a process actually named sshd/ssh bound to
+# a real port to exercise end-to-end, which this sandbox cannot produce
+# without root and a real sshd — that combination is UNVERIFIED here
+# (see docs/IMPLEMENTATION_STATUS.md); the config-file and override
+# paths above ARE exercised functionally. This checks the code path
+# exists and greps for the right process names.
+if grep -q "ss -H -lntp 2>/dev/null | grep -E 'sshd|\"ssh\"'" "$PREFLIGHT_SH"; then
+  ok "preflight_detect_ssh_port() has a listener-based fallback matching sshd/ssh-owned sockets (live-listener path itself is UNVERIFIED without a real sshd — see docs/IMPLEMENTATION_STATUS.md)"
+else
+  fail "preflight_detect_ssh_port() lost its listener-based fallback"
+fi
+
+echo
+echo "--- static: firewall.sh/firewall-ufw.sh both call preflight_resolve_ssh_port() and never hardcode 22 as the only rule ---"
 for f in "$FIREWALL_SH" "$FIREWALL_UFW_SH"; do
   name="$(basename "$f")"
-  if grep -q 'preflight_detect_ssh_port' "$f"; then
-    ok "$name calls preflight_detect_ssh_port()"
+  if grep -q 'preflight_resolve_ssh_port' "$f"; then
+    ok "$name calls preflight_resolve_ssh_port()"
   else
-    fail "$name does not call preflight_detect_ssh_port() — would assume port 22"
+    fail "$name does not call preflight_resolve_ssh_port() — would assume port 22"
   fi
   if grep -qE '\[ "\$SSH_PORT" != "22" \]' "$f"; then
     ok "$name adds an explicit rule for a detected non-default SSH port"
   else
     fail "$name has no non-default-SSH-port rule path"
   fi
+  if grep -qE 'preflight_resolve_ssh_port\)"\s*\|\|\s*die' "$f"; then
+    ok "$name fails closed (die) rather than falling back to 22 when SSH port resolution fails"
+  else
+    fail "$name does not fail closed on inconclusive SSH port resolution"
+  fi
 done
+
+echo
+echo "--- static: install.sh resolves the SSH port in preflight_stage (stage 1), strictly before packages_stage ever activates firewalld ---"
+if grep -qE '^\s*resolve_ssh_port$' "$INSTALL_SH"; then
+  ok "install.sh calls resolve_ssh_port()"
+else
+  fail "install.sh no longer calls resolve_ssh_port()"
+fi
+preflight_body_ssh="$(sed -n '/^preflight_stage() {/,/^}/p' "$INSTALL_SH")"
+if echo "$preflight_body_ssh" | grep -qE '^\s*resolve_ssh_port$'; then
+  ok "resolve_ssh_port() runs inside preflight_stage (stage 1)"
+else
+  fail "resolve_ssh_port() does not run inside preflight_stage"
+fi
+if grep -qE -- '--ssh-port\) VPN1_SSH_PORT=' "$INSTALL_SH"; then
+  ok "--ssh-port is a real recognized CLI flag wired to VPN1_SSH_PORT"
+else
+  fail "--ssh-port flag is not wired into parse_cli_args()"
+fi
+
+echo
+echo "--- static: firewalld is only ever activated via activate_firewalld_ssh_safe(), which allows the confirmed SSH port before/at the same activation as enabling it ---"
+if grep -qE 'systemctl enable --now firewalld' "$INSTALL_SH"; then
+  fail "install.sh still contains a bare 'systemctl enable --now firewalld' — this is exactly the unsafe ordering (activates before SSH port is allowed)"
+else
+  ok "install.sh no longer bare-activates firewalld outside the SSH-safe helper"
+fi
+activate_body="$(sed -n '/^activate_firewalld_ssh_safe() {/,/^}/p' "$INSTALL_SH")"
+start_line="$(echo "$activate_body" | grep -n '^\s*systemctl start firewalld\s*$' | head -n1 | cut -d: -f1)"
+ssh_rule_line="$(echo "$activate_body" | grep -n 'add-service=ssh\|add-port="\${SSH_PORT}' | head -n1 | cut -d: -f1)"
+if [ -n "$start_line" ] && [ -n "$ssh_rule_line" ] && [ "$start_line" -lt "$ssh_rule_line" ]; then
+  ok "activate_firewalld_ssh_safe() starts firewalld, then immediately adds the SSH-allow rule(s), before any other firewall change"
+else
+  fail "activate_firewalld_ssh_safe() does not clearly order 'start firewalld' before 'allow SSH' (start=$start_line, ssh_rule=$ssh_rule_line)"
+fi
+if echo "$activate_body" | grep -q 'is-active --quiet firewalld'; then
+  ok "activate_firewalld_ssh_safe() checks whether firewalld was already active and preserves its existing config in that case"
+else
+  fail "activate_firewalld_ssh_safe() does not guard against re-activating an already-active (pre-existing) firewalld"
+fi
+install_deps_rhel_body2="$(sed -n '/^install_dependencies_rhel() {/,/^}/p' "$INSTALL_SH")"
+if echo "$install_deps_rhel_body2" | grep -q 'activate_firewalld_ssh_safe'; then
+  ok "install_dependencies_rhel() (packages_stage) activates firewalld only through the SSH-safe helper"
+else
+  fail "install_dependencies_rhel() does not call activate_firewalld_ssh_safe()"
+fi
 
 echo
 echo "--- static: firewall ownership of pre-existing state is captured before any firewall mutation ---"
