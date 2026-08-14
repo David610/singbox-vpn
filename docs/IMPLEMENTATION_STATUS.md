@@ -56,6 +56,76 @@ and `deploy/lib/fast-gate.sh` already scope to the supported crates only.
 Splitting the workspace-wide CI jobs would touch CI trust/release
 plumbing for a runner-minutes-only win; deferred.
 
+## Checkpoint 6 (release/bootstrap/documentation consistency, first-release readiness) — completed this session
+
+Audit found the release contract itself (installer/updater/CI agreement on
+source, binaries, sing-box pin, single-version resolution) already
+internally consistent and documented honestly — Checkpoints 1-5 and the
+prior "Checkpoint 9" (see "Completed checkpoints" below) had already fixed
+the real defects there (unverified bootstrap source, mixed-release
+binaries, no-release stable-channel fallback). Two real, previously
+unverified defects were found and fixed in `.github/workflows/release.yml`
+itself, which had never been exercised by a real tag push:
+
+- **`workflow_dispatch` could build/publish a mismatched commit**: the
+  `build` job's `actions/checkout@v4` has no explicit `ref:`, so it checks
+  out `github.sha` — for `workflow_dispatch` that is whichever ref the
+  operator selected in the "Use workflow from" dropdown, **not**
+  necessarily the tag named in the `tag` input. A release triggered this
+  way could silently build current-branch HEAD while labeling/publishing
+  it as an unrelated version tag (Checkpoint 6 §8's exact failure mode).
+  Fixed with a new `validate-tag` job that fails closed unless
+  `github.ref_type == 'tag' && github.ref_name == inputs.tag`.
+- **Release publication was never gated by CI**: `release.yml` built and
+  published from a green compile alone — a red `fmt`/`clippy`/`test`/
+  `shellcheck`/`cargo audit`/`singbox-validate`/real-interop run at the
+  tagged commit would not have blocked publication (Checkpoint 6 §9's
+  requirement). Fixed by adding `workflow_call:` to `ci.yml`'s triggers
+  (additive; does not change its existing `push`/`pull_request` behavior)
+  and a new `gate` job in `release.yml` that calls `ci.yml` as a reusable
+  workflow; `build` now `needs: [gate]`. This reuses the canonical job
+  graph instead of duplicating any check.
+- **A release candidate could be silently auto-installed as "latest
+  stable"**: `install.sh`'s stable channel resolves `/releases/latest`,
+  which GitHub already excludes prereleases from — but `release.yml`
+  never set `prerelease:` on the GitHub Release it publishes. Fixed:
+  `prerelease: ${{ contains(tag, '-') }}` marks any SemVer-prerelease tag
+  (e.g. `v1.0.0-rc.1`) as a GitHub prerelease, so only an explicit
+  `--version v1.0.0-rc.1` pin resolves it — a normal stable install can
+  never land on an RC by surprise (Checkpoint 6 §19).
+
+All three are `VERIFIED-CODE` (read/YAML-lint verified; the actual
+GitHub Actions execution of `release.yml` remains `UNVERIFIED` — this
+repository has never pushed a real tag). Static regression coverage
+for all three was added to
+`deploy/lib/tests/test-release-archive-contract.sh` — `VERIFIED-TEST`.
+
+`docs/PRODUCTION_ACCEPTANCE_REPORT.md` had one stale claim ("falls back
+to `main` with an explicit warning if no release has been tagged yet")
+left over from before the no-release-fallback behavior was fixed (prior
+session, see "Completed checkpoints" #9 below) — corrected to match the
+current fail-closed bootstrap. Every other audited doc (README,
+`docs/SUPPORTED_PRODUCT.md`, `docs/ALMALINUX_DEPLOYMENT.md`, this file)
+already stated the current behavior consistently; no other drift found.
+`docs/FINAL_PRODUCTION_AUDIT.md`'s similar-sounding old claim was left
+alone — it is explicitly commit-pinned/dated as a historical audit
+document, not live operator documentation.
+
+**First release version**: no tag has ever been pushed. Given the
+destructive AlmaLinux lifecycle gate and all real-device acceptance
+(`docs/DEVICE_ACCEPTANCE_TESTS.md`) remain `UNVERIFIED` (no disposable
+host/device available in any session so far), a final `v1.0.0` tag would
+overclaim. The evidence supports, at most, a **release candidate**
+(e.g. `v1.0.0-rc.1`) — an immutable artifact to actually run the
+lifecycle/device acceptance passes against, now that `release.yml` is
+gated and tag/commit-correct. No tag was pushed this session: publication
+requires explicit authorization per this checkpoint's own instructions,
+which was not given.
+
+**Working tree**: clean before and after this checkpoint's edits; all
+changes committed to `claude/vpn1-release-readiness-c538l9`. See git log
+for the exact commit.
+
 ## Checkpoint 5 (repair/harden the destructive lifecycle acceptance harness) — completed this session
 
 `deploy/almalinux/lifecycle-acceptance.sh` had six real defects making a

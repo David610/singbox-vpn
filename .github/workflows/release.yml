@@ -24,7 +24,40 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Checkpoint 6 §8: a manual workflow_dispatch run must build the exact
+  # tagged commit it claims to publish, never whatever ref happened to
+  # trigger the run. `actions/checkout@v4` with no explicit `ref:` checks
+  # out `github.sha`, which for workflow_dispatch is whichever branch/tag
+  # the operator selected in the "Use workflow from" dropdown — NOT
+  # necessarily the tag named in the `tag` input. Refuse to proceed unless
+  # they match, instead of silently building/publishing a mismatch.
+  validate-tag:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Confirm dispatch ref is the requested tag
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_type }}" != "tag" ] || [ "${{ github.ref_name }}" != "${{ github.event.inputs.tag }}" ]; then
+            echo "::error::workflow_dispatch was run from ref '${{ github.ref_name }}' (type: ${{ github.ref_type }}), but the 'tag' input requested '${{ github.event.inputs.tag }}'. Re-run this workflow using the 'Use workflow from' dropdown set to the '${{ github.event.inputs.tag }}' tag itself, so the built commit and the published tag are guaranteed to match."
+            exit 1
+          fi
+          echo "ok: dispatched from tag ${{ github.ref_name }}, matches requested tag ${{ github.event.inputs.tag }}"
+
+  # Checkpoint 6 §9: a release must not be publishable merely because
+  # binaries compiled — it must pass the same gate as every other change
+  # (fmt, clippy, workspace tests, shellcheck, cargo audit, secret-logging,
+  # release archive contract, real pinned sing-box interop). Reusing
+  # ci.yml as a reusable workflow (workflow_call) keeps this as one
+  # canonical job graph instead of a second, driftable copy.
+  gate:
+    needs: [validate-tag]
+    if: always() && (needs.validate-tag.result == 'success' || needs.validate-tag.result == 'skipped')
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: [gate]
     strategy:
       fail-fast: false
       matrix:
@@ -153,6 +186,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          # GitHub's "latest release" resolution (which install.sh's
+          # resolve_version() queries via /releases/latest) skips any
+          # release marked prerelease. A tag containing a SemVer
+          # prerelease segment (e.g. v1.0.0-rc.1) is marked as such here
+          # so a release candidate can never be silently auto-installed by
+          # a normal stable `curl | sudo bash` run — only an explicit
+          # `--version v1.0.0-rc.1` pin resolves it (Checkpoint 6 §19).
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS

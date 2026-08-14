@@ -134,6 +134,27 @@ else
 fi
 
 echo
+echo "--- static: release workflow is gated by CI and validates workflow_dispatch tag/ref ---"
+if grep -q 'uses: \./\.github/workflows/ci\.yml' "$RELEASE_YML" && grep -qE '^\s*build:\s*$' "$RELEASE_YML" && grep -q 'needs: \[gate\]' "$RELEASE_YML"; then
+  echo "ok: build job depends on the 'gate' job, which reuses ci.yml as a reusable workflow"
+else
+  echo "FAIL: release.yml's build job is not gated on ci.yml passing (Checkpoint 6 §9)"
+  failures=$((failures + 1))
+fi
+if grep -q "github.ref_name.*github.event.inputs.tag" "$RELEASE_YML"; then
+  echo "ok: release.yml validates that a workflow_dispatch run's ref matches the requested tag before building"
+else
+  echo "FAIL: release.yml does not validate workflow_dispatch ref == requested tag — could build/publish a mismatched commit (Checkpoint 6 §8)"
+  failures=$((failures + 1))
+fi
+if grep -q "prerelease: \${{ contains(" "$RELEASE_YML"; then
+  echo "ok: release.yml marks SemVer-prerelease tags (e.g. -rc.1) as GitHub prereleases, so install.sh's stable /releases/latest resolution never auto-selects one"
+else
+  echo "FAIL: release.yml does not mark prerelease tags as prerelease — an RC could be silently auto-installed by the stable channel (Checkpoint 6 §19)"
+  failures=$((failures + 1))
+fi
+
+echo
 if [ "$failures" -gt 0 ]; then
   echo "$failures test(s) FAILED"
   exit 1

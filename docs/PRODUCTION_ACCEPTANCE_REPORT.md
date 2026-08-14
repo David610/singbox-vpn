@@ -154,8 +154,13 @@ curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sud
 ```
 
 Resolves the latest stable tagged release if one exists (source + binaries
-from the same tag, never mixed); falls back to `main` with an explicit
-warning if no release has been tagged yet. Version-pinned form:
+from the same tag, never mixed). If no release has been tagged yet, the
+default (stable) channel refuses to run rather than falling back to `main`
+— see `docs/IMPLEMENTATION_STATUS.md` and the top-level README for the
+current no-release-yet behavior and the explicit `VPN1_CHANNEL=dev`
+development-only escape hatch. This paragraph described an earlier,
+now-superseded behavior; corrected to match the current fail-closed
+bootstrap. Version-pinned form:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash -s -- --version vX.Y.Z
