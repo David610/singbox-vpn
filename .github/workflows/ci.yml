@@ -113,38 +113,21 @@ jobs:
           sudo apt-get update -y >/dev/null
           sudo apt-get install -y shellcheck jq idn2 >/dev/null
           shellcheck -S warning install.sh uninstall.sh bin/vpn1-uninstall deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
-      - name: vpn-benchmark outbound-discovery unit tests
-        run: bash deploy/lib/tests/test-vpn-benchmark-lib.sh
-      - name: vpn-benchmark set -e / discovery-call-site regression test
-        run: bash deploy/lib/tests/test-vpn-benchmark-set-e-regression.sh
-      - name: perf-tuning rendering/baseline/rollback unit tests
-        run: bash deploy/lib/tests/test-perf-tuning.sh
-      - name: install.sh / update.sh runtime-asset parity check
-        run: bash deploy/lib/tests/test-install-update-parity.sh
-      - name: update.sh conditional sing-box restart + protocol acceptance gate
-        run: bash deploy/lib/tests/test-update-conditional-restart.sh
-      - name: Amazon Linux 2023 detection + curl-minimal handling unit tests
-        run: bash deploy/lib/tests/test-amazon-linux-2023.sh
-      - name: preflight curl-retry (bounded network-blip resilience) unit tests
-        run: bash deploy/lib/tests/test-preflight-curl-retry.sh
-      - name: release archive/checksum contract static test
-        run: bash deploy/lib/tests/test-release-archive-contract.sh
-      - name: installer manifest-timing/idempotency static test
-        run: bash deploy/lib/tests/test-install-manifest-idempotency.sh
-      - name: ownership manifest unit tests
-        run: bash deploy/lib/tests/test-ownership-manifest.sh
-      - name: persistent source-tree trust regression test
-        run: sudo bash deploy/lib/tests/test-persist-source-tree.sh
-      - name: non-interactive single-shot installer rollback regression test
-        run: sudo bash deploy/lib/tests/test-installer-rollback.sh
-      - name: install/uninstall ownership-key parity cross-check
-        run: bash deploy/lib/tests/test-uninstall-ownership-parity.sh
-      - name: preflight-first REALITY/host-config ordering regression test
-        run: bash deploy/lib/tests/test-preflight-ordering.sh
-      - name: IDN/punycode domain handling tests
-        run: bash deploy/lib/tests/test-idn-punycode.sh
-      - name: uninstall idempotency (real script, no-op-only environment)
-        run: sudo bash deploy/lib/tests/test-uninstall-idempotency.sh
+      # Run the complete deterministic suite rather than maintaining a
+      # second hand-written list here. The old list omitted transactional
+      # update, fresh-install acceptance, schema migration, release
+      # reproducibility, and ownership-safe uninstall regressions even
+      # though those tests shipped in this directory. `sudo` is required by
+      # the tests that exercise root-owned staging/uninstall safeguards; all
+      # tests use isolated fixtures and none performs a real host install.
+      - name: deployment lifecycle and shell regression tests
+        run: |
+          set -euo pipefail
+          for test_script in deploy/lib/tests/*.sh; do
+            echo "::group::$test_script"
+            sudo bash "$test_script"
+            echo "::endgroup::"
+          done
 
   secret-logging-check:
     runs-on: ubuntu-latest
