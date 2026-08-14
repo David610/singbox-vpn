@@ -22,7 +22,6 @@ REPO_ROOT="$SRC"
 . "$REPO_ROOT_ACTUAL/deploy/almalinux/install.sh"
 REPO_ROOT="$SRC"
 PERSIST_DIR="$TMP/opt/vpn1"
-OPT_VPN1_PRE_EXISTED=0
 persist_source_tree
 
 [ -x "$PERSIST_DIR/nested/executable.sh" ]

@@ -2312,36 +2312,36 @@ main() {
   preflight_stage
   VPN1_STAGE=packages
   packages_stage
-  VPN1_STAGE=host-configuration
+  VPN1_STAGE="host-configuration"
   host_config_stage
   VPN1_STAGE=binaries
   binaries_stage
-  VPN1_STAGE=state-schema
+  VPN1_STAGE="state-schema"
   check_state_schema
-  VPN1_STAGE=sing-box-install
+  VPN1_STAGE="sing-box-install"
   singbox_install_stage
   lifecycle_gate_abort_hook install_singbox
   VPN1_STAGE=systemd
   systemd_stage
-  VPN1_STAGE=users-groups
+  VPN1_STAGE="users-groups"
   users_groups_stage
   VPN1_STAGE=directories
   directories_stage
   VPN1_STAGE=certificates
   certificates_stage
-  VPN1_STAGE=reality-keys
+  VPN1_STAGE="reality-keys"
   reality_keys_stage
-  VPN1_STAGE=server-config
+  VPN1_STAGE="server-config"
   server_config_stage
   VPN1_STAGE=nginx
   nginx_stage
-  VPN1_STAGE=performance-tuning
+  VPN1_STAGE="performance-tuning"
   perf_tuning_stage
   VPN1_STAGE=firewall
   firewall_stage
   VPN1_STAGE=selinux
   selinux_stage
-  VPN1_STAGE=service-start
+  VPN1_STAGE="service-start"
   start_stage
   VPN1_STAGE=acceptance
   acceptance_stage
