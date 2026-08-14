@@ -51,14 +51,28 @@ ownership_set() {
 ownership_get() {
   local key="$1" default="${2:-}" val
   [ -f "$OWNERSHIP_FILE" ] || { printf '%s' "$default"; return 0; }
-  val="$(grep -E "^${key}=" "$OWNERSHIP_FILE" 2>/dev/null | tail -n1 | sed -E "s/^${key}=\"//; s/\"\$//")"
+  # An absent key is normal.  Keep grep's status out of a command
+  # substitution pipeline: under `set -e -o pipefail`, grep(1)'s ordinary
+  # "no match" status would otherwise terminate the installer.
+  val="$(awk -v key="$key" '
+    index($0, key "=\"") == 1 {
+      value = substr($0, length(key) + 3)
+      sub(/\"$/, "", value)
+      found = value
+    }
+    END { if (found != "") printf "%s", found }
+  ' "$OWNERSHIP_FILE" 2>/dev/null || true)"
   if [ -n "$val" ]; then printf '%s' "$val"; else printf '%s' "$default"; fi
+  return 0
 }
 
 # Boolean fact: once true, callers should never flip it back to false —
 # only ever call this to RECORD "vpn1 did this", never to un-record it.
 ownership_mark() { ownership_set "$1" "1"; }
-ownership_is_marked() { [ "$(ownership_get "$1" "0")" = "1" ]; }
+ownership_is_marked() {
+  [ "$(ownership_get "$1" "0")" = "1" ] && printf '%s' "1" || printf '%s' "0"
+  return 0
+}
 
 # Append a token to a space-separated list-valued key, de-duplicated.
 ownership_list_add() {

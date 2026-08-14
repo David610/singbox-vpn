@@ -425,7 +425,7 @@ fi
 # only vpn1's own paths, so they are always vpn1-owned when present).
 # ---------------------------------------------------------------------
 if command -v semanage >/dev/null 2>&1; then
-  if ownership_is_marked SELINUX_FCONTEXT_RULES_ADDED; then
+  if [ "$(ownership_is_marked SELINUX_FCONTEXT_RULES_ADDED)" = "1" ]; then
     semanage fcontext -d "/usr/local/bin/sing-box" 2>/dev/null || true
     semanage fcontext -d "/etc/vpn/compat/sing-box(/.*)?" 2>/dev/null || true
     semanage fcontext -d "/etc/vpn/compat/hysteria(/.*)?" 2>/dev/null || true
@@ -454,21 +454,21 @@ fi
 # beyond vpn1's own footprint.
 # ---------------------------------------------------------------------
 log "removing vpn1-created service accounts..."
-if ownership_is_marked USER_SINGBOX_CREATED && id sing-box >/dev/null 2>&1; then
+if [ "$(ownership_is_marked USER_SINGBOX_CREATED)" = "1" ] && id sing-box >/dev/null 2>&1; then
   if ! userdel sing-box >/dev/null 2>&1; then
     warn "could not remove user 'sing-box'."
     NONCRITICAL_RESIDUE+=("system user 'sing-box' (vpn1-created) could not be removed — likely still has a running process; retry after 'pkill -u sing-box'")
   fi
   note_removed
 fi
-if ownership_is_marked USER_VPNSUB_CREATED && id vpn-subscription >/dev/null 2>&1; then
+if [ "$(ownership_is_marked USER_VPNSUB_CREATED)" = "1" ] && id vpn-subscription >/dev/null 2>&1; then
   if ! userdel vpn-subscription >/dev/null 2>&1; then
     warn "could not remove user 'vpn-subscription'."
     NONCRITICAL_RESIDUE+=("system user 'vpn-subscription' (vpn1-created) could not be removed — likely still has a running process; retry after 'pkill -u vpn-subscription'")
   fi
   note_removed
 fi
-if ownership_is_marked GROUP_VPNCOMPAT_CREATED && getent group vpn-compat >/dev/null 2>&1; then
+if [ "$(ownership_is_marked GROUP_VPNCOMPAT_CREATED)" = "1" ] && getent group vpn-compat >/dev/null 2>&1; then
   if ! groupdel vpn-compat >/dev/null 2>&1; then
     warn "could not remove group 'vpn-compat' (a pre-existing user may still be a member)."
     NONCRITICAL_RESIDUE+=("group 'vpn-compat' (vpn1-created) could not be removed")
@@ -480,7 +480,7 @@ fi
 # Rust toolchain: remove ONLY if vpn1 installed it (i.e. no toolchain
 # was already present before install.sh ran rustup-init).
 # ---------------------------------------------------------------------
-if ownership_is_marked RUSTUP_INSTALLED_BY_VPN1; then
+if [ "$(ownership_is_marked RUSTUP_INSTALLED_BY_VPN1)" = "1" ]; then
   rustup_home="$(ownership_get RUSTUP_HOME_DIR "/root")"
   if ! ownership_path_is_safe "$rustup_home"; then
     warn "RUSTUP_HOME_DIR in the ownership record ('$rustup_home') is not a safe absolute path — skipping Rust toolchain removal. This indicates a corrupted ownership record; check/remove it manually if it is actually vpn1's."
@@ -661,7 +661,9 @@ if [ -d /opt/vpn1 ] && [ "$opt_vpn1_pre_existed" != "1" ]; then
 fi
 
 if [ "${#CRITICAL_RESIDUE[@]}" -eq 0 ]; then
-  if [ "$REMOVED_ANYTHING" -eq 1 ]; then
+  if [ "${#NONCRITICAL_RESIDUE[@]}" -gt 0 ]; then
+    log "UNINSTALL COMPLETE WITH SAFE RETAINED DEPENDENCIES/AMBIGUOUS ITEMS — critical vpn1 state is gone; see retained items below."
+  elif [ "$REMOVED_ANYTHING" -eq 1 ]; then
     log "UNINSTALL COMPLETE — vpn1 and everything it created have been removed."
   else
     log "UNINSTALL COMPLETE — nothing to remove (vpn1 is not installed, or was already fully uninstalled)."

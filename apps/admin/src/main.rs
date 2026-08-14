@@ -2929,6 +2929,9 @@ fn print_client_acceptance_checklist(
     println!("       (Hiddify Settings — the two modes look similar but only VPN/TUN mode");
     println!("       captures system-wide traffic; \"Proxy Only\" never shows an iOS VPN icon");
     println!("       and never changes your public IP by design).");
+    println!("   [ ] For FULL-TUNNEL verification choose Region=Other / disable RU bypass");
+    println!("       and custom split routes, then reconnect. The subscription cannot override");
+    println!("       Hiddify's global routing policy.");
     println!("2. [ ] iOS granted the \"Allow VPN Configurations\" permission when first asked");
     println!("       (a dismissed/denied prompt fails silently — no error shown in Hiddify).");
     println!("3. [ ] Settings -> General -> VPN & Device Management shows a Hiddify VPN");
@@ -2940,6 +2943,8 @@ fn print_client_acceptance_checklist(
     println!("7. [ ] Select REALITY explicitly in Hiddify's server list (don't rely on auto).");
     println!("8. [ ] Public IPv4 AFTER connecting to REALITY: ______________  (must differ");
     println!("       from step 6 and match this server's public IP)");
+    println!("   [ ] Check both a neutral IP endpoint and a .ru endpoint. If only .ru keeps");
+    println!("       the ISP IP, classify CLIENT REGION BYPASS, not server failure.");
     println!("9. [ ] Disconnect, select Hysteria2 explicitly, reconnect, and repeat the public");
     println!("       IP check for Hysteria2 alone.");
     println!("10.[ ] Tested on Wi-Fi.");
@@ -4613,6 +4618,10 @@ fn run_reality_client_selftest(
     test_user: &CompatUser,
     reality_port: u16,
 ) -> Result<RealitySelfTestOutcome> {
+    // Fence the journal before creating our loopback client. Public scanners
+    // routinely produce the same rejection string and must never be
+    // attributed to this self-test.
+    let journal_cursor = singbox_journal_cursor();
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
 
     // Reserve a free loopback port for the throwaway client's local
@@ -4742,7 +4751,7 @@ fn run_reality_client_selftest(
     }
     if reality_selftest_stderr_or_journal_indicates_rejection(
         &captured_stderr,
-        server_journal_shows_processed_invalid_connection_recently(),
+        server_journal_shows_local_processed_invalid_connection_after(journal_cursor.as_deref()),
     ) {
         return Ok(RealitySelfTestOutcome::HandshakeRejected);
     }
@@ -4805,15 +4814,49 @@ fn reality_selftest_stderr_or_journal_indicates_rejection(
 /// `journalctl`, no permission, non-systemd host) — this never fabricates a
 /// positive result, it only widens what counts as corroborating evidence for
 /// a rejection the caller already suspects from `relay_ok == false`.
-fn server_journal_shows_processed_invalid_connection_recently() -> bool {
+fn singbox_journal_cursor() -> Option<String> {
+    let output = std::process::Command::new("journalctl")
+        .args([
+            "-u",
+            "sing-box",
+            "-n",
+            "0",
+            "--show-cursor",
+            "--no-pager",
+            "-q",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("-- cursor: ").map(str::to_owned))
+}
+
+fn journal_has_local_reality_rejection(text: &str) -> bool {
+    text.lines().any(|line| {
+        line.contains("processed invalid connection")
+            && (line.contains("127.0.0.1") || line.contains("[::1]"))
+    })
+}
+
+fn server_journal_shows_local_processed_invalid_connection_after(cursor: Option<&str>) -> bool {
+    let Some(cursor) = cursor else { return false };
     std::process::Command::new("journalctl")
-        .args(["-u", "sing-box", "--since", "-20s", "--no-pager", "-q"])
+        .args([
+            "-u",
+            "sing-box",
+            "--after-cursor",
+            cursor,
+            "--no-pager",
+            "-q",
+        ])
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .is_some_and(|o| {
-            String::from_utf8_lossy(&o.stdout).contains("processed invalid connection")
-        })
+        .is_some_and(|o| journal_has_local_reality_rejection(&String::from_utf8_lossy(&o.stdout)))
 }
 
 /// See `run_reality_client_selftest`'s doc comment for how these are
@@ -5513,6 +5556,19 @@ mod reality_selftest_classification_tests {
         assert!(!reality_selftest_stderr_or_journal_indicates_rejection(
             "", false,
         ));
+    }
+
+    #[test]
+    fn unrelated_public_scanner_rejection_is_not_attributed_to_selftest() {
+        let journal = "sing-box inbound/reality[0]: [203.0.113.9:50123] REALITY: processed invalid connection";
+        assert!(!journal_has_local_reality_rejection(journal));
+    }
+
+    #[test]
+    fn fenced_loopback_rejection_is_still_detected() {
+        let journal =
+            "sing-box inbound/reality[0]: [127.0.0.1:50123] REALITY: processed invalid connection";
+        assert!(journal_has_local_reality_rejection(journal));
     }
 }
 

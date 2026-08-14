@@ -128,7 +128,7 @@ run_resolve_reality_invalid >/dev/null 2>&1 || rc3=$?
 
 echo
 echo "--- static: an ERR trap installs automatic rollback (transactional install) ---"
-if grep -q "trap on_fatal_error ERR" "$INSTALL_SH" && grep -q "^on_fatal_error()" "$INSTALL_SH"; then
+if grep -qE "trap .*on_fatal_error.* ERR" "$INSTALL_SH" && grep -q "^on_fatal_error()" "$INSTALL_SH"; then
   ok "install.sh installs a global ERR trap that triggers automatic rollback on fatal failure"
 else
   fail "install.sh no longer installs an ERR-trap-based automatic rollback"
