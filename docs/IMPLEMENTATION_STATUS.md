@@ -56,6 +56,73 @@ and `deploy/lib/fast-gate.sh` already scope to the supported crates only.
 Splitting the workspace-wide CI jobs would touch CI trust/release
 plumbing for a runner-minutes-only win; deferred.
 
+## Checkpoint 3 (transactional release-to-release updater) — completed this session
+
+- **Old model (replaced)**: `deploy/almalinux/update.sh` rebuilt
+  whatever source happened to be checked out at `/opt/vpn1` via
+  `cargo build`, unconditionally required Cargo/Rust, never resolved or
+  fetched a target release, never touched the sing-box binary, and
+  never wrote the install-state manifest (so `vpn1_version` went stale
+  after every update).
+- **New model**: `deploy/almalinux/update.sh --version vX.Y.Z` (or
+  `--latest` / `--repair`) is a real STAGE -> PREPARE -> SWITCH ->
+  ACTIVATE -> VERIFY -> COMMIT transaction. Production path requires no
+  Cargo/Rust: it downloads and SHA-256-verifies the target release's
+  source archive (reusing `install.sh`'s bootstrap trust model) and
+  prebuilt binaries (reusing `fetch_release_binaries()`'s asset/
+  checksum contract) into a staging directory under `/opt`, and fails
+  closed with "Nothing live has been changed" if either is missing or
+  fails verification — never a silent fallback to a source build.
+  sing-box is staged/verified and swapped too, only when the target
+  release pins a different version. `--dev-rebuild` (or
+  `VPN1_CHANNEL=dev`) is the explicit, structurally separate escape
+  hatch that keeps the old Cargo-rebuild-from-local-source behavior for
+  development/testing.
+- Source tree swap is an atomic same-filesystem rename
+  (`/opt/vpn1` <-> a staged/previous directory under `/opt`), not an
+  in-place overwrite — the previous release stays fully intact until
+  SWITCH, and rollback renames it straight back.
+- `install-state.json` is only rewritten at COMMIT, strictly after
+  `doctor --protocol --require-protocol` passes — a failed update never
+  updates the authoritative version record.
+- Rollback restores binaries, systemd units, helper scripts, the
+  sing-box binary (if changed), and the previous `/opt/vpn1` source
+  tree, then re-renders (never rewinds) `users.json`/REALITY material
+  with the restored tooling, and reports exactly one of `UPDATE FAILED —
+  PREVIOUS RELEASE RESTORED AND VERIFIED` or `UPDATE FAILED — ROLLBACK
+  ALSO FAILED` (never a bare "update failed").
+- Interrupted-transaction detection: a `TRANSACTION_MARKER` written in
+  PREPARE (before the first live mutation) makes a subsequent
+  invocation refuse with precise recovery instructions instead of
+  starting a new update on top of unknown state; a stale
+  `/opt/.vpn1-update-staging.*`/`/opt/.vpn1-prev-*` directory left by a
+  killed prior run is detected the same way.
+- Same-version requests exit cleanly ("Already at vX.Y.Z...") with zero
+  mutation unless `--repair` is given; `--repair` re-fetches and
+  re-verifies the *currently recorded* release's own material rather
+  than resolving a different version.
+- Transaction-only backups/staging directories are removed on
+  successful commit (never a permanent backup product) and reused
+  (never blindly overwritten) if a prior interrupted transaction is
+  detected first.
+- `deploy/almalinux/lifecycle-acceptance.sh`'s `--update-to-ref` path
+  fixed to actually invoke `update.sh --dev-rebuild` (the old
+  `VPN1_REF=...` env var it passed was silently ignored by update.sh —
+  a genuine tagged-release A->B lifecycle run remains a separate,
+  UNVERIFIED gap pending a first real release, see below).
+- New test file `deploy/lib/tests/test-update-transactional.sh`;
+  extended `test-update-conditional-restart.sh` and
+  `test-state-schema-migration.sh` for the new two-code-path
+  (production/dev-rebuild) structure. All static/source-inspection —
+  update.sh itself needs root/systemd/a real deployment/network access,
+  the same constraint the pre-existing update.sh tests already had.
+- **UNVERIFIED** (no disposable AlmaLinux 9 host, no tagged release
+  published this session): a real release A -> B production update has
+  never been executed end-to-end; every failure-injection scenario
+  listed in the checkpoint spec is verified only by static/structural
+  inspection of the transaction ordering, not by actually killing the
+  process mid-transaction against a live host.
+
 ## Checkpoint 1 (SSH/firewall/rollback safety) — completed this session
 
 - **SSH/firewall ordering fixed**: firewalld used to be activated
@@ -226,6 +293,11 @@ bash deploy/lib/fast-gate.sh
 
 # offline uninstall — no network access needed
 sudo /opt/vpn1/bin/vpn1-uninstall --yes
+
+# production update — transactional, checksum-verified, no Cargo/Rust required
+sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z
+sudo /opt/vpn1/deploy/almalinux/update.sh --latest      # resolve latest stable tag
+sudo /opt/vpn1/deploy/almalinux/update.sh --repair       # reconcile the current release, no version change
 
 # out-of-band recovery — no subscription domain needed
 vpn-admin user links <user_id>

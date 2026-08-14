@@ -60,7 +60,12 @@ fi
 
 echo
 echo "--- static: update.sh also validates/migrates state and dies closed on an unsupported schema ---"
-update_body="$(sed -n '/^log "install mode: UPGRADE/,/^log "rendering current authoritative/p' "$UPDATE_SH")"
+# Checks the PRODUCTION update path (checkpoint 3) — the one this
+# checkpoint's transactional release-to-release updater actually
+# introduced. The separate --dev-rebuild/VPN1_CHANNEL=dev escape hatch
+# has its own equivalent block (an intentional near-verbatim copy of the
+# pre-checkpoint-3 flow) and is not re-checked here.
+update_body="$(sed -n '/^log "install mode: UPDATE/,/^log "rendering current authoritative/p' "$UPDATE_SH")"
 if echo "$update_body" | grep -q 'config validate'; then
   ok "update.sh calls 'vpn-admin config validate' before rendering"
 else

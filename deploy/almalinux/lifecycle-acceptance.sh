@@ -177,11 +177,26 @@ else
 fi
 
 if [ -n "$UPDATE_TO_REF" ]; then
-  section "7. update path -> $UPDATE_TO_REF"
-  if ssh_run "sudo VPN1_REF=$UPDATE_TO_REF /opt/vpn1/deploy/almalinux/update.sh"; then
-    pass "update.sh -> $UPDATE_TO_REF"
+  # No real tagged vpn1 release exists yet to exercise update.sh's actual
+  # production release-to-release transaction (--version/--latest) —
+  # that remains a real-release UNVERIFIED item (see
+  # docs/IMPLEMENTATION_STATUS.md). Until one is published, this
+  # exercises the explicit --dev-rebuild escape hatch instead: check out
+  # $UPDATE_TO_REF's source over /opt/vpn1, then rebuild/redeploy it via
+  # update.sh --dev-rebuild (the same transactional
+  # backup/switch/verify/rollback machinery the production path uses,
+  # minus release-artifact resolution). update.sh no longer reads
+  # VPN1_REF at all — passing it as an env var (the previous, silently
+  # ignored invocation) never actually changed anything.
+  section "7. update path -> $UPDATE_TO_REF (--dev-rebuild; real A->B production-updater lifecycle needs a tagged release, see Checkpoint 3 status)"
+  if ssh_run "curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/vpn1-update-ref.tar.gz https://codeload.github.com/David610/vpn1/tar.gz/refs/heads/$UPDATE_TO_REF \
+      && rm -rf /tmp/vpn1-update-ref && mkdir -p /tmp/vpn1-update-ref \
+      && tar -xzf /tmp/vpn1-update-ref.tar.gz -C /tmp/vpn1-update-ref --strip-components=1 \
+      && sudo rsync -a --delete --exclude target --exclude .git /tmp/vpn1-update-ref/ /opt/vpn1/ \
+      && sudo /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild"; then
+    pass "update.sh --dev-rebuild -> $UPDATE_TO_REF"
   else
-    fail "update.sh -> $UPDATE_TO_REF"
+    fail "update.sh --dev-rebuild -> $UPDATE_TO_REF"
   fi
 else
   section "7. update path (SKIPPED: no --update-to-ref given)"
