@@ -467,6 +467,48 @@ mod tests {
         );
     }
 
+    /// Byte-shape contract for fields that clients are otherwise prone to
+    /// silently supplying themselves.  Their absence is intentional: this
+    /// outbounds-only document cannot control a client's TUN, DNS, MTU, mux,
+    /// or platform routing policy.
+    #[test]
+    fn client_subscription_profile_shape_is_explicit_and_minimal() {
+        let doc =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let reality = outbounds.iter().find(|o| o["type"] == "vless").unwrap();
+        assert_eq!(reality["uuid"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(reality["flow"], "xtls-rprx-vision");
+        assert_eq!(reality["tls"]["server_name"], "www.google.com");
+        assert_eq!(reality["tls"]["utls"]["fingerprint"], "chrome");
+        assert_eq!(reality["tls"]["reality"]["public_key"], "abc123");
+        assert_eq!(reality["tls"]["reality"]["short_id"], "0a1b2c3d");
+        let urltest = outbounds.iter().find(|o| o["type"] == "urltest").unwrap();
+        assert_eq!(urltest["url"], "https://www.gstatic.com/generate_204");
+
+        let encoded = serde_json::to_string(&doc).unwrap();
+        for forbidden in [
+            "multiplex",
+            "mux",
+            "fragment",
+            "padding",
+            "packet_encoding",
+            "tcp_fast_open",
+            "tcp_keep_alive",
+            "auto_route",
+            "strict_route",
+            "mtu",
+            "inbounds",
+            "dns",
+        ] {
+            assert!(
+                !encoded.contains(&format!("\"{forbidden}\"")),
+                "renderer unexpectedly emitted client-owned field {forbidden}: {encoded}"
+            );
+        }
+    }
+
     #[test]
     fn route_final_points_at_manual_selector_not_urltest() {
         let doc =
