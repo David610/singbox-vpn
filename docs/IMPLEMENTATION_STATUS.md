@@ -56,6 +56,83 @@ and `deploy/lib/fast-gate.sh` already scope to the supported crates only.
 Splitting the workspace-wide CI jobs would touch CI trust/release
 plumbing for a runner-minutes-only win; deferred.
 
+## Checkpoint 5 (repair/harden the destructive lifecycle acceptance harness) — completed this session
+
+`deploy/almalinux/lifecycle-acceptance.sh` had six real defects making a
+PASS from it untrustworthy; all six are fixed, none by wording changes:
+
+- **Failure-injection env var reached `curl`, not the installer**: stage
+  10 used `sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=... curl | bash` — `sudo`
+  scoped the var to `curl`'s own exec, never to `bash` on the other side
+  of the pipe. Fixed by moving the var to the `bash` side (matching the
+  pattern already correct in every other stage), and added an assertion
+  that partial `/opt/vpn1`/`/etc/vpn` state exists after the "abort"
+  (proof the hook fired mid-install, not that curl/SSH merely failed).
+- **"Offline uninstall" downloaded code from GitHub**: every uninstall
+  call in the harness used `curl .../uninstall.sh | bash`. Now uses
+  `sudo /opt/vpn1/bin/vpn1-uninstall --yes` exclusively (stages 10 and
+  11), with a best-effort `iptables REJECT` to `github.com`/
+  `raw.githubusercontent.com` around the offline-uninstall call as
+  additional proof of no outbound dependency.
+- **SSH testing assumed port 22**: added `--ssh-port`, threaded through
+  to `install.sh --ssh-port`, used in `SSH_OPTS`, and the baseline check
+  now greps the configured port instead of a hardcoded `:22`.
+- **Update never proved the version changed**: the update stage now
+  captures `install-state.json` before/after and `fail_required`s if
+  they're identical — a same-checkout rebuild can no longer be reported
+  as a real update.
+- **Cleanup was checked only superficially**: uninstall residue is now
+  compared against a sanitized pre-install host baseline (services,
+  units, listeners, accounts, nginx/certbot-hook presence, locks) instead
+  of two path checks.
+- **Command failures were swallowed / client-vs-host properties
+  conflated**: unguarded `ssh_run` command substitutions that could abort
+  the whole script under `set -e` are now `|| true`-guarded so one probe
+  failing doesn't hide the rest of the report; the existing client/device
+  exclusion (Hiddify/iOS/Android/MagicOS — Checkpoint 8) is preserved
+  and now explicitly reported as `UNVERIFIED` rather than just a comment.
+- **Reboot only checked `health-check.sh`**: now independently verifies
+  sshd, sing-box, vpn-subscription, nginx, a vpn1 timer, the 443
+  listener, `install-state.json`, and `vpn-admin doctor --protocol`.
+
+New: a `VPN1_LIFECYCLE_GATE_ABORT_AFTER` hook was added to `update.sh`
+(mirroring `install.sh`'s existing one), fired after SWITCH/migration
+begins, enabling a real failed-update-rollback stage (7b) that asserts
+sshd/sing-box/vpn-subscription/protocol/`install-state.json` are restored
+to their pre-update values. `PASS`/`FAIL`/`UNVERIFIED` are now tracked as
+three distinct outcomes; the exit summary prints exactly `LIFECYCLE GATE:
+PASS` or `LIFECYCLE GATE: FAIL`, and a non-zero UNVERIFIED count is
+called out so a PASS is never read as full v1.0 release readiness.
+
+12 new fixture/regression tests were added
+(`deploy/lib/tests/test-lifecycle-acceptance-harness.sh`, run against the
+real script with a mocked `ssh`/`sleep` recording every invocation — not
+comment-grepping) proving: destructive opt-in is required; `--host` is
+required; localhost/production-host targets are refused; a non-numeric
+`--ssh-port` is rejected; SSH is invoked with the configured port, not a
+hardcoded 22, and `install.sh` receives `--ssh-port`; the abort-hook env
+var reaches the `bash` side of the pipe (regression guard against the
+fixed bug reappearing); offline uninstall uses the local binary, not
+`curl | bash`; a no-op update is detected and failed; a required-stage
+failure can never produce `LIFECYCLE GATE: PASS`; UNVERIFIED items are
+reported distinctly from PASS/FAIL. A second fixture test
+(`deploy/lib/tests/test-update-release-fixture-verification.sh`) extracts
+`update.sh`'s real checksum-verification lines (not a reimplementation)
+and exercises them against two distinct local fixture releases with
+immutable version IDs, separate content, and real sha256 checksums,
+proving the verification contract is fail-closed against tampering and
+malformed manifests — marked `VERIFIED-TEST`; a real GitHub release A->B
+transition remains `UNVERIFIED` until a first tagged release exists.
+
+**Real execution status**: the harness itself was repaired and its logic
+proven with fixture tests in this sandbox (no disposable AlmaLinux 9 host
+available here, and no destructive opt-in context established, so the
+real destructive lifecycle was correctly NOT run automatically per this
+checkpoint's own instructions). Actually running it against a real
+disposable host remains `UNVERIFIED`, same as before this checkpoint —
+this checkpoint fixed the harness's trustworthiness, not the fact that it
+still needs to be run for real.
+
 ## Checkpoint 4 (strict fresh-install success semantics) — completed this session
 
 - **Subscription HTTPS is now mandatory, not best-effort**:
@@ -346,9 +423,14 @@ plumbing for a runner-minutes-only win; deferred.
 - Real VLESS+REALITY / Hysteria2 connectivity from an actual Hiddify
   client on a real device.
 - Full clean-VPS install -> update -> migrate -> rollback -> uninstall
-  lifecycle, including SSH-preservation, on real AlmaLinux 9 (no
-  disposable host available this session — `lifecycle-acceptance.sh` not
-  executed).
+  lifecycle, including SSH-preservation and non-default-SSH-port
+  survival, on real AlmaLinux 9 (no disposable host available this
+  session — `lifecycle-acceptance.sh` was repaired and its own logic
+  fixture-tested this checkpoint, but not run against a real host; see
+  Checkpoint 5).
+- Certificate renewal (`certbot renew --dry-run`) on a real host — the
+  harness now attempts it and reports the real result or `UNVERIFIED` if
+  provider conditions prevent it, but this has not actually run.
 - A real tagged release has never been published — the checksum-verified
   bootstrap path (checkpoint 9) is fixture/unit-tested, not exercised
   against a real GitHub Release.
@@ -361,9 +443,18 @@ plumbing for a runner-minutes-only win; deferred.
 # FAST GATE — one command, run after every change (see Blockers re: root)
 bash deploy/lib/fast-gate.sh
 
-# DESTRUCTIVE lifecycle gate — disposable AlmaLinux 9 host ONLY, over SSH
+# DESTRUCTIVE lifecycle gate — DISPOSABLE ALMALINUX 9 HOST ONLY, over SSH.
+# Prerequisites: passwordless-sudo SSH access to a throwaway AlmaLinux 9
+# x86_64 VM/VPS you can afford to wipe and reboot; it must NOT be your
+# configured production host (the script refuses that, and refuses
+# localhost/no --host, by construction). Optional --ssh-port exercises a
+# non-default SSH port end-to-end instead of assuming 22; optional
+# --update-to-ref exercises update.sh's --dev-rebuild transactional path
+# (a real tagged-release A->B transition remains UNVERIFIED until a first
+# GitHub release exists — see Important UNVERIFIED items below).
 ./deploy/almalinux/lifecycle-acceptance.sh \
-  --host root@DISPOSABLE-HOST --i-understand-this-is-destructive
+  --host root@DISPOSABLE-HOST --i-understand-this-is-destructive \
+  [--ssh-port 2222] [--update-to-ref BRANCH]
 
 # offline uninstall — no network access needed
 sudo /opt/vpn1/bin/vpn1-uninstall --yes

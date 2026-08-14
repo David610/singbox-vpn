@@ -56,6 +56,17 @@ log() { echo "[update] $*"; }
 warn() { echo "[update] WARNING: $*" >&2; }
 die() { echo "[update] ERROR: $*" >&2; exit 1; }
 
+# Deterministic failure injection for the destructive lifecycle-acceptance
+# gate ONLY (deploy/almalinux/lifecycle-acceptance.sh). Mirrors install.sh's
+# lifecycle_gate_abort_hook(): if VPN1_LIFECYCLE_GATE_ABORT_AFTER matches the
+# stage name given, die immediately so rollback_update() (already trap-armed
+# via on_exit at this point) fires and can be independently verified. A
+# no-op unless the env var is explicitly set.
+lifecycle_gate_abort_hook() {
+  [ "${VPN1_LIFECYCLE_GATE_ABORT_AFTER:-}" = "$1" ] || return 0
+  die "VPN1_LIFECYCLE_GATE_ABORT_AFTER=$1 — deliberately aborting for lifecycle-gate testing."
+}
+
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 
 # shellcheck source=/dev/null
@@ -749,12 +760,14 @@ case "$validate_rc" in
     "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config migrate \
       || die "persistent state migration failed — see output above. Rolling back to $CURRENT_VERSION; nothing about this failure changes credentials."
     log "persistent state schema: migration complete."
+    lifecycle_gate_abort_hook after_migration
     ;;
   *)
     echo "$validate_output" >&2
     die "persistent state is INVALID/unsupported (status $validate_rc) — see output above. Rolling back to $CURRENT_VERSION."
     ;;
 esac
+lifecycle_gate_abort_hook after_switch
 
 log "rendering current authoritative users/REALITY state with new tooling (credentials are never rotated by an update)..."
 VPN1_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
