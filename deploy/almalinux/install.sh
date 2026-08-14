@@ -392,8 +392,24 @@ persist_source_tree() {
   if [ "$REPO_ROOT" = "$PERSIST_DIR" ]; then
     return
   fi
+  # A bootstrap repair may be running from a newly downloaded temporary
+  # tree while a valid persistent installer already exists.  Do not move a
+  # known-good installation aside merely to refresh this convenience copy:
+  # a SIGKILL between two directory renames cannot be rolled back by shell.
+  # Release-to-release source replacement belongs to update.sh's transaction.
+  if [ -d "$PERSIST_DIR" ]; then
+    local existing_bad
+    existing_bad="$(find "$PERSIST_DIR" \( ! -user root -o -perm /022 \) -print -quit)"
+    if [ -z "$existing_bad" ] && [ -x "$PERSIST_DIR/deploy/almalinux/uninstall.sh" ]; then
+      log "reusing the existing root-controlled persistent source tree at $PERSIST_DIR."
+      REPO_ROOT="$PERSIST_DIR"
+      return 0
+    fi
+    echo "[install] ERROR: existing $PERSIST_DIR is not a trusted complete source tree; refusing to replace ambiguous data during repair." >&2
+    return 1
+  fi
   log "installing a persistent copy of the vpn1 source to $PERSIST_DIR (for future updates/uninstall)..."
-  local parent stage backup="" bad
+  local parent stage bad
   parent="$(dirname "$PERSIST_DIR")"
   install -d -o root -g root -m 0755 "$parent"
   stage="$(mktemp -d "$parent/.vpn1-source.XXXXXX")"
@@ -411,17 +427,10 @@ persist_source_tree() {
     rm -rf "$stage"
     return 1
   fi
-  if [ -e "$PERSIST_DIR" ]; then
-    backup="$(mktemp -d "$parent/.vpn1-previous.XXXXXX")"
-    rmdir "$backup"
-    mv "$PERSIST_DIR" "$backup"
-  fi
   if ! mv "$stage" "$PERSIST_DIR"; then
-    [ -n "$backup" ] && mv "$backup" "$PERSIST_DIR"
     rm -rf "$stage"
     return 1
   fi
-  [ -z "$backup" ] || rm -rf "$backup"
   REPO_ROOT="$PERSIST_DIR"
 }
 

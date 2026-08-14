@@ -133,6 +133,10 @@ jobs:
         run: bash deploy/lib/tests/test-install-manifest-idempotency.sh
       - name: ownership manifest unit tests
         run: bash deploy/lib/tests/test-ownership-manifest.sh
+      - name: persistent source-tree trust regression test
+        run: sudo bash deploy/lib/tests/test-persist-source-tree.sh
+      - name: non-interactive single-shot installer rollback regression test
+        run: sudo bash deploy/lib/tests/test-installer-rollback.sh
       - name: install/uninstall ownership-key parity cross-check
         run: bash deploy/lib/tests/test-uninstall-ownership-parity.sh
       - name: preflight-first REALITY/host-config ordering regression test

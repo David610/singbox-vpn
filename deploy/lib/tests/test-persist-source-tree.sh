@@ -41,4 +41,16 @@ for path in "$PERSIST_DIR" "$PERSIST_DIR/deploy/almalinux/uninstall.sh"; do
   [ $((group_digit & 2)) -eq 0 ]
   [ $((other_digit & 2)) -eq 0 ]
 done
+
+# A repair launched from a different temporary checkout must reuse, not
+# replace, an already trusted persistent tree. This closes the SIGKILL gap
+# that exists in any two-rename "backup then replace" sequence.
+printf 'previous-install\n' > "$PERSIST_DIR/sentinel"
+SECOND="$TMP/second-source"
+mkdir -p "$SECOND"
+printf 'replacement\n' > "$SECOND/sentinel"
+REPO_ROOT="$SECOND"
+persist_source_tree
+[ "$(cat "$PERSIST_DIR/sentinel")" = "previous-install" ]
+[ "$REPO_ROOT" = "$PERSIST_DIR" ]
 echo "persist-source-tree regression passed"
