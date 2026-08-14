@@ -38,8 +38,7 @@ out="$(
   # shellcheck disable=SC1090
   . "$OWNERSHIP_SH"
   log() { :; }; warn() { :; }
-  REMOVED_ANYTHING=0
-  note_removed() { REMOVED_ANYTHING=1; }
+  note_removed() { :; }
   NONCRITICAL_RESIDUE=()
   ownership_set_baseline_once "FIXEDPATH_TESTKEY_PRE_EXISTED" "0"
   restore_or_remove_fixed_path() {
@@ -77,8 +76,7 @@ out2="$(
   # shellcheck disable=SC1090
   . "$OWNERSHIP_SH"
   log() { :; }; warn() { :; }
-  REMOVED_ANYTHING=0
-  note_removed() { REMOVED_ANYTHING=1; }
+  note_removed() { :; }
   NONCRITICAL_RESIDUE=()
   BACKUP="$TMPDIR_TEST/own2-backup"
   echo "ORIGINAL pre-existing content" > "$BACKUP"
@@ -119,8 +117,6 @@ out3="$(
   # shellcheck disable=SC1090
   . "$OWNERSHIP_SH"
   log() { :; }; warn() { :; }
-  REMOVED_ANYTHING=0
-  note_removed() { REMOVED_ANYTHING=1; }
   NONCRITICAL_RESIDUE=()
   restore_or_remove_fixed_path() {
     local path="$1" key="$2"
@@ -128,7 +124,7 @@ out3="$(
     local pre_existed
     pre_existed="$(ownership_get "FIXEDPATH_${key}_PRE_EXISTED" "")"
     case "$pre_existed" in
-      0) rm -f "$path"; note_removed ;;
+      0) rm -f "$path" ;;
       1) : ;;
       *) NONCRITICAL_RESIDUE+=("$path (ambiguous ownership)") ;;
     esac
@@ -156,6 +152,9 @@ echo "vpn1 compat state" > "$ETCVPN_FIXTURE/compat/marker"
 echo 'public_host = "x"' > "$ETCVPN_FIXTURE/deployment.toml"
 OWNDIR4="$TMPDIR_TEST/own4"
 (
+  # OWNERSHIP_DIR is read by ownership.sh itself once sourced below;
+  # this tool cannot see that dynamic use.
+  # shellcheck disable=SC2034
   OWNERSHIP_DIR="$OWNDIR4"
   # shellcheck disable=SC1090
   . "$OWNERSHIP_SH"
