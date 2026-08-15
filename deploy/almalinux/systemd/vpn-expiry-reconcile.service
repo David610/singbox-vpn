@@ -20,4 +20,3 @@ ExecStart=/usr/local/bin/vpn --config /etc/vpn/deployment.toml render-config --r
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
-
