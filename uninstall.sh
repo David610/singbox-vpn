@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # vpn1 one-command bootstrap uninstaller.
 #
-#   curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash
 #
 # Mirrors install.sh: this script does NOT assume the repository is
 # already cloned or that a persistent copy still exists at /opt/vpn1. It
@@ -22,7 +22,7 @@
 #                          (default: main)
 set -Eeuo pipefail
 
-VPN1_REPO="${VPN1_REPO:-David610/vpn1}"
+VPN1_REPO="${VPN1_REPO:-David610/singbox-vpn}"
 VPN1_REF="${VPN1_REF:-main}"
 
 log() { echo "[bootstrap] $*" >&2; }
@@ -42,7 +42,7 @@ while [ $# -gt 0 ]; do
       cat <<'USAGE'
 vpn1 one-command bootstrap uninstaller.
 
-  curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
+  curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash
 
 Removes EVERYTHING vpn1 created on this host, completely, by default —
 no other flags are needed. Bootstrap-specific options:

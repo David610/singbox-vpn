@@ -36,7 +36,7 @@ has not been run against a real AlmaLinux host/Android client — see
   actually asserted (rendering correctness); true network-level
   failure-independence for this specific pair has **not** been proven
   with an executed test (unlike the native stack's
-  `tests/failure_independence.rs`) because this sandbox cannot run real
+  `tests/tests/failure_independence.rs`) because this sandbox cannot run real
   sing-box/network-namespace tests. Documented gap, not claimed solved.
   `render.rs`'s
   `hysteria2_unavailable_reality_only_profile_remains_fully_usable` test

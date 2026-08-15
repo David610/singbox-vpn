@@ -179,12 +179,12 @@ BASELINE="$(ssh_run '
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
   echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
   echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn1.conf ] && echo 1 || echo 0)"
-  echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/vpn1.sh ] && echo 1 || echo 0)"
+  echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh ] && echo 1 || echo 0)"
 ' 2>/dev/null || true)"
 if [ -n "$BASELINE" ]; then pass "host baseline captured"; else fail "host baseline captured"; fi
 
 section "2. clean install"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"; then
   pass "install.sh (clean)"
 else
   fail_required "install.sh (clean)"
@@ -228,7 +228,7 @@ else
 fi
 
 section "6. repair / idempotent re-run"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "install.sh (idempotent re-run) + SSH reconnect"
 else
@@ -249,7 +249,7 @@ if [ -n "$UPDATE_TO_REF" ]; then
   # ignored invocation) never actually changed anything.
   section "7. update path -> $UPDATE_TO_REF (--dev-rebuild; this is VERIFIED-TEST for the transactional updater machinery only — a real GitHub release A->B transition remains UNVERIFIED until a tagged release exists, see docs/IMPLEMENTATION_STATUS.md)"
   version_before="$(ssh_run 'sudo /opt/vpn1/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
-  if ssh_run "curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/vpn1-update-ref.tar.gz https://codeload.github.com/David610/vpn1/tar.gz/refs/heads/$UPDATE_TO_REF \
+  if ssh_run "curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/vpn1-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$UPDATE_TO_REF \
       && rm -rf /tmp/vpn1-update-ref && mkdir -p /tmp/vpn1-update-ref \
       && tar -xzf /tmp/vpn1-update-ref.tar.gz -C /tmp/vpn1-update-ref --strip-components=1 \
       && sudo rsync -a --delete --exclude target --exclude .git /tmp/vpn1-update-ref/ /opt/vpn1/ \
@@ -319,7 +319,7 @@ section "10. failed/interrupted install cleanup"
 # for the bash process that actually execs install.sh, not for curl on the
 # other side of the pipe (sudo VAR=x curl | bash would silently drop it —
 # sudo scopes VAR=x to curl's own exec only, never to bash downstream).
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" ; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" ; then
   fail_required "interrupted install actually aborted" "(expected non-zero exit, got success)"
 else
   pass "interrupted install aborted as expected"
@@ -342,7 +342,7 @@ else
 fi
 
 section "11. offline uninstall (from the repaired install in stage 6, redone)"
-ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" >/dev/null 2>&1 || true
+ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" >/dev/null 2>&1 || true
 # Genuinely offline: the local binary only, no curl/GitHub/DNS/package-repo.
 # Best-effort proof of no outbound network use: block egress to github.com
 # for the duration of this one command (ignored if iptables/firewalld isn't
@@ -369,7 +369,7 @@ RESIDUE="$(ssh_run '
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
   echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
   echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn1.conf ] && echo 1 || echo 0)"
-  echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/vpn1.sh ] && echo 1 || echo 0)"
+  echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh ] && echo 1 || echo 0)"
   echo "listeners=$(ss -ltnp 2>/dev/null | grep -Ec "sing-box|vpn-subscription")"
   echo "locks=$(ls /run/lock/vpn1* 2>/dev/null | wc -l)"
 ' 2>/dev/null || true)"
@@ -380,7 +380,7 @@ else
 fi
 
 section "14. reinstall"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/vpn1/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "reinstall after uninstall + SSH reconnect"
 else

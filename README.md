@@ -1,340 +1,755 @@
-# Adaptive Censorship-Resistant Networking Platform
+# singbox-vpn
 
-> The protocol is not the product. The adaptive connection system is the product.
+A simple self-hosted VPN for a small group of trusted users.
 
-An encrypted-connectivity platform that assumes any single transport,
-endpoint, or relay can eventually be blocked or fingerprinted, and adapts
-by scoring and switching between independent transport families instead of
-depending on one protocol staying usable forever.
+Install it on one VPS, get a subscription URL or QR code, import it into Hiddify, and connect.
 
-This repository ships **two distinct client modes** — do not treat them
-as the same client:
+The server uses:
 
-1. **Native adaptive client** — the original `client-daemon` +
-   `transport-native` (direct-tls, noise-quic) stack, driven by the
-   `policy`/`failure-classifier` adaptive scoring engine. Requires
-   running this project's own Rust daemon on the client device.
-2. **Hiddify-compatible deployment** — a VLESS+REALITY (TCP/443) and
-   Hysteria2 (UDP/443) data plane, served by an external, unmodified
-   `sing-box` process, with a Rust control plane (`vpn-admin`,
-   `services/subscription`) for user management and subscription
-   delivery. No custom client software is required — Hiddify,
-   sing-box-compatible clients, and (for VLESS) v2rayNG connect
-   directly. See `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md`,
-   `docs/HIDDIFY_ANDROID.md`, and `docs/ALMALINUX_DEPLOYMENT.md`.
+* **VLESS + REALITY** over TCP/443 as the primary transport
+* **Hysteria2** over UDP/443 as an optional secondary transport
+* **sing-box** as the VPN data plane
+* **Hiddify-compatible subscriptions**
+* automatic TLS certificate setup
+* built-in user management, diagnostics, backup and restore
+* complete offline uninstall
 
-Adaptive transport *selection* works differently in each mode — the
-native client uses this repo's own `policy` scoring engine; Hiddify/
-sing-box clients use sing-box's own `urltest` selector plus
-server-reported endpoint health. Neither claims to control the other —
-see `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` §"adaptive behavior" for
-the exact boundary.
+No custom client application is required.
 
-Start here:
+> This project is intended for private use by small trusted groups. It is not an anonymity network and does not provide Tor-like anonymity guarantees.
 
-- [`PLAN.md`](PLAN.md) — what this session actually built vs. deferred, and why
-- [`TASKS.md`](TASKS.md) — live status of every workstream
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design
-- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — adversaries, what's protected, what isn't
-- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — running the local dev slice (native mode)
-- [`docs/ALMALINUX_DEPLOYMENT.md`](docs/ALMALINUX_DEPLOYMENT.md) — production deployment (Hiddify-compatible mode)
-- [`docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md`](docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md) — how the two modes fit together
-- [`docs/PRODUCTION_HARDENING_PLAN.md`](docs/PRODUCTION_HARDENING_PLAN.md) — issue-by-issue security/operability hardening pass for the Hiddify-compatible deployment (permissions, credential revocation, TLS, rollback, CI validation), with an honest implemented-vs-verified status per item
-- [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) — what existed vs. what this session added (QR onboarding, `vpn status`/`doctor`/`backup`/`restore`, client docs)
-- [`docs/DEVICE_ACCEPTANCE_TESTS.md`](docs/DEVICE_ACCEPTANCE_TESTS.md) — the real-device test matrix (all cells honestly "not yet tested" until someone runs it on a real VPS + device), including a Telegram-specific transport x function matrix
-- [`docs/TELEGRAM_RESILIENCE_PLAN.md`](docs/TELEGRAM_RESILIENCE_PLAN.md) — investigation and changes made to improve Telegram reliability under Russian censorship, and an honest statement of what remains unverified
-- [`docs/TELEGRAM_TROUBLESHOOTING.md`](docs/TELEGRAM_TROUBLESHOOTING.md) — the client-side troubleshooting procedure for a Telegram-specific connection problem
+> The supported v1.0 code path is covered by automated checks, but a complete
+> real-VPS and real-device acceptance run is still outstanding. Do not treat
+> this repository as device-verified; see
+> [Supported product](docs/SUPPORTED_PRODUCT.md) and
+> [Device acceptance tests](docs/DEVICE_ACCEPTANCE_TESTS.md).
 
-## Quickstart: native mode (local, loopback only)
+---
 
-```bash
-cargo build --workspace
-./deploy/local/run-dev-slice.sh
-curl --socks5-hostname 127.0.0.1:1080 http://127.0.0.1:8081/
+## Quick start
+
+### Requirements
+
+For the supported setup you need:
+
+* a VPS with **AlmaLinux 9 x86-64**
+* root or sudo access
+* a public IPv4 address
+* approximately 1 GB RAM or more
+* a domain or subdomain pointing to the VPS
+* Hiddify (recommended); the client guides also document a limited v2rayNG
+  Android fallback
+
+A custom domain is recommended.
+
+Example:
+
+```text
+vpn.example.com → 203.0.113.10
 ```
 
-This boots a test HTTP service, a combined ingress/egress relay
-(direct-tls + noise-quic), a rendezvous service issuing signed relay
-bundles, and a client daemon exposing a local SOCKS5 proxy — all on
-loopback with freshly generated dev-only keys. See `docs/DEPLOYMENT.md`
-for the split ingress/egress topology and other variations.
+---
 
-## Quickstart: Hiddify-compatible mode (production)
+## 1. Configure your VPS firewall
 
-Follow these steps **in order** on a fresh, supported VPS (root/sudo
-access, public IPv4). A custom domain is the default/recommended path —
-the installer will not silently invent one for you.
+The VPN uses the following public ports:
 
-Skipping step 1 works only when you run the command yourself in a real
-interactive terminal: with no `--domain`, the installer prompts on
-`/dev/tty` and pressing Enter opts into an auto-assigned `<ip>.sslip.io`
-hostname instead. In any non-interactive context (automation, cloud-init,
-`--non-interactive`, or no TTY at all) the installer refuses to guess and
-exits with an error unless you pass `--allow-ip-hostname` explicitly —
-see the trade-offs below before choosing that flag.
+| Port                | Protocol | Purpose                            |
+| ------------------- | -------- | ---------------------------------- |
+| 22 or your SSH port | TCP      | SSH administration                 |
+| 80                  | TCP      | TLS certificate validation/renewal |
+| 443                 | TCP      | VLESS + REALITY                    |
+| 443                 | UDP      | Hysteria2                          |
+| 8443                | TCP      | HTTPS subscription endpoint        |
 
-### 1. (Optional) Point your own domain at the VPS
+If you change the subscription port during installation, allow that port instead of `8443`.
 
-If you want `vpn.example.com` instead of an auto-assigned
-`<ip>.sslip.io` hostname, create the DNS record *before* running the
-installer:
-
-- Add an `A` record (and `AAAA` if the VPS has IPv6) for your chosen
-  hostname pointing at the VPS's public IP.
-- **If you're on Cloudflare (or any proxying DNS host): the record
-  must be "DNS only" (grey cloud), not proxied (orange cloud).**
-  VLESS+REALITY needs a real, unproxied TLS handshake on 443/tcp and
-  Hysteria2 needs raw UDP/443 passthrough — an HTTP(S) proxy in front
-  breaks both.
-- Unicode/IDN domains (Cyrillic, etc.) are handled automatically — enter
-  it exactly as it appears in your DNS dashboard (e.g. `чёрт.com`,
-  interactively or via `--domain 'чёрт.com'`); the installer converts it
-  to its ASCII/punycode form (`xn--p1aen4b.com`) internally before it
-  touches TLS/ACME/nginx. You never need to calculate punycode by hand.
-- Give DNS a minute to propagate, then confirm before installing:
-  `dig +short vpn.example.com` (or `getent hosts vpn.example.com`)
-  should return the VPS's IP.
-
-Skip this step in an interactive terminal to be prompted for one, with
-Enter opting into an auto-assigned `sslip.io` hostname instead (no DNS
-setup required, real TLS cert issued automatically either way). Running
-the installer non-interactively with no domain requires the explicit
-`--allow-ip-hostname` flag — see step 2.
-
-### 2. Run the installer
+The installer opens the VPS's operating-system firewall for TCP/80 only
+temporarily during initial HTTP-01 certificate issuance. Certbot renewals need
+TCP/80 again. On the supported AlmaLinux target, keep it open after a
+successful install unless you configure another ACME challenge method:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo REALITY_HANDSHAKE_SERVER=www.google.com bash
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --reload
+sudo certbot renew --dry-run
 ```
 
-`REALITY_HANDSHAKE_SERVER` is explicit because REALITY decoys are an
-external protocol dependency, not a safe universal default: the target
-must actually run a TLS 1.3 server whose handshake fits within the
-pinned sing-box/utls implementation's record budget, and no target
-guarantees censorship resistance. The installer runs a real
-authenticated sing-box round trip and refuses completion if the selected
-endpoint is protocol-incompatible; `www.microsoft.com` is known to
-exceed the pinned sing-box/utls 8192-byte handshake budget and must not
-be used. `www.google.com` and `www.cloudflare.com` are commonly used
-starting points because they reliably serve a compact TLS 1.3
-certificate flight within that budget — this is a statement about
-handshake/protocol compatibility, not a claim that either is
-unblockable or that using them makes this deployment resistant to a
-specific censor. Target suitability can vary by network and country and
-has not been measured against any real censorship regime by this
-project; the installer's protocol self-test only proves local
-protocol compatibility, not real-world blocking resistance. VPS IP/ASN
-blocking remains a hard single-node failure mode regardless of which
-handshake target is chosen — see `docs/COMPATIBILITY_SECURITY_REVIEW.md`.
-The command resolves the latest tagged release, downloads its immutable
-vpn1 source (checksum-verified against that release's published
-`SHA256SUMS` before extraction — see the trust-boundary note at the top
-of `install.sh`), and detects your OS/architecture. It prefers a
-prebuilt, checksum-verified release binary for your exact version/arch,
-falling back to installing a Rust toolchain and building from that same
-exact-tag source when no matching release asset exists — either way,
-source and binaries always come from one immutable, checksum-verified,
-self-consistent version. **As of this writing no `vX.Y.Z` tag has ever been pushed to
-this repo, so the plain command above currently refuses to run** (a
-production install must pin an immutable release, never mutable branch
-source — see below for the explicit development-only escape hatch).
-Publishing the first tagged release is a manual operational step outside
-this codebase — see `docs/ALMALINUX_DEPLOYMENT.md` for details; a code
-change alone cannot complete it. Once a release exists, the installer
-continues, installs dependencies, auto-detects your server's public IP,
-issues a real TLS certificate for it automatically (via
-[sslip.io](https://sslip.io) + certbot — no domain needed), stands up
-VLESS+REALITY and Hysteria2 behind `sing-box`, configures the firewall
-and SELinux (RHEL family), enables everything under systemd, creates a
-`default` user, and prints a ready-to-import subscription URL with a
-terminal QR code.
+The provider firewall or AWS Security Group must also allow TCP/80. DNS-01 is
+an alternative, but this repository does not configure it automatically.
 
-**Before the first tag exists**, install from branch source explicitly
-with `VPN1_CHANNEL=dev` — this is intentionally NOT reproducible/pinned
-and is for development/testing only, never a real deployment:
+### AWS EC2
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com bash
+If you use AWS, configure the instance's **Security Group**.
+
+Recommended inbound rules:
+
+```text
+SSH          TCP   22     YOUR_IP/32
+HTTP         TCP   80     0.0.0.0/0
+REALITY      TCP   443    0.0.0.0/0
+Hysteria2    UDP   443    0.0.0.0/0
+Subscription TCP   8443   0.0.0.0/0
 ```
 
-If you set up a domain in step 1, pass it explicitly instead of
-auto-detecting (the installer also prompts for one interactively if
-you run it without this and a real terminal is attached). `--domain`/
-`PUBLIC_HOST` and `--reality-handshake-server`/`REALITY_HANDSHAKE_SERVER`
-are equivalent — use whichever is more convenient for `curl | sudo bash`:
+Replace port `22` if your SSH server uses another port.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo bash -s -- --domain vpn.example.com --reality-handshake-server www.cloudflare.com
+The installer configures the firewall **inside the VPS**, but it cannot modify AWS Security Groups, provider firewalls, router firewalls or other external firewalls.
+
+This is one of the most common reasons for an installation that looks healthy on the server but cannot be reached from a client.
+
+---
+
+## 2. Configure DNS
+
+Create an `A` record:
+
+```text
+vpn.example.com → YOUR_VPS_IPV4
 ```
 
-An IDN (Unicode) domain works the same way, quoted:
+Verify it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo bash -s -- --domain 'чёрт.com' --reality-handshake-server www.cloudflare.com
+dig +short vpn.example.com
 ```
 
-Fully non-interactive (for automation — CI, cloud-init, etc.), add
-`--non-interactive`; it fails immediately with no host changes if a
-required value like the REALITY decoy is missing, instead of blocking on
-a prompt that will never be answered:
+or:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo bash -s -- --non-interactive --domain vpn.example.com \
+nslookup vpn.example.com
+```
+
+The returned IP should match your VPS.
+
+### Cloudflare users
+
+The VPN hostname must normally be:
+
+```text
+DNS only
+```
+
+not:
+
+```text
+Proxied
+```
+
+In the Cloudflare dashboard this means the cloud should be **grey**, not orange.
+
+REALITY and Hysteria2 need a direct connection to the VPS. Do not put the VPN hostname behind the normal Cloudflare HTTP proxy.
+
+Do not create an `AAAA` record unless IPv6 is actually configured and working on the VPS.
+
+---
+
+## 3. Install
+
+Once a tagged release has been published, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh \
+  | sudo bash -s -- \
+    --domain vpn.example.com \
     --reality-handshake-server www.cloudflare.com
 ```
 
-The environment-variable form still works identically:
+Replace:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=vpn.example.com \
-    REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash
+```text
+vpn.example.com
 ```
 
-If something else on the VPS already listens on 8443 (the default
-subscription-HTTPS port), relocate it with `SUBSCRIPTION_PORT`:
+with your own hostname.
+
+The REALITY handshake server shown above is only an example. Its suitability can vary between networks.
+
+The stable installer resolves an immutable tagged release and refuses to fall
+back silently to mutable branch source. **No release tag exists yet, so the
+stable command above currently exits without changing the host.** Publishing
+the first release is a separate release-readiness decision and is not part of
+this repository migration.
+
+For development and disposable-host testing only, explicitly opt into the
+unverified `main` branch:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=vpn.example.com \
-    SUBSCRIPTION_PORT=8444 REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh \
+  | sudo VPN1_CHANNEL=dev bash -s -- \
+    --domain vpn.example.com \
+    --reality-handshake-server www.cloudflare.com
 ```
 
-Pin a specific release instead of the latest:
+This development command is not reproducible and must not be presented as a
+production install. When a release exists, the stable installer configures the
+server, validates the configuration, creates the initial user and prints the
+user's subscription URL and QR code.
+
+---
+
+## 4. Connect with Hiddify
+
+Install Hiddify on your phone or computer.
+
+After installation completes, the server prints a subscription URL and QR code.
+
+In Hiddify:
+
+1. Open **New Profile**
+2. Scan the QR code or paste the subscription URL
+3. Import the profile
+4. Select **REALITY** or **Hysteria2**
+5. Connect
+
+Then check your public IP.
+
+It should change to the public IP of your VPS.
+
+If Hiddify says "connected" but your IP does not change, see [Troubleshooting](#troubleshooting).
+
+---
+
+# User management
+
+## List users
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo REALITY_HANDSHAKE_SERVER=www.cloudflare.com bash -s -- --version v1.2.3
+sudo vpn user list
 ```
 
-Running the same command again is safe and expected if it fails partway
-through (transient network issues, etc.) — it repairs/upgrades an
-existing install in place without regenerating keys, duplicating
-firewall rules, or destroying existing users. A failed run always
-prints the exact diagnostic commands to check next.
+Commands use the user's **ID**, not their display name.
 
-### 3. Get your subscription URL
+Example:
 
-The installer prints a subscription URL + QR code for a new `default`
-user automatically — but if a user with that name already exists from
-an earlier run, it skips recreating it (never silently rotates a
-credential a real client might already be using). Get it yourself:
+```text
+user_dd466bb1-...
+```
+
+---
+
+## Add a user
 
 ```bash
-sudo vpn user list                       # find the user's ID (NOT its display name)
-sudo vpn user rotate-token <user-id> --qr    # prints subscription URL + QR
+sudo vpn user create --name alice --qr
 ```
 
-`vpn user`/`vpn-admin` commands take the user's **ID** column from
-`vpn user list` (e.g. `user_dd466bb1-...`), not its `NAME` column.
+This prints the new user's subscription URL and QR code.
 
-If `sudo vpn ...` reports `command not found` even though installation
-succeeded, it's a `PATH` issue, not a missing binary: some
-distributions' `sudo` uses a `secure_path` that excludes
-`/usr/local/bin`. Use the full path instead: `sudo /usr/local/bin/vpn ...`.
+Treat the subscription URL like a password.
 
-### 4. Connect
+Anyone who has it can obtain that user's connection configuration.
 
-Install [Hiddify](https://hiddify.com) (Android, iOS, Linux, Windows,
-macOS) or, for Android specifically, v2rayNG also works for the VLESS
-endpoint. Add a profile and either scan the printed QR code or paste the
-subscription URL. See `docs/clients/README.md` for per-platform guides
-(iOS, Android, HONOR MagicOS, Linux) and `docs/HIDDIFY_ANDROID.md`.
+---
 
-### 5. Day-2 operations
+## Reprint / replace a subscription token
+
+First find the user:
 
 ```bash
-sudo vpn status               # runtime health at a glance
-sudo vpn doctor                # numbered [OK]/[WARN]/[FAIL] diagnostics
-sudo vpn user create --name NAME --qr
+sudo vpn user list
 ```
 
-`vpn` is an ergonomic alias for `vpn-admin` — both names run the same
-binary. Other day-2 commands: `vpn version`, `vpn backup`/`vpn restore`,
-`vpn user enable/disable/rotate-token/rotate-vless/rotate-hysteria/remove/qr`
-(all keyed by user ID), `deploy/almalinux/update.sh` (safe update with
-automatic rollback on failed health check).
+Then:
 
-### Uninstalling
+```bash
+sudo vpn user rotate-token USER_ID --qr
+```
 
-One command, no network access required — removes everything vpn1
-created (secrets, users, REALITY/Hysteria2 material, source tree,
-generated configs, binaries, the sing-box binary/LICENSE if vpn1
-installed it, firewall rules, certificates, kernel tuning, and anything
-else vpn1 touched) while leaving anything that already existed on the
-host before vpn1 (nginx, certbot, firewalld/ufw, a pre-existing Rust
-toolchain, pre-existing certificates/users/firewall rules) untouched or
-restored to its prior state:
+---
+
+## Disable a user
+
+```bash
+sudo vpn user disable USER_ID
+```
+
+Enable again:
+
+```bash
+sudo vpn user enable USER_ID
+```
+
+---
+
+## Remove a user
+
+```bash
+sudo vpn user remove USER_ID
+```
+
+Removal is destructive.
+
+---
+
+# Check server health
+
+Run:
+
+```bash
+sudo vpn status
+```
+
+For detailed diagnostics:
+
+```bash
+sudo vpn doctor
+```
+
+If you suspect a protocol problem:
+
+```bash
+sudo vpn doctor --protocol --require-protocol
+```
+
+Check services:
+
+```bash
+systemctl status sing-box
+systemctl status vpn-subscription
+```
+
+Recent logs:
+
+```bash
+journalctl -u sing-box -u vpn-subscription --no-pager -n 100
+```
+
+---
+
+# Troubleshooting
+
+## Hiddify shows `timeout`, but the VPN still works
+
+Do not assume the VPN is broken only because a latency or connectivity test in Hiddify reports a timeout.
+
+First verify the actual tunnel:
+
+1. Connect.
+2. Open a website.
+3. Check your public IP.
+4. Confirm it changed to your VPS IP.
+
+If normal traffic works and the public IP changed, the important VPN path is working even if a Hiddify health/latency test failed.
+
+Try selecting **REALITY** manually instead of `auto`.
+
+Then test **Hysteria2** separately.
+
+Do not rotate server keys or reinstall the server solely because a Hiddify latency test says `timeout` while real traffic is working.
+
+---
+
+## Hiddify says connected, but my public IP does not change
+
+On iOS in particular, check that Hiddify is actually using VPN/TUN mode rather than a proxy-only mode.
+
+Also verify that iOS granted Hiddify permission to create a VPN configuration.
+
+Check:
+
+```text
+Settings
+→ General
+→ VPN & Device Management
+```
+
+A Hiddify VPN configuration should exist.
+
+Then reconnect and check your public IP again.
+
+---
+
+## REALITY works but Hysteria2 does not
+
+REALITY uses:
+
+```text
+TCP/443
+```
+
+Hysteria2 uses:
+
+```text
+UDP/443
+```
+
+Check that UDP/443 is allowed by:
+
+* your VPS provider
+* AWS Security Groups or another cloud firewall
+* the operating-system firewall
+* the client network
+
+On AWS, having TCP/443 open does **not** automatically mean UDP/443 is open.
+
+They require separate Security Group rules.
+
+If REALITY works reliably, you can continue using it even if Hysteria2 is unavailable on a particular network.
+
+---
+
+## Hysteria2 works but REALITY does not
+
+First test TCP/443 from another machine:
+
+### Windows
+
+```powershell
+Test-NetConnection vpn.example.com -Port 443
+```
+
+### Linux/macOS
+
+```bash
+nc -vz vpn.example.com 443
+```
+
+Then check:
+
+```bash
+sudo vpn doctor --protocol --require-protocol
+```
+
+and:
+
+```bash
+journalctl -u sing-box --no-pager -n 100
+```
+
+Also verify that the REALITY handshake server you selected is still reachable and compatible.
+
+---
+
+## Nothing can connect from AWS
+
+Check the AWS Security Group before changing the VPN configuration.
+
+At minimum verify:
+
+```text
+TCP/443
+UDP/443
+TCP/8443
+```
+
+and your actual SSH port.
+
+If TLS certificate creation fails, also verify TCP/80.
+
+The VPS operating-system firewall and the AWS Security Group are separate layers.
+
+Both must allow the required traffic.
+
+---
+
+## Subscription URL times out
+
+Test it directly:
+
+```bash
+curl -v https://vpn.example.com:8443/healthz
+```
+
+Then check whether the port is listening:
+
+```bash
+sudo ss -lntup
+```
+
+And run:
+
+```bash
+sudo vpn doctor
+```
+
+If you use AWS or another cloud provider, verify TCP/8443 is also open in the provider firewall.
+
+If you configured another subscription port, replace `8443` everywhere with that port.
+
+---
+
+## Subscription URL returns 404
+
+Do not manually construct the URL using the user's ID.
+
+A user ID such as:
+
+```text
+user_1234...
+```
+
+is not the subscription token.
+
+Get a fresh subscription URL with:
+
+```bash
+sudo vpn user list
+sudo vpn user rotate-token USER_ID --qr
+```
+
+Use the exact URL printed by the command.
+
+---
+
+## DNS points to the wrong server
+
+Check:
+
+```bash
+dig +short vpn.example.com
+```
+
+The returned address must match the public IP of your VPS.
+
+If it does not:
+
+1. correct the DNS record
+2. wait for DNS propagation/cache expiry
+3. test again
+
+If using Cloudflare, make sure the VPN record is **DNS only**.
+
+---
+
+## Cloudflare is enabled and nothing connects
+
+Check the DNS record.
+
+If it has an orange cloud, disable proxying.
+
+Use:
+
+```text
+DNS only
+```
+
+for the VPN hostname.
+
+Then wait briefly for DNS to update and test again.
+
+---
+
+## `sudo vpn` says `command not found`
+
+Some systems use a restricted sudo `PATH`.
+
+Try:
+
+```bash
+sudo /usr/local/bin/vpn status
+```
+
+If that works, the VPN installation itself is present.
+
+---
+
+## Port 8443 is already in use
+
+Check:
+
+```bash
+sudo ss -lntp | grep :8443
+```
+
+You can install with another subscription port:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh \
+  | sudo bash -s -- \
+    --domain vpn.example.com \
+    --subscription-port 8444 \
+    --reality-handshake-server www.cloudflare.com
+```
+
+Remember to also open that port in your VPS provider firewall.
+
+---
+
+## Port 443 is already in use
+
+Check:
+
+```bash
+sudo ss -lntup | grep :443
+```
+
+VLESS+REALITY requires TCP/443 in the supported configuration, and Hysteria2 uses UDP/443.
+
+Stop or reconfigure the conflicting service before installing.
+
+---
+
+## Installation stopped halfway through
+
+The installer is designed to be repair-safe.
+
+First run:
+
+```bash
+sudo vpn doctor
+```
+
+If the installation did not get far enough to install `vpn`, inspect:
+
+```bash
+systemctl status sing-box
+systemctl status vpn-subscription
+journalctl -u sing-box -u vpn-subscription --no-pager -n 100
+```
+
+After fixing the underlying network/DNS/firewall issue, run the installation command again.
+
+---
+
+# Backup
+
+Create a backup before major changes:
+
+```bash
+sudo vpn backup
+```
+
+Follow the path printed by the command and store the backup securely.
+
+It contains sensitive VPN configuration.
+
+---
+
+# Uninstall
+
+A normal installation includes a complete offline uninstaller.
+
+Run:
 
 ```bash
 sudo /opt/vpn1/bin/vpn1-uninstall --yes
 ```
 
-That path is installed by every normal install — no `curl`/GitHub
-access needed. `--yes` skips the interactive confirmation prompt
-(irreversible: it deletes live credentials/secrets, so an interactive
-run without `--yes` asks first). If `/opt/vpn1` is missing or damaged,
-an online fallback re-downloads and runs the same uninstaller:
+This removes the files, credentials, services and firewall changes created by the VPN installer.
+
+If `/opt/vpn1` is missing or damaged, use the online recovery fallback:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh \
+  | sudo bash -s -- --yes
 ```
 
-Safe to run more than once — re-running after a successful uninstall
-exits cleanly and reports nothing left to remove. It cannot see or
-change your cloud provider's network-level firewall (AWS/GCP/Azure
-security groups); it prints a checklist for that at the end.
+The uninstall process cannot remove rules from external cloud firewalls such as AWS Security Groups.
 
-### Advanced / manual deployment
+Remove those separately if you no longer need them.
 
-The one-liner above wraps `deploy/almalinux/install.sh` (which, despite
-the directory name, supports the RHEL family — AlmaLinux 9, Rocky Linux
-9, RHEL 9, Amazon Linux 2023 — and the Debian family — Ubuntu 22.04/24.04,
-Debian 12/13; see `deploy/lib/os.sh`). Amazon Linux 2023 is `ci-tested`,
-not `tested`: it's covered by automated detection/dependency unit tests
-(`deploy/lib/tests/test-amazon-linux-2023.sh`, which exercise the real
-`detect_os()`/`install_dependencies_rhel()` functions against fixtures)
-but has **not** been verified end to end on a real Amazon Linux 2023
-host — see `docs/ALMALINUX_DEPLOYMENT.md`'s three-tier support matrix for
-the exact tested/ci-tested/untested status of every OS. You can run it
-directly for full control over every install stage, including a fully
-manual TLS setup:
+---
+
+# Security
+
+## Protect subscription URLs
+
+A subscription URL is a credential.
+
+Do not:
+
+* post it in GitHub issues
+* publish screenshots containing it
+* commit it to a repository
+* send it through public chats
+* include it in logs when opening a bug report
+
+If a subscription URL leaks:
 
 ```bash
-sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com \
-  ./deploy/almalinux/install.sh
+sudo vpn user rotate-token USER_ID --qr
 ```
 
-See `docs/ALMALINUX_DEPLOYMENT.md` for what each of the 17 install
-stages does and how to intervene manually at any of them.
+If you need to stop an already-imported profile immediately:
 
-See `docs/IMPLEMENTATION_AUDIT.md` for exactly what's implemented vs.
-still needs a real VPS to verify, and `docs/DEVICE_ACCEPTANCE_TESTS.md`
-for the manual client-import test matrix.
+```bash
+sudo vpn user disable USER_ID
+```
 
-## Workspace layout
+---
 
-See `docs/ARCHITECTURE.md#workspace-layout`.
+## What this VPN does not provide
 
-## Status
+This project does not claim to provide:
 
-This is a working local vertical slice with two independent, real
-transport families, signed/verified configuration, adaptive
-transport/endpoint selection with failure attribution, and a tested
-failure-classification state machine — not a production-ready public
-deployment. See `TASKS.md` for exactly what's real vs. deferred, and the
-final engineering report in the session that produced this repository for
-an honest gaps/next-steps list.
+* Tor-style anonymity
+* protection from a compromised VPS
+* protection from every censorship system
+* guaranteed access from every country or ISP
+* protection if a user's VPN credentials are leaked
+* automatic protection against the VPS IP itself being blocked
 
-For the Hiddify-compatible server stack specifically (`install.sh` /
-`deploy/almalinux/*`), see `docs/FINAL_PRODUCTION_AUDIT.md` for a detailed,
-code-verified list of what was found and fixed, and
-`docs/PRODUCTION_ACCEPTANCE_REPORT.md` for the current pass/fail summary,
-what has and has not been verified on a real VPS/real client device, and
-an honest answer to whether it can be called production-ready today
-(currently: no — see that document for exactly why).
+The VPS provider still controls the server infrastructure.
+
+Use a provider you trust.
+
+---
+
+# Supported configuration
+
+The supported v1.0 target is intentionally narrow:
+
+```text
+Server:       AlmaLinux 9 x86-64
+Topology:     One VPS
+Users:        Up to 10 trusted users
+Primary:      VLESS + REALITY / TCP 443
+Secondary:    Hysteria2 / UDP 443
+Data plane:   sing-box
+Clients:      Hiddify / compatible sing-box clients
+Domain:       Custom domain recommended
+```
+
+Keeping the supported configuration narrow makes installation and troubleshooting easier to reproduce.
+
+---
+
+# Advanced documentation
+
+More detailed information is available under `docs/`:
+
+* [supported v1.0 product boundary](docs/SUPPORTED_PRODUCT.md)
+* [AlmaLinux deployment runbook](docs/ALMALINUX_DEPLOYMENT.md)
+* [architecture](docs/ARCHITECTURE.md)
+* [security model](docs/SECURITY_MODEL.md) and [threat model](docs/THREAT_MODEL.md)
+* [privacy model](docs/PRIVACY_MODEL.md)
+* [client setup](docs/clients/README.md)
+* [recovery](docs/RECOVERY.md)
+* [protocol troubleshooting](docs/TELEGRAM_TROUBLESHOOTING.md)
+* [AWS/network reachability testing](docs/AWS_REACHABILITY_TEST.md)
+* [implementation status](docs/IMPLEMENTATION_STATUS.md) and
+  [device acceptance status](docs/DEVICE_ACCEPTANCE_TESTS.md)
+
+---
+
+# License
+
+Apache License 2.0.
+
+See [LICENSE](LICENSE).
+
+---
+
+# Contributing
+
+Bug reports and tested fixes are welcome.
+
+When opening an issue, include:
+
+* server OS
+* VPS provider
+* client operating system
+* Hiddify/client version
+* whether REALITY works
+* whether Hysteria2 works
+* output of `sudo vpn doctor`
+* relevant service errors
+
+Never include:
+
+* subscription URLs
+* VLESS UUIDs
+* Hysteria2 passwords
+* REALITY private keys
+* other VPN credentials

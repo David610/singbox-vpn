@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # vpn1 one-command bootstrap installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
 #
 # This script does NOT assume the repository is already cloned — it is
 # designed to be piped directly from `curl` into `bash` via stdin, in
@@ -49,7 +49,7 @@
 #                                 usable through `curl | sudo bash -s --`
 set -Eeuo pipefail
 
-VPN1_REPO="${VPN1_REPO:-David610/vpn1}"
+VPN1_REPO="${VPN1_REPO:-David610/singbox-vpn}"
 VPN1_VERSION="${VPN1_VERSION:-}"
 VPN1_REF="${VPN1_REF:-main}"
 VPN1_CHANNEL="${VPN1_CHANNEL:-stable}"
@@ -98,7 +98,7 @@ while [ $# -gt 0 ]; do
       cat <<'USAGE'
 vpn1 one-command bootstrap installer.
 
-  curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
+  curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
 
 Bootstrap options:
   --version, -s -- --version v1.2.3   pin to a specific tagged release

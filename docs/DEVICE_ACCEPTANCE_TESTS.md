@@ -37,7 +37,7 @@ from spec conformance or code review alone.
 
 Prerequisites:
 
-1. A real AlmaLinux 9 (or Rocky Linux 9) VPS with a public IP and two
+1. A real AlmaLinux 9 x86-64 VPS with a public IP and two
    DNS names pointed at it (`vpn.example.com`, `sub.example.com` — see
    `docs/ALMALINUX_DEPLOYMENT.md`).
 2. `sudo ./deploy/almalinux/install.sh` run there, completing without

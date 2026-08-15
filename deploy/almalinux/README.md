@@ -1,22 +1,17 @@
 # deploy/almalinux/
 
 Production deployment tooling for the Hiddify/VLESS-REALITY/Hysteria2
-compatibility stack. Despite the directory name (kept for backwards
-compatibility with existing links), it supports the RHEL family
-(AlmaLinux 9, Rocky Linux 9, RHEL 9, Amazon Linux 2023 — the last one is
-`ci-tested` only: automated unit/fixture coverage, not a real-host
-verification; see `docs/ALMALINUX_DEPLOYMENT.md`'s three-tier support
-matrix) and the Debian family
-(Ubuntu 22.04/24.04, Debian 12/13) — see `deploy/lib/os.sh`. See
-`docs/ALMALINUX_DEPLOYMENT.md` for the full runbook; this file is a
-quick index.
+compatibility stack. The public v1.0 target is **AlmaLinux 9 x86-64 only**.
+Other distro branches in `deploy/lib/os.sh` are implementation paths, not a
+support claim. See `../../docs/SUPPORTED_PRODUCT.md` for the authoritative
+scope and `../../docs/ALMALINUX_DEPLOYMENT.md` for the full runbook.
 
 | Script | Purpose |
 |---|---|
-| `install.sh` | Fresh install: packages, binaries, sing-box, secrets, systemd, firewall, SELinux context. |
-| `update.sh` | Rebuild + validate + atomic swap + health-check + auto-rollback on failure. |
-| `uninstall.sh` | Stop/disable/remove services and binaries; state kept unless `--purge-state`. |
-| `firewall.sh` | Idempotently applies the firewalld rule set (22/tcp, 443/tcp, 443/udp, 8443/tcp only). |
+| `install.sh` | Fresh install or repair: packages, binaries, sing-box, secrets, systemd, firewall and SELinux context. |
+| `update.sh` | Checksum-verified transactional release update/repair with health verification and automatic rollback; `--dev-rebuild` is explicitly development-only. |
+| `uninstall.sh` | Ownership-aware complete removal by default, including state and installer-owned firewall changes. |
+| `firewall.sh` | Idempotently applies the firewalld rules for the detected/explicit SSH port, TCP/443, UDP/443 and the configurable subscription HTTPS port. |
 | `render-config.sh` | Re-render + validate + apply sing-box config from the current user store and reload. |
 | `health-check.sh` | Installed as `/usr/local/bin/vpn-health-check`; spec §42 smoke test, no secrets printed. |
 | `systemd/*.service` | Hardened unit files for `sing-box` and `vpn-subscription`. |

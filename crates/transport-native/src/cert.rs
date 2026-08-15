@@ -78,8 +78,8 @@ impl ServerCertVerifier for PinnedCertVerifier {
 /// Generates a fresh self-signed keypair+certificate for a relay to serve.
 /// Dev/local-slice tooling only — a real deployment provisions relay
 /// certificates out of band and distributes the pin via the signed
-/// rendezvous bundle (see RENDEZVOUS_DESIGN.md); this function is what
-/// `deploy/local/gen-keys.sh`-equivalent test fixtures call.
+/// rendezvous bundle (see RENDEZVOUS_DESIGN.md); this function is used by
+/// `deploy/local/run-dev-slice.sh`'s in-process components and test fixtures.
 pub fn generate_self_signed(subject_alt_name: &str) -> (rcgen::Certificate, rcgen::KeyPair) {
     let key_pair = rcgen::KeyPair::generate().expect("keygen");
     let params = rcgen::CertificateParams::new(vec![subject_alt_name.to_string()]).expect("params");

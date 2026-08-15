@@ -1,60 +1,37 @@
 # ALMALINUX_DEPLOYMENT.md
 
 Production runbook for the Hiddify/VLESS-REALITY/Hysteria2 compatibility
-stack. Despite the filename/directory name (kept for backwards
-compatibility with existing links), this deployment path now supports
-the RHEL family (AlmaLinux 9, Rocky Linux 9, RHEL 9, Amazon Linux 2023)
-and the Debian family (Ubuntu 22.04/24.04, Debian 12/13) — see
-`deploy/lib/os.sh`.
+stack. The supported v1.0 server target is deliberately limited to
+**AlmaLinux 9 x86-64**; [SUPPORTED_PRODUCT.md](SUPPORTED_PRODUCT.md) is
+authoritative whenever another document or an installer code path suggests a
+broader scope.
 
-### Support matrix — three tiers, not two
+### Public support matrix
 
-`OS_SUPPORT` (see `deploy/lib/os.sh`) has three distinct values. Do not
-read "ci-tested" as a synonym for "tested" — it is a materially weaker
-claim, and the installer's own preflight warning says so at runtime too.
+| OS | v1.0 status | Basis |
+|---|---|---|
+| AlmaLinux 9 x86-64 | **supported** | authoritative v1.0 target; supported-path CI uses the real pinned `sing-box` binary |
+| Rocky Linux 9 / RHEL 9 | **unsupported / unverified** | installer family branches exist, but that is not a public support claim |
+| Amazon Linux 2023 | **unsupported / fixture-tested only** | OS detection and dependency fixtures exist; no live-host validation |
+| Ubuntu 22.04/24.04 / Debian 12/13 | **unsupported / unverified** | installer family branches exist, but they are outside v1.0 support |
+| anything else | **unsupported / unverified** | no guarantee |
 
-| OS | Family | `OS_SUPPORT` | Basis |
-|---|---|---|---|
-| AlmaLinux 9 | RHEL | `tested` | exercised as the primary development/CI target |
-| Rocky Linux 9 | RHEL | `tested` | same install path as AlmaLinux 9 (dnf/firewalld) |
-| RHEL 9 | RHEL | `tested` | same install path as AlmaLinux 9 |
-| Amazon Linux 2023 | RHEL | `ci-tested` | automated unit/fixture coverage only, no live-host run — see below |
-| Ubuntu 22.04 / 24.04 | Debian | `tested` | exercised as a development/CI target |
-| Debian 12 / 13 | Debian | `tested` | same install path as Ubuntu (apt/ufw) |
-| anything else | — | `untested` | installer warns and continues; no guarantee |
+`OS_SUPPORT` in `deploy/lib/os.sh` controls installer warnings and code-path
+selection. It is an internal implementation classification, not the public
+v1.0 support contract.
 
-- **`tested`** — genuinely exercised as a development/CI target (AlmaLinux
-  9, Rocky 9, RHEL 9, Ubuntu 22.04/24.04, Debian 12/13).
-- **`ci-tested`** — Amazon Linux 2023 only. Covered by automated
-  static/unit tests (`deploy/lib/tests/test-amazon-linux-2023.sh`), which
-  `source` the real `deploy/lib/os.sh` and exercise the real `detect_os()`
-  against a fixture `/etc/os-release` (`ID=amzn`/`ID_LIKE=fedora`
-  correctly mapping to the RHEL family), plus the real
-  `install_dependencies_rhel()`'s `curl-minimal`/`curl` package-conflict
-  handling — it has **not** been verified end to end against a real
-  Amazon Linux 2023 EC2 instance (no such host was available while this
-  support was added). In particular, whether `firewalld` is actually
-  installable from AL2023's default `dnf` repos on a stock EC2 image has
-  not been confirmed live; if it isn't, `packages_stage` will fail loudly
-  at `dnf install` rather than silently degrading — check
-  `journalctl`/the installer's own error output if that happens, and
-  please report back so this matrix can be corrected (and, once a real
-  run succeeds, so this can be upgraded to `tested`).
-- **`untested`** — everything else; installer warns and continues, no
-  automated coverage at all.
-
-Every
-command below is copy-pasteable. This deploys the compatibility
+Every command below is copy-pasteable. This deploys the compatibility
 (sing-box) data plane only — the native `direct-tls`/`noise-quic` stack
 stays on `deploy/local/` (see `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md`
 §14).
 
 **Most installs should use the one-command bootstrap** described in the
-top-level [`README.md`](../README.md#quick-install):
+top-level [`README.md`](../README.md#3-install):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh \
-  | sudo REALITY_HANDSHAKE_SERVER=www.google.com bash
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh \
+  | sudo bash -s -- --domain vpn.example.com \
+      --reality-handshake-server www.cloudflare.com
 ```
 
 That command resolves the latest tagged release, downloads the source
@@ -62,8 +39,8 @@ archive `release.yml` published for that exact tag, verifies it against
 that release's `SHA256SUMS` manifest (refusing to extract/run anything
 if the asset, manifest, or checksum don't match — see
 `download_verified_source_release()` in the top-level `install.sh`),
-auto-detects your public IP, issues a real (non-self-signed) TLS
-certificate automatically via [sslip.io](https://sslip.io) + certbot,
+validates your domain and public IP, issues a real (non-self-signed) TLS
+certificate automatically via certbot,
 and runs everything below for you. `fetch_release_binaries()` in
 `deploy/almalinux/install.sh` prefers a prebuilt, checksum-verified
 release binary for your exact version/architecture and only falls back
@@ -86,7 +63,7 @@ compromise of the GitHub release itself (someone who can edit/replace a
 release could republish a matching archive+checksum pair together). No
 code-signing infrastructure is implemented for v1.0.
 
-**As of this writing, no `vX.Y.Z` tag has ever been pushed to this repo,
+**As of 2026-08-15, no `vX.Y.Z` tag has been pushed to this repo,
 so the plain `curl | sudo bash` command above currently refuses to run**
 with an error explaining the two options: pin `--version vX.Y.Z` once a
 release exists, or explicitly opt into unpinned branch-source
@@ -122,8 +99,8 @@ connection on this host directly.
 
 ## Prerequisites (manual path)
 
-- A fresh, supported VPS with a public IPv4 (IPv6 optional), root SSH
-  access.
+- A fresh AlmaLinux 9 x86-64 VPS with a public IPv4 (IPv6 optional) and
+  root SSH access.
 - Optionally, a domain name pointed at the VPS (an A record for both
   `vpn.example.com` and, if different, `sub.example.com`) if you don't
   want the automatic `sslip.io`-based hostname. REALITY's disguise
@@ -197,14 +174,11 @@ compatibility transport doesn't depend on it) but the nginx vhost is
 left unconfigured and the final status explicitly says `SUBSCRIPTION
 HTTPS: NOT CONFIGURED` — re-run `install.sh` once the cert exists.
 
-Renewal: certbot's systemd timer handles both certs automatically.
-After the Hysteria2 cert renews, re-copy it into
-`/etc/vpn/compat/hysteria/` (preserving `root:sing-box 0640`) and
-`sudo systemctl reload-or-restart sing-box` — a `certbot renew` deploy
-hook is the natural way to automate this on a real host, not
-implemented by this repo. After the subscription cert renews, `nginx -s
-reload` is enough (TLS termination lives entirely in nginx, no
-compatibility-stack service needs to restart).
+Renewal: the installer enables the available certbot renewal timer and installs
+`/etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh`. After a successful
+renewal, that hook validates and refreshes the Hysteria2 certificate copy,
+reloads and verifies `sing-box`, tests the nginx configuration, and reloads
+nginx so the subscription endpoint picks up the renewed certificate.
 
 **TCP/80 must stay reachable from the public internet long-term, not
 just during the initial install.** Both certificates above use the
@@ -219,9 +193,17 @@ security groups" below) — it does not leave it open permanently, since
 vpn1's own protocols (VLESS+REALITY, Hysteria2, the subscription HTTPS
 vhost) never use port 80. Either:
   - permanently allow inbound TCP/80 at both the host firewall layer
-    (vpn1 manages this) and, if applicable, the separate cloud-provider
-    firewall layer (vpn1 does not manage this — see below), or
-  - switch to a different ACME challenge method (e.g. DNS-01) that
+    (the installer does **not** leave its temporary issuance rule in place)
+    and, if applicable, the separate cloud-provider firewall layer (vpn1
+    cannot manage that layer — see below). On AlmaLinux:
+
+    ```bash
+    sudo firewall-cmd --permanent --add-service=http
+    sudo firewall-cmd --reload
+    sudo certbot renew --dry-run
+    ```
+
+- Alternatively, switch to a different ACME challenge method (e.g. DNS-01) that
     doesn't need port 80 open at all — not implemented by this repo;
     you would configure it directly in certbot/your ACME client and
     point `install_certbot_renewal_hook`'s deploy hook at the resulting
@@ -413,8 +395,8 @@ disabled successfully" while the old credentials are still live.
 | Hysteria2 password only | `vpn-admin user rotate-hysteria <id>` | User must re-import; VLESS credentials unaffected. |
 | Both VLESS UUID + Hysteria2 password | `vpn-admin user rotate-credentials <id>` | User must re-import both transports. |
 | REALITY keypair | `vpn-admin init --rotate` | **Every** client using this server must re-import (spec §12/§30: high impact, do this deliberately, rarely). |
-| TLS certificate (Hysteria2) | manual re-copy + `systemctl reload-or-restart sing-box` (see "Certificates" above) | None — same cert, just renewed. |
-| TLS certificate (subscription reverse proxy) | `certbot renew` (automatic) + `nginx -s reload` | None — reverse proxy only. |
+| TLS certificate (Hysteria2) | `certbot renew` timer + installed deploy hook | None — the hook validates/copies the renewed cert and reloads `sing-box`. |
+| TLS certificate (subscription reverse proxy) | `certbot renew` timer + installed deploy hook | None — the hook validates and reloads nginx. |
 
 All four `rotate-*`/`disable`/`enable`/`remove` commands go through the
 same render→validate→apply→reload→verify→rollback-on-failure path.
@@ -422,47 +404,57 @@ same render→validate→apply→reload→verify→rollback-on-failure path.
 ## Updating
 
 ```bash
-sudo ./deploy/almalinux/update.sh
+sudo /opt/vpn1/deploy/almalinux/update.sh --latest
+# or pin a specific release:
+sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z
+# or reconcile the currently installed release without changing versions:
+sudo /opt/vpn1/deploy/almalinux/update.sh --repair
 ```
 
-Builds, validates the re-rendered sing-box config, restarts services,
-runs the health check, and automatically rolls back binaries + config
-if the health check fails (spec §48/§49).
+Production updates download and checksum-verify the target release source and
+prebuilt binaries before changing live state, validate the re-rendered
+configuration, restart services, run protocol health checks, and automatically
+roll back the complete transaction on failure. A no-argument update is rejected
+so an operator cannot change versions accidentally. `--dev-rebuild` is the
+explicit source-build path for development only.
 
 ## Backup
 
-Back up:
+Create a backup before a major change:
 
-- `/etc/vpn/deployment.toml`
-- `/etc/vpn/compat/reality/` (REALITY private key — losing this means
-  regenerating and every client re-importing)
-- `/etc/vpn/compat/users/users.json`
-- Reverse proxy TLS/ACME state (e.g. `/etc/letsencrypt/`)
+```bash
+sudo vpn backup
+```
 
-Do **not** need to back up: `/etc/vpn/compat/sing-box/config.json`
-(regenerable from `users.json` + the REALITY key via
-`vpn-admin render-config`), logs, `target/`.
+The archive contains sensitive credentials. Move it to encrypted, off-host
+storage and protect it like the live server. Restore only a trusted archive and
+follow the command's confirmation prompts:
 
-Restore: reinstall the OS packages/binaries with `install.sh` (it will
-skip secret generation if the restored files are already present at
-their expected paths — `reality/private.key` existing is what triggers
-the "refuse to overwrite" path), copy the backed-up `/etc/vpn` tree
-back into place with correct ownership/permissions, then
-`./deploy/almalinux/render-config.sh`.
+```bash
+sudo vpn restore /path/to/vpn1-backup-<timestamp>.tar
+```
+
+See [RECOVERY.md](RECOVERY.md) for full-host recovery and the exact limitations
+of an application-state backup.
 
 ## Rollback
 
-See `deploy/almalinux/update.sh` — it keeps a timestamped backup under
-`/etc/vpn/backups/` and rolls back automatically on health-check
-failure. To roll back manually to a specific backup:
+`deploy/almalinux/update.sh` keeps a timestamped transaction backup under
+`/etc/vpn/backups/` and rolls back automatically on any uncommitted update
+failure. Do not manually copy only the binaries: a release transaction can also
+change systemd units, helper scripts, the sing-box binary and the persisted
+source tree.
+
+After a committed update, return to a previously published release through the
+same verified transaction path:
 
 ```bash
-sudo cp /etc/vpn/backups/<timestamp>/vpn-admin /usr/local/bin/vpn-admin
-sudo cp /etc/vpn/backups/<timestamp>/vpn-subscription-svc /usr/local/bin/vpn-subscription-svc
-sudo cp /etc/vpn/backups/<timestamp>/config.json /etc/vpn/compat/sing-box/config.json
-sudo systemctl restart vpn-subscription
-sudo systemctl reload-or-restart sing-box
+sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z  # replace with the previous release tag
 ```
+
+If an interrupted transaction marker remains, stop and follow the exact recovery
+instructions printed by `update.sh`; do not delete its staging/previous-release
+directories before inspecting them.
 
 ## Uninstall
 
@@ -479,7 +471,7 @@ terminal attached, asks first). Online fallback, only needed if
 `/opt/vpn1` is missing or damaged:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
 This removes **everything** vpn1 created by default — `/etc/vpn`

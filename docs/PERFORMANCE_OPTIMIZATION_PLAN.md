@@ -136,7 +136,7 @@ benefit from this change.
 usable before enabling it — `perf_kernel_supports_bbr` checks
 `/proc/sys/net/ipv4/tcp_available_congestion_control` and, if BBR isn't
 already listed, attempts `modprobe tcp_bbr` (BBR is a loadable module on
-several supported distro kernels, notably stock Ubuntu/Debian — a kernel
+several common distro kernels, notably stock Ubuntu/Debian — a kernel
 that supports it can still be missing it from the "available" list
 purely because nothing has loaded the module yet) and re-checks. Only
 if BBR is confirmed available does it set
@@ -497,10 +497,9 @@ capability quic-go/the Go runtime detects and uses automatically, not a
 sing-box config knob.
 
 **Decision: no code change — this is a kernel-version property, not a
-configuration gap.** Every OS this project supports (AlmaLinux 9, Rocky
-9, RHEL 9, Ubuntu 22.04+, Debian 12+ — see `deploy/lib/os.sh`) ships a
-kernel well above 4.18, so GSO/GRO are already available and already
-used automatically on every supported deployment target. There is
+configuration gap.** The supported AlmaLinux 9 target, and the additional
+unsupported distro code paths in `deploy/lib/os.sh`, use kernels well above
+4.18, so GSO/GRO are already available on the supported target. There is
 nothing for `deploy/lib/perf-tuning.sh` or the sing-box config generator
 to set — adding a "GSO/GRO tuning" section to either would be
 configuring something that isn't actually configurable at this layer,

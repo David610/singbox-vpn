@@ -31,8 +31,8 @@ These were true of the repository before this pass, verified by reading
 1. **BUG/RELIABILITY ISSUE** — Automatic transport selection
    (`render_singbox_client_subscription`) built only a `urltest` group
    (`tag: "auto"`) and set `route.final` to it directly. `urltest`
-   measures a fast plain-HTTPS request to `https://www.gstatic.com/
-   generate_204` — it proves nothing about Telegram, long-lived
+   measures a fast plain-HTTPS request to
+   `https://www.gstatic.com/generate_204` — it proves nothing about Telegram, long-lived
    connections, media transfers, UDP reliability, PMTU, or DPI
    resistance on a censored network. A fresh subscription import had no
    deterministic default transport at all; it was whatever won that one

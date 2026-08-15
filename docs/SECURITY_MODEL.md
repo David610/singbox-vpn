@@ -33,7 +33,7 @@ underlying primitive.
   file with group/other read bits set, on Unix).
 - `tracing` field redaction: session tokens and private key bytes implement
   a `Debug`/`Display` that never prints the underlying bytes
-  (`crypto::Secret<T>` wrapper); grep-based test in `crates/crypto/tests`
+  (`crypto::Secret<T>` wrapper); regression tests in `crates/crypto/src/`
   asserts no test accidentally derives `Debug` on raw key bytes.
 - No secret is included in telemetry events by construction — the
   telemetry event enum has no `String`/`Vec<u8>` free-form field, only

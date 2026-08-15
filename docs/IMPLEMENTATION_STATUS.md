@@ -1,8 +1,9 @@
 # Implementation Status (v1.0 baseline)
 
 Compact engineering handoff. Full boundary definition: `docs/SUPPORTED_PRODUCT.md`.
-Release-readiness evidence (PASS/FAIL/UNVERIFIED matrix): `docs/ACCEPTANCE.md`
-if present, otherwise the latest PR final-response acceptance pass.
+Release-readiness evidence is recorded in this file and in
+`docs/DEVICE_ACCEPTANCE_TESTS.md`; `docs/PRODUCTION_ACCEPTANCE_REPORT.md` is a
+dated historical audit snapshot.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
 ## Supported scope (summary)
@@ -35,7 +36,8 @@ v1.0 — see `deploy/local/run-dev-slice.sh` for its dev-only entry point.
   `crates/compat-config`, `apps/admin`, `services/subscription`.
 - Rust tests: `crates/compat-config/tests/*` + `src/**` unit tests,
   `apps/admin/tests/*`, `services/subscription/tests/*`.
-- Shell tests: `deploy/lib/tests/*.sh` (20 files).
+- Shell tests: `deploy/lib/tests/*.sh` (discovered dynamically by the fast
+  gate; do not maintain a duplicated count here).
 - Recovery: `docs/RECOVERY.md` (manual disaster-recovery procedure),
   `vpn-admin user links <id>` (out-of-band profile delivery independent
   of the subscription hostname).

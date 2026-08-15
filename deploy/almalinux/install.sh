@@ -4,11 +4,11 @@
 # re-running skips already-generated secrets and already-installed
 # packages. See docs/ALMALINUX_DEPLOYMENT.md.
 #
-# Despite the directory name (kept for backwards compatibility with
-# existing docs/links), this script now supports the RHEL family
-# (AlmaLinux, Rocky Linux, RHEL) and the Debian family (Ubuntu, Debian) —
-# see deploy/lib/os.sh. Package-manager/firewall logic is branched
-# per-family; nothing else about the deployment changes between them.
+# The public v1.0 target is AlmaLinux 9 x86-64 only (see
+# docs/SUPPORTED_PRODUCT.md). deploy/lib/os.sh retains additional RHEL/Debian
+# implementation paths for compatibility and experimentation, but their
+# presence is not a public support claim. Package-manager/firewall logic is
+# branched per family.
 #
 # Explicitly out of scope here (per docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md):
 # the native direct-tls/noise-quic stack (rendezvous/relay-agent) is not
@@ -56,7 +56,7 @@ done
 SINGBOX_BIN="$BIN_DIR/sing-box"
 NGINX_CONF="/etc/nginx/conf.d/vpn-subscription.conf"
 VPN1_VERSION="${VPN1_VERSION:-}"
-VPN1_RELEASE_REPO="${VPN1_RELEASE_REPO:-David610/vpn1}"
+VPN1_RELEASE_REPO="${VPN1_RELEASE_REPO:-David610/singbox-vpn}"
 
 # Independent component status, set ONLY at the point each component
 # actually confirms success (docs/FINAL_PRODUCTION_AUDIT.md P0-14) — never
@@ -165,7 +165,7 @@ print_install_help() {
 vpn1 installer (deploy/almalinux/install.sh).
 
 Normal usage takes no arguments at all:
-  curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
+  curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
 
 Optional flags (all have environment-variable equivalents):
   --domain HOST                    same as PUBLIC_HOST; accepts a Unicode
@@ -500,20 +500,27 @@ preflight_stage() {
   preflight_require_root
   acquire_installer_lock
   detect_os || die "unsupported operating system."
-  log "detected OS: $OS_PRETTY_NAME (family=$OS_FAMILY, support=$OS_SUPPORT)"
-  # Three OS_SUPPORT tiers (see deploy/lib/os.sh) get three distinct
-  # messages — do not collapse "ci-tested" into either "tested" (overclaims)
-  # or the generic "untested" warning (underclaims; it has real automated
-  # coverage the generic message wouldn't mention).
+  log "detected OS: $OS_PRETTY_NAME (family=$OS_FAMILY, implementation_coverage=$OS_SUPPORT)"
+  # OS_SUPPORT describes implementation-path coverage, not the public v1.0
+  # product boundary. Always warn when a recognized compatibility path is
+  # outside the authoritative AlmaLinux 9 target.
+  case "$OS_ID-$OS_VERSION_ID" in
+    almalinux-9*) ;;
+    *)
+      warn "this OS is outside the supported v1.0 target (AlmaLinux 9 x86-64). A package/firewall implementation path exists and the installer will continue for backwards compatibility, but this is an unsupported/unverified deployment." ;;
+  esac
   case "$OS_SUPPORT" in
     tested) ;;
     ci-tested)
-      warn "this OS (Amazon Linux 2023) has automated static/unit test coverage (deploy/lib/tests/test-amazon-linux-2023.sh) but has NOT been verified end-to-end on a live host of this OS; continuing, but this is not the same guarantee as the tested matrix (AlmaLinux/Rocky/RHEL 9, Ubuntu 22.04/24.04, Debian 12/13)." ;;
+      warn "this OS path has automated fixture coverage but has NOT been verified end-to-end on a live host; continuing as unsupported/unverified." ;;
     *)
-      warn "this OS/version combination is not in the tested support matrix; continuing, but this is not a guarantee it works." ;;
+      warn "this OS/version implementation path has no dedicated coverage; continuing as unsupported/unverified." ;;
   esac
-  ARCH="$(detect_arch)" || die "unsupported CPU architecture: $(uname -m). vpn1 supports x86_64 and aarch64."
+  ARCH="$(detect_arch)" || die "unsupported CPU architecture: $(uname -m). Available implementation paths are x86_64 and aarch64; the supported v1.0 target is x86_64."
   log "detected architecture: $ARCH ($(uname -m))"
+  if [ "$ARCH" != "amd64" ]; then
+    warn "this architecture is outside the supported v1.0 target (AlmaLinux 9 x86-64). Release tooling has an arm64 implementation path, but it is unsupported/unverified for v1.0."
+  fi
   preflight_require_systemd
   preflight_require_commands curl tar awk sed grep
   preflight_check_disk_space / 2048

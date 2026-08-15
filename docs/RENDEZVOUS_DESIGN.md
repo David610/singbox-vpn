@@ -44,7 +44,7 @@ client: cache bundle to disk as the "emergency bundle" (last-known-good)
   bundle and will serve it (still expiry-checked) if the rendezvous
   service is unreachable, satisfying spec §52's "rendezvous temporarily
   unavailable, cached signed recovery information still works" test
-  (`tests/failure_independence.rs::rendezvous_outage_uses_cached_bundle`).
+  (`tests/tests/failure_independence.rs::rendezvous_outage_uses_cached_bundle`).
 
 ## What is explicitly not solved this session
 

@@ -124,7 +124,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` completed · `[!]
 ## Phase 11 — Security testing
 - [x] fuzz targets: config bundle parser, rendezvous response parser
 - [x] property tests: state machine invariants, scoring bounds, serialization round-trips
-- [~] tc netem hostile-network tests: script + `#[ignore]`d test written (`tests/hostile_network/`) and reviewed; still not executed — re-checked this session (`which ip tc` both fail, uid 0 but `iproute2` is simply not installed in this sandbox image), so the situation is unchanged from the prior session, not newly re-verified as fixable. Failure-independence *is* proven without netem via `tests/failure_independence.rs` (deterministic connection-refused simulation), which is a real but weaker substitute — see docs/TEST_STRATEGY.md.
+- [~] tc netem hostile-network tests: script + `#[ignore]`d test written (`tests/hostile_network/`) and reviewed; still not executed — re-checked this session (`which ip tc` both fail, uid 0 but `iproute2` is simply not installed in this sandbox image), so the situation is unchanged from the prior session, not newly re-verified as fixable. Failure-independence *is* proven without netem via `tests/tests/failure_independence.rs` (deterministic connection-refused simulation), which is a real but weaker substitute — see docs/TEST_STRATEGY.md.
 - [~] cargo-fuzz targets (`fuzz/`) still not executed — re-checked this
       session: only the `stable` rustup toolchain is installed, no
       nightly, and `cargo-fuzz` was not present. Proptest-based substitute

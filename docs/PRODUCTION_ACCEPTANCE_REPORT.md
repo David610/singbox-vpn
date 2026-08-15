@@ -4,6 +4,13 @@ Date: 2026-08-09. Companion to `docs/FINAL_PRODUCTION_AUDIT.md` (per-issue
 detail lives there; this document is the pass/fail summary and the honest
 answer to "is this production-ready").
 
+> **Historical audit snapshot.** Results and gap statements below describe
+> the repository at the date of this audit. For the current public support
+> boundary and current implementation state, use
+> `docs/SUPPORTED_PRODUCT.md` and `docs/IMPLEMENTATION_STATUS.md`. In
+> particular, AlmaLinux 9 x86-64 is the only supported v1.0 server target;
+> additional distro branches are not current support claims.
+
 ## Tests executed, and how
 
 | Check | Result | How verified |
@@ -92,7 +99,7 @@ CI too).
 ## Tests that could not be executed, and why
 
 - `cargo audit` — tool unavailable, build timed out twice in this sandbox.
-- Any real VPS/VM install on any of the 6 target OSes — no VM/VPS
+- Any real VPS/VM install on any of the six implementation OS paths — no VM/VPS
   provisioning available in this environment.
 - Any real device import test (Hiddify Android/iOS/Windows/macOS/Linux/
   MagicOS, v2rayNG) — no devices available.
@@ -107,19 +114,19 @@ CI too).
 ## Exact remaining blockers to a truthful "production-ready" claim
 
 1. **No real-VPS installation has ever been run against these changes.**
-   The single highest-value next step is: provision a real Ubuntu 24.04
-   or AlmaLinux 9 VPS, run the exact one-command installer below, and
+   The single highest-value next step is: provision a real AlmaLinux 9
+   x86-64 VPS, run the exact one-command installer below, and
    fix whatever the first real run surfaces that this sandbox could not
    catch (SELinux contexts, real firewalld/ufw behavior, real certbot
    HTTP-01 against a real public IP, real systemd unit startup ordering).
 2. **No real client has ever imported a subscription URL from this
    stack.** Hiddify (any platform) and v2rayNG import/connect/rotate/
    revoke behavior is entirely unverified against the current code.
-3. **`update.sh` is still source-rebuild-based**, not the
-   verified-prebuilt-release / versioned-directory / full-rollback design
-   the brief asks for — this is the largest remaining structural gap and
-   was explicitly deferred (see audit doc P1 table) rather than attempted
-   partially and left half-working.
+3. ~~**`update.sh` is still source-rebuild-based.**~~ **Resolved after this
+   audit:** the production path now performs checksum-verified transactional
+   release updates with full rollback; source rebuilding requires the
+   explicit development-only `--dev-rebuild` mode. See
+   `docs/IMPLEMENTATION_STATUS.md`.
 4. **`cargo audit` has never actually been run** against this dependency
    tree in this pass — a real dependency-vulnerability gate is missing
    until someone runs it (ideally in CI, which now has a job wired up
@@ -150,7 +157,7 @@ device. Until at least one real end-to-end run happens (item 1 above),
 ## Exact one-command installation (as implemented now)
 
 ```
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
 ```
 
 Resolves the latest stable tagged release if one exists (source + binaries
@@ -163,7 +170,7 @@ now-superseded behavior; corrected to match the current fail-closed
 bootstrap. Version-pinned form:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/install.sh | sudo bash -s -- --version vX.Y.Z
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash -s -- --version vX.Y.Z
 ```
 
 ## Exact user onboarding flow for Hiddify (as implemented now)

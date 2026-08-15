@@ -19,6 +19,6 @@ hardcodes hop count.
   diversification some users need (THREAT_MODEL.md malicious-relay case).
 
 ## Consequences
-Two topologies must be tested (both are, in `tests/e2e.rs` and
-`tests/failure_independence.rs`). Cross-client aggregation/global relay
+Two topologies must be tested (both are, in `tests/tests/e2e.rs` and
+`tests/tests/failure_independence.rs`). Cross-client aggregation/global relay
 health policy (deferred, Phase 7) will need to be topology-aware later.

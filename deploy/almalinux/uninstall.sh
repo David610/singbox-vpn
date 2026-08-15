@@ -157,7 +157,7 @@ Options:
           terminal is attached, e.g. non-interactive automation).
 
 Online fallback (only if the local copy at /opt/vpn1 is missing):
-  curl -fsSL https://raw.githubusercontent.com/David610/vpn1/main/uninstall.sh | sudo bash
+  curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash
 USAGE
       exit 0 ;;
     *) die "unknown flag: $arg" ;;

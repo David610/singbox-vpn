@@ -175,7 +175,7 @@ if [ -f "$INSTALL_STATE_MANIFEST" ]; then
   CURRENT_SINGBOX_PINNED="$(manifest_field sing_box_version_pinned)"
   CURRENT_ARCH="$(manifest_field arch)"
 fi
-VPN1_REPO="${VPN1_REPO_OVERRIDE:-${CURRENT_REPO:-David610/vpn1}}"
+VPN1_REPO="${VPN1_REPO_OVERRIDE:-${CURRENT_REPO:-David610/singbox-vpn}}"
 ARCH="${CURRENT_ARCH:-$(detect_arch)}" || die "unsupported CPU architecture: $(uname -m)."
 
 # A pre-checkpoint-3 install, or one made with VPN1_CHANNEL=dev, may

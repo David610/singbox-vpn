@@ -47,7 +47,7 @@ Failed(cat) -> Idle   (after policy decides next endpoint/transport)
 Degraded -> {Healthy, Closed}
 ```
 
-Invariants (property-tested in `crates/failure-classifier/tests`):
+Invariants (property-tested in `crates/failure-classifier/src/lib.rs`):
 
 1. `PossibleShutdown` classification never triggers another automatic
    transport switch within its cooldown window (no infinite cycling).

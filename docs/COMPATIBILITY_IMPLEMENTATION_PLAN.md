@@ -1,5 +1,12 @@
 # COMPATIBILITY_IMPLEMENTATION_PLAN.md
 
+> **Historical planning snapshot.** The "current" and "missing" sections
+> below describe the native-only repository before the Hiddify/sing-box
+> compatibility stack was implemented. They are retained as design history,
+> not as current feature or support claims. See
+> `docs/SUPPORTED_PRODUCT.md` and `docs/IMPLEMENTATION_STATUS.md` for the
+> current state.
+
 ## 1. Current architecture
 
 A Rust workspace implementing a *native* adaptive censorship-resistant
