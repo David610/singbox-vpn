@@ -30,6 +30,13 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
   and anonymous exact-tag URLs passed. GitHub's stable `/releases/latest`
   endpoint remained 404, confirming that the RC was excluded from the stable
   channel. This is the verified candidate for stable `v0.1.0`.
+- Stable `v0.1.0` was published from commit
+  `71697025cdbcaf0c7ac87fe36328d7e092a3a260` after release workflow run
+  `31941781143` passed every gate and both architecture builds. GitHub marks
+  it non-draft, non-prerelease, and `Latest`. The published manifest, archive
+  layouts/modes, source-bootstrap layout, anonymous asset/script URLs, and
+  anonymous `/releases/latest` resolution to `v0.1.0` were independently
+  rechecked after publication.
 - Historical checkpoint text below describes what was known during each pass;
   newer evidence in this section and the device matrix takes precedence.
 
