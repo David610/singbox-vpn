@@ -29,6 +29,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "vpn-admin",
+    version,
     about = "Compatibility (Hiddify/VLESS-REALITY/Hysteria2) user administration"
 )]
 struct Cli {

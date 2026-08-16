@@ -101,6 +101,23 @@ impl CargoLikeBin for std::process::Command {
 }
 
 #[test]
+fn release_binary_exposes_package_version() {
+    let output = std::process::Command::cargo_like_bin()
+        .arg("--version")
+        .output()
+        .expect("run subscription --version");
+    assert!(
+        output.status.success(),
+        "subscription --version must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("subscription {}", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
 fn refuses_to_start_with_empty_public_key() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_deployment_toml(dir.path(), free_port());

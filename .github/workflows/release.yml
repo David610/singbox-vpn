@@ -95,7 +95,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Keep this exact revision aligned with rust-toolchain.toml. The action
+      # installs matrix targets for the selected toolchain; using @stable here
+      # would install aarch64 for a different toolchain when the repository pin
+      # overrides rustup's active version.
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           targets: ${{ matrix.target }}
 

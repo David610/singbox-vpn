@@ -15,9 +15,13 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 - `v0.1.0-rc.1` matched the packaged Rust binaries' `0.1.0` version and
   passed every reusable CI gate, but GitHub skipped its build/publish jobs
   because a tag-only validation job was itself skipped for tag pushes. No
-  Release or assets were created. The dependency semantics were fixed for
-  `v0.1.0-rc.2`; its assets and exact-tag installer path must be verified
-  before the stable `v0.1.0` tag is created.
+  Release or assets were created. `v0.1.0-rc.2` proved the dependency fix:
+  all release gates passed and both artifact jobs ran, then exposed two
+  independent build-contract defects. The packaged CLIs lacked the
+  `--version` flag checked by the workflow, and the ARM target was installed
+  for floating `stable` even though `rust-toolchain.toml` pins 1.94.1. Both
+  are fixed and regression-tested. No rc.2 Release or assets were created;
+  a fresh candidate tag must pass before stable `v0.1.0` is created.
 - Historical checkpoint text below describes what was known during each pass;
   newer evidence in this section and the device matrix takes precedence.
 

@@ -184,6 +184,19 @@ fn admin(dir: &Path, cfg_path: &Path) -> Command {
     cmd
 }
 
+#[test]
+fn release_binary_exposes_package_version() {
+    Command::cargo_bin("vpn-admin")
+        .unwrap()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!(
+            "vpn-admin {}",
+            env!("CARGO_PKG_VERSION")
+        )));
+}
+
 /// A probably-free localhost port, picked by binding to port 0 and
 /// releasing it immediately. Small TOCTOU race is acceptable for a test
 /// harness. Used so tests that spawn the REAL `subscription` service

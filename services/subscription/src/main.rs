@@ -8,6 +8,7 @@ use subscription::{standard_endpoints, AppState, RateLimiter};
 #[derive(Parser)]
 #[command(
     name = "subscription",
+    version,
     about = "Compatibility subscription HTTP service"
 )]
 struct Cli {

@@ -9,7 +9,10 @@
 # against it, so a future edit to either side that breaks the contract
 # fails this test instead of only being caught by a live release.
 #
-# A live v0.1.0-rc.1 tag run exposed a skipped-ancestor propagation bug:
+# Live v0.1.0-rc.1 and v0.1.0-rc.2 tag runs exposed dependency-gating,
+# CLI-version, and pinned-toolchain target-installation bugs. The assertions
+# below cover those corrected contracts as well as packaging.
+# rc.1's specific failure was a skipped-ancestor propagation bug:
 # validate-tag was skipped for tag pushes, so build/publish were skipped even
 # after the reusable CI gate passed. The static assertions below now cover
 # the corrected explicit dependency-result conditions as well as packaging.
@@ -38,6 +41,16 @@ yml_targets="$(grep -oE 'target: [A-Za-z0-9_.-]+-unknown-linux-gnu' "$RELEASE_YM
 os_sh_targets="$(grep -oE 'echo "[A-Za-z0-9_.-]+-unknown-linux-gnu"' "$REPO_ROOT/deploy/lib/os.sh" | grep -oE '[A-Za-z0-9_.-]+-unknown-linux-gnu' | sort -u)"
 assert_eq "release.yml build matrix targets == os.sh rust_target_for_arch() targets" \
   "$yml_targets" "$os_sh_targets"
+
+echo
+echo "--- static: release target installation uses the repository's pinned Rust toolchain ---"
+rust_channel="$(sed -nE 's/^channel = "([^"]+)"$/\1/p' "$REPO_ROOT/rust-toolchain.toml")"
+if [ -n "$rust_channel" ] && grep -q "uses: dtolnay/rust-toolchain@${rust_channel}" "$RELEASE_YML"; then
+  echo "ok: release.yml installs cross targets for pinned Rust $rust_channel"
+else
+  echo "FAIL: release.yml does not install targets for rust-toolchain.toml's pinned channel ($rust_channel)"
+  failures=$((failures + 1))
+fi
 
 echo
 echo "--- static: asset filename pattern matches between release.yml and install.sh ---"
@@ -148,6 +161,13 @@ else
   echo "FAIL: release.yml does not validate workflow_dispatch ref == requested tag — could build/publish a mismatched commit (Checkpoint 6 §8)"
   failures=$((failures + 1))
 fi
+if grep -q '"\$extracted/vpn-admin" --version' "$RELEASE_YML" \
+    && grep -q '"\$extracted/subscription" --version' "$RELEASE_YML"; then
+  echo "ok: native release archives execute both packaged binaries' --version contract"
+else
+  echo "FAIL: release.yml does not execute both packaged binaries with --version"
+  failures=$((failures + 1))
+fi
 if grep -q 'name: Confirm tag push ref' "$RELEASE_YML" \
     && grep -q "if: github.event_name == 'push'" "$RELEASE_YML" \
     && grep -q "needs.gate.result == 'success'" "$RELEASE_YML" \
@@ -179,5 +199,4 @@ fi
 echo "all tests passed"
 echo
 echo "NOTE: packaging/checksum logic matches install.sh's fetch_release_binaries()"
-echo "contract, and live-tag dependency ordering is regression-tested after rc.1 exposed"
-echo "a skipped build/publish path."
+echo "contract, and live-tag regressions exposed by rc.1/rc.2 are covered."
