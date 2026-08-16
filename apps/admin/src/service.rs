@@ -232,41 +232,23 @@ exit 1
 
     /// `systemctl is-failed` exits 0 when the unit IS in `failed` state
     /// and non-zero otherwise — mirrors real systemd's own contract.
-    fn fake_systemctl_is_failed(dir: &std::path::Path, failed: bool) -> PathBuf {
-        let path = dir.join("systemctl");
-        let is_failed_exit = if failed { 0 } else { 1 };
-        let script = format!(
-            r#"#!/usr/bin/env bash
-case "$1" in
-  --version) exit 0 ;;
-  show) echo "loaded"; exit 0 ;;
-  is-failed) exit {is_failed_exit} ;;
-esac
-exit 1
-"#
-        );
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(script.as_bytes()).unwrap();
-        drop(f);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
-    }
-
     #[test]
     fn is_failed_true_when_systemctl_reports_failed() {
-        let dir = tempfile::tempdir().unwrap();
-        let systemctl = fake_systemctl_is_failed(dir.path(), true);
+        // `systemctl is-failed` exits 0 when the unit IS failed. Use the
+        // platform's immutable success binary so this status-mapping test
+        // cannot intermittently hit ETXTBSY while executing a just-written
+        // temporary shell script on a loaded CI filesystem.
         let mgr = CompatibilityServiceManager::new("vpn-expiry-reconcile")
-            .with_systemctl_binary(systemctl);
+            .with_systemctl_binary(PathBuf::from("/bin/true"));
         assert!(mgr.is_failed());
     }
 
     #[test]
     fn is_failed_false_when_systemctl_reports_not_failed() {
-        let dir = tempfile::tempdir().unwrap();
-        let systemctl = fake_systemctl_is_failed(dir.path(), false);
+        // Any non-zero `systemctl is-failed` status means the unit is not in
+        // failed state; /bin/false deterministically supplies that status.
         let mgr = CompatibilityServiceManager::new("vpn-expiry-reconcile")
-            .with_systemctl_binary(systemctl);
+            .with_systemctl_binary(PathBuf::from("/bin/false"));
         assert!(!mgr.is_failed());
     }
 
