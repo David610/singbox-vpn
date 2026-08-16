@@ -9,9 +9,10 @@
 # against it, so a future edit to either side that breaks the contract
 # fails this test instead of only being caught by a live release.
 #
-# This test found no real bug in release.yml as of when it was written —
-# see the review note further down. It exists for regression coverage,
-# not because a bug was fixed here.
+# A live v0.1.0-rc.1 tag run exposed a skipped-ancestor propagation bug:
+# validate-tag was skipped for tag pushes, so build/publish were skipped even
+# after the reusable CI gate passed. The static assertions below now cover
+# the corrected explicit dependency-result conditions as well as packaging.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -147,6 +148,15 @@ else
   echo "FAIL: release.yml does not validate workflow_dispatch ref == requested tag — could build/publish a mismatched commit (Checkpoint 6 §8)"
   failures=$((failures + 1))
 fi
+if grep -q 'name: Confirm tag push ref' "$RELEASE_YML" \
+    && grep -q "if: github.event_name == 'push'" "$RELEASE_YML" \
+    && grep -q "needs.gate.result == 'success'" "$RELEASE_YML" \
+    && grep -q "needs.build.result == 'success'" "$RELEASE_YML"; then
+  echo "ok: tag pushes run validation and successful dependencies explicitly unlock build/publish"
+else
+  echo "FAIL: release.yml can regress to skipping build/publish after a successful tag gate"
+  failures=$((failures + 1))
+fi
 if grep -q 'bash deploy/lib/check-release-version.sh' "$RELEASE_YML" \
     && grep -q 'needs: \[validate-tag, validate-version\]' "$RELEASE_YML"; then
   echo "ok: release.yml validates tag/package version consistency before running the CI gate"
@@ -168,8 +178,6 @@ if [ "$failures" -gt 0 ]; then
 fi
 echo "all tests passed"
 echo
-echo "NOTE: no real bug was found in .github/workflows/release.yml's packaging/checksum"
-echo "logic while writing this test — it already matches install.sh's fetch_release_binaries()"
-echo "contract. This test exists to catch FUTURE drift, and to add coverage that was"
-echo "previously only exercised by an actual GitHub Actions run against a pushed 'v*' tag"
-echo "(which this repository has never done)."
+echo "NOTE: packaging/checksum logic matches install.sh's fetch_release_binaries()"
+echo "contract, and live-tag dependency ordering is regression-tested after rc.1 exposed"
+echo "a skipped build/publish path."

@@ -12,9 +12,12 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
   Hiddify import/connection on an iPhone. This is recorded as a limited smoke
   pass in `docs/DEVICE_ACCEPTANCE_TESTS.md`; missing client, transport,
   refresh, revocation, network-switch, DNS, and IPv6 details remain explicit.
-- The first automated release is planned as `v0.1.0-rc.1`, matching the
-  packaged Rust binaries' `0.1.0` version. Its assets and exact-tag installer
-  path must be verified before the stable `v0.1.0` tag is created.
+- `v0.1.0-rc.1` matched the packaged Rust binaries' `0.1.0` version and
+  passed every reusable CI gate, but GitHub skipped its build/publish jobs
+  because a tag-only validation job was itself skipped for tag pushes. No
+  Release or assets were created. The dependency semantics were fixed for
+  `v0.1.0-rc.2`; its assets and exact-tag installer path must be verified
+  before the stable `v0.1.0` tag is created.
 - Historical checkpoint text below describes what was known during each pass;
   newer evidence in this section and the device matrix takes precedence.
 
