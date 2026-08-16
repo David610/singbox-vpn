@@ -6,10 +6,10 @@ name: Release
 # `v*` tags; each tag produces one GitHub Release with per-arch tarballs
 # plus a SHA256SUMS file the installer verifies before using anything.
 #
-# The installer falls back to `cargo build --release` from source when
-# no matching release exists (e.g. before the first tag is ever pushed,
-# or for untagged main-branch installs) — this workflow is what removes
-# that fallback from the common path going forward.
+# The stable bootstrap refuses to install when no release exists. For an
+# existing exact tag, the AlmaLinux installer prefers these prebuilt assets
+# and can build from that same checksum-verified tag source only when its
+# architecture-specific binary asset is unavailable.
 
 on:
   push:
@@ -45,6 +45,14 @@ jobs:
           fi
           echo "ok: dispatched from tag ${{ github.ref_name }}, matches requested tag ${{ github.event.inputs.tag }}"
 
+  validate-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm release tag matches packaged Rust versions
+        run: bash deploy/lib/check-release-version.sh "${{ github.event.inputs.tag || github.ref_name }}"
+
   # Checkpoint 6 §9: a release must not be publishable merely because
   # binaries compiled — it must pass the same gate as every other change
   # (fmt, clippy, workspace tests, shellcheck, cargo audit, secret-logging,
@@ -52,8 +60,8 @@ jobs:
   # ci.yml as a reusable workflow (workflow_call) keeps this as one
   # canonical job graph instead of a second, driftable copy.
   gate:
-    needs: [validate-tag]
-    if: always() && (needs.validate-tag.result == 'success' || needs.validate-tag.result == 'skipped')
+    needs: [validate-tag, validate-version]
+    if: always() && needs.validate-version.result == 'success' && (needs.validate-tag.result == 'success' || needs.validate-tag.result == 'skipped')
     uses: ./.github/workflows/ci.yml
 
   build:
@@ -189,10 +197,10 @@ jobs:
           # GitHub's "latest release" resolution (which install.sh's
           # resolve_version() queries via /releases/latest) skips any
           # release marked prerelease. A tag containing a SemVer
-          # prerelease segment (e.g. v1.0.0-rc.1) is marked as such here
+          # prerelease segment (e.g. v0.1.0-rc.1) is marked as such here
           # so a release candidate can never be silently auto-installed by
           # a normal stable `curl | sudo bash` run — only an explicit
-          # `--version v1.0.0-rc.1` pin resolves it (Checkpoint 6 §19).
+          # `--version v0.1.0-rc.1` pin resolves it (Checkpoint 6 §19).
           prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
           files: |
             dist/*.tar.gz

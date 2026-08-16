@@ -63,14 +63,15 @@ compromise of the GitHub release itself (someone who can edit/replace a
 release could republish a matching archive+checksum pair together). No
 code-signing infrastructure is implemented for v1.0.
 
-**As of 2026-08-15, no `vX.Y.Z` tag has been pushed to this repo,
-so the plain `curl | sudo bash` command above currently refuses to run**
-with an error explaining the two options: pin `--version vX.Y.Z` once a
-release exists, or explicitly opt into unpinned branch-source
-development mode with `VPN1_CHANNEL=dev` (never for a real deployment —
-see the top-level README's Quickstart for the exact command). Publishing
-the first tagged release is a manual, human, one-time operational action
-(`git tag vX.Y.Z && git push --tags`, or an equivalent GitHub release) —
+The plain `curl | sudo bash` command selects the latest stable
+non-prerelease. If no stable release exists, it refuses to run with an error
+explaining the two options: pin an exact `--version vX.Y.Z` release, or
+explicitly opt into unpinned branch-source development mode with
+`VPN1_CHANNEL=dev` (never for a real deployment —
+see the top-level README's Quickstart for the exact command). Publishing a
+tagged release is an explicit maintainer action (`git tag vX.Y.Z && git push
+origin vX.Y.Z`); the release workflow then gates, builds, verifies, and
+publishes that exact tag —
 no code change in this repository can complete that step by itself, and
 none has been attempted here. `release.yml`'s packaging/checksum logic
 has been reviewed and is exercised by
@@ -603,12 +604,11 @@ broken server; a `[FAIL]` anywhere in `[L1]`-`[L4]` is.
 This runbook and the scripts it documents are syntax-checked
 (`bash -n`/`shellcheck deploy/almalinux/*.sh`, both clean) and the
 underlying Rust logic (ownership/permission modes, reload/rollback,
-credential generation) is unit- and integration-tested. The scripts
-themselves have **not been executed against a real AlmaLinux 9 host, a
-real VPS, or a real domain/DNS/TLS setup** in this development
-session — this sandbox has no root network capability, no `dnf`, and
-no real VPS. Treat the first real run (`install.sh` followed by
-`acceptance-test.sh`) as the actual validation pass, and record the
-outcome in `docs/CLIENT_COMPATIBILITY.md`'s manual acceptance log —
-do not treat this document's existence as proof of a validated
-deployment.
+credential generation) is unit- and integration-tested. The supported path
+has an owner-reported smoke pass on a real AlmaLinux 9 VPS with Hiddify on an
+iPhone (2026-08-16). That report did not include the full destructive
+lifecycle, certificate-renewal, per-transport, revocation, network-switch, or
+DNS/IPv6 matrix. Run `install.sh` followed by `acceptance-test.sh`, record
+detailed client results in `docs/DEVICE_ACCEPTANCE_TESTS.md`, and do not treat
+either this document or a single smoke pass as proof that every deployment
+environment is validated.

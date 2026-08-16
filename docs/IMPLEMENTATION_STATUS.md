@@ -6,6 +6,18 @@ Release-readiness evidence is recorded in this file and in
 dated historical audit snapshot.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
+## Release readiness update (2026-08-16)
+
+- The owner reports a successful real AlmaLinux 9 installation and successful
+  Hiddify import/connection on an iPhone. This is recorded as a limited smoke
+  pass in `docs/DEVICE_ACCEPTANCE_TESTS.md`; missing client, transport,
+  refresh, revocation, network-switch, DNS, and IPv6 details remain explicit.
+- The first automated release is planned as `v0.1.0-rc.1`, matching the
+  packaged Rust binaries' `0.1.0` version. Its assets and exact-tag installer
+  path must be verified before the stable `v0.1.0` tag is created.
+- Historical checkpoint text below describes what was known during each pass;
+  newer evidence in this section and the device matrix takes precedence.
+
 ## Supported scope (summary)
 
 AlmaLinux 9 x86_64, <=10 users, one VPS, upstream sing-box, VLESS+REALITY

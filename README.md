@@ -38,6 +38,12 @@ No custom client application or web control panel is required.
 
 > Built for small groups of users.
 
+> Release status: the supported path has an owner-reported smoke pass on a
+> real AlmaLinux 9 VPS with Hiddify on an iPhone. The detailed device matrix
+> is still partial, so this is not a claim that every client, network, or
+> transport combination has been verified. See
+> [Device acceptance tests](docs/DEVICE_ACCEPTANCE_TESTS.md).
+
 ## Quick start
 
 ### Requirements
@@ -68,6 +74,20 @@ vpn.example.com → 203.0.113.10
 | 8443 | TCP | Subscription endpoint |
 
 The installer configures the firewall inside the VPS. Your VPS provider or cloud firewall must be configured separately.
+
+The installer opens the VPS operating-system firewall for TCP/80 temporarily
+during initial HTTP-01 certificate issuance. Certbot renewals need TCP/80 to
+remain reachable from the public Internet. On AlmaLinux, keep it open after
+installation unless you configure another ACME challenge method:
+
+```bash
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --reload
+sudo certbot renew --dry-run
+```
+
+Your provider firewall or AWS Security Group must allow TCP/80 as well. DNS-01
+is an alternative, but this project does not configure it automatically.
 
 ### AWS EC2
 
@@ -107,6 +127,12 @@ nslookup vpn.example.com
 
 The returned IP should match your VPS.
 
+### Cloudflare users
+
+Set the VPN hostname to **DNS only** (grey cloud), not **Proxied** (orange
+cloud). REALITY and Hysteria2 require a direct connection to the VPS and do
+not work through Cloudflare's normal HTTP proxy.
+
 Do not add an `AAAA` record unless IPv6 is configured and working.
 
 ## 3. Install
@@ -122,7 +148,10 @@ curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.s
 
 Replace `vpn.example.com` with your domain.
 
-> **No stable release exists yet.** Until the first tagged release is published, the stable installer exits without modifying the server.
+The stable installer resolves the latest non-prerelease tag, downloads source
+and binaries from that exact version, and verifies them against the release's
+`SHA256SUMS`. If no stable release is available, it exits before modifying the
+server rather than silently installing mutable branch source.
 
 ### Development
 
@@ -433,3 +462,16 @@ Data plane   sing-box
 Clients      Hiddify / sing-box compatible
 Domain       Custom domain
 ```
+
+# Documentation
+
+- [Supported product boundary](docs/SUPPORTED_PRODUCT.md)
+- [AlmaLinux deployment runbook](docs/ALMALINUX_DEPLOYMENT.md)
+- [Client setup](docs/clients/README.md)
+- [Device acceptance status](docs/DEVICE_ACCEPTANCE_TESTS.md)
+- [Security model](docs/SECURITY_MODEL.md)
+- [Recovery](docs/RECOVERY.md)
+
+# License
+
+Apache License 2.0. See [LICENSE](LICENSE).

@@ -147,6 +147,13 @@ else
   echo "FAIL: release.yml does not validate workflow_dispatch ref == requested tag — could build/publish a mismatched commit (Checkpoint 6 §8)"
   failures=$((failures + 1))
 fi
+if grep -q 'bash deploy/lib/check-release-version.sh' "$RELEASE_YML" \
+    && grep -q 'needs: \[validate-tag, validate-version\]' "$RELEASE_YML"; then
+  echo "ok: release.yml validates tag/package version consistency before running the CI gate"
+else
+  echo "FAIL: release.yml does not gate publication on the release tag/package version contract"
+  failures=$((failures + 1))
+fi
 if grep -q "prerelease: \${{ contains(" "$RELEASE_YML"; then
   echo "ok: release.yml marks SemVer-prerelease tags (e.g. -rc.1) as GitHub prereleases, so install.sh's stable /releases/latest resolution never auto-selects one"
 else

@@ -187,5 +187,15 @@ real Russian network runs it and reports back.
 
 ## Entries
 
-_No entries yet — this document defines the procedure, not a result. Do
-not mark any matrix cell PASS without a corresponding entry here._
+### 2026-08-16 — owner-reported release-readiness smoke test
+
+- A real AlmaLinux 9 VPS installation was reported working.
+- Hiddify on a real iPhone was reported to import/connect successfully and
+  pass traffic through the VPS.
+
+This is useful evidence that the basic supported path works, but it is not a
+completed matrix entry: the iOS/Hiddify version, device/OS version, selected
+transport, subscription refresh, credential revocation, network switching,
+DNS/IPv6 behavior, and sustained-transfer results were not recorded. The
+matrix above therefore remains unchanged rather than inferring PASS for tests
+that were not individually reported.

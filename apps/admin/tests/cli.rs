@@ -754,6 +754,7 @@ fn rotate_token_does_not_claim_already_imported_profile_stops_connecting() {
 /// and the CLI output must say so precisely rather than leaving the
 /// operator to guess or (worse) assume the "safe" rotate-token blast
 /// radius applies universally.
+#[cfg(unix)]
 #[test]
 fn each_credential_mutation_states_its_own_blast_radius() {
     let dir = tempfile::tempdir().unwrap();
@@ -879,6 +880,7 @@ fn credential_mutation_does_not_claim_blast_radius_when_not_reloaded_live() {
 /// REALITY specifically — it must NOT say the whole "subscription" is
 /// invalid, since the subscription URL itself keeps fetching/refreshing
 /// fine and Hysteria2 profiles are unaffected.
+#[cfg(unix)]
 #[test]
 fn reality_rotate_scopes_blast_radius_to_reality_only() {
     let dir = tempfile::tempdir().unwrap();

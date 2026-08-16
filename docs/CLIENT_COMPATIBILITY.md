@@ -13,7 +13,7 @@ client, and see `docs/clients/` for per-platform walkthroughs.
 
 | Client | VLESS+REALITY | Hysteria2 | Subscription import |
 |---|---|---|---|
-| Hiddify (iOS/Android/Linux/Windows/macOS/MagicOS) | not yet tested on a real device (see `docs/DEVICE_ACCEPTANCE_TESTS.md`) | not yet tested on a real device | not yet tested on a real device |
+| Hiddify (iOS/Android/Linux/Windows/macOS/MagicOS) | iOS smoke connection reported; transport was not recorded, so this protocol-specific cell remains incomplete | iOS smoke connection reported; transport was not recorded, so this protocol-specific cell remains incomplete | iOS import/connect smoke pass reported; detailed refresh/revocation matrix remains incomplete |
 | v2rayNG (Android, VLESS-only fallback) | not yet tested on a real device | N/A — not supported (see `docs/clients/V2RAYNG_ANDROID.md`) | not yet tested on a real device |
 | sing-box (real pinned binary, real handshake) | **verified** — real handshake against a real pinned `sing-box` binary, both success (matched keys) and failure (mismatched keys) paths | **verified** — real handshake, matched/mismatched password, obfuscated, and Brutal-bandwidth variants | **verified** — real `sing-box check` against a rendered server config, in CI on every push |
 
@@ -26,20 +26,21 @@ tests, all passing as of the date `docs/COMPATIBILITY_VERSIONS.md`
 records. CI's `singbox-validate` job (`.github/workflows/ci.yml`) does
 this on every push, and `VPN1_REQUIRE_REAL_INTEROP=1` turns any skip
 into a hard failure so this can never silently degrade to schema-only
-checking again. **This still is not the same claim as "a real Hiddify
-app on a real phone connects"** — that requires an actual device, which
-remains not yet tested (see below).
+checking again. An owner-reported iPhone/Hiddify smoke test now confirms
+that a real app can import/connect through a real AlmaLinux VPS. It did
+not record enough detail to assign that success to one specific transport
+or complete the refresh, revocation, network-switch, DNS, and IPv6 matrix.
 
-## Why the Hiddify/v2rayNG rows aren't "yes" yet
+## Why the Hiddify/v2rayNG rows aren't fully "yes" yet
 
 Real client/device testing requires a real AlmaLinux 9 host with a
 public IP and DNS name, `sudo ./deploy/almalinux/install.sh` run there,
 and an actual iOS/Android/Linux/Windows/macOS device with the relevant
 client installed, on a real network, pointed at the real subscription
-URL. None of that has been run in this development session (real
-sing-box protocol handshakes have been — see above; that is a narrower,
-already-satisfied claim). Treat `docs/DEVICE_ACCEPTANCE_TESTS.md` as the
-checklist for the remaining manual acceptance pass — see
+URL. A limited owner-reported AlmaLinux/iPhone smoke pass was recorded on
+2026-08-16, but its client version, selected transport, and extended matrix
+were not captured. Treat `docs/DEVICE_ACCEPTANCE_TESTS.md` as the checklist
+for the remaining manual acceptance pass — see
 `docs/ALMALINUX_DEPLOYMENT.md` §"Testing with Hiddify" for the exact
 steps — and fill in a dated entry there once run.
 
