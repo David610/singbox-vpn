@@ -229,3 +229,62 @@ jobs:
             dist/*.tar.gz
             dist/SHA256SUMS
           generate_release_notes: true
+
+  # Exercise the public assets after GitHub has published them. The fake
+  # final handoff keeps this read-only while still running the real bootstrap
+  # through release resolution, checksum verification, extraction, and the
+  # deploy/almalinux/install.sh boundary that broke in v0.1.0.
+  verify-published-bootstrap:
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify published release through the real bootstrap
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          testbin="$(mktemp -d)"
+          marker="$(mktemp)"
+          trap 'rm -rf "$testbin" "$marker"' EXIT
+
+          cat > "$testbin/id" <<'EOF'
+          #!/bin/sh
+          if [ "${1:-}" = "-u" ]; then
+            printf '0\n'
+            exit 0
+          fi
+          exec /usr/bin/id "$@"
+          EOF
+
+          cat > "$testbin/bash" <<'EOF'
+          #!/bin/sh
+          set -eu
+          installer="${1:-}"
+          [ -n "$installer" ] || { echo "missing installer handoff path" >&2; exit 1; }
+          shift
+          [ -x "$installer" ] || { echo "handoff target is not executable: $installer" >&2; exit 1; }
+          case "$installer" in
+            */deploy/almalinux/install.sh) ;;
+            *) echo "unexpected handoff target: $installer" >&2; exit 1 ;;
+          esac
+          [ "${VPN1_VERSION:-}" = "${RELEASE_TAG:?}" ] || {
+            echo "bootstrap handed off VPN1_VERSION='${VPN1_VERSION:-}', expected '$RELEASE_TAG'" >&2
+            exit 1
+          }
+          printf '%s\n' "$*" > "${VPN1_BOOTSTRAP_VERIFY_MARKER:?}"
+          EOF
+
+          chmod +x "$testbin/id" "$testbin/bash"
+          export VPN1_BOOTSTRAP_VERIFY_MARKER="$marker"
+          PATH="$testbin:$PATH" /usr/bin/bash install.sh \
+            --version "$RELEASE_TAG" \
+            --non-interactive \
+            --allow-ip-hostname \
+            --reality-handshake-server www.cloudflare.com
+
+          grep -Fxq -- '--non-interactive --allow-ip-hostname --reality-handshake-server www.cloudflare.com' "$marker"
+          echo "published bootstrap verified for $RELEASE_TAG"

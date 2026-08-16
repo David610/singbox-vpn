@@ -266,6 +266,14 @@ if grep -q 'test -x "$tmp/vpn1-src/deploy/almalinux/install.sh"' "$RELEASE_YML";
 else
   fail "release.yml does not verify the source archive can hand off to deploy/almalinux/install.sh"
 fi
+if grep -q '^  verify-published-bootstrap:' "$RELEASE_YML" \
+   && grep -q '^    needs: publish' "$RELEASE_YML" \
+   && grep -q 'PATH="$testbin:$PATH" /usr/bin/bash install.sh' "$RELEASE_YML" \
+   && grep -q -- '--version "$RELEASE_TAG"' "$RELEASE_YML"; then
+  ok "release.yml verifies each published tag through the real public bootstrap path after publishing"
+else
+  fail "release.yml does not run the real bootstrap against each newly published release"
+fi
 
 echo
 echo "--- static: bootstrap install.sh verifies the release source archive checksum for a pinned VPN1_VERSION, never falls through unverified ---"
