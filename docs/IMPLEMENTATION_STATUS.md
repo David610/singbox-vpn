@@ -21,7 +21,15 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
   `--version` flag checked by the workflow, and the ARM target was installed
   for floating `stable` even though `rust-toolchain.toml` pins 1.94.1. Both
   are fixed and regression-tested. No rc.2 Release or assets were created;
-  a fresh candidate tag must pass before stable `v0.1.0` is created.
+  it remains an immutable record of that failed candidate.
+- `v0.1.0-rc.3` passed the complete release workflow (GitHub Actions run
+  `31941405036`): version/tag validation, every reusable CI gate, native and
+  ARM64 builds, archive/installer checks, checksum aggregation, and prerelease
+  publication. All four public assets were downloaded independently;
+  `SHA256SUMS`, archive layouts, executable modes, source-bootstrap layout,
+  and anonymous exact-tag URLs passed. GitHub's stable `/releases/latest`
+  endpoint remained 404, confirming that the RC was excluded from the stable
+  channel. This is the verified candidate for stable `v0.1.0`.
 - Historical checkpoint text below describes what was known during each pass;
   newer evidence in this section and the device matrix takes precedence.
 
