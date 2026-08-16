@@ -42,8 +42,16 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
   a broken prerelease and removed from `/releases/latest`; its tag/assets stay
   immutable for auditability. The bootstrap now returns its source directory
   through a shell variable, keeps checksum status off stdout, and has a real
-  checksum-download/extract/argument/handoff regression test. Patch release
-  `v0.1.1` supersedes it.
+  checksum-download/extract/argument/handoff regression test.
+- `v0.1.1-rc.1` and stable `v0.1.1` were both cut from commit
+  `a3ae0115c0c0875255c1a80ddde4bfa8a12bcd26`. Release runs
+  `31944229010` (RC) and `31944455292` (stable) passed version/tag validation,
+  every reusable CI gate, both architecture builds, archive checks, checksum
+  publication, and a new final job that downloads the newly published public
+  assets through the real top-level bootstrap and verifies its handoff without
+  performing a privileged install. The stable assets were also downloaded
+  independently and matched `SHA256SUMS`; GitHub's `/releases/latest` now
+  resolves to `v0.1.1`. It supersedes the quarantined `v0.1.0`.
 - Historical checkpoint text below describes what was known during each pass;
   newer evidence in this section and the device matrix takes precedence.
 
@@ -70,7 +78,8 @@ v1.0 — see `deploy/local/run-dev-slice.sh` for its dev-only entry point.
   `health-check.sh`, `acceptance-test.sh`, `certbot-deploy-hook.sh`.
 - Release: `.github/workflows/release.yml` publishes per-arch binary
   tarballs + a checksum-manifested `vpn1-src.tar.gz` source archive +
-  combined `SHA256SUMS`, all fetched/verified by `install.sh`.
+  combined `SHA256SUMS`, all fetched/verified by `install.sh`, then tests the
+  newly published tag through the real public bootstrap path.
 - Shared shell libs: `deploy/lib/*.sh` plus `deploy/lib/versions.env`
   (one authoritative sing-box version/checksum/arch source).
 - Rust crates in the supported dependency closure: `crates/common`,
@@ -235,7 +244,8 @@ and exercises them against two distinct local fixture releases with
 immutable version IDs, separate content, and real sha256 checksums,
 proving the verification contract is fail-closed against tampering and
 malformed manifests — marked `VERIFIED-TEST`; a real GitHub release A->B
-transition remains `UNVERIFIED` until a first tagged release exists.
+transition on a disposable VPS remains `UNVERIFIED` despite the now-published
+releases.
 
 **Real execution status**: the harness itself was repaired and its logic
 proven with fixture tests in this sandbox (no disposable AlmaLinux 9 host
@@ -544,9 +554,10 @@ still needs to be run for real.
 - Certificate renewal (`certbot renew --dry-run`) on a real host — the
   harness now attempts it and reports the real result or `UNVERIFIED` if
   provider conditions prevent it, but this has not actually run.
-- A real tagged release has never been published — the checksum-verified
-  bootstrap path (checkpoint 9) is fixture/unit-tested, not exercised
-  against a real GitHub Release.
+- Stable `v0.1.1` is published and its checksum-verified source bootstrap was
+  exercised against the real public GitHub Release in release workflow run
+  `31944455292`. A complete privileged fresh install and release-to-release
+  update on a disposable VPS remain separate lifecycle gaps.
 - DNS leak prevention, IPv6 correctness, kill-switch behavior,
   censorship resistance against a real adversary in a real country.
 
@@ -563,8 +574,8 @@ bash deploy/lib/fast-gate.sh
 # localhost/no --host, by construction). Optional --ssh-port exercises a
 # non-default SSH port end-to-end instead of assuming 22; optional
 # --update-to-ref exercises update.sh's --dev-rebuild transactional path
-# (a real tagged-release A->B transition remains UNVERIFIED until a first
-# GitHub release exists — see Important UNVERIFIED items below).
+# (a real tagged-release A->B transition remains UNVERIFIED until it is run
+# between two valid releases on a disposable VPS).
 ./deploy/almalinux/lifecycle-acceptance.sh \
   --host root@DISPOSABLE-HOST --i-understand-this-is-destructive \
   [--ssh-port 2222] [--update-to-ref BRANCH]
@@ -585,15 +596,12 @@ See `docs/RECOVERY.md` for the full disaster-recovery procedure.
 
 ## Next logical checkpoint
 
-Push the first real `vX.Y.Z` release tag (exercises `release.yml` +
-the new checksum-verified bootstrap path for the first time for real),
-then run `deploy/almalinux/lifecycle-acceptance.sh` against a real
-disposable AlmaLinux 9 host AND, on that same host, work through
-`docs/DEVICE_ACCEPTANCE_TESTS.md` with at least one real Hiddify device.
-This remains the single highest-value gap across every checkpoint:
-SSH preservation, rollback, idempotency, ACME restoration, config
-migration, offline uninstall, release-integrity verification, AND real
-client connectivity are all code-read/unit/fixture verified only, never
-exercised end-to-end. Until then, pick one concrete supported-product
-defect/gap and fix it with minimum churn, running
-`deploy/lib/fast-gate.sh` after every change.
+Run `deploy/almalinux/lifecycle-acceptance.sh` against a real disposable
+AlmaLinux 9 host and work through the remaining rows in
+`docs/DEVICE_ACCEPTANCE_TESTS.md` with supported clients. When a second valid
+stable patch exists, exercise a real tagged-release A->B update on that host.
+The highest-value remaining gaps are the complete SSH-preservation, rollback,
+idempotency, ACME restoration, migration, offline-uninstall, and multi-client
+lifecycle under real provider conditions. The owner-reported AlmaLinux/iPhone
+smoke pass and the public `v0.1.1` bootstrap verification are real evidence,
+but they do not cover that full matrix.
