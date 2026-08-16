@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail closed when a release tag does not match the version compiled into the
 # Rust packages. Prerelease suffixes are allowed, but their SemVer core must
-# still equal every package version (for example v0.1.0-rc.1 -> 0.1.0).
+# still equal every package version (for example v0.1.1-rc.1 -> 0.1.1).
 set -euo pipefail
 
 tag="${1:-}"

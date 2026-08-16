@@ -29,14 +29,21 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
   `SHA256SUMS`, archive layouts, executable modes, source-bootstrap layout,
   and anonymous exact-tag URLs passed. GitHub's stable `/releases/latest`
   endpoint remained 404, confirming that the RC was excluded from the stable
-  channel. This is the verified candidate for stable `v0.1.0`.
+  channel. Those checks did not execute the top-level bootstrap's verified
+  source download and handoff as one process, leaving a coverage gap.
 - Stable `v0.1.0` was published from commit
   `71697025cdbcaf0c7ac87fe36328d7e092a3a260` after release workflow run
-  `31941781143` passed every gate and both architecture builds. GitHub marks
-  it non-draft, non-prerelease, and `Latest`. The published manifest, archive
-  layouts/modes, source-bootstrap layout, anonymous asset/script URLs, and
-  anonymous `/releases/latest` resolution to `v0.1.0` were independently
-  rechecked after publication.
+  `31941781143` passed every then-existing gate and both architecture builds.
+  A real default VPS bootstrap subsequently exposed a release-blocking bug:
+  `sha256sum -c` printed `vpn1-src.tar.gz: OK` to stdout while
+  `download_source` was inside command substitution, corrupting `SRC_DIR` with
+  that status line and causing a false "deploy/almalinux/install.sh missing"
+  failure. The archive itself was intact. `v0.1.0` was immediately marked as
+  a broken prerelease and removed from `/releases/latest`; its tag/assets stay
+  immutable for auditability. The bootstrap now returns its source directory
+  through a shell variable, keeps checksum status off stdout, and has a real
+  checksum-download/extract/argument/handoff regression test. Patch release
+  `v0.1.1` supersedes it.
 - Historical checkpoint text below describes what was known during each pass;
   newer evidence in this section and the device matrix takes precedence.
 

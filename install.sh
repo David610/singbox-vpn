@@ -185,7 +185,11 @@ download_verified_source_release() {
     || die "release $version was found but its SHA256SUMS checksum manifest could not be downloaded — refusing to install an unverified source archive."
   grep -qE '^[0-9a-f]{64}  vpn1-src\.tar\.gz$' "$sums" \
     || die "SHA256SUMS for $version has no well-formed entry for vpn1-src.tar.gz (malformed or unexpected checksum manifest) — refusing to install an unverified source archive."
-  ( cd "$TMPDIR" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) \
+  # Keep sha256sum's success line off stdout. download_source used to be
+  # called inside command substitution, so `vpn1-src.tar.gz: OK` was silently
+  # prepended to the returned directory path and every stable install failed
+  # the handoff check even though the verified archive was correct.
+  ( cd "$TMPDIR" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) >&2 \
     || die "checksum verification failed for vpn1-src.tar.gz against $version's published SHA256SUMS — refusing to extract/execute an unverified source archive."
   log "source archive checksum verified against release SHA256SUMS."
 }
@@ -197,6 +201,7 @@ download_verified_source_release() {
 # only — see the top-of-file trust-boundary note). GitHub's codeload
 # tarballs work for any public branch without needing git installed.
 # ---------------------------------------------------------------------
+DOWNLOADED_SOURCE_DIR=""
 download_source() {
   local ref="$VPN1_REF" url tarball="$TMPDIR/vpn1-src.tar.gz"
   if [ -n "$VPN1_VERSION" ]; then
@@ -215,7 +220,9 @@ download_source() {
   local extracted
   extracted="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
   [ -n "$extracted" ] || die "extracted archive did not contain the expected repository directory."
-  echo "$extracted"
+  # Return through a shell variable, not stdout. This deliberately makes the
+  # handoff immune to informational output from curl/tar/checksum tools.
+  DOWNLOADED_SOURCE_DIR="$extracted"
 }
 
 # ---------------------------------------------------------------------
@@ -260,7 +267,8 @@ resolve_version() {
 }
 
 resolve_version
-SRC_DIR="$(download_source)"
+download_source
+SRC_DIR="$DOWNLOADED_SOURCE_DIR"
 [ -x "$SRC_DIR/deploy/almalinux/install.sh" ] || die "downloaded source is missing deploy/almalinux/install.sh — cannot continue."
 
 log "handing off to deploy/almalinux/install.sh (repo checked out at $SRC_DIR)"

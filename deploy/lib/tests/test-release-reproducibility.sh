@@ -261,6 +261,11 @@ if grep -q 'sha256sum vpn1-src.tar.gz > vpn1-src.tar.gz.sha256' "$RELEASE_YML"; 
 else
   fail "release.yml no longer computes a checksum for vpn1-src.tar.gz"
 fi
+if grep -q 'test -x "$tmp/vpn1-src/deploy/almalinux/install.sh"' "$RELEASE_YML"; then
+  ok "release.yml extracts the source archive and verifies the bootstrap handoff executable"
+else
+  fail "release.yml does not verify the source archive can hand off to deploy/almalinux/install.sh"
+fi
 
 echo
 echo "--- static: bootstrap install.sh verifies the release source archive checksum for a pinned VPN1_VERSION, never falls through unverified ---"
