@@ -510,6 +510,63 @@ unbatched syscalls automatically; there is no failure mode to guard
 against, only a (kernel-version-dependent, not vpn1-dependent)
 throughput ceiling.
 
+### Additional stable-1.13.18 tunings investigated — NOT changed
+
+A later review pass (2026-08-17) re-checked whether the currently-pinned
+**stable** sing-box (1.13.18) has any further upstream-documented,
+low-risk tuning genuinely missing from this deploy pipeline. Three
+candidates were evaluated and rejected; none required a code change, so
+none appear in the gap list above.
+
+**`udp_fragment` (shared Listen Fields option) — investigated, NOT
+changed.** VERIFIED UPSTREAM: this field lets a UDP-based inbound/
+outbound accept fragmented UDP datagrams instead of dropping them.
+**Decision: do not enable.** QUIC (Hysteria2's transport) does its own
+path-MTU discovery specifically so it never needs IP-level UDP
+fragmentation in the first place — fragmented UDP is exactly the kind of
+traffic many middleboxes and NAT devices drop or rate-limit, so this
+option exists for non-QUIC UDP protocols facing unusual path-MTU
+conditions, not for a protocol that already avoids the problem by
+design. Enabling it would add a real (if rare) failure surface without
+addressing anything QUIC/Hysteria2 doesn't already handle itself. This
+matches the task's own explicit "do NOT globally change MTU/MSS"
+constraint in spirit — fragmentation acceptance is the same class of
+path-MTU-adjacent knob.
+
+**`tcp_fast_open` (TFO, shared Listen Fields option) — investigated, NOT
+changed.** VERIFIED UPSTREAM: TFO saves one round trip on repeat TCP
+connections to the same peer by carrying early data in the SYN.
+**Decision: do not enable for the VLESS+REALITY (TCP) listener.**
+REALITY's entire threat model is looking like an ordinary TLS connection
+to an uninvolved third-party site under active-probing censorship
+conditions. TFO is a distinguishing TCP-option fingerprint most ordinary
+browser-to-CDN connections in the wild do not universally exhibit in the
+same way a permanently-TFO-enabled listener would, and REALITY
+connections are typically long-lived (one handshake serves an extended
+session), so the one-RTT savings TFO offers matters far less here than
+in the class of workload (many short-lived repeat connections) TFO is
+meant for. The benefit is marginal for this workload; the fingerprinting
+risk is not zero. Not enabled.
+
+**`tcp_multi_path` (MPTCP) — investigated, NOT changed.** No evidence
+any client this project supports negotiates MPTCP, so there is no
+throughput or resilience benefit to enabling it server-side, only
+unused surface area. Not enabled.
+
+**`bbr_profile`, Gecko obfuscation packet-size fields
+(`min_packet_size`/`max_packet_size`), and the `realm.*` NAT-traversal
+fields are v1.14.0-only** — confirmed against the currently-pinned
+stable 1.13.18 vs. the v1.14.0-beta.* changelog — and are therefore
+out of scope per the explicit "do NOT use sing-box prerelease features"
+constraint, independent of whether they'd otherwise be worth adopting.
+
+**Conclusion: no further safe missing tuning exists in stable 1.13.18.**
+This section exists specifically so a future pass doesn't have to
+re-research the same three candidates from scratch — and doesn't
+change any configuration file, since doing so here would only be
+producing a diff for its own sake, which the task explicitly asked not
+to do.
+
 ---
 
 ## sing-box version pin: 1.13.14 → 1.13.18
@@ -573,6 +630,8 @@ case) were run against the real 1.13.18 binary and pass. See
 | P2 | VPS resize (1→2 vCPU) | Conditional on H1/H2 — do not do preemptively |
 | P2 | QUIC receive-window tuning | Investigated — leave at upstream auto-tuning default, no evidence to justify a fixed value |
 | P2 | GSO/GRO | Investigated — kernel-automatic, no sing-box-level knob exists, no action possible |
+| P2 | `udp_fragment` / `tcp_fast_open` / `tcp_multi_path` | Investigated — all rejected (QUIC design, REALITY fingerprinting risk, no MPTCP client support), no code change |
+| P1 | `vpn-benchmark --json`/`--output`/`--quick`/`--compare` + kernel-tuning/UDP-error-delta/server-process CPU-RSS sections | Shipped |
 | P2 | Throughput-aware auto-selection | Future work — needs new instrumentation |
 
 ---
@@ -639,6 +698,52 @@ prints `SKIPPED: <reason>` and continues. The final "Assessment" section
 is a decision *guide* that repeats the layer-4 caveat, not a computed
 verdict.
 
+**Extended this pass (2026-08-17), same four layers, no new layer
+added:**
+
+- **`--json`** — the exact same measurements as the prose report, as a
+  single flat JSON object (numeric-looking values become real JSON
+  numbers; everything else stays a string). Built as a side effect of
+  the same `section()`/`kv()`/`sample_min_median_max()` calls the prose
+  report uses, so the two output formats structurally cannot drift
+  apart — there is no separate code path that could report something
+  different.
+- **`--output PATH`** — tees the report (either format) to a file in
+  addition to stdout.
+- **`--quick`** — 1 sample instead of 3, and a ~2 MB test download
+  instead of ~25 MB, for a fast, bandwidth-light check; an explicit
+  `--runs`/`--download-url` always overrides `--quick`'s own defaults
+  rather than being silently ignored.
+- **`--compare A.json B.json`** — diffs two prior `--json` outputs
+  (jq only — no Python or other new runtime dependency, per the task
+  constraint), printing a table with a computed delta for every
+  key present as a number on both sides.
+- **Effective kernel tuning, read live** — `net.core.rmem_max`/
+  `wmem_max`, `net.ipv4.tcp_congestion_control`,
+  `net.core.default_qdisc` — the same knobs `perf-tuning.sh`/`vpn doctor
+  --performance` manage, now also surfaced directly in `vpn-benchmark`'s
+  own output so a benchmark result and the tuning that produced it are
+  in the same report.
+- **UDP `RcvbufErrors`/`SndbufErrors` before/after, with delta** —
+  sampled from `/proc/net/snmp` immediately before and after layer 4's
+  transfers, operationalizing hypothesis H6 (previously required a
+  manual before/after comparison via `vpn doctor --performance` run
+  twice by hand). Host-wide, not sing-box-scoped, so a nonzero delta
+  during the run is a lead, not proof — the report says so.
+- **Server-side sing-box process CPU/RSS during layer 4** — in addition
+  to the pre-existing throwaway *client* CPU-ticks sample, layer 4 now
+  also samples the real *production* sing-box process (found via
+  `systemctl show -p MainPID --value sing-box`, falling back to the
+  fixed `/etc/vpn/compat/sing-box/config.json` path every
+  AlmaLinux deploy/health-check/acceptance-test script already agrees
+  on) during the same transfer window, so "cost to the production
+  server" and "cost to this script's disposable test client" are
+  reported separately instead of only the latter.
+
+None of this changes what layer 4 measures or how it's labeled — the
+same same-host-hairpin caveat from the methodology note above still
+applies verbatim to the new server-process CPU/RSS numbers.
+
 ---
 
 ## What to run on the actual VPS
@@ -646,6 +751,12 @@ verdict.
 ```
 vpn doctor --performance
 vpn-benchmark --runs 5 --target-host <a host on your users' real ISP path>
+
+# Fast, low-bandwidth sanity check, machine-readable for later diffing:
+vpn-benchmark --quick --json --output before.json
+# ... after a change ...
+vpn-benchmark --quick --json --output after.json
+vpn-benchmark --compare before.json after.json
 ```
 
 Then work through the hypothesis table above. In particular:
