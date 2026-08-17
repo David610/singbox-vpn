@@ -2,6 +2,18 @@
 Description=vpn compatibility subscription HTTP service (loopback only)
 After=network.target
 
+# See sing-box.service's own Restart=/StartLimit* comments for the full
+# rationale — the same reasoning applies here: on-failure (below) covers
+# a plain crash, an unclean signal (SIGKILL included), and a startup
+# failure (e.g. a missing/invalid REALITY key file — see
+# services/subscription/src/main.rs, which refuses to start and serve
+# broken subscriptions rather than binding with bad data). An explicit,
+# generous StartLimit means a burst of startup failures survives without
+# the unit parking itself `failed` forever; vpn-service-watchdog.timer
+# is the safety net if it ever does exhaust this budget.
+StartLimitIntervalSec=300
+StartLimitBurst=8
+
 [Service]
 Type=simple
 User=vpn-subscription

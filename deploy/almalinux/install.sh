@@ -1161,6 +1161,9 @@ install_systemd_units() {
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service VPNSUB_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.service" /etc/systemd/system/vpn-expiry-reconcile.service EXPIRY_SVC_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.timer" /etc/systemd/system/vpn-expiry-reconcile.timer EXPIRY_TIMER_UNIT
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-service-watchdog.service" /etc/systemd/system/vpn-service-watchdog.service WATCHDOG_SVC_UNIT
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-service-watchdog.timer" /etc/systemd/system/vpn-service-watchdog.timer WATCHDOG_TIMER_UNIT
+  install -m 0755 "$REPO_ROOT/deploy/almalinux/service-watchdog.sh" "$BIN_DIR/vpn-service-watchdog"
   systemctl daemon-reload
 }
 
@@ -1880,13 +1883,20 @@ enable_and_start_services() {
   # idempotent no-op, not redundant risk — it's still restarted
   # explicitly rather than relying on that earlier reload alone, so this
   # function's behavior does not depend on stage ordering elsewhere.
-  systemctl enable sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer
+  systemctl enable sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-service-watchdog.timer
   systemctl reload-or-restart sing-box.service \
     || die "sing-box failed to (re)start — check: journalctl -u sing-box --no-pager -n 100"
   systemctl reload-or-restart vpn-subscription.service \
     || die "vpn-subscription failed to (re)start — check: journalctl -u vpn-subscription --no-pager -n 100"
   systemctl start vpn-expiry-reconcile.timer \
     || die "credential-expiry reconciliation timer failed to start"
+  # Safety-net timer only (see vpn-service-watchdog.timer's own doc
+  # comment) — it never restarts a healthy unit, so failing to arm it is
+  # a real regression (the fresh install just lost its only defense
+  # against a recoverable service staying `failed` forever) but never a
+  # reason to abort an otherwise-successful install.
+  systemctl start vpn-service-watchdog.timer \
+    || warn "vpn-service-watchdog.timer failed to start — sing-box/vpn-subscription will still recover from ordinary crashes (Restart=on-failure), but a unit that exhausts its StartLimitBurst will stay failed until 'systemctl reset-failed && systemctl start' is run by hand."
 }
 
 # Each protocol's status is confirmed independently by actually observing

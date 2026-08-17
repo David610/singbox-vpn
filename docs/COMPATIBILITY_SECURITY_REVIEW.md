@@ -174,8 +174,22 @@ has not been run against a real AlmaLinux host/Android client — see
   this; documented, not automated by this codebase (nginx/certbot are
   external, well-maintained components per spec §13/§27).
 - **What happens if sing-box crashes?** `Restart=on-failure` +
-  `RestartSec=2` in `sing-box.service`; `vpn-health-check` will report
-  `sing-box service FAIL` until it recovers or an operator intervenes.
+  `RestartSec=2` in `sing-box.service` recovers an ordinary crash within
+  seconds, including a `SIGKILL`/OOM kill. An explicit, generous
+  `StartLimitIntervalSec=300`/`StartLimitBurst=8` (same pattern in
+  `vpn-subscription.service`) means a burst of transient startup
+  failures — a slower-than-usual boot-time race, for example — survives
+  instead of the unit parking itself `failed` after systemd's old
+  implicit 10s/5-restart default. If a unit ever does exhaust that
+  budget, `vpn-service-watchdog.timer` (a small, low-frequency,
+  systemd-native timer — no custom monitoring service) periodically
+  clears a stuck `failed` state and asks systemd to try again, so a
+  recoverable service is never left permanently down after a transient
+  failure; a deliberate `systemctl stop` is unaffected (that state is
+  `inactive`, never `failed`). `vpn-health-check`/`vpn doctor`/`vpn
+  status` all report `failed` explicitly (distinct from merely
+  `inactive`) and a restart count when systemd exposes one, so an
+  operator can see this happened even after it self-heals.
 
 ## As a censor blocking the VPS's IP/ASN or the subscription domain
 

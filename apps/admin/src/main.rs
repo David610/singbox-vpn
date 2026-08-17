@@ -2167,6 +2167,8 @@ fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
         service_state_label(&subscription)
     );
     println!();
+    print_expiry_reconcile_status();
+    println!();
     println!(
         "sing-box config:       {}",
         if cfg.singbox_config_file().exists() {
@@ -2200,15 +2202,83 @@ fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
     Ok(())
 }
 
-fn service_state_label(mgr: &CompatibilityServiceManager) -> &'static str {
+/// A human-readable service state summary — `active`/`inactive`/
+/// `failed`/`not installed`/`unknown (...)` — plus a restart count when
+/// systemd exposes one and it is nonzero. `failed` is checked and
+/// reported explicitly, distinct from a merely `inactive` (deliberately
+/// stopped) unit: `systemctl stop` leaves a unit `inactive`, never
+/// `failed`, so this distinction is exactly "did something break" vs.
+/// "someone turned it off on purpose," which a bare active/not-active
+/// check cannot tell apart. The restart count matters even for a
+/// currently-`active` unit: it can have crashed and been auto-restarted
+/// several times since its last deliberate start (see
+/// sing-box.service/vpn-subscription.service's StartLimitBurst) while
+/// still looking perfectly healthy right now — invisible from "active"
+/// alone.
+fn service_state_label(mgr: &CompatibilityServiceManager) -> String {
     if !mgr.is_available() {
-        "unknown (systemctl not available)"
-    } else if !mgr.is_unit_installed() {
-        "not installed"
+        return "unknown (systemctl not available)".to_string();
+    }
+    if !mgr.is_unit_installed() {
+        return "not installed".to_string();
+    }
+    let mut label = if mgr.is_failed() {
+        "failed".to_string()
     } else if mgr.is_active() {
-        "active"
+        "active".to_string()
+    } else {
+        "inactive".to_string()
+    };
+    if let Some(n) = mgr.restart_count() {
+        if n > 0 {
+            label.push_str(&format!(" (restarted {n}x since last deliberate start)"));
+        }
+    }
+    label
+}
+
+/// `vpn status`'s expiry-reconcile section. Deliberately asks two
+/// DIFFERENT units two different questions, not the same check twice:
+/// `vpn-expiry-reconcile.timer`'s own armed/waiting state and next
+/// scheduled elapse (is the automation even going to run again?), and
+/// `vpn-expiry-reconcile.service`'s last recorded `Result=`/failed state
+/// (how did it go the last time it DID run?). A timer can be perfectly
+/// armed and waiting while its service has been failing every single
+/// run — reporting only one of these would hide that.
+fn print_expiry_reconcile_status() {
+    let timer = CompatibilityServiceManager::new("vpn-expiry-reconcile.timer");
+    let svc = CompatibilityServiceManager::new("vpn-expiry-reconcile");
+    if !timer.is_available() {
+        println!("expiry-reconcile timer unknown (systemctl not available)");
+        return;
+    }
+    if !timer.is_unit_installed() {
+        println!(
+            "expiry-reconcile timer not installed (expiry is not being reconciled automatically)"
+        );
+        return;
+    }
+    let timer_state = if timer.is_active() {
+        "active (waiting)"
     } else {
         "inactive"
+    };
+    println!("expiry-reconcile timer {timer_state}");
+    if let Some(next) = timer.timer_next_elapse() {
+        println!("  next scheduled run:  {next}");
+    }
+    if svc.is_failed() {
+        let detail = svc
+            .last_result()
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default();
+        println!(
+            "  last reconcile:      FAILED{detail} — run `sudo journalctl -u vpn-expiry-reconcile` for the cause"
+        );
+    } else if let Some(result) = svc.last_result() {
+        println!("  last reconcile:      {result}");
+    } else {
+        println!("  last reconcile:      no run recorded yet");
     }
 }
 
@@ -2646,8 +2716,37 @@ fn cmd_doctor(
                 "L1",
                 format!("{name}.service not installed on this host"),
             );
+        } else if mgr.is_failed() {
+            // Distinct from "not active" below: `failed` means systemd
+            // gave up restarting it (see sing-box.service/
+            // vpn-subscription.service's StartLimitBurst) — a
+            // deliberate `systemctl stop` never produces this state, it
+            // produces plain `inactive`. vpn-service-watchdog.timer is
+            // the systemd-native safety net that periodically clears
+            // this and retries; this check is what lets an operator (or
+            // this very report) actually see that it fired.
+            report_check(
+                CheckStatus::Fail,
+                "L1",
+                format!(
+                    "{name}.service is in a FAILED state (restart budget exhausted — see \
+                     StartLimitBurst in the unit file); vpn-service-watchdog.timer will retry \
+                     it periodically, or run `sudo systemctl reset-failed {name} && sudo \
+                     systemctl start {name}` by hand"
+                ),
+            );
+            failures += 1;
         } else if mgr.is_active() {
-            report_check(CheckStatus::Ok, "L1", format!("{name}.service active"));
+            let restarts = mgr
+                .restart_count()
+                .filter(|n| *n > 0)
+                .map(|n| format!(" ({n} restart(s) since last deliberate start)"))
+                .unwrap_or_default();
+            report_check(
+                CheckStatus::Ok,
+                "L1",
+                format!("{name}.service active{restarts}"),
+            );
         } else {
             report_check(
                 CheckStatus::Fail,
@@ -2670,13 +2769,19 @@ fn cmd_doctor(
         let reconcile_mgr = CompatibilityServiceManager::new("vpn-expiry-reconcile");
         if reconcile_mgr.is_available() && reconcile_mgr.is_unit_installed() {
             if reconcile_mgr.is_failed() {
+                let detail = reconcile_mgr
+                    .last_result()
+                    .map(|r| format!(" (systemd Result={r})"))
+                    .unwrap_or_default();
                 report_check(
                     CheckStatus::Fail,
                     "L1",
-                    "vpn-expiry-reconcile.service is in a FAILED state — expired/disabled \
-                     users' authorization may not be in sync with the live server; run `sudo \
-                     journalctl -u vpn-expiry-reconcile` for the cause, then `sudo vpn-admin \
-                     render-config --require-applied` to retry by hand",
+                    format!(
+                        "vpn-expiry-reconcile.service is in a FAILED state{detail} — \
+                         expired/disabled users' authorization may not be in sync with the live \
+                         server; run `sudo journalctl -u vpn-expiry-reconcile` for the cause, \
+                         then `sudo vpn-admin render-config --require-applied` to retry by hand"
+                    ),
                 );
                 failures += 1;
             } else {
@@ -2692,6 +2797,69 @@ fn cmd_doctor(
                 "L1",
                 "vpn-expiry-reconcile.service not installed on this host — expiry is not being \
                  reconciled automatically",
+            );
+        }
+
+        // The TIMER's own armed/waiting state is a different question
+        // from the SERVICE's failed/not-failed state above: a disabled
+        // or inactive timer means expiry is never reconciled again at
+        // all, regardless of how the last run went — a gap the check
+        // above cannot see (a service that was never re-triggered stays
+        // in whatever state its last run left it, forever).
+        let reconcile_timer = CompatibilityServiceManager::new("vpn-expiry-reconcile.timer");
+        if reconcile_timer.is_available() && reconcile_timer.is_unit_installed() {
+            if reconcile_timer.is_active() {
+                report_check(
+                    CheckStatus::Ok,
+                    "L1",
+                    "vpn-expiry-reconcile.timer is armed and waiting",
+                );
+            } else {
+                report_check(
+                    CheckStatus::Fail,
+                    "L1",
+                    "vpn-expiry-reconcile.timer is installed but NOT active — expiry will never \
+                     be reconciled again until it is restarted (`sudo systemctl start \
+                     vpn-expiry-reconcile.timer`)",
+                );
+                failures += 1;
+            }
+        }
+    }
+
+    // vpn-service-watchdog.timer is the safety net for sing-box/
+    // vpn-subscription exhausting their own StartLimitBurst (see those
+    // unit files) — armed-but-idle is the expected, healthy state; it
+    // only ever acts on a unit already reported FAILED above. Warn (not
+    // fail doctor) if it isn't installed/armed: the primary Restart=
+    // on-failure recovery still works without it, this only means a
+    // unit that DOES exhaust its restart budget would stay down until a
+    // human intervenes.
+    {
+        let watchdog_timer = CompatibilityServiceManager::new("vpn-service-watchdog.timer");
+        if watchdog_timer.is_available() && watchdog_timer.is_unit_installed() {
+            if watchdog_timer.is_active() {
+                report_check(
+                    CheckStatus::Ok,
+                    "L1",
+                    "vpn-service-watchdog.timer is armed and waiting",
+                );
+            } else {
+                report_check(
+                    CheckStatus::Warn,
+                    "L1",
+                    "vpn-service-watchdog.timer is installed but NOT active — a service that \
+                     exhausts its restart budget will stay failed until a human runs `sudo \
+                     systemctl reset-failed <unit> && sudo systemctl start <unit>`",
+                );
+            }
+        } else {
+            report_check(
+                CheckStatus::Warn,
+                "L1",
+                "vpn-service-watchdog.timer not installed on this host — sing-box/vpn-subscription \
+                 still recover from ordinary crashes (Restart=on-failure), but a unit that exhausts \
+                 its StartLimitBurst will stay failed until a human intervenes",
             );
         }
     }

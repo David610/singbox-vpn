@@ -216,8 +216,8 @@ fi
 # Fixed-name systemd/nginx/certbot-hook ownership wiring (static).
 # ---------------------------------------------------------------------
 echo
-echo "--- static: install.sh installs the 4 systemd units + certbot hook through install_fixed_path_with_ownership() ---"
-for key in SINGBOX_UNIT VPNSUB_UNIT EXPIRY_SVC_UNIT EXPIRY_TIMER_UNIT CERTBOT_HOOK; do
+echo "--- static: install.sh installs the 6 systemd units + certbot hook through install_fixed_path_with_ownership() ---"
+for key in SINGBOX_UNIT VPNSUB_UNIT EXPIRY_SVC_UNIT EXPIRY_TIMER_UNIT WATCHDOG_SVC_UNIT WATCHDOG_TIMER_UNIT CERTBOT_HOOK; do
   # -A2: the call may wrap onto a continuation line (e.g. the certbot
   # hook call), so the KEY argument is not always on the same line as
   # the function name.
@@ -234,8 +234,8 @@ else
 fi
 
 echo
-echo "--- static: uninstall.sh restores/removes all 6 fixed paths via restore_or_remove_fixed_path() ---"
-for key in SINGBOX_UNIT VPNSUB_UNIT EXPIRY_SVC_UNIT EXPIRY_TIMER_UNIT CERTBOT_HOOK NGINX_CONF; do
+echo "--- static: uninstall.sh restores/removes all 8 fixed paths via restore_or_remove_fixed_path() ---"
+for key in SINGBOX_UNIT VPNSUB_UNIT EXPIRY_SVC_UNIT EXPIRY_TIMER_UNIT WATCHDOG_SVC_UNIT WATCHDOG_TIMER_UNIT CERTBOT_HOOK NGINX_CONF; do
   if grep -q "restore_or_remove_fixed_path .* $key" "$UNINSTALL_SH"; then
     ok "uninstall.sh restores/removes the $key fixed path via restore_or_remove_fixed_path()"
   else

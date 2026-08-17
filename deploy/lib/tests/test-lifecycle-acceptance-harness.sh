@@ -35,11 +35,37 @@ cat > "$MOCKBIN/ssh" <<'MOCKSSH'
   echo
 } >> "$SSH_LOG"
 cmd="${*: -1}"
+STATE_FILE="$TMPDIR_TEST/singbox_state"
+singbox_state() { cat "$STATE_FILE" 2>/dev/null || echo active; }
 case "$cmd" in
   true) exit 0 ;;
   *os-release*) echo 'ID=almalinux'; exit 0 ;;
   *uname\ -m*) echo x86_64; exit 0 ;;
   *:*grep*) echo 1; exit 0 ;;
+  # The burst-crash-until-failed compound command (stage 13b): a real
+  # multi-line script containing "systemctl show -p MainPID --value
+  # sing-box" and "systemctl is-failed --quiet sing-box" as its LAST
+  # command — matched here, BEFORE the generic MainPID/is-failed
+  # patterns below, specifically so this one opaque invocation can flip
+  # the shared state file to "failed" and report success (real
+  # is-failed's contract: exit 0 means "yes, it is failed").
+  *"seq 1 12"*)
+    echo failed > "$STATE_FILE"
+    exit 0 ;;
+  *"systemctl start vpn-service-watchdog.service"*)
+    # Simulates the real watchdog script: only acts on a FAILED unit.
+    [ "$(singbox_state)" = "failed" ] && echo active > "$STATE_FILE"
+    exit 0 ;;
+  *"systemctl stop sing-box"*)
+    echo stopped > "$STATE_FILE"
+    exit 0 ;;
+  *"systemctl start sing-box"*)
+    echo active > "$STATE_FILE"
+    exit 0 ;;
+  *"is-active --quiet sing-box"*)
+    [ "$(singbox_state)" = "active" ] && exit 0 || exit 1 ;;
+  *"is-failed --quiet sing-box"*)
+    [ "$(singbox_state)" = "failed" ] && exit 0 || exit 1 ;;
   *MainPID*sing-box*)
     counter_file="$TMPDIR_TEST/mainpid_counter"
     n=0
@@ -65,6 +91,21 @@ BENCH
     exit 0 ;;
   *doctor\ --protocol*)
     echo 'protocol self-test: a throwaway sing-box client using the CURRENT REALITY public_key/short_id and an active VLESS user completed a full handshake through 127.0.0.1:443 and returned application bytes end-to-end'
+    exit 0 ;;
+  *"vpn-admin doctor"*)
+    # Bare `doctor` (no --protocol) — stateful so stage 13b's
+    # during-failure check has something real to observe.
+    if [ "$(singbox_state)" = "failed" ]; then
+      echo "[FAIL] [L1  ] sing-box.service is in a FAILED state (restart budget exhausted — see StartLimitBurst in the unit file); vpn-service-watchdog.timer will retry it periodically"
+      exit 1
+    fi
+    exit 0 ;;
+  *"vpn-admin status"*)
+    if [ "$(singbox_state)" = "failed" ]; then
+      echo "sing-box              failed"
+    else
+      echo "sing-box              active"
+    fi
     exit 0 ;;
   *acceptance-test.sh*) exit 0 ;;
   *systemctl\ reboot*) exit 0 ;;
@@ -205,6 +246,54 @@ if grep -A8 '=== 13. kill sing-box' "$TMPDIR_TEST/out-2222.log" | grep -q 'MainP
   ok "the recovery stage reports the MainPID actually changed"
 else
   fail "the recovery stage did not report a MainPID change"
+fi
+
+echo
+echo "--- StartLimitBurst exhaustion + vpn-service-watchdog recovery (stage 13b) ---"
+stage13b_block="$(sed -n '/=== 13b\./,/=== 13c\./p' "$TMPDIR_TEST/out-2222.log")"
+if printf '%s' "$stage13b_block" | grep -q 'reached FAILED state after exhausting StartLimitBurst'; then
+  ok "the harness actually drives sing-box into a FAILED state, not just asserting one exists"
+else
+  fail "stage 13b did not report exhausting StartLimitBurst"
+fi
+if printf '%s' "$stage13b_block" | grep -q 'vpn-admin doctor correctly reports sing-box.service as FAILED'; then
+  ok "vpn doctor is checked for the FAILED state during the outage, not just service state after recovery"
+else
+  fail "stage 13b did not check vpn-admin doctor during the outage"
+fi
+if printf '%s' "$stage13b_block" | grep -q 'vpn-admin status correctly reports sing-box as failed'; then
+  ok "vpn status is also checked for the failed state during the outage"
+else
+  fail "stage 13b did not check vpn-admin status during the outage"
+fi
+if grep -q 'systemctl start vpn-service-watchdog.service' "$SSH_LOG"; then
+  ok "the watchdog service is triggered directly to prove its recovery logic (not just waiting on its timer)"
+else
+  fail "stage 13b never invoked vpn-service-watchdog.service"
+fi
+if printf '%s' "$stage13b_block" | grep -q 'vpn-service-watchdog recovered sing-box.service from its parked FAILED state'; then
+  ok "the harness proves the watchdog actually recovers a parked FAILED unit"
+else
+  fail "stage 13b did not prove watchdog recovery"
+fi
+
+echo
+echo "--- systemctl stop still behaves normally, and the watchdog leaves a stopped unit alone (stage 13c) ---"
+stage13c_block="$(sed -n '/=== 13c\./,/=== 14\./p' "$TMPDIR_TEST/out-2222.log")"
+if printf '%s' "$stage13c_block" | grep -q "is inactive after systemctl stop"; then
+  ok "a deliberate systemctl stop leaves sing-box inactive (not silently auto-restarted)"
+else
+  fail "stage 13c did not confirm sing-box went inactive after systemctl stop"
+fi
+if printf '%s' "$stage13c_block" | grep -q "'inactive', not 'failed', after a deliberate stop"; then
+  ok "a deliberate stop is distinguished from a failure (inactive, never failed)"
+else
+  fail "stage 13c did not distinguish a deliberate stop from a failure"
+fi
+if printf '%s' "$stage13c_block" | grep -q "left the deliberately-stopped sing-box alone"; then
+  ok "the watchdog is proven to never restart a deliberately-stopped unit"
+else
+  fail "stage 13c did not prove the watchdog leaves a stopped unit alone"
 fi
 
 echo

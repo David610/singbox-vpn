@@ -16,9 +16,14 @@
 # --require-protocol (real REALITY handshake proof) ->
 # deploy/lib/vpn-benchmark.sh (real Hysteria2 handshake+transfer proof)
 # -> SIGKILL sing-box and verify systemd recovers it within a bounded
-# time, then re-verify the protocol -> user rotate/disable/remove
-# sanity on a scratch user -> update.sh (if a second version/fixture is
-# given) -> a deliberately failed update + rollback proof -> vpn-admin
+# time -> exhaust sing-box's StartLimitBurst on purpose and prove
+# vpn-service-watchdog recovers it from a parked FAILED state (and that
+# `vpn doctor`/`vpn status` actually report FAILED, not just "not
+# active") -> prove a deliberate `systemctl stop` still behaves
+# normally and is never "recovered" by the watchdog -> re-verify the
+# protocol -> user rotate/disable/remove sanity on a scratch user ->
+# update.sh (if a second version/fixture is given) -> a deliberately
+# failed update + rollback proof -> vpn-admin
 # backup -> uninstall.sh (complete) -> reinstall -> vpn-admin restore ->
 # verify the restored user/key state works -> doctor/protocol checks
 # again -> final uninstall.sh -> SSH/host-state residue checks, over
@@ -223,11 +228,13 @@ if [ "$SKIP_REBOOT" -eq 0 ]; then
     && systemctl is-active --quiet vpn-subscription \
     && systemctl is-active --quiet nginx \
     && systemctl list-timers --all 2>/dev/null | grep -q vpn1 \
+    && systemctl is-active --quiet vpn-expiry-reconcile.timer \
+    && systemctl is-active --quiet vpn-service-watchdog.timer \
     && ss -ltn 2>/dev/null | grep -q ":443 " \
     && sudo test -s /var/lib/vpn1/install-state.json \
     && sudo vpn-admin doctor --protocol
      ' 2>/dev/null; then
-    pass "reboot + independent post-reboot verification (sshd/sing-box/subscription/nginx/timers/listener/install-state/protocol)"
+    pass "reboot + independent post-reboot verification (sshd/sing-box/subscription/nginx/timers incl. watchdog/listener/install-state/protocol)"
   else
     fail_required "reboot + independent post-reboot verification"
   fi
@@ -356,6 +363,100 @@ if [ -n "$sb_pid_after" ] && [ "$sb_pid_after" != "0" ] && [ "$sb_pid_after" != 
   pass "sing-box MainPID changed after kill+restart (a real respawn, not a stale unit)"
 else
   fail_required "sing-box MainPID changed after kill+restart" "(before=$sb_pid_before after=$sb_pid_after)"
+fi
+
+section "13b. exhaust the restart budget (StartLimitBurst) and prove vpn-service-watchdog recovers it"
+# sing-box.service's StartLimitBurst=8 within StartLimitIntervalSec=300
+# (see that unit file) means a unit crashing more than 8 times in 5
+# minutes is marked FAILED and systemd stops retrying it automatically —
+# vpn-service-watchdog.timer/.service exist specifically so that this is
+# never permanent. Prove the whole chain for real, not just that the
+# unit files exist: crash sing-box fast enough to actually exhaust the
+# burst; confirm systemd really does give up (`is-failed`); confirm
+# `vpn doctor`/`vpn status` report it; then run the watchdog directly
+# (a fast, legitimate way to prove its OWN logic works, rather than
+# waiting up to 5 real minutes for its timer to fire naturally — the
+# timer's cadence itself is already proven separately by the reboot
+# stage confirming it comes up armed) and confirm sing-box comes back.
+if ssh_run '
+  for _ in $(seq 1 12); do
+    pid="$(systemctl show -p MainPID --value sing-box)"
+    [ -n "$pid" ] && [ "$pid" != "0" ] && sudo kill -9 "$pid" 2>/dev/null
+    sleep 0.3
+  done
+  sleep 3
+  systemctl is-failed --quiet sing-box
+' 2>/dev/null; then
+  pass "sing-box.service reached FAILED state after exhausting StartLimitBurst (proves the burst is real, not effectively infinite)"
+else
+  fail_required "sing-box.service did not reach FAILED state after a fast repeated-crash burst" "(StartLimitBurst may be too generous, or something else recovered it before this check ran)"
+fi
+
+if DOCTOR_DURING_FAILURE_OUT="$(ssh_run 'sudo vpn-admin doctor' 2>&1)"; then
+  doctor_during_failure_rc=0
+else
+  doctor_during_failure_rc=$?
+fi
+if [ "$doctor_during_failure_rc" -ne 0 ] && printf '%s' "$DOCTOR_DURING_FAILURE_OUT" | grep -qi 'sing-box.service is in a FAILED state'; then
+  pass "vpn-admin doctor correctly reports sing-box.service as FAILED (distinct from merely 'not active')"
+else
+  fail_required "vpn-admin doctor did not report the FAILED sing-box.service" "(exit=$doctor_during_failure_rc; see remote output above)"
+fi
+
+STATUS_DURING_FAILURE_OUT="$(ssh_run 'sudo vpn-admin status' 2>&1 || true)"
+if printf '%s' "$STATUS_DURING_FAILURE_OUT" | grep -qi 'sing-box.*failed'; then
+  pass "vpn-admin status correctly reports sing-box as failed"
+else
+  fail_required "vpn-admin status did not report sing-box as failed" "(see remote output above)"
+fi
+
+if ssh_run 'sudo systemctl start vpn-service-watchdog.service' 2>/dev/null; then
+  pass "vpn-service-watchdog.service ran without error"
+else
+  fail_required "vpn-service-watchdog.service ran without error"
+fi
+
+watchdog_recovered=0
+for _ in $(seq 1 15); do
+  if ssh_run 'systemctl is-active --quiet sing-box' 2>/dev/null; then watchdog_recovered=1; break; fi
+  sleep 2
+done
+if [ "$watchdog_recovered" -eq 1 ]; then
+  pass "vpn-service-watchdog recovered sing-box.service from its parked FAILED state (a recoverable service is never left permanently down)"
+else
+  fail_required "vpn-service-watchdog did not recover sing-box.service from its FAILED state"
+fi
+
+section "13c. systemctl stop still behaves normally (a deliberate stop is never treated as a failure to auto-recover)"
+if ssh_run 'sudo systemctl stop sing-box' 2>/dev/null; then
+  pass "systemctl stop sing-box succeeded"
+else
+  fail_required "systemctl stop sing-box succeeded"
+fi
+sleep 3
+if ssh_run 'systemctl is-active --quiet sing-box' 2>/dev/null; then
+  fail_required "sing-box remained active after systemctl stop" "(a deliberate stop must actually stop it)"
+else
+  pass "sing-box is inactive after systemctl stop (not silently auto-restarted)"
+fi
+if ssh_run 'systemctl is-failed --quiet sing-box' 2>/dev/null; then
+  fail_required "sing-box is reported FAILED after a deliberate stop" "(a clean stop must leave it 'inactive', never 'failed' — 'failed' would wrongly make vpn-service-watchdog try to restart it)"
+else
+  pass "sing-box is 'inactive', not 'failed', after a deliberate stop"
+fi
+# Prove the watchdog genuinely leaves a deliberately-stopped unit alone
+# — it only acts on units systemd itself reports as FAILED.
+ssh_run 'sudo systemctl start vpn-service-watchdog.service' >/dev/null 2>&1 || true
+sleep 2
+if ssh_run 'systemctl is-active --quiet sing-box' 2>/dev/null; then
+  fail_required "vpn-service-watchdog restarted a deliberately-stopped sing-box" "(it must only act on FAILED units, never merely-inactive ones)"
+else
+  pass "vpn-service-watchdog left the deliberately-stopped sing-box alone"
+fi
+if ssh_run 'sudo systemctl start sing-box' 2>/dev/null; then
+  pass "sing-box restarted normally after the deliberate-stop test (restoring state for the rest of this run)"
+else
+  fail_required "sing-box restarted normally after the deliberate-stop test"
 fi
 
 section "14. protocol works after recovery (re-run doctor --protocol --require-protocol)"
