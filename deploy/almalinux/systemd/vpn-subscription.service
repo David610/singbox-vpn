@@ -9,7 +9,26 @@ Group=vpn-subscription
 ExecStart=/usr/local/bin/vpn-subscription-svc --config /etc/vpn/deployment.toml
 Restart=on-failure
 RestartSec=2
-Environment=RUST_LOG=info
+# Production default is warnings/errors only — a successful subscription
+# fetch is per-user activity metadata (which user, when, in what format;
+# see services/subscription/src/lib.rs's `tracing::debug!("subscription
+# served")` call) and is not retained by default. Failure diagnostics
+# (rate-limit engagement, user-store load errors, render errors) are all
+# logged at `warn`/`error` and are unaffected by this change. An operator
+# troubleshooting a specific deployment can still see per-request success
+# lines by temporarily overriding this, e.g.
+# `systemctl edit vpn-subscription` with `Environment=RUST_LOG=debug` (or
+# `=info`), then `systemctl restart vpn-subscription`.
+Environment=RUST_LOG=warn
+# Per-service journal rate limiting (systemd >= 240; does not touch
+# /etc/systemd/journald.conf or any other unit). Conservative but not
+# tight: this service sees at most a handful of requests/second even
+# under nginx's own 5r/s-per-client cap (see the nginx vhost template),
+# so 200 messages/30s comfortably covers real traffic plus a burst of
+# errors, while still capping a scanner/error flood from filling the
+# journal.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 
 # Never needs to write anywhere except read the user store (read-only
 # from this service's perspective — vpn-admin, run as root, is the only

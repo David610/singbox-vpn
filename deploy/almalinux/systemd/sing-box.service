@@ -14,6 +14,17 @@ Restart=on-failure
 RestartSec=2
 LimitNOFILE=65535
 
+# Per-service journal rate limiting (systemd >= 240; does not touch
+# /etc/systemd/journald.conf or any other unit). sing-box is the one
+# internet-facing process here (TCP/443 + UDP/443) and its own config
+# already logs at "warn" (see crates/compat-config/src/server.rs), so
+# under normal operation this limit is never reached — it exists purely
+# to cap a port-scanner/DPI-probe flood of rejected-handshake warnings
+# from filling the journal, while 1000 messages/30s is generous enough
+# that a real incident still leaves plenty to investigate.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
+
 # Modest CPU scheduling priority bump, not real-time scheduling. On a
 # 1-2 vCPU host, sing-box's Hysteria2/QUIC inbound is latency-sensitive
 # userspace packet processing that competes with everything else on the

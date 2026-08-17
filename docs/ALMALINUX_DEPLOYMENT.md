@@ -363,6 +363,15 @@ journalctl -u vpn-subscription -f
 sudo vpn-health-check
 ```
 
+`vpn-subscription` logs warnings/errors only by default (`RUST_LOG=warn`
+in its systemd unit) — a successful subscription fetch is not logged, by
+design, to minimize retained per-user activity metadata. Failures (rate
+limiting engaged, a corrupt user store, a render error) are always
+logged. To see per-request success lines while troubleshooting, run
+`sudo systemctl edit vpn-subscription`, add `Environment=RUST_LOG=debug`
+(or `=info`) under `[Service]`, then `sudo systemctl restart
+vpn-subscription` — revert the override afterward.
+
 ## Firewall
 
 ```bash
