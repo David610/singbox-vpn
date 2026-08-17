@@ -387,6 +387,28 @@ the command exits non-zero explaining exactly that (see
 `docs/PRODUCTION_HARDENING_PLAN.md` #4/#7) — it never prints "user
 disabled successfully" while the old credentials are still live.
 
+### Every reload briefly disconnects every user, not just the one that changed
+
+sing-box has no in-place config reload for this compatibility stack
+(`docs/PRODUCTION_HARDENING_PLAN.md` #4), so `systemctl reload-or-restart
+sing-box` always performs a full stop+start. This means **any** action
+that reloads sing-box — `user create/disable/enable/remove/rotate-*`,
+`render-config`, `init --rotate`, `restore` — briefly drops the listener
+entirely and forcibly disconnects every currently-connected client's live
+session, not only the user whose credentials actually changed. A client
+that hits this mid-session sees a hard connection error; reconnecting
+immediately afterward succeeds, because `vpn-admin` does not report the
+command as done until it has confirmed sing-box is active again.
+
+The unattended `vpn-expiry-reconcile.timer` (checks every 10 minutes,
+`deploy/almalinux/systemd/vpn-expiry-reconcile.timer`) goes through this
+same path: it only reloads when a user's expiration actually crosses
+`now` (a no-op check otherwise costs no reload), but when it does, it
+reloads the shared sing-box process for everyone, with no operator action
+and no client-facing explanation — check `journalctl -u sing-box -u
+vpn-expiry-reconcile` for the "reloading sing-box (...)" line this repo
+now logs at every real reload, stating what triggered it.
+
 ## Credential rotation
 
 | What | Command | Client impact |

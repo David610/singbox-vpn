@@ -808,6 +808,11 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     config_applied.set(true);
 
     let singbox_reloaded_live = if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
+        println!(
+            "reloading sing-box (source: reality-rotate) — this is a full restart (sing-box \
+             has no in-place reload), so all currently connected clients will be briefly \
+             disconnected."
+        );
         if let Err(e) = singbox_mgr.reload_and_verify() {
             bail!(rollback(&format!("sing-box reload failed: {e}")));
         }
@@ -1065,6 +1070,11 @@ fn cmd_hysteria_obfs_rotate(cfg: &DeploymentConfig) -> Result<()> {
     config_applied.set(true);
 
     let singbox_reloaded_live = if singbox_mgr.is_available() && singbox_mgr.is_unit_installed() {
+        println!(
+            "reloading sing-box (source: hysteria-obfs-rotate) — this is a full restart \
+             (sing-box has no in-place reload), so all currently connected clients will be \
+             briefly disconnected."
+        );
         if let Err(e) = singbox_mgr.reload_and_verify() {
             bail!(rollback(&format!("sing-box reload failed: {e}")));
         }
@@ -1383,6 +1393,20 @@ fn render_and_apply_singbox_config(
         return Ok(false);
     }
 
+    // sing-box has no in-place config reload (docs/PRODUCTION_HARDENING_PLAN.md
+    // #4), so `reload_and_verify` below always does a full restart: every
+    // currently-connected client, not just the one whose credentials
+    // changed, gets briefly disconnected. Say so explicitly — this is the
+    // shared path every `user create/disable/rotate-*`, `render-config`
+    // (including the unattended `vpn-expiry-reconcile.timer` run), and
+    // `restore` call goes through, so without this line the automatic
+    // timer path bounces the service with zero visibility into why.
+    let active_now = users.iter().filter(|u| u.is_active(now)).count();
+    println!(
+        "reloading sing-box ({active_now} active user(s) in the new config) — this is a full \
+         restart (sing-box has no in-place reload), so all currently connected clients will be \
+         briefly disconnected."
+    );
     if let Err(reload_err) = mgr.reload_and_verify() {
         let backup = config_backup_path(&target);
         let restored = backup.exists() && std::fs::copy(&backup, &target).is_ok();
