@@ -74,11 +74,16 @@ echo "--- --json output round-trips through jq's regex numeric-conversion pass s
 # A value that LOOKS numeric-ish but isn't a bare number (e.g. the RTT
 # summary "min/avg/max/mdev" line, or an "unavailable" string) must stay
 # a JSON string, not get mangled into a number or throw a jq error.
-if echo "$out" | jq -e '.ping_status | type == "string"' >/dev/null 2>&1; then
-  ok "a non-numeric status string (ping_status) stays a JSON string"
+# tcp_congestion_control (e.g. "bbr"/"cubic") is set unconditionally by
+# the script regardless of the host's ping/network state, unlike
+# ping_status (only set on ping's SKIPPED path — a real, reachable ping
+# target sets packet_loss/rtt_* instead, so asserting on ping_status
+# here would depend on whether the CI runner's loopback ping succeeds).
+if echo "$out" | jq -e '.tcp_congestion_control | type == "string"' >/dev/null 2>&1; then
+  ok "a non-numeric status string (tcp_congestion_control) stays a JSON string"
 else
-  fail "ping_status was not a plain JSON string:
-$(echo "$out" | jq '.ping_status')"
+  fail "tcp_congestion_control was not a plain JSON string:
+$(echo "$out" | jq '.tcp_congestion_control')"
 fi
 
 echo
