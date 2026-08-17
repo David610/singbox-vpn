@@ -2,8 +2,17 @@
 Description=Apply vpn1 user expirations to live protocol authorization
 
 [Timer]
+# OnUnitActiveSec is deliberately 10min, not 1min: sing-box has no
+# in-place config reload (see docs/PRODUCTION_HARDENING_PLAN.md #4), so
+# every reconcile run that actually finds a newly-expired user causes a
+# full sing-box restart that briefly drops every connected user's live
+# session, not just the expiring one. A 10-minute window lets multiple
+# near-simultaneous expirations coalesce into a single restart instead
+# of one restart per 1-minute tick that happens to catch a different
+# user. OnBootSec stays short so a freshly-booted host still reconciles
+# promptly once.
 OnBootSec=1min
-OnUnitActiveSec=1min
+OnUnitActiveSec=10min
 AccuracySec=10s
 Persistent=true
 Unit=vpn-expiry-reconcile.service
