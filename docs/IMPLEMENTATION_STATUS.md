@@ -6,6 +6,63 @@ Release-readiness evidence is recorded in this file and in
 dated historical audit snapshot.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
+## Release readiness update (2026-08-17)
+
+- **`deploy/almalinux/lifecycle-acceptance.sh` was substantially expanded**
+  to turn the disposable-host lifecycle gate into evidence for the full
+  production lifecycle, not just install/update/uninstall in isolation.
+  New stages (all destructive-gate-only, disposable-host, over SSH):
+  a persisted test user is created and kept alive through every check
+  below (previously it was created and deleted in the same stage, so
+  `doctor --protocol` never verified the specific test identity);
+  `vpn-admin doctor` (plain) runs before the protocol self-test;
+  `vpn-admin doctor --protocol --require-protocol` (hard-fails instead of
+  warning) proves REALITY authentication for real; `deploy/lib/vpn-benchmark.sh`
+  (an existing tool, not new code) is reused to prove a real Hysteria2
+  handshake+transfer through the live listener; `sing-box` is SIGKILLed by
+  its own MainPID and systemd's recovery is verified within a bounded
+  30s window, then the protocol self-test is re-run to prove the
+  recovered process is still correct; `vpn-admin backup`/`vpn-admin
+  restore` are exercised across a real uninstall -> reinstall cycle, with
+  the restored user list and REALITY handshake both re-verified
+  afterward; a final uninstall + residue audit runs only after that
+  restore is proven, not before. `certbot renew --dry-run` was moved to
+  run while the deployment is still live (previously it ran after the
+  final reinstall, which was correct then, but is now sequenced right
+  before the destructive uninstall/restore cycle it precedes). A reboot
+  test already existed (stage 5) and was left in place — this checkpoint
+  did not need to add reboot coverage, only note that a real CLIENT
+  DEVICE's reconnect-after-server-reboot behavior remains a manual
+  release-candidate requirement (second physical device, not automatable
+  in this SSH-only harness).
+- `deploy/almalinux/acceptance-test.sh`'s "optional real transport test"
+  section referenced a `vpn-health-check --full` flag that was never
+  implemented and does not exist. Fixed to point at the two commands
+  that actually do this today: `vpn-admin doctor --protocol
+  --require-protocol` (REALITY) and `deploy/lib/vpn-benchmark.sh`
+  (Hysteria2 + REALITY real transfer), both of which the lifecycle gate
+  above now also exercises automatically.
+- 9 new regression assertions were added to
+  `deploy/lib/tests/test-lifecycle-acceptance-harness.sh` (extending its
+  existing mocked-`ssh` pattern, not comment-grepping) covering: the test
+  user is created before the REALITY proof runs; `--require-protocol` is
+  actually passed; the Hysteria2 stage invokes `vpn-benchmark.sh` and
+  reports PASS; `sing-box` is killed via its own captured MainPID (not a
+  broad `pkill`); MainPID is queried both before and after the kill;
+  backup/restore run with the expected `--output`/archive path and in
+  the expected order relative to the destructive uninstall; a final
+  uninstall + residue audit runs strictly after the restore is verified,
+  not the interim uninstall. All pass against the real script; the real
+  destructive lifecycle itself remains `UNVERIFIED` (see below — no
+  disposable AlmaLinux 9 host available in this session).
+- **UNVERIFIED** (no disposable AlmaLinux 9 host available this
+  session, same constraint as every prior checkpoint that touched this
+  harness): none of the above was executed against a real host. The
+  harness's own logic is fixture-tested against a mocked `ssh`; the real
+  SIGKILL-recovery timing, real Hysteria2/REALITY transfer numbers, real
+  backup/restore round trip, and real reboot-triggered client reconnect
+  from a physical device all still need a first real run.
+
 ## Release readiness update (2026-08-16)
 
 - The owner reports a successful real AlmaLinux 9 installation and successful

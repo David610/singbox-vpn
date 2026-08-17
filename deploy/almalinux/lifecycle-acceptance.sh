@@ -8,12 +8,20 @@
 #   ./deploy/almalinux/lifecycle-acceptance.sh \
 #       --host root@DISPOSABLE-HOST --i-understand-this-is-destructive
 #
-# What this does: drives install.sh -> acceptance-test.sh -> reboot ->
-# health-check.sh -> re-run install.sh (idempotent repair) ->
-# update.sh (if a second version/fixture is given) -> vpn-admin user
-# create/disable/rotate-token/delete -> vpn-admin doctor --protocol ->
-# a deliberately interrupted install (failure-injection hook, see
-# below) -> uninstall.sh -> SSH/host-state checks -> reinstall, over
+# What this does: drives install.sh -> acceptance-test.sh (services
+# healthy) -> reboot -> health-check.sh -> re-run install.sh (idempotent
+# repair) -> a deliberately interrupted install + offline-uninstall
+# cleanup (failure-injection hook, see below) -> reinstall -> create a
+# test user -> vpn-admin doctor -> vpn-admin doctor --protocol
+# --require-protocol (real REALITY handshake proof) ->
+# deploy/lib/vpn-benchmark.sh (real Hysteria2 handshake+transfer proof)
+# -> SIGKILL sing-box and verify systemd recovers it within a bounded
+# time, then re-verify the protocol -> user rotate/disable/remove
+# sanity on a scratch user -> update.sh (if a second version/fixture is
+# given) -> a deliberately failed update + rollback proof -> vpn-admin
+# backup -> uninstall.sh (complete) -> reinstall -> vpn-admin restore ->
+# verify the restored user/key state works -> doctor/protocol checks
+# again -> final uninstall.sh -> SSH/host-state residue checks, over
 # SSH, on ONE remote host you name explicitly. It never runs any stage
 # locally and never assumes a target.
 #
@@ -235,84 +243,7 @@ else
   fail_required "install.sh (idempotent re-run) + SSH reconnect"
 fi
 
-if [ -n "$UPDATE_TO_REF" ]; then
-  # No real tagged vpn1 release exists yet to exercise update.sh's actual
-  # production release-to-release transaction (--version/--latest) —
-  # that remains a real-release UNVERIFIED item (see
-  # docs/IMPLEMENTATION_STATUS.md). Until one is published, this
-  # exercises the explicit --dev-rebuild escape hatch instead: check out
-  # $UPDATE_TO_REF's source over /opt/vpn1, then rebuild/redeploy it via
-  # update.sh --dev-rebuild (the same transactional
-  # backup/switch/verify/rollback machinery the production path uses,
-  # minus release-artifact resolution). update.sh no longer reads
-  # VPN1_REF at all — passing it as an env var (the previous, silently
-  # ignored invocation) never actually changed anything.
-  section "7. update path -> $UPDATE_TO_REF (--dev-rebuild; this is VERIFIED-TEST for the transactional updater machinery only — a real GitHub release A->B transition remains UNVERIFIED until a tagged release exists, see docs/IMPLEMENTATION_STATUS.md)"
-  version_before="$(ssh_run 'sudo /opt/vpn1/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
-  if ssh_run "curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/vpn1-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$UPDATE_TO_REF \
-      && rm -rf /tmp/vpn1-update-ref && mkdir -p /tmp/vpn1-update-ref \
-      && tar -xzf /tmp/vpn1-update-ref.tar.gz -C /tmp/vpn1-update-ref --strip-components=1 \
-      && sudo rsync -a --delete --exclude target --exclude .git /tmp/vpn1-update-ref/ /opt/vpn1/ \
-      && sudo /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild" \
-    && ssh_reconnect 'true' 2>/dev/null; then
-    version_after="$(ssh_run 'sudo /opt/vpn1/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
-    if [ -n "$version_after" ] && [ "$version_before" != "$version_after" ]; then
-      pass "update.sh --dev-rebuild -> $UPDATE_TO_REF (binary/state actually changed, not just exit 0)"
-    else
-      fail_required "update.sh --dev-rebuild -> $UPDATE_TO_REF" "(command succeeded but before/after version-state did not change — this must not be reported as an update)"
-    fi
-  else
-    fail "update.sh --dev-rebuild -> $UPDATE_TO_REF"
-  fi
-
-  section "7b. failed update -> rollback (failure injected after SWITCH begins, via update.sh's VPN1_LIFECYCLE_GATE_ABORT_AFTER hook)"
-  pre_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
-  if ssh_run "sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild" 2>/dev/null; then
-    fail_required "failed update aborted as expected" "(expected non-zero exit, got success)"
-  else
-    pass "failed update aborted as expected"
-  fi
-  if ssh_reconnect '
-       systemctl is-active --quiet sshd \
-    && systemctl is-active --quiet sing-box \
-    && systemctl is-active --quiet vpn-subscription \
-    && sudo vpn-admin doctor --protocol
-     ' 2>/dev/null; then
-    post_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
-    if [ "$pre_rollback_version" = "$post_rollback_version" ]; then
-      pass "rollback restored prior binary/schema/units/config/services/protocol/SSH"
-    else
-      fail_required "rollback restored prior state" "(install-state.json differs from before the failed update)"
-    fi
-  else
-    fail_required "rollback restored prior binary/schema/units/config/services/protocol/SSH"
-  fi
-else
-  section "7. update path (SKIPPED: no --update-to-ref given)"
-  section "7b. failed update -> rollback (SKIPPED: no --update-to-ref given)"
-fi
-
-section "8. user add / disable / rotate / delete"
-if ssh_run 'sudo vpn-admin user create --name lifecycle-gate-user \
-  && sudo vpn-admin user list | grep -q lifecycle-gate-user \
-  && sudo vpn-admin user rotate-token lifecycle-gate-user \
-  && sudo vpn-admin user rotate-vless lifecycle-gate-user \
-  && sudo vpn-admin user rotate-hysteria lifecycle-gate-user \
-  && sudo vpn-admin user disable lifecycle-gate-user \
-  && sudo vpn-admin user remove lifecycle-gate-user' 2>/dev/null; then
-  pass "user create/rotate/disable/remove"
-else
-  fail_required "user create/rotate/disable/remove"
-fi
-
-section "9. local protocol validation"
-if ssh_run 'sudo vpn-admin doctor --protocol' 2>/dev/null; then
-  pass "vpn-admin doctor --protocol"
-else
-  fail "vpn-admin doctor --protocol" "(see remote output above)"
-fi
-
-section "10. failed/interrupted install cleanup"
+section "7. failed/interrupted install cleanup (scratch scenario; ends with vpn1 fully removed)"
 # Failure-injection hook: install.sh honors VPN1_LIFECYCLE_GATE_ABORT_AFTER
 # (a stage-name substring) to deliberately die mid-install, purely for this
 # gate — see install.sh's own comment at the check. The env var MUST be set
@@ -341,13 +272,198 @@ else
   fail "cleanup after interrupted install"
 fi
 
-section "11. offline uninstall (from the repaired install in stage 6, redone)"
-ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" >/dev/null 2>&1 || true
+section "8. reinstall after interrupted-install cleanup (back to a working baseline for the rest of this run)"
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+  && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
+  pass "install.sh (clean, post-cleanup) + SSH reconnect"
+else
+  fail_required "install.sh (clean, post-cleanup) + SSH reconnect"
+fi
+
+section "9. create test user (persists through the backup/restore verification below)"
+TEST_USER_NAME="lifecycle-test-user"
+if ssh_run "sudo vpn-admin user create --name $TEST_USER_NAME --json" >/dev/null 2>&1 \
+  && ssh_run "sudo vpn-admin user list | grep -q $TEST_USER_NAME" 2>/dev/null; then
+  pass "test user created ($TEST_USER_NAME)"
+else
+  fail_required "test user created ($TEST_USER_NAME)"
+fi
+
+section "10. vpn-admin doctor (standard checks, no protocol self-test)"
+if ssh_run 'sudo vpn-admin doctor' 2>/dev/null; then
+  pass "vpn-admin doctor"
+else
+  fail_required "vpn-admin doctor"
+fi
+
+section "11. REALITY authentication proof (vpn-admin doctor --protocol --require-protocol)"
+# --require-protocol turns an inconclusive/unavailable self-test into a
+# hard failure instead of a warning — this is the same flag the
+# installer itself uses after creating the first user (see
+# apps/admin/src/main.rs), so a PASS here means what a real fresh
+# install's own acceptance gate means, not a weaker check.
+if PROTOCOL_OUT="$(ssh_run 'sudo vpn-admin doctor --protocol --require-protocol' 2>&1)"; then
+  protocol_rc=0
+else
+  protocol_rc=$?
+fi
+if [ "$protocol_rc" -eq 0 ] && printf '%s' "$PROTOCOL_OUT" | grep -q 'completed a full handshake'; then
+  pass "REALITY handshake self-test PASSED (real sing-box client, live public_key/short_id, application bytes end-to-end)"
+else
+  fail_required "REALITY handshake self-test (doctor --protocol --require-protocol)" "(exit=$protocol_rc; see remote output above)"
+fi
+
+section "12. Hysteria2 real handshake+transfer proof (deploy/lib/vpn-benchmark.sh)"
+# Reuses the existing benchmark tool's layer-4 tunnel test: a REAL
+# sing-box client, on this same host, dials this same host's own live
+# Hysteria2 listener through a throwaway benchmark user (created and
+# deleted by the tool itself) and transfers real bytes through it. A
+# small download size keeps this bounded on a disposable VPS's uplink.
+if HY_OUT="$(ssh_run "sudo /opt/vpn1/deploy/lib/vpn-benchmark.sh --runs 1 --download-url 'https://speed.cloudflare.com/__down?bytes=2000000'" 2>&1)"; then
+  hy_rc=0
+else
+  hy_rc=$?
+fi
+hy_block="$(printf '%s\n' "$HY_OUT" | sed -n '/^Hysteria2 protocol\/server-side overhead/,/^Assessment$/p' || true)"
+hy_line="$(printf '%s\n' "$hy_block" | grep -A1 'throughput (Mbps)' | tail -1 || true)"
+hy_min_mbps="$(printf '%s' "$hy_line" | grep -oE 'min=[0-9.]+' | cut -d= -f2 || true)"
+if [ "$hy_rc" -eq 0 ] && ! printf '%s' "$hy_block" | grep -qE 'SKIPPED|FAILED|unavailable' \
+  && [ -n "$hy_min_mbps" ] && awk -v n="$hy_min_mbps" 'BEGIN{exit !(n>0)}'; then
+  pass "Hysteria2 real handshake+transfer proof (throughput: $hy_line Mbps)"
+else
+  fail_required "Hysteria2 real handshake+transfer proof" "(exit=$hy_rc; see benchmark output: $hy_block)"
+fi
+
+section "13. kill sing-box (SIGKILL) and verify systemd recovers it within a bounded time"
+sb_pid_before="$(ssh_run 'systemctl show -p MainPID --value sing-box' 2>/dev/null || true)"
+if [ -n "$sb_pid_before" ] && [ "$sb_pid_before" != "0" ] && ssh_run "sudo kill -9 $sb_pid_before" 2>/dev/null; then
+  pass "SIGKILL sent to sing-box (pid $sb_pid_before)"
+else
+  fail_required "SIGKILL sent to sing-box"
+fi
+sb_recovered=0
+for _ in $(seq 1 15); do
+  if ssh_run 'systemctl is-active --quiet sing-box' 2>/dev/null; then sb_recovered=1; break; fi
+  sleep 2
+done
+if [ "$sb_recovered" -eq 1 ]; then
+  pass "systemd restarted sing-box within a bounded time (<=30s; unit is Restart=on-failure, RestartSec=2)"
+else
+  fail_required "systemd restarted sing-box within a bounded time"
+fi
+sb_pid_after="$(ssh_run 'systemctl show -p MainPID --value sing-box' 2>/dev/null || true)"
+if [ -n "$sb_pid_after" ] && [ "$sb_pid_after" != "0" ] && [ "$sb_pid_after" != "$sb_pid_before" ]; then
+  pass "sing-box MainPID changed after kill+restart (a real respawn, not a stale unit)"
+else
+  fail_required "sing-box MainPID changed after kill+restart" "(before=$sb_pid_before after=$sb_pid_after)"
+fi
+
+section "14. protocol works after recovery (re-run doctor --protocol --require-protocol)"
+if POST_RECOVERY_PROTOCOL_OUT="$(ssh_run 'sudo vpn-admin doctor --protocol --require-protocol' 2>&1)"; then
+  post_recovery_rc=0
+else
+  post_recovery_rc=$?
+fi
+if [ "$post_recovery_rc" -eq 0 ] && printf '%s' "$POST_RECOVERY_PROTOCOL_OUT" | grep -q 'completed a full handshake'; then
+  pass "REALITY handshake self-test still PASSES after the SIGKILL+recovery cycle"
+else
+  fail_required "REALITY handshake self-test after recovery" "(exit=$post_recovery_rc; see remote output above)"
+fi
+
+section "15. user rotate/disable/remove sanity (scratch user; does not touch the persisted test user above)"
+if ssh_run 'sudo vpn-admin user create --name lifecycle-scratch-user \
+  && sudo vpn-admin user list | grep -q lifecycle-scratch-user \
+  && sudo vpn-admin user rotate-token lifecycle-scratch-user \
+  && sudo vpn-admin user rotate-vless lifecycle-scratch-user \
+  && sudo vpn-admin user rotate-hysteria lifecycle-scratch-user \
+  && sudo vpn-admin user disable lifecycle-scratch-user \
+  && sudo vpn-admin user remove lifecycle-scratch-user' 2>/dev/null; then
+  pass "scratch user create/rotate/disable/remove"
+else
+  fail_required "scratch user create/rotate/disable/remove"
+fi
+
+if [ -n "$UPDATE_TO_REF" ]; then
+  # No real tagged vpn1 release exists yet to exercise update.sh's actual
+  # production release-to-release transaction (--version/--latest) —
+  # that remains a real-release UNVERIFIED item (see
+  # docs/IMPLEMENTATION_STATUS.md). Until one is published, this
+  # exercises the explicit --dev-rebuild escape hatch instead: check out
+  # $UPDATE_TO_REF's source over /opt/vpn1, then rebuild/redeploy it via
+  # update.sh --dev-rebuild (the same transactional
+  # backup/switch/verify/rollback machinery the production path uses,
+  # minus release-artifact resolution). update.sh no longer reads
+  # VPN1_REF at all — passing it as an env var (the previous, silently
+  # ignored invocation) never actually changed anything.
+  section "16. safe update path -> $UPDATE_TO_REF (--dev-rebuild; this is VERIFIED-TEST for the transactional updater machinery only — a real GitHub release A->B transition remains UNVERIFIED until a tagged release exists, see docs/IMPLEMENTATION_STATUS.md)"
+  version_before="$(ssh_run 'sudo /opt/vpn1/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+  if ssh_run "curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/vpn1-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$UPDATE_TO_REF \
+      && rm -rf /tmp/vpn1-update-ref && mkdir -p /tmp/vpn1-update-ref \
+      && tar -xzf /tmp/vpn1-update-ref.tar.gz -C /tmp/vpn1-update-ref --strip-components=1 \
+      && sudo rsync -a --delete --exclude target --exclude .git /tmp/vpn1-update-ref/ /opt/vpn1/ \
+      && sudo /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild" \
+    && ssh_reconnect 'true' 2>/dev/null; then
+    version_after="$(ssh_run 'sudo /opt/vpn1/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+    if [ -n "$version_after" ] && [ "$version_before" != "$version_after" ]; then
+      pass "update.sh --dev-rebuild -> $UPDATE_TO_REF (binary/state actually changed, not just exit 0)"
+    else
+      fail_required "update.sh --dev-rebuild -> $UPDATE_TO_REF" "(command succeeded but before/after version-state did not change — this must not be reported as an update)"
+    fi
+  else
+    fail "update.sh --dev-rebuild -> $UPDATE_TO_REF"
+  fi
+
+  section "16b. injected failed update -> rollback proof (failure injected after SWITCH begins, via update.sh's VPN1_LIFECYCLE_GATE_ABORT_AFTER hook)"
+  pre_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+  if ssh_run "sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild" 2>/dev/null; then
+    fail_required "failed update aborted as expected" "(expected non-zero exit, got success)"
+  else
+    pass "failed update aborted as expected"
+  fi
+  if ssh_reconnect '
+       systemctl is-active --quiet sshd \
+    && systemctl is-active --quiet sing-box \
+    && systemctl is-active --quiet vpn-subscription \
+    && sudo vpn-admin doctor --protocol
+     ' 2>/dev/null; then
+    post_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+    if [ "$pre_rollback_version" = "$post_rollback_version" ]; then
+      pass "rollback restored the previous working release (prior binary/schema/units/config/services/protocol/SSH)"
+    else
+      fail_required "rollback restored prior state" "(install-state.json differs from before the failed update)"
+    fi
+  else
+    fail_required "rollback restored prior binary/schema/units/config/services/protocol/SSH"
+  fi
+else
+  section "16. safe update path (SKIPPED: no --update-to-ref given)"
+  section "16b. injected failed update -> rollback proof (SKIPPED: no --update-to-ref given)"
+fi
+
+section "17. create vpn backup"
+BACKUP_PATH="/root/vpn1-lifecycle-backup.tar"
+PRE_BACKUP_USERLIST="$(ssh_run 'sudo vpn-admin user list' 2>/dev/null || true)"
+if ssh_run "sudo vpn-admin backup --output $BACKUP_PATH" 2>/dev/null \
+  && ssh_run "sudo test -s $BACKUP_PATH" 2>/dev/null; then
+  pass "vpn-admin backup produced a non-empty archive at $BACKUP_PATH"
+else
+  fail_required "vpn-admin backup produced a non-empty archive"
+fi
+
+section "18. certbot renew --dry-run (while the deployment is still live, before the destructive uninstall below)"
+if ssh_run 'sudo certbot renew --dry-run' 2>/dev/null; then
+  pass "certbot renew --dry-run"
+else
+  mark_unverified "certbot renew --dry-run" "(failed or certbot/ACME conditions on this host prevent a dry-run — not faked)"
+fi
+
+section "19. uninstall completely (offline vpn1-uninstall)"
 # Genuinely offline: the local binary only, no curl/GitHub/DNS/package-repo.
 # Best-effort proof of no outbound network use: block egress to github.com
 # for the duration of this one command (ignored if iptables/firewalld isn't
 # available/permitted — the "local binary only" invocation itself is the
-# primary guarantee either way).
+# primary guarantee either way). $BACKUP_PATH lives under /root, which
+# vpn1-uninstall never touches, so the backup survives this step.
 ssh_run 'sudo iptables -I OUTPUT -d github.com -j REJECT 2>/dev/null; sudo iptables -I OUTPUT -d raw.githubusercontent.com -j REJECT 2>/dev/null' >/dev/null 2>&1 || true
 if ssh_run 'sudo /opt/vpn1/bin/vpn1-uninstall --yes'; then
   pass "vpn1-uninstall --yes (offline, local binary only)"
@@ -356,10 +472,61 @@ else
 fi
 ssh_run 'sudo iptables -D OUTPUT -d github.com -j REJECT 2>/dev/null; sudo iptables -D OUTPUT -d raw.githubusercontent.com -j REJECT 2>/dev/null' >/dev/null 2>&1 || true
 
-section "12. SSH after uninstall (new connection, port $SSH_PORT)"
+section "20. SSH after uninstall (new connection, port $SSH_PORT)"
 if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH still active post-uninstall"; else fail_required "SSH still active post-uninstall"; fi
 
-section "13. uninstall residue audit (vs. host baseline from stage 1b)"
+section "21. reinstall from the normal one-command production path"
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+  && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
+  pass "reinstall after uninstall + SSH reconnect"
+else
+  fail_required "reinstall after uninstall + SSH reconnect"
+fi
+
+section "22. restore backup"
+if ssh_run "sudo test -s $BACKUP_PATH" 2>/dev/null && ssh_run "sudo vpn-admin restore $BACKUP_PATH" 2>/dev/null; then
+  pass "vpn-admin restore applied the backup archive"
+else
+  fail_required "vpn-admin restore applied the backup archive"
+fi
+
+section "23. verify restored user/key state works"
+POST_RESTORE_USERLIST="$(ssh_run 'sudo vpn-admin user list' 2>/dev/null || true)"
+if [ -n "$PRE_BACKUP_USERLIST" ] && [ "$PRE_BACKUP_USERLIST" = "$POST_RESTORE_USERLIST" ]; then
+  pass "restored user list matches the pre-backup snapshot exactly (ids/names/enabled state, including $TEST_USER_NAME)"
+else
+  fail_required "restored user list matches the pre-backup snapshot" "(pre-backup: $PRE_BACKUP_USERLIST | post-restore: $POST_RESTORE_USERLIST)"
+fi
+if ssh_run "sudo vpn-admin user list | grep -q $TEST_USER_NAME" 2>/dev/null; then
+  pass "the persisted test user ($TEST_USER_NAME) survived uninstall/reinstall/restore"
+else
+  fail_required "the persisted test user ($TEST_USER_NAME) survived uninstall/reinstall/restore"
+fi
+
+section "24. doctor/protocol checks again (post-restore)"
+if POST_RESTORE_PROTOCOL_OUT="$(ssh_run 'sudo vpn-admin doctor --protocol --require-protocol' 2>&1)"; then
+  post_restore_rc=0
+else
+  post_restore_rc=$?
+fi
+if [ "$post_restore_rc" -eq 0 ] && printf '%s' "$POST_RESTORE_PROTOCOL_OUT" | grep -q 'completed a full handshake'; then
+  pass "REALITY handshake self-test PASSES against the restored key material"
+else
+  fail_required "REALITY handshake self-test against restored key material" "(exit=$post_restore_rc; see remote output above)"
+fi
+
+section "25. final uninstall (offline vpn1-uninstall)"
+ssh_run "sudo rm -f $BACKUP_PATH" >/dev/null 2>&1 || true
+if ssh_run 'sudo /opt/vpn1/bin/vpn1-uninstall --yes'; then
+  pass "final vpn1-uninstall --yes (offline, local binary only)"
+else
+  fail_required "final vpn1-uninstall --yes (offline, local binary only)"
+fi
+
+section "26. SSH after final uninstall (new connection, port $SSH_PORT)"
+if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH still active post-uninstall"; else fail_required "SSH still active post-uninstall"; fi
+
+section "27. final uninstall residue audit (vs. host baseline from stage 1b) — no vpn1-owned services/binaries/state/firewall rules/sysctl or other residue"
 RESIDUE="$(ssh_run '
   echo "opt_vpn1=$([ -e /opt/vpn1 ] && echo 1 || echo 0)"
   echo "etc_vpn=$([ -e /etc/vpn ] && echo 1 || echo 0)"
@@ -379,25 +546,13 @@ else
   fail_required "no vpn1 residue vs. pre-install host baseline" "(baseline: $BASELINE | after uninstall: $RESIDUE)"
 fi
 
-section "14. reinstall"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
-  && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
-  pass "reinstall after uninstall + SSH reconnect"
-else
-  fail_required "reinstall after uninstall + SSH reconnect"
-fi
-
 section "manual-only / out-of-scope gates (cannot be automated here — UNVERIFIED, not PASS)"
 mark_unverified "public/internet reachability from outside the target's network" "(no independent external controller in this harness — see checkpoint scope)"
 mark_unverified "real Hiddify iOS/Android/MagicOS import + connect + sustained traffic" "(client/device properties — out of scope for this host-lifecycle gate)"
 if [ -z "$UPDATE_TO_REF" ]; then
   mark_unverified "real GitHub release A->B update transition" "(no --update-to-ref given, and no tagged release exists yet to test against)"
 fi
-if ssh_run 'sudo certbot renew --dry-run' 2>/dev/null; then
-  pass "certbot renew --dry-run"
-else
-  mark_unverified "certbot renew --dry-run" "(failed or certbot/ACME conditions on this host prevent a dry-run — not faked)"
-fi
+mark_unverified "reboot-triggered client reconnect from a real device (Hiddify/other) after a server-side reboot" "(this harness proves the SERVER recovers on reboot — see stage 5 — and that the protocol self-test passes afterward; whether a REAL CLIENT DEVICE reconnects on its own after a server reboot needs a second physical device and is a manual release-candidate requirement, not automatable here — see docs/DEVICE_ACCEPTANCE_TESTS.md)"
 
 section "summary"
 echo "failing stages: $failures"

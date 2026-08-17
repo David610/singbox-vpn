@@ -40,19 +40,39 @@ case "$cmd" in
   *os-release*) echo 'ID=almalinux'; exit 0 ;;
   *uname\ -m*) echo x86_64; exit 0 ;;
   *:*grep*) echo 1; exit 0 ;;
+  *MainPID*sing-box*)
+    counter_file="$TMPDIR_TEST/mainpid_counter"
+    n=0
+    [ -f "$counter_file" ] && n="$(cat "$counter_file")"
+    n=$((n + 1))
+    echo "$n" > "$counter_file"
+    echo "$((1000 + n))"
+    exit 0 ;;
   *systemctl\ is-active*sshd*) exit 0 ;;
   *systemctl\ is-active*) exit 0 ;;
   *health-check.sh*) exit 0 ;;
   *ss\ -ltn*) echo ':443 LISTEN'; exit 0 ;;
   *list-timers*) echo 'vpn1-cert-renew.timer'; exit 0 ;;
   *install-state.json*) echo '{"vpn1_version":"mock"}'; exit 0 ;;
-  *doctor\ --protocol*) exit 0 ;;
+  *vpn-benchmark.sh*)
+    cat <<'BENCH'
+Hysteria2 protocol/server-side overhead (sing-box client on THIS VPS -> THIS VPS's public IP; NOT a remote-client network-path measurement)
+--------------------------------------------------------------------------------------------------------------------------------------------
+  throughput (Mbps), 1 run(s):
+    min=42.00 median=42.00 max=42.00 (n=1)
+Assessment
+BENCH
+    exit 0 ;;
+  *doctor\ --protocol*)
+    echo 'protocol self-test: a throwaway sing-box client using the CURRENT REALITY public_key/short_id and an active VLESS user completed a full handshake through 127.0.0.1:443 and returned application bytes end-to-end'
+    exit 0 ;;
   *acceptance-test.sh*) exit 0 ;;
   *systemctl\ reboot*) exit 0 ;;
   *sudo\ systemctl\ reboot*) exit 0 ;;
   *VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox*) exit 1 ;;
   *vpn1-uninstall\ --yes*) echo 'uninstalled'; exit 0 ;;
   *iptables*) exit 0 ;;
+  *vpn-admin\ user\ list*) echo 'mock-id-1 lifecycle-test-user yes'; exit 0 ;;
   *vpn-admin\ user*) exit 0 ;;
   *install.sh*) exit 0 ;;
   *VPN1_LIFECYCLE_GATE_ABORT_AFTER=after_switch*update.sh*) exit 1 ;;
@@ -64,7 +84,7 @@ case "$cmd" in
 esac
 MOCKSSH
 chmod +x "$MOCKBIN/ssh"
-export SSH_LOG
+export SSH_LOG TMPDIR_TEST
 
 cat > "$MOCKBIN/sleep" <<'MOCKSLEEP'
 #!/bin/bash
@@ -137,6 +157,94 @@ else
 fi
 
 echo
+echo "--- test user is created and used for the REALITY/Hysteria2/recovery proofs ---"
+if grep -q -- '--name lifecycle-test-user' "$SSH_LOG"; then
+  ok "a persisted test user is created"
+else
+  fail "no persisted test user was created"
+fi
+if grep -q -- 'doctor --protocol --require-protocol' "$SSH_LOG"; then
+  ok "doctor --protocol is invoked with --require-protocol (hard-fails instead of warning)"
+else
+  fail "doctor --protocol was not invoked with --require-protocol"
+fi
+create_line="$(grep -n -- '--name lifecycle-test-user' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+protocol_line="$(grep -n -- 'doctor --protocol --require-protocol' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$create_line" ] && [ -n "$protocol_line" ] && [ "$create_line" -lt "$protocol_line" ]; then
+  ok "the test user is created before the REALITY protocol proof runs"
+else
+  fail "the test user was not created before the REALITY protocol proof (ordering regression)"
+fi
+
+echo
+echo "--- Hysteria2 real handshake+transfer proof reuses deploy/lib/vpn-benchmark.sh ---"
+if grep -q 'vpn-benchmark.sh' "$SSH_LOG"; then
+  ok "the Hysteria2 proof stage invokes deploy/lib/vpn-benchmark.sh"
+else
+  fail "no invocation of deploy/lib/vpn-benchmark.sh was found"
+fi
+if grep -A6 '=== 12. Hysteria2' "$TMPDIR_TEST/out-2222.log" | grep -q '\[PASS\]'; then
+  ok "the Hysteria2 proof stage reports PASS against a healthy mocked transfer"
+else
+  fail "the Hysteria2 proof stage did not report PASS"
+fi
+
+echo
+echo "--- SIGKILL recovery stage targets a real PID and proves the PID actually changed ---"
+if grep -q -- 'sudo kill -9 1001' "$SSH_LOG"; then
+  ok "sing-box is killed via its own MainPID (kill -9 <pid>), not a broad pkill"
+else
+  fail "sing-box was not killed via its captured MainPID"
+fi
+if [ "$(grep -c 'MainPID' "$SSH_LOG")" -ge 2 ]; then
+  ok "MainPID is queried both before and after the kill (to prove a real respawn)"
+else
+  fail "MainPID was not queried both before and after the kill"
+fi
+if grep -A8 '=== 13. kill sing-box' "$TMPDIR_TEST/out-2222.log" | grep -q 'MainPID changed'; then
+  ok "the recovery stage reports the MainPID actually changed"
+else
+  fail "the recovery stage did not report a MainPID change"
+fi
+
+echo
+echo "--- backup is created, survives the destructive uninstall, and is restored afterward ---"
+if grep -q -- 'vpn-admin backup --output /root/vpn1-lifecycle-backup.tar' "$SSH_LOG"; then
+  ok "vpn-admin backup is invoked with an explicit --output path outside vpn1-managed trees"
+else
+  fail "vpn-admin backup was not invoked with the expected --output path"
+fi
+if grep -q -- 'vpn-admin restore /root/vpn1-lifecycle-backup.tar' "$SSH_LOG"; then
+  ok "vpn-admin restore is invoked against the backup created earlier in the run"
+else
+  fail "vpn-admin restore was not invoked against the earlier backup"
+fi
+backup_line="$(grep -n -- '17. create vpn backup' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+uninstall_line="$(grep -n -- '19. uninstall completely' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+restore_line="$(grep -n -- '22. restore backup' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+if [ -n "$backup_line" ] && [ -n "$uninstall_line" ] && [ -n "$restore_line" ] \
+  && [ "$backup_line" -lt "$uninstall_line" ] && [ "$uninstall_line" -lt "$restore_line" ]; then
+  ok "backup happens before the destructive uninstall, restore happens after reinstall"
+else
+  fail "backup/uninstall/restore stages are not in the expected order"
+fi
+
+echo
+echo "--- a final uninstall + residue audit runs after the restore is verified ---"
+if [ "$(grep -c -- 'vpn1-uninstall --yes' "$SSH_LOG")" -ge 2 ]; then
+  ok "vpn1-uninstall runs at least twice (once before restore, once as the true final uninstall)"
+else
+  fail "vpn1-uninstall did not run the expected number of times"
+fi
+final_uninstall_line="$(grep -n -- '25. final uninstall' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+residue_line="$(grep -n -- '27. final uninstall residue audit' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+if [ -n "$final_uninstall_line" ] && [ -n "$residue_line" ] && [ "$final_uninstall_line" -lt "$residue_line" ]; then
+  ok "the residue audit runs after the final uninstall, not the interim one"
+else
+  fail "the residue audit did not run after the final uninstall"
+fi
+
+echo
 echo "--- failure-injection env var reaches the bash process that execs install.sh, not curl ---"
 if grep -qP 'curl[^\t]*\|\tsudo\tVPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox' "$SSH_LOG" \
   || grep -qE 'sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox' "$SSH_LOG"; then
@@ -157,10 +265,10 @@ if grep -q 'vpn1-uninstall --yes' "$SSH_LOG"; then
 else
   fail "offline uninstall stage did not invoke the local vpn1-uninstall binary"
 fi
-if grep -A2 '=== 11. offline uninstall' "$TMPDIR_TEST/out-2222.log" | grep -qi 'uninstall.sh | bash'; then
-  fail "stage 11's own uninstall call still uses curl | bash instead of the offline binary"
+if grep -A2 '=== 19. uninstall completely' "$TMPDIR_TEST/out-2222.log" | grep -qi 'uninstall.sh | bash'; then
+  fail "stage 19's own uninstall call still uses curl | bash instead of the offline binary"
 else
-  ok "stage 11's uninstall call does not use curl | bash"
+  ok "stage 19's uninstall call does not use curl | bash"
 fi
 
 echo
