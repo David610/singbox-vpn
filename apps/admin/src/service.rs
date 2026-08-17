@@ -80,6 +80,21 @@ impl CompatibilityServiceManager {
             .unwrap_or(false)
     }
 
+    /// The full systemd unit name for `self.service_name`: used as-is if
+    /// it already names a unit type (contains a `.`, e.g. constructing
+    /// this manager with `"vpn-expiry-reconcile.timer"` to inspect a
+    /// `.timer` unit instead of a `.service`), otherwise `.service` is
+    /// appended — every existing call site constructs this with a bare
+    /// name (`"sing-box"`, `"vpn-subscription"`, ...) and has always
+    /// meant `.service`, so that behavior is preserved unchanged.
+    fn unit_name(&self) -> String {
+        if self.service_name.contains('.') {
+            self.service_name.clone()
+        } else {
+            format!("{}.service", self.service_name)
+        }
+    }
+
     /// True if the unit is actually installed (`systemctl` itself can be
     /// present — e.g. a GitHub Actions VM — without the `sing-box.service`
     /// unit ever having been installed by `install.sh`). Reload is
@@ -87,10 +102,67 @@ impl CompatibilityServiceManager {
     /// this is what lets `vpn-admin render-config`/`user create` work in
     /// CI and local dev without a real systemd deployment.
     pub fn is_unit_installed(&self) -> bool {
-        let unit = format!("{}.service", self.service_name);
+        let unit = self.unit_name();
         self.run(&["show", "-p", "LoadState", "--value", &unit])
             .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "loaded")
             .unwrap_or(false)
+    }
+
+    /// Reads one `systemctl show -p <property> --value` string for this
+    /// unit. Shared by every `--value`-style property lookup below so
+    /// there is exactly one place that decides what "unavailable" means
+    /// (spawn/exec failure, non-zero exit, or an empty value are all
+    /// treated identically — `None`, never a fabricated default that
+    /// could be misread as a real answer).
+    fn show_value(&self, property: &str) -> Option<String> {
+        self.run(&["show", "-p", property, "--value", &self.service_name])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// How many times systemd has automatically restarted this unit
+    /// (`systemctl show -p NRestarts`) since it was last (re)started —
+    /// resets to 0 on every explicit `systemctl start`/`restart`, so a
+    /// nonzero count means "has crashed and been auto-restarted since
+    /// the last deliberate (re)start," a real signal `vpn doctor`/`vpn
+    /// status` can surface even when the unit is currently healthy.
+    /// Only meaningful for `Restart=`-driven units (sing-box,
+    /// vpn-subscription); a `Type=oneshot` unit with no `Restart=`
+    /// (vpn-expiry-reconcile) always reports 0 here — `is_failed`/
+    /// `last_result` are the right questions for that kind of unit
+    /// instead. `None` if unavailable (old systemd, dev/CI host, or the
+    /// unit isn't installed) — never fabricated as `Some(0)`, which
+    /// would be indistinguishable from a genuinely healthy unit.
+    pub fn restart_count(&self) -> Option<u64> {
+        self.show_value("NRestarts").and_then(|s| s.parse().ok())
+    }
+
+    /// The systemd-assigned `Result=` of this unit's most recent
+    /// completed run — `"success"` normally, or a short systemd keyword
+    /// (`"exit-code"`, `"signal"`, `"timeout"`, `"start-limit-hit"`, ...)
+    /// describing how it last failed. This is systemd's own record, not
+    /// re-derived from `is_failed`/`is_active`: it is the one place
+    /// "how did the last run actually end" is exposed, including for a
+    /// unit that is currently active/healthy again after a past failure
+    /// (`is_failed` alone cannot tell that story once the unit is
+    /// running fine — `Result=` still can, until the next run overwrites
+    /// it). `None` if unavailable.
+    pub fn last_result(&self) -> Option<String> {
+        self.show_value("Result")
+    }
+
+    /// Human-readable next scheduled elapse time for a `.timer` unit,
+    /// exactly as systemd formats it (`systemctl show -p
+    /// NextElapseUSecRealtime`) — e.g. `"Mon 2024-01-01 12:00:00 UTC"`.
+    /// Only meaningful when this manager was constructed with a `.timer`
+    /// unit name (see `unit_name`'s doc comment); calling it against a
+    /// `.service` name will simply report unavailable, since services
+    /// don't have this property. `None` if the timer has no pending
+    /// elapse (disabled/inactive) or is otherwise unavailable.
+    pub fn timer_next_elapse(&self) -> Option<String> {
+        self.show_value("NextElapseUSecRealtime")
     }
 
     fn reload_or_restart(&self) -> Result<(), String> {
@@ -257,6 +329,131 @@ exit 1
         let mgr = CompatibilityServiceManager::new("sing-box")
             .with_systemctl_binary(PathBuf::from("/nonexistent/systemctl"));
         assert!(!mgr.is_available());
+    }
+
+    /// A fake `systemctl` that answers `show -p <PROPERTY> --value <unit>`
+    /// with a caller-supplied value for exactly one property (empty
+    /// string simulates "unavailable"/no such property) and fails
+    /// everything else. Also records every invocation's raw argv (one
+    /// call per line) to `log_path`, so a test can assert exactly which
+    /// unit name was actually queried — the whole point of the
+    /// `is_unit_installed`/`unit_name` fix is that a `.timer`-suffixed
+    /// name must reach `systemctl` unchanged, never re-suffixed to
+    /// `.timer.service`.
+    fn fake_systemctl_show_property(
+        dir: &std::path::Path,
+        log_path: &std::path::Path,
+        property: &str,
+        value: &str,
+    ) -> PathBuf {
+        let path = dir.join("systemctl");
+        let script = format!(
+            r#"#!/usr/bin/env bash
+echo "$*" >> "{log}"
+case "$1" in
+  --version) exit 0 ;;
+  show)
+    if [ "$3" = "{property}" ]; then
+      echo "{value}"
+      exit 0
+    fi
+    exit 1
+    ;;
+esac
+exit 1
+"#,
+            log = log_path.display(),
+        );
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(script.as_bytes()).unwrap();
+        drop(f);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn is_unit_installed_uses_a_dotted_unit_name_verbatim_for_a_timer() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("calls.log");
+        let systemctl = fake_systemctl_show_property(dir.path(), &log_path, "LoadState", "loaded");
+        let mgr = CompatibilityServiceManager::new("vpn-expiry-reconcile.timer")
+            .with_systemctl_binary(systemctl);
+        assert!(
+            mgr.is_unit_installed(),
+            "expected a .timer unit reporting LoadState=loaded to be seen as installed"
+        );
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            log.contains("vpn-expiry-reconcile.timer") && !log.contains("vpn-expiry-reconcile.timer.service"),
+            "the .timer unit name must reach systemctl verbatim, never re-suffixed with .service: {log}"
+        );
+    }
+
+    #[test]
+    fn is_unit_installed_still_appends_service_for_a_bare_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("calls.log");
+        let systemctl = fake_systemctl_show_property(dir.path(), &log_path, "LoadState", "loaded");
+        let mgr = CompatibilityServiceManager::new("sing-box").with_systemctl_binary(systemctl);
+        assert!(mgr.is_unit_installed());
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            log.contains("sing-box.service"),
+            "a bare unit name must still be queried as <name>.service, unchanged from before this fix: {log}"
+        );
+    }
+
+    #[test]
+    fn restart_count_parses_nrestarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("calls.log");
+        let systemctl = fake_systemctl_show_property(dir.path(), &log_path, "NRestarts", "3");
+        let mgr = CompatibilityServiceManager::new("sing-box").with_systemctl_binary(systemctl);
+        assert_eq!(mgr.restart_count(), Some(3));
+    }
+
+    #[test]
+    fn restart_count_is_none_when_systemctl_is_unavailable() {
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(PathBuf::from("/nonexistent/systemctl"));
+        assert_eq!(mgr.restart_count(), None);
+    }
+
+    #[test]
+    fn last_result_returns_the_raw_systemd_result_keyword() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("calls.log");
+        let systemctl =
+            fake_systemctl_show_property(dir.path(), &log_path, "Result", "start-limit-hit");
+        let mgr = CompatibilityServiceManager::new("sing-box").with_systemctl_binary(systemctl);
+        assert_eq!(mgr.last_result(), Some("start-limit-hit".to_string()));
+    }
+
+    #[test]
+    fn last_result_is_none_when_the_value_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("calls.log");
+        let systemctl = fake_systemctl_show_property(dir.path(), &log_path, "Result", "");
+        let mgr = CompatibilityServiceManager::new("sing-box").with_systemctl_binary(systemctl);
+        assert_eq!(mgr.last_result(), None);
+    }
+
+    #[test]
+    fn timer_next_elapse_returns_systemds_own_formatted_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("calls.log");
+        let systemctl = fake_systemctl_show_property(
+            dir.path(),
+            &log_path,
+            "NextElapseUSecRealtime",
+            "Mon 2024-01-01 12:00:00 UTC",
+        );
+        let mgr = CompatibilityServiceManager::new("vpn-expiry-reconcile.timer")
+            .with_systemctl_binary(systemctl);
+        assert_eq!(
+            mgr.timer_next_elapse(),
+            Some("Mon 2024-01-01 12:00:00 UTC".to_string())
+        );
     }
 
     #[test]

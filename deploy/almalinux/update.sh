@@ -50,7 +50,7 @@ SINGBOX_BIN="$BIN_DIR/sing-box"
 # necessity, since this is bash, not shared code; if you add a unit to
 # one, add it to the other in the same commit — deploy/lib/tests/
 # test-install-update-parity.sh fails loudly if these two lists drift).
-SYSTEMD_UNITS=(sing-box.service vpn-subscription.service vpn-expiry-reconcile.service vpn-expiry-reconcile.timer)
+SYSTEMD_UNITS=(sing-box.service vpn-subscription.service vpn-expiry-reconcile.service vpn-expiry-reconcile.timer vpn-service-watchdog.service vpn-service-watchdog.timer)
 
 log() { echo "[update] $*"; }
 warn() { echo "[update] WARNING: $*" >&2; }
@@ -230,7 +230,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
     [ -f "$SYSTEMD_DIR/$u" ] || die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update"
     cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
   done
-  for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh; do
+  for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
     [ -f "$BIN_DIR/$f" ] && cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
   done
 
@@ -243,6 +243,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   install -m 0755 "$REPO_ROOT/deploy/almalinux/health-check.sh" "$BIN_DIR/vpn-health-check.update-new"
   install -m 0755 "$REPO_ROOT/deploy/lib/vpn-benchmark.sh" "$BIN_DIR/vpn-benchmark.update-new"
   install -m 0644 "$REPO_ROOT/deploy/lib/vpn-benchmark-lib.sh" "$BIN_DIR/vpn-benchmark-lib.sh.update-new"
+  install -m 0755 "$REPO_ROOT/deploy/almalinux/service-watchdog.sh" "$BIN_DIR/vpn-service-watchdog.update-new"
 
   exec 201>/run/lock/vpn1.lock
   flock -x 201
@@ -271,7 +272,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
       rm -f "$SYSTEMD_DIR/$u.update-new"
     done
     systemctl daemon-reload || failed=1
-    for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh; do
+    for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
       if [ -f "$BACKUP_DIR/$f" ]; then
         install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
         mv -f "$BIN_DIR/$f.rollback" "$BIN_DIR/$f" || failed=1
@@ -328,6 +329,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   mv -f "$BIN_DIR/vpn-health-check.update-new" "$BIN_DIR/vpn-health-check"
   mv -f "$BIN_DIR/vpn-benchmark.update-new" "$BIN_DIR/vpn-benchmark"
   mv -f "$BIN_DIR/vpn-benchmark-lib.sh.update-new" "$BIN_DIR/vpn-benchmark-lib.sh"
+  mv -f "$BIN_DIR/vpn-service-watchdog.update-new" "$BIN_DIR/vpn-service-watchdog"
 
   log "reloading systemd unit definitions..."
   systemctl daemon-reload
@@ -574,7 +576,7 @@ for u in "${SYSTEMD_UNITS[@]}"; do
   [ -f "$SYSTEMD_DIR/$u" ] || die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update. Nothing live has been changed."
   cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
 done
-for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh; do
+for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
   [ -f "$BIN_DIR/$f" ] && cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
 done
 if [ -n "$STAGED_SINGBOX_BIN" ]; then
@@ -628,7 +630,7 @@ rollback_update() {
     fi
     rm -f "$SYSTEMD_DIR/$u.update-new"
   done
-  for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh; do
+  for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
     if [ -f "$BACKUP_DIR/$f" ]; then
       install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
       mv -f "$BIN_DIR/$f.rollback" "$BIN_DIR/$f" || failed=1
@@ -722,6 +724,7 @@ done
 install -m 0755 "$NEW_REPO_ROOT/deploy/almalinux/health-check.sh" "$BIN_DIR/vpn-health-check.update-new"
 install -m 0755 "$NEW_REPO_ROOT/deploy/lib/vpn-benchmark.sh" "$BIN_DIR/vpn-benchmark.update-new"
 install -m 0644 "$NEW_REPO_ROOT/deploy/lib/vpn-benchmark-lib.sh" "$BIN_DIR/vpn-benchmark-lib.sh.update-new"
+install -m 0755 "$NEW_REPO_ROOT/deploy/almalinux/service-watchdog.sh" "$BIN_DIR/vpn-service-watchdog.update-new"
 
 mv -f "$BIN_DIR/vpn-admin.update-new" "$BIN_DIR/vpn-admin"
 mv -f "$BIN_DIR/vpn.update-new" "$BIN_DIR/vpn"
@@ -732,6 +735,7 @@ done
 mv -f "$BIN_DIR/vpn-health-check.update-new" "$BIN_DIR/vpn-health-check"
 mv -f "$BIN_DIR/vpn-benchmark.update-new" "$BIN_DIR/vpn-benchmark"
 mv -f "$BIN_DIR/vpn-benchmark-lib.sh.update-new" "$BIN_DIR/vpn-benchmark-lib.sh"
+mv -f "$BIN_DIR/vpn-service-watchdog.update-new" "$BIN_DIR/vpn-service-watchdog"
 
 singbox_binary_changed=0
 if [ -n "$STAGED_SINGBOX_BIN" ]; then

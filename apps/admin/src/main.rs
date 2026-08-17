@@ -2167,6 +2167,8 @@ fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
         service_state_label(&subscription)
     );
     println!();
+    print_expiry_reconcile_status();
+    println!();
     println!(
         "sing-box config:       {}",
         if cfg.singbox_config_file().exists() {
@@ -2200,15 +2202,83 @@ fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
     Ok(())
 }
 
-fn service_state_label(mgr: &CompatibilityServiceManager) -> &'static str {
+/// A human-readable service state summary — `active`/`inactive`/
+/// `failed`/`not installed`/`unknown (...)` — plus a restart count when
+/// systemd exposes one and it is nonzero. `failed` is checked and
+/// reported explicitly, distinct from a merely `inactive` (deliberately
+/// stopped) unit: `systemctl stop` leaves a unit `inactive`, never
+/// `failed`, so this distinction is exactly "did something break" vs.
+/// "someone turned it off on purpose," which a bare active/not-active
+/// check cannot tell apart. The restart count matters even for a
+/// currently-`active` unit: it can have crashed and been auto-restarted
+/// several times since its last deliberate start (see
+/// sing-box.service/vpn-subscription.service's StartLimitBurst) while
+/// still looking perfectly healthy right now — invisible from "active"
+/// alone.
+fn service_state_label(mgr: &CompatibilityServiceManager) -> String {
     if !mgr.is_available() {
-        "unknown (systemctl not available)"
-    } else if !mgr.is_unit_installed() {
-        "not installed"
+        return "unknown (systemctl not available)".to_string();
+    }
+    if !mgr.is_unit_installed() {
+        return "not installed".to_string();
+    }
+    let mut label = if mgr.is_failed() {
+        "failed".to_string()
     } else if mgr.is_active() {
-        "active"
+        "active".to_string()
+    } else {
+        "inactive".to_string()
+    };
+    if let Some(n) = mgr.restart_count() {
+        if n > 0 {
+            label.push_str(&format!(" (restarted {n}x since last deliberate start)"));
+        }
+    }
+    label
+}
+
+/// `vpn status`'s expiry-reconcile section. Deliberately asks two
+/// DIFFERENT units two different questions, not the same check twice:
+/// `vpn-expiry-reconcile.timer`'s own armed/waiting state and next
+/// scheduled elapse (is the automation even going to run again?), and
+/// `vpn-expiry-reconcile.service`'s last recorded `Result=`/failed state
+/// (how did it go the last time it DID run?). A timer can be perfectly
+/// armed and waiting while its service has been failing every single
+/// run — reporting only one of these would hide that.
+fn print_expiry_reconcile_status() {
+    let timer = CompatibilityServiceManager::new("vpn-expiry-reconcile.timer");
+    let svc = CompatibilityServiceManager::new("vpn-expiry-reconcile");
+    if !timer.is_available() {
+        println!("expiry-reconcile timer unknown (systemctl not available)");
+        return;
+    }
+    if !timer.is_unit_installed() {
+        println!(
+            "expiry-reconcile timer not installed (expiry is not being reconciled automatically)"
+        );
+        return;
+    }
+    let timer_state = if timer.is_active() {
+        "active (waiting)"
     } else {
         "inactive"
+    };
+    println!("expiry-reconcile timer {timer_state}");
+    if let Some(next) = timer.timer_next_elapse() {
+        println!("  next scheduled run:  {next}");
+    }
+    if svc.is_failed() {
+        let detail = svc
+            .last_result()
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default();
+        println!(
+            "  last reconcile:      FAILED{detail} — run `sudo journalctl -u vpn-expiry-reconcile` for the cause"
+        );
+    } else if let Some(result) = svc.last_result() {
+        println!("  last reconcile:      {result}");
+    } else {
+        println!("  last reconcile:      no run recorded yet");
     }
 }
 
@@ -2252,6 +2322,43 @@ fn cert_expiry_days(path: &std::path::Path) -> Option<Result<i64, String>> {
             Some(Ok((secs - now) / 86400))
         }
         _ => Some(Err(format!("could not parse expiry date {date_str:?}"))),
+    }
+}
+
+/// Reports one `report_check` line for a certificate's expiry state via
+/// `cert_expiry_days`, using the same "not present" / "EXPIRED" /
+/// "expires soon" / "could not check" wording and 30-day warning
+/// threshold as the Hysteria2 TLS cert check elsewhere in `cmd_doctor`.
+fn report_cert_expiry(label: &str, path: &std::path::Path, failures: &mut u32) {
+    match cert_expiry_days(path) {
+        None => report_check(
+            CheckStatus::Warn,
+            "L2",
+            format!("{label} certificate not present"),
+        ),
+        Some(Ok(days)) if days < 0 => {
+            report_check(
+                CheckStatus::Fail,
+                "L2",
+                format!("{label} certificate EXPIRED {} day(s) ago", -days),
+            );
+            *failures += 1;
+        }
+        Some(Ok(days)) if days < 30 => report_check(
+            CheckStatus::Warn,
+            "L2",
+            format!("{label} certificate expires in {days} day(s)"),
+        ),
+        Some(Ok(days)) => report_check(
+            CheckStatus::Ok,
+            "L2",
+            format!("{label} certificate valid, expires in {days} day(s)"),
+        ),
+        Some(Err(e)) => report_check(
+            CheckStatus::Warn,
+            "L2",
+            format!("could not check {label} certificate expiry: {e}"),
+        ),
     }
 }
 
@@ -2308,14 +2415,25 @@ impl ProtocolCheckResult {
 /// `cmd_doctor` for why this labeling exists: L1-L3 all passing does
 /// NOT mean a real client can connect (that's what the incident this
 /// tagging responds to actually looked like).
-fn report_check(status: CheckStatus, layer: &str, message: impl AsRef<str>) {
-    let label = match status {
+/// Bracketed label used by `report_check`; also reused (trimmed) by
+/// `cmd_doctor_report` so both the interactive and sanitized-report
+/// paths describe the same finding with the same word, never two
+/// independently-maintained vocabularies drifting apart.
+fn check_status_label(status: CheckStatus) -> &'static str {
+    match status {
         CheckStatus::Ok => "[OK]  ",
         CheckStatus::Info => "[INFO]",
         CheckStatus::Warn => "[WARN]",
         CheckStatus::Fail => "[FAIL]",
-    };
-    println!("{label} [{layer:<4}] {}", message.as_ref());
+    }
+}
+
+fn report_check(status: CheckStatus, layer: &str, message: impl AsRef<str>) {
+    println!(
+        "{} [{layer:<4}] {}",
+        check_status_label(status),
+        message.as_ref()
+    );
 }
 
 #[cfg(unix)]
@@ -2632,6 +2750,21 @@ fn cmd_doctor(
         );
     }
 
+    // The nginx/subscription (Let's Encrypt) certificate is a SEPARATE
+    // cert from the Hysteria2 one above (see docs/ALMALINUX_DEPLOYMENT.md
+    // "Two independent TLS certificates") and was previously only
+    // checked by the shell `health-check.sh`, never by `vpn-admin
+    // doctor` itself — read-only, same `cert_expiry_days` helper, same
+    // thresholds.
+    report_cert_expiry(
+        "nginx subscription TLS",
+        &std::path::PathBuf::from(format!(
+            "/etc/letsencrypt/live/{}/fullchain.pem",
+            cfg.subscription_host
+        )),
+        &mut failures,
+    );
+
     for name in ["sing-box", "vpn-subscription"] {
         let mgr = CompatibilityServiceManager::new(name);
         if !mgr.is_available() {
@@ -2646,8 +2779,37 @@ fn cmd_doctor(
                 "L1",
                 format!("{name}.service not installed on this host"),
             );
+        } else if mgr.is_failed() {
+            // Distinct from "not active" below: `failed` means systemd
+            // gave up restarting it (see sing-box.service/
+            // vpn-subscription.service's StartLimitBurst) — a
+            // deliberate `systemctl stop` never produces this state, it
+            // produces plain `inactive`. vpn-service-watchdog.timer is
+            // the systemd-native safety net that periodically clears
+            // this and retries; this check is what lets an operator (or
+            // this very report) actually see that it fired.
+            report_check(
+                CheckStatus::Fail,
+                "L1",
+                format!(
+                    "{name}.service is in a FAILED state (restart budget exhausted — see \
+                     StartLimitBurst in the unit file); vpn-service-watchdog.timer will retry \
+                     it periodically, or run `sudo systemctl reset-failed {name} && sudo \
+                     systemctl start {name}` by hand"
+                ),
+            );
+            failures += 1;
         } else if mgr.is_active() {
-            report_check(CheckStatus::Ok, "L1", format!("{name}.service active"));
+            let restarts = mgr
+                .restart_count()
+                .filter(|n| *n > 0)
+                .map(|n| format!(" ({n} restart(s) since last deliberate start)"))
+                .unwrap_or_default();
+            report_check(
+                CheckStatus::Ok,
+                "L1",
+                format!("{name}.service active{restarts}"),
+            );
         } else {
             report_check(
                 CheckStatus::Fail,
@@ -2670,13 +2832,19 @@ fn cmd_doctor(
         let reconcile_mgr = CompatibilityServiceManager::new("vpn-expiry-reconcile");
         if reconcile_mgr.is_available() && reconcile_mgr.is_unit_installed() {
             if reconcile_mgr.is_failed() {
+                let detail = reconcile_mgr
+                    .last_result()
+                    .map(|r| format!(" (systemd Result={r})"))
+                    .unwrap_or_default();
                 report_check(
                     CheckStatus::Fail,
                     "L1",
-                    "vpn-expiry-reconcile.service is in a FAILED state — expired/disabled \
-                     users' authorization may not be in sync with the live server; run `sudo \
-                     journalctl -u vpn-expiry-reconcile` for the cause, then `sudo vpn-admin \
-                     render-config --require-applied` to retry by hand",
+                    format!(
+                        "vpn-expiry-reconcile.service is in a FAILED state{detail} — \
+                         expired/disabled users' authorization may not be in sync with the live \
+                         server; run `sudo journalctl -u vpn-expiry-reconcile` for the cause, \
+                         then `sudo vpn-admin render-config --require-applied` to retry by hand"
+                    ),
                 );
                 failures += 1;
             } else {
@@ -2692,6 +2860,69 @@ fn cmd_doctor(
                 "L1",
                 "vpn-expiry-reconcile.service not installed on this host — expiry is not being \
                  reconciled automatically",
+            );
+        }
+
+        // The TIMER's own armed/waiting state is a different question
+        // from the SERVICE's failed/not-failed state above: a disabled
+        // or inactive timer means expiry is never reconciled again at
+        // all, regardless of how the last run went — a gap the check
+        // above cannot see (a service that was never re-triggered stays
+        // in whatever state its last run left it, forever).
+        let reconcile_timer = CompatibilityServiceManager::new("vpn-expiry-reconcile.timer");
+        if reconcile_timer.is_available() && reconcile_timer.is_unit_installed() {
+            if reconcile_timer.is_active() {
+                report_check(
+                    CheckStatus::Ok,
+                    "L1",
+                    "vpn-expiry-reconcile.timer is armed and waiting",
+                );
+            } else {
+                report_check(
+                    CheckStatus::Fail,
+                    "L1",
+                    "vpn-expiry-reconcile.timer is installed but NOT active — expiry will never \
+                     be reconciled again until it is restarted (`sudo systemctl start \
+                     vpn-expiry-reconcile.timer`)",
+                );
+                failures += 1;
+            }
+        }
+    }
+
+    // vpn-service-watchdog.timer is the safety net for sing-box/
+    // vpn-subscription exhausting their own StartLimitBurst (see those
+    // unit files) — armed-but-idle is the expected, healthy state; it
+    // only ever acts on a unit already reported FAILED above. Warn (not
+    // fail doctor) if it isn't installed/armed: the primary Restart=
+    // on-failure recovery still works without it, this only means a
+    // unit that DOES exhaust its restart budget would stay down until a
+    // human intervenes.
+    {
+        let watchdog_timer = CompatibilityServiceManager::new("vpn-service-watchdog.timer");
+        if watchdog_timer.is_available() && watchdog_timer.is_unit_installed() {
+            if watchdog_timer.is_active() {
+                report_check(
+                    CheckStatus::Ok,
+                    "L1",
+                    "vpn-service-watchdog.timer is armed and waiting",
+                );
+            } else {
+                report_check(
+                    CheckStatus::Warn,
+                    "L1",
+                    "vpn-service-watchdog.timer is installed but NOT active — a service that \
+                     exhausts its restart budget will stay failed until a human runs `sudo \
+                     systemctl reset-failed <unit> && sudo systemctl start <unit>`",
+                );
+            }
+        } else {
+            report_check(
+                CheckStatus::Warn,
+                "L1",
+                "vpn-service-watchdog.timer not installed on this host — sing-box/vpn-subscription \
+                 still recover from ordinary crashes (Restart=on-failure), but a unit that exhausts \
+                 its StartLimitBurst will stay failed until a human intervenes",
             );
         }
     }
@@ -2797,6 +3028,8 @@ fn cmd_doctor(
         // is unconditionally required regardless of DNS records.
     }
 
+    check_expected_public_surface(cfg, &mut failures);
+    check_firewall_zone_and_ownership();
     check_l4_subscription_coherence(cfg, &mut failures);
     check_l4_live_subscription_process_state(cfg, &mut failures);
     check_public_hostname_and_ipv6_policy(cfg, &mut failures);
@@ -3515,6 +3748,44 @@ fn cmd_doctor_report(cfg: &DeploymentConfig, output: Option<&std::path::Path>) -
             let _ = writeln!(out, "hysteria2 tls cert: not present");
         }
     }
+    let subscription_cert_path = std::path::PathBuf::from(format!(
+        "/etc/letsencrypt/live/{}/fullchain.pem",
+        cfg.subscription_host
+    ));
+    match cert_expiry_days(&subscription_cert_path) {
+        Some(Ok(days)) => {
+            let _ = writeln!(out, "nginx subscription tls cert: expires in {days} day(s)");
+        }
+        Some(Err(e)) => {
+            let _ = writeln!(out, "nginx subscription tls cert: could not check ({e})");
+        }
+        None => {
+            let _ = writeln!(out, "nginx subscription tls cert: not present");
+        }
+    }
+
+    let _ = writeln!(out, "\n[public surface]");
+    match enumerate_listeners() {
+        Some(listeners) => {
+            let ssh_port = detect_ssh_port(&listeners);
+            let expected = expected_vpn1_ports(cfg);
+            let findings = classify_public_surface(
+                &listeners,
+                ssh_port,
+                &expected,
+                cfg.subscription.listen_port,
+            );
+            if findings.is_empty() {
+                let _ = writeln!(out, "no listening sockets observed");
+            }
+            for (status, msg) in findings {
+                let _ = writeln!(out, "{}: {msg}", check_status_label(status).trim());
+            }
+        }
+        None => {
+            let _ = writeln!(out, "unavailable: `ss` is unavailable or failed");
+        }
+    }
 
     let _ = writeln!(out, "\n[firewall]");
     match std::process::Command::new("firewall-cmd")
@@ -3529,6 +3800,56 @@ fn cmd_doctor_report(cfg: &DeploymentConfig, output: Option<&std::path::Path>) -
         }
         Err(_) => {
             let _ = writeln!(out, "firewalld: firewall-cmd unavailable");
+        }
+    }
+    match std::process::Command::new("firewall-cmd")
+        .arg("--get-default-zone")
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let _ = writeln!(
+                out,
+                "active zone: {}",
+                String::from_utf8_lossy(&o.stdout).trim()
+            );
+        }
+        _ => {
+            let _ = writeln!(out, "active zone: unavailable");
+        }
+    }
+    match read_firewall_ownership(std::path::Path::new("/var/lib/vpn1/firewall-owned.env")) {
+        Some(map) => {
+            let backend = map
+                .get("firewall_backend")
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+            let mut owned_rules = Vec::new();
+            if map.get("owned_443_tcp").map(String::as_str) == Some("1") {
+                owned_rules.push("443/tcp".to_string());
+            }
+            if map.get("owned_443_udp").map(String::as_str) == Some("1") {
+                owned_rules.push("443/udp".to_string());
+            }
+            if map.get("owned_subscription_tcp").map(String::as_str) == Some("1") {
+                let port = map
+                    .get("subscription_port")
+                    .cloned()
+                    .unwrap_or_else(|| "?".to_string());
+                owned_rules.push(format!("{port}/tcp"));
+            }
+            let _ = writeln!(out, "backend: {backend}");
+            let _ = writeln!(
+                out,
+                "vpn1-owned public rules: {}",
+                if owned_rules.is_empty() {
+                    "none (every required port pre-existed before install)".to_string()
+                } else {
+                    owned_rules.join(", ")
+                }
+            );
+        }
+        None => {
+            let _ = writeln!(out, "ownership record: not found");
         }
     }
 
@@ -4506,6 +4827,475 @@ fn listener_reported_by_ss(port: u16, udp: bool) -> Option<bool> {
             field == suffix || field.ends_with(&suffix) || field.contains(&format!("]{suffix}"))
         })
     }))
+}
+
+// -----------------------------------------------------------------------
+// Expected public surface (read-only): enumerates every real listening
+// socket via `ss` and classifies it against what vpn1 itself expects to
+// expose, so an operator can see at a glance whether anything besides
+// SSH/REALITY/Hysteria2/subscription-HTTPS is reachable from the
+// network — without `doctor` ever touching firewall/listener state
+// itself (spec for this check: never auto-close anything, an unknown
+// listener may belong to another application entirely).
+// -----------------------------------------------------------------------
+
+/// One socket `ss` reported as listening.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ListenSocket {
+    udp: bool,
+    /// Local address, brackets stripped (e.g. `"0.0.0.0"`, `"127.0.0.1"`,
+    /// `"::"`, `"::1"`) — never the raw `[::1]`-bracketed form `ss`
+    /// prints, so callers can `.parse::<IpAddr>()` it directly.
+    addr: String,
+    port: u16,
+    /// Owning process name, best-effort: present only when `ss -p`
+    /// could resolve it (requires the caller to be root, or the
+    /// process to be owned by the caller). `None` never means "no
+    /// process" — a listening socket always has one — it means this
+    /// run could not identify it, which every caller must treat as
+    /// "unknown," never as evidence of anything.
+    process: Option<String>,
+}
+
+impl ListenSocket {
+    fn is_loopback(&self) -> bool {
+        self.addr
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+    }
+}
+
+/// Parses `ss -H -tlnp`/`ss -H -ulnp`-style output (one socket per line,
+/// header already suppressed by `-H`) into structured entries. Pure —
+/// no subprocess here — so this is directly unit-testable against
+/// captured real `ss` output without mocking `Command`.
+fn parse_ss_listen_output(text: &str, udp: bool) -> Vec<ListenSocket> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let _state = fields.next();
+        let _recv_q = fields.next();
+        let _send_q = fields.next();
+        let local = match fields.next() {
+            Some(l) => l,
+            None => continue,
+        };
+        let (addr, port_str) = match local.rsplit_once(':') {
+            Some(v) => v,
+            None => continue,
+        };
+        let port: u16 = match port_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let addr = addr
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
+        // `ss -p` renders the owning process as `users:(("name",pid=N,...))`
+        // — extract just the quoted name, nothing else from that field
+        // (never the pid/fd, which are not needed and would just be
+        // more to keep in sync with ss's exact formatting).
+        let process = line
+            .split("users:((\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .map(|s| s.to_string());
+        out.push(ListenSocket {
+            udp,
+            addr,
+            port,
+            process,
+        });
+    }
+    out
+}
+
+/// Real enumeration: `ss -H -tlnp` + `ss -H -ulnp`. `None` only when
+/// `ss` itself could not be run/failed outright — a non-root invocation
+/// still succeeds, just with `process: None` entries (ss silently omits
+/// the `users:` field without root, it does not error).
+fn enumerate_listeners() -> Option<Vec<ListenSocket>> {
+    let mut all = Vec::new();
+    for (udp, args) in [(false, ["-H", "-tlnp"]), (true, ["-H", "-ulnp"])] {
+        let output = std::process::Command::new("ss").args(args).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        all.extend(parse_ss_listen_output(&text, udp));
+    }
+    Some(all)
+}
+
+/// Shared parser for both `sshd -T`'s output and a raw `sshd_config`
+/// file — both use the same `Port N` directive shape. First match wins,
+/// matching sshd's own precedence for a directive repeated in a config
+/// file. Pure/testable.
+fn parse_sshd_port_directive(text: &str) -> Option<u16> {
+    text.lines().find_map(|l| {
+        let mut it = l.split_whitespace();
+        let first = it.next()?;
+        if first.eq_ignore_ascii_case("port") {
+            it.next()?.parse().ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn detect_ssh_port_via_sshd_t() -> Option<u16> {
+    let output = std::process::Command::new("sshd").arg("-T").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_sshd_port_directive(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn detect_ssh_port_via_sshd_config(path: &std::path::Path) -> Option<u16> {
+    let text = std::fs::read_to_string(path).ok()?;
+    parse_sshd_port_directive(&text)
+}
+
+/// Read-only SSH port detection, same precedence as
+/// `deploy/lib/preflight.sh`'s `preflight_detect_ssh_port()` (`sshd -T`,
+/// then `sshd_config`, then a live listener owned by `sshd`) — kept as
+/// its own independent implementation (not a shared library, this is
+/// Rust vs. bash) but deliberately the same three-step fallback so
+/// `doctor`'s idea of "the SSH port" never disagrees with what
+/// install.sh/firewall.sh actually opened. Diagnostic only: `doctor`
+/// never touches sshd or firewall state itself.
+fn detect_ssh_port(listeners: &[ListenSocket]) -> Option<u16> {
+    detect_ssh_port_via_sshd_t()
+        .or_else(|| detect_ssh_port_via_sshd_config(std::path::Path::new("/etc/ssh/sshd_config")))
+        .or_else(|| {
+            listeners
+                .iter()
+                .find(|l| !l.udp && l.process.as_deref() == Some("sshd"))
+                .map(|l| l.port)
+        })
+}
+
+/// True if `name` (a process name as `ss -p`/`/proc/*/comm` reports it,
+/// possibly truncated to 15 bytes by the kernel) identifies one of
+/// vpn1's own long-running network-facing processes. `vpn-subscript` is
+/// deliberately a prefix, not the full `vpn-subscription-svc` — `comm`
+/// truncates to 15 characters, so the observed name for that binary is
+/// `vpn-subscriptio`.
+fn is_vpn1_process(name: &str) -> bool {
+    name == "sing-box" || name.starts_with("vpn-subscript")
+}
+
+/// One port vpn1 itself expects to be publicly reachable, and which
+/// process should legitimately be the one serving it.
+struct ExpectedPort {
+    udp: bool,
+    port: u16,
+    label: &'static str,
+    /// Process name prefixes considered a legitimate owner. Checked
+    /// with `starts_with` for the same truncated-`comm` reason as
+    /// `is_vpn1_process`.
+    expected_owner_prefixes: &'static [&'static str],
+}
+
+fn expected_vpn1_ports(cfg: &DeploymentConfig) -> Vec<ExpectedPort> {
+    vec![
+        ExpectedPort {
+            udp: false,
+            port: cfg.reality.listen_port,
+            label: "VLESS+REALITY",
+            expected_owner_prefixes: &["sing-box"],
+        },
+        ExpectedPort {
+            udp: true,
+            port: cfg.hysteria2.listen_port,
+            label: "Hysteria2",
+            expected_owner_prefixes: &["sing-box"],
+        },
+        ExpectedPort {
+            udp: false,
+            port: cfg.subscription.public_port,
+            label: "nginx subscription HTTPS",
+            expected_owner_prefixes: &["nginx"],
+        },
+    ]
+}
+
+/// Pure classifier — no I/O — so this is the part unit tests exercise
+/// directly with synthetic listener lists, independent of `enumerate_listeners`/
+/// `detect_ssh_port`'s real subprocess calls. Every listener produces
+/// exactly one finding:
+///   - the vpn-subscription backend: OK if loopback-only, FAIL if not
+///     (spec: "internal vpn1 control/service ports" must never be
+///     publicly exposed).
+///   - the detected SSH port: OK (expected, by design, to be public).
+///   - another expected vpn1-facing port, served by the expected
+///     process (or process unknown): OK. Served by something else
+///     entirely: FAIL ("port conflict" — the transport vpn1 advertises
+///     there is not actually what is listening).
+///   - anything else on loopback: not reported at all (not vpn1's
+///     concern, not exposed to the network).
+///   - anything else non-loopback, owned by one of vpn1's own
+///     processes: FAIL (an internal service leaking out on an
+///     unexpected port).
+///   - anything else non-loopback, owned by something else (or
+///     unknown): WARN — never assumed malicious, never touched.
+fn classify_public_surface(
+    listeners: &[ListenSocket],
+    ssh_port: Option<u16>,
+    expected: &[ExpectedPort],
+    subscription_backend_port: u16,
+) -> Vec<(CheckStatus, String)> {
+    let mut findings = Vec::new();
+    for l in listeners {
+        let loopback = l.is_loopback();
+        let proto = if l.udp { "udp" } else { "tcp" };
+        let addr_port = format!("{}:{}", l.addr, l.port);
+        let owner = l.process.as_deref();
+
+        if !l.udp && l.port == subscription_backend_port {
+            if loopback {
+                findings.push((
+                    CheckStatus::Ok,
+                    format!(
+                        "vpn-subscription backend {addr_port}/{proto} is loopback-only, as expected"
+                    ),
+                ));
+            } else {
+                findings.push((
+                    CheckStatus::Fail,
+                    format!(
+                        "vpn-subscription backend is listening on {addr_port}/{proto} — a \
+                         NON-loopback address. This internal service must never be reachable \
+                         from outside this host; check [subscription].listen_port in \
+                         deployment.toml."
+                    ),
+                ));
+            }
+            continue;
+        }
+
+        if !l.udp && Some(l.port) == ssh_port {
+            findings.push((
+                CheckStatus::Ok,
+                format!(
+                    "SSH listener present on {addr_port}/{proto} (expected, publicly reachable \
+                     by design)"
+                ),
+            ));
+            continue;
+        }
+
+        if let Some(exp) = expected.iter().find(|e| e.udp == l.udp && e.port == l.port) {
+            let owner_ok = owner
+                .map(|o| exp.expected_owner_prefixes.iter().any(|p| o.starts_with(p)))
+                .unwrap_or(true);
+            if owner_ok {
+                let owner_note = owner
+                    .map(|o| format!(" (owned by {o})"))
+                    .unwrap_or_default();
+                findings.push((
+                    CheckStatus::Ok,
+                    format!(
+                        "{} listener present on {addr_port}/{proto}{owner_note} (expected)",
+                        exp.label
+                    ),
+                ));
+            } else {
+                findings.push((
+                    CheckStatus::Fail,
+                    format!(
+                        "port conflict: {} is expected on {addr_port}/{proto}, but it is \
+                         actually being served by {} instead — investigate before assuming this \
+                         transport works",
+                        exp.label,
+                        owner.unwrap_or("an unknown process")
+                    ),
+                ));
+            }
+            continue;
+        }
+
+        if loopback {
+            continue;
+        }
+
+        if let Some(name) = owner {
+            if is_vpn1_process(name) {
+                findings.push((
+                    CheckStatus::Fail,
+                    format!(
+                        "internal vpn1 process ({name}) is listening on {addr_port}/{proto} — a \
+                         port vpn1 does not expect to expose publicly; investigate immediately"
+                    ),
+                ));
+                continue;
+            }
+        }
+
+        let owner_desc =
+            owner.unwrap_or("an unidentified process (run as root for process detail)");
+        findings.push((
+            CheckStatus::Warn,
+            format!(
+                "unexpected listener on {addr_port}/{proto}, owned by {owner_desc} — not part \
+                 of vpn1's expected public surface. This may be a legitimate unrelated service \
+                 on this host; vpn doctor never modifies firewall/listener state automatically."
+            ),
+        ));
+    }
+    findings
+}
+
+/// `vpn doctor`'s expected-public-surface check: enumerates real
+/// listeners, classifies each against what vpn1 expects, and reports
+/// every finding. Read-only end to end.
+fn check_expected_public_surface(cfg: &DeploymentConfig, failures: &mut u32) {
+    let listeners = match enumerate_listeners() {
+        Some(l) => l,
+        None => {
+            report_check(
+                CheckStatus::Warn,
+                "L3",
+                "expected-public-surface check skipped: `ss` is unavailable or failed",
+            );
+            return;
+        }
+    };
+    let ssh_port = detect_ssh_port(&listeners);
+    if ssh_port.is_none() {
+        report_check(
+            CheckStatus::Info,
+            "L3",
+            "could not positively determine the SSH port (checked `sshd -T`, sshd_config, and \
+             live sshd listeners) — SSH-specific classification below is skipped; an SSH \
+             listener may still appear as an unrecognized non-loopback listener",
+        );
+    }
+    let expected = expected_vpn1_ports(cfg);
+    let findings = classify_public_surface(
+        &listeners,
+        ssh_port,
+        &expected,
+        cfg.subscription.listen_port,
+    );
+    if findings.is_empty() {
+        report_check(
+            CheckStatus::Warn,
+            "L3",
+            "no listening sockets were observed at all — unusual on a running vpn1 host",
+        );
+        return;
+    }
+    for (status, msg) in findings {
+        let is_fail = status == CheckStatus::Fail;
+        report_check(status, "L3", &msg);
+        if is_fail {
+            *failures += 1;
+        }
+    }
+}
+
+/// Parses the firewall ownership state file `firewall.sh`/
+/// `firewall-ufw.sh` write (`/var/lib/vpn1/firewall-owned.env`) —
+/// simple `KEY=VALUE` lines. Read-only, and deliberately reads the SAME
+/// file those scripts themselves treat as authoritative rather than
+/// re-deriving ownership some other way. Pure/testable given a path.
+fn read_firewall_ownership(
+    path: &std::path::Path,
+) -> Option<std::collections::HashMap<String, String>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut map = std::collections::HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().trim_matches('"').to_string());
+        }
+    }
+    Some(map)
+}
+
+/// Read-only firewall zone + vpn1-owned-rule reporting. The only
+/// firewall-cmd call here is `--get-default-zone`, a pure query;
+/// nothing in this function ever mutates firewall state.
+fn check_firewall_zone_and_ownership() {
+    match std::process::Command::new("firewall-cmd")
+        .arg("--get-default-zone")
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let zone = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            report_check(
+                CheckStatus::Info,
+                "L3",
+                format!("active firewalld zone: {zone}"),
+            );
+        }
+        _ => report_check(
+            CheckStatus::Info,
+            "L3",
+            "could not determine the active firewalld zone (firewall-cmd unavailable, or a \
+             non-firewalld backend such as ufw is in use)",
+        ),
+    }
+
+    let ownership_path = std::path::Path::new("/var/lib/vpn1/firewall-owned.env");
+    match read_firewall_ownership(ownership_path) {
+        Some(map) => {
+            let backend = map
+                .get("firewall_backend")
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+            let mut owned_rules = Vec::new();
+            if map.get("owned_443_tcp").map(String::as_str) == Some("1") {
+                owned_rules.push("443/tcp".to_string());
+            }
+            if map.get("owned_443_udp").map(String::as_str) == Some("1") {
+                owned_rules.push("443/udp".to_string());
+            }
+            if map.get("owned_subscription_tcp").map(String::as_str) == Some("1") {
+                let port = map
+                    .get("subscription_port")
+                    .cloned()
+                    .unwrap_or_else(|| "?".to_string());
+                owned_rules.push(format!("{port}/tcp (subscription)"));
+            }
+            if owned_rules.is_empty() {
+                report_check(
+                    CheckStatus::Info,
+                    "L3",
+                    format!(
+                        "firewall backend: {backend}; vpn1 added no new rules (every required \
+                         port was already open before install)"
+                    ),
+                );
+            } else {
+                report_check(
+                    CheckStatus::Info,
+                    "L3",
+                    format!(
+                        "firewall backend: {backend}; vpn1-owned public rules: {}",
+                        owned_rules.join(", ")
+                    ),
+                );
+            }
+        }
+        None => report_check(
+            CheckStatus::Info,
+            "L3",
+            "no firewall ownership record found at /var/lib/vpn1/firewall-owned.env \
+             (firewall.sh/firewall-ufw.sh may not have run yet, or every rule pre-existed \
+             before vpn1)",
+        ),
+    }
 }
 
 /// Returns the exact outcome of the L5-6 real-protocol self-test as a
@@ -6093,5 +6883,248 @@ mod doctor_coverage_tests {
             };
             assert_eq!(result.label(), label);
         }
+    }
+}
+
+/// `check_expected_public_surface`'s pure pieces, exercised directly
+/// against captured/synthetic `ss` output and `sshd`/firewall-ownership
+/// text — no subprocess mocking needed since the parsing/classification
+/// logic never calls `Command` itself.
+#[cfg(test)]
+mod public_surface_tests {
+    use super::*;
+
+    #[test]
+    fn parses_real_shaped_tcp_ss_output_including_process_name() {
+        let text = "LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:((\"sing-box\",pid=1234,fd=10))\n\
+                    LISTEN 0      4096       127.0.0.1:9100        0.0.0.0:*    users:((\"vpn-subscriptio\",pid=5678,fd=12))\n";
+        let listeners = parse_ss_listen_output(text, false);
+        assert_eq!(listeners.len(), 2);
+        assert_eq!(listeners[0].addr, "0.0.0.0");
+        assert_eq!(listeners[0].port, 443);
+        assert_eq!(listeners[0].process.as_deref(), Some("sing-box"));
+        assert!(!listeners[0].udp);
+        assert_eq!(listeners[1].addr, "127.0.0.1");
+        assert_eq!(listeners[1].port, 9100);
+        assert!(listeners[1].is_loopback());
+    }
+
+    #[test]
+    fn parses_bracketed_ipv6_addresses_and_strips_brackets() {
+        let text = "LISTEN 0 128    [::]:22    [::]:*    users:((\"sshd\",pid=1,fd=3))\n\
+                    LISTEN 0 128   [::1]:9100   [::]:*    users:((\"nginx\",pid=2,fd=4))\n";
+        let listeners = parse_ss_listen_output(text, false);
+        assert_eq!(listeners[0].addr, "::");
+        assert_eq!(listeners[0].port, 22);
+        assert!(!listeners[0].is_loopback());
+        assert_eq!(listeners[1].addr, "::1");
+        assert!(listeners[1].is_loopback());
+    }
+
+    #[test]
+    fn parses_udp_output_without_a_users_field_when_not_root() {
+        // Without root, `ss -p` silently omits the users: field rather
+        // than erroring — the parser must not crash or drop the line.
+        let text = "UNCONN 0 0    0.0.0.0:443    0.0.0.0:*\n";
+        let listeners = parse_ss_listen_output(text, true);
+        assert_eq!(listeners.len(), 1);
+        assert!(listeners[0].udp);
+        assert_eq!(listeners[0].process, None);
+    }
+
+    #[test]
+    fn empty_and_malformed_lines_are_skipped_without_panicking() {
+        let text = "\n   \nnot a real ss line\nLISTEN\nLISTEN 0 0\n";
+        let listeners = parse_ss_listen_output(text, false);
+        assert!(listeners.is_empty());
+    }
+
+    fn sock(udp: bool, addr: &str, port: u16, process: Option<&str>) -> ListenSocket {
+        ListenSocket {
+            udp,
+            addr: addr.to_string(),
+            port,
+            process: process.map(str::to_string),
+        }
+    }
+
+    fn expected() -> Vec<ExpectedPort> {
+        vec![
+            ExpectedPort {
+                udp: false,
+                port: 443,
+                label: "VLESS+REALITY",
+                expected_owner_prefixes: &["sing-box"],
+            },
+            ExpectedPort {
+                udp: true,
+                port: 443,
+                label: "Hysteria2",
+                expected_owner_prefixes: &["sing-box"],
+            },
+            ExpectedPort {
+                udp: false,
+                port: 8443,
+                label: "nginx subscription HTTPS",
+                expected_owner_prefixes: &["nginx"],
+            },
+        ]
+    }
+
+    #[test]
+    fn expected_vpn1_listener_is_ok() {
+        let listeners = vec![sock(false, "0.0.0.0", 443, Some("sing-box"))];
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].0, CheckStatus::Ok);
+        assert!(findings[0].1.contains("VLESS+REALITY"));
+    }
+
+    #[test]
+    fn expected_listener_with_unknown_process_is_still_ok() {
+        // Non-root run: process name unavailable — must not be treated
+        // as a conflict just because the owner could not be identified.
+        let listeners = vec![sock(true, "0.0.0.0", 443, None)];
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert_eq!(findings[0].0, CheckStatus::Ok);
+    }
+
+    #[test]
+    fn expected_ssh_listener_is_ok() {
+        let listeners = vec![sock(false, "0.0.0.0", 2222, Some("sshd"))];
+        let findings = classify_public_surface(&listeners, Some(2222), &expected(), 9100);
+        assert_eq!(findings[0].0, CheckStatus::Ok);
+        assert!(findings[0].1.contains("SSH"));
+    }
+
+    #[test]
+    fn subscription_backend_on_loopback_is_ok() {
+        let listeners = vec![sock(false, "127.0.0.1", 9100, Some("vpn-subscriptio"))];
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert_eq!(findings[0].0, CheckStatus::Ok);
+    }
+
+    #[test]
+    fn subscription_backend_exposed_publicly_is_fail() {
+        let listeners = vec![sock(false, "0.0.0.0", 9100, Some("vpn-subscriptio"))];
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].0, CheckStatus::Fail);
+        assert!(findings[0].1.contains("NON-loopback"));
+    }
+
+    #[test]
+    fn internal_vpn1_process_on_an_unexpected_public_port_is_fail() {
+        let listeners = vec![sock(false, "0.0.0.0", 6000, Some("sing-box"))];
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].0, CheckStatus::Fail);
+        assert!(findings[0].1.contains("internal vpn1 process"));
+    }
+
+    #[test]
+    fn unrelated_process_on_a_non_loopback_port_is_warn_not_fail() {
+        let listeners = vec![sock(false, "0.0.0.0", 8080, Some("apache2"))];
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].0, CheckStatus::Warn);
+        assert!(findings[0].1.contains("apache2"));
+    }
+
+    #[test]
+    fn unidentified_process_on_a_non_loopback_port_is_warn_never_fail() {
+        // Never assume malicious just because the owner is unknown.
+        let listeners = vec![sock(false, "0.0.0.0", 8080, None)];
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert_eq!(findings[0].0, CheckStatus::Warn);
+    }
+
+    #[test]
+    fn loopback_only_unrelated_listener_is_not_reported_at_all() {
+        let listeners = vec![sock(false, "127.0.0.1", 5432, Some("postgres"))];
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert!(
+            findings.is_empty(),
+            "a loopback-only unrelated listener must not be reported: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn port_conflict_expected_port_served_by_wrong_process_is_fail() {
+        // Something other than sing-box is bound to the REALITY port —
+        // a real, actionable "port conflict," not a plain pass.
+        let listeners = vec![sock(false, "0.0.0.0", 443, Some("nginx"))];
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].0, CheckStatus::Fail);
+        assert!(findings[0].1.contains("port conflict"));
+    }
+
+    #[test]
+    fn never_closes_or_mutates_anything_by_construction() {
+        // Structural guard, not a behavioral one: `classify_public_surface`
+        // takes `&[ListenSocket]` (immutable borrow) and returns owned
+        // findings — there is no code path here that could execute a
+        // command or write a file. This test exists so a future change
+        // that adds a `&mut` parameter or a `Command::new` call to this
+        // function gets caught by review, not just by this comment.
+        let listeners = vec![sock(false, "0.0.0.0", 9999, Some("mystery"))];
+        let before = listeners.clone();
+        let _ = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        assert_eq!(
+            listeners, before,
+            "classify_public_surface must not mutate its input"
+        );
+    }
+
+    #[test]
+    fn is_vpn1_process_matches_truncated_comm_names() {
+        assert!(is_vpn1_process("sing-box"));
+        // /proc/*/comm truncates to 15 bytes — "vpn-subscription-svc" (21
+        // chars) is observed as "vpn-subscriptio".
+        assert!(is_vpn1_process("vpn-subscriptio"));
+        assert!(!is_vpn1_process("nginx"));
+        assert!(!is_vpn1_process("sshd"));
+    }
+
+    #[test]
+    fn sshd_port_directive_parses_first_match_case_insensitively() {
+        let text = "Port 2222\nAddressFamily any\nport 3333\n";
+        assert_eq!(parse_sshd_port_directive(text), Some(2222));
+    }
+
+    #[test]
+    fn sshd_port_directive_none_when_absent() {
+        assert_eq!(parse_sshd_port_directive("AddressFamily any\n"), None);
+    }
+
+    #[test]
+    fn firewall_ownership_parses_key_value_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("firewall-owned.env");
+        std::fs::write(
+            &path,
+            "firewall_backend=firewalld\nfirewall_zone=public\nsubscription_port=8443\nowned_443_tcp=1\nowned_443_udp=0\nowned_subscription_tcp=1\n",
+        )
+        .unwrap();
+        let map = read_firewall_ownership(&path).expect("file exists");
+        assert_eq!(
+            map.get("firewall_backend").map(String::as_str),
+            Some("firewalld")
+        );
+        assert_eq!(map.get("owned_443_tcp").map(String::as_str), Some("1"));
+        assert_eq!(map.get("owned_443_udp").map(String::as_str), Some("0"));
+        assert_eq!(
+            map.get("subscription_port").map(String::as_str),
+            Some("8443")
+        );
+    }
+
+    #[test]
+    fn firewall_ownership_none_when_file_missing() {
+        assert!(
+            read_firewall_ownership(std::path::Path::new("/nonexistent/firewall-owned.env"))
+                .is_none()
+        );
     }
 }

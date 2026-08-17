@@ -4,15 +4,59 @@ Documentation=https://sing-box.sagernet.org/
 After=network-online.target
 Wants=network-online.target
 
+# StartLimitIntervalSec/StartLimitBurst were previously left at
+# systemd's compiled-in default (10s / 5 restarts) — implicit, and far
+# too tight for what this unit actually needs to survive: 5 restarts at
+# a 2s RestartSec exhausts in ~10s, after which systemd marks the unit
+# `failed` and STOPS retrying entirely, even automatically, until a
+# human runs `systemctl reset-failed`. A boot-time race (e.g. a slower
+# disk/cert-mount than usual, or network-online.target firing before
+# routing is actually usable despite the Wants= above) can easily crash
+# sing-box more than 5 times in its first 10 seconds and then simply
+# never come back — indistinguishable from a real outage to every
+# client, and invisible unless an operator happens to run `systemctl
+# status`/`vpn doctor`. 8 restarts inside a 5-minute window is generous
+# enough to absorb that kind of transient without ever looking like a
+# permanent outage, while still giving up on a truly-broken config/
+# binary well before it could meaningfully spam the journal (bounded
+# further by LogRateLimitBurst below). Once the burst IS exhausted, this
+# unit does not stay parked forever either —
+# vpn-service-watchdog.timer (see that file) periodically clears a
+# stuck `failed` state and asks systemd to try again, so "restart budget
+# exhausted" is a throttle, never a dead end, without this unit's own
+# Restart= directive ever spinning in a fast, uncapped loop.
+StartLimitIntervalSec=300
+StartLimitBurst=8
+
 [Service]
 Type=simple
 User=sing-box
 Group=sing-box
 ExecStartPre=/usr/local/bin/sing-box check -c /etc/vpn/compat/sing-box/config.json
 ExecStart=/usr/local/bin/sing-box run -c /etc/vpn/compat/sing-box/config.json
+# Restart=on-failure already covers every crash path that matters here:
+# a plain non-zero exit, an unclean signal (including SIGKILL — a kill
+# -9 or an OOM kill is exactly as "unclean" to systemd as any other
+# fatal signal), and ExecStartPre's own config-check failing before
+# ExecStart ever runs (a bad config is never loaded live, per the
+# ExecStartPre gate above — it just makes this a repeating failed START
+# instead of a running process crashing later). See the [Unit] section
+# above for the explicit StartLimitIntervalSec/StartLimitBurst this
+# restart behavior operates within.
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=65535
+
+# Per-service journal rate limiting (systemd >= 240; does not touch
+# /etc/systemd/journald.conf or any other unit). sing-box is the one
+# internet-facing process here (TCP/443 + UDP/443) and its own config
+# already logs at "warn" (see crates/compat-config/src/server.rs), so
+# under normal operation this limit is never reached — it exists purely
+# to cap a port-scanner/DPI-probe flood of rejected-handshake warnings
+# from filling the journal, while 1000 messages/30s is generous enough
+# that a real incident still leaves plenty to investigate.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
 
 # Modest CPU scheduling priority bump, not real-time scheduling. On a
 # 1-2 vCPU host, sing-box's Hysteria2/QUIC inbound is latency-sensitive

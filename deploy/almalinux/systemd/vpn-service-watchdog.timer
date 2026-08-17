@@ -1,0 +1,30 @@
+[Unit]
+Description=Periodically recover sing-box/vpn-subscription from a parked failed state
+
+[Timer]
+# Low frequency, deliberately — this is a SAFETY NET for a unit that has
+# already exhausted its own StartLimitBurst restart budget (see
+# sing-box.service/vpn-subscription.service), not a fast health-check
+# loop: Restart=on-failure + RestartSec=2 already recovers an ordinary
+# crash within seconds, long before this timer would ever fire. This
+# only matters for the rarer case of a unit that stayed down long enough
+# to hit its start-limit and get marked `failed` — without this, that
+# state is permanent until a human runs `systemctl reset-failed` by
+# hand, which is exactly the "leaves a recoverable service down after a
+# transient failure" outcome this whole change exists to avoid. 5
+# minutes is short enough that the VPN is never down for long, but long
+# enough that `vpn doctor`/`vpn status` (which read the same `failed`
+# state this timer clears) still has a realistic window to actually
+# observe and report a real failure to an operator before it's
+# auto-cleared, and clearly distinct from vpn-expiry-reconcile.timer's
+# own 10-minute cadence (an unrelated concern — this timer never touches
+# expiry/authorization state, and does not restart anything that isn't
+# already `failed`).
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=vpn-service-watchdog.service
+
+[Install]
+WantedBy=timers.target

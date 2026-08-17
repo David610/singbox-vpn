@@ -6,7 +6,7 @@ of these; do not track `latest` in production.
 
 | Component | Version pinned | Source | Checked |
 |---|---|---|---|
-| sing-box | `1.13.18` (latest stable, non-beta) | https://github.com/SagerNet/sing-box/releases | 2026-08-12 |
+| sing-box | `1.13.19` (latest stable, non-beta) | https://github.com/SagerNet/sing-box/releases | 2026-08-17 |
 | Hysteria2 | bundled inbound inside sing-box (not the standalone `apernet/hysteria` binary) | https://sing-box.sagernet.org/configuration/inbound/hysteria2/ | 2026-08-09 |
 | Xray-core | not used this phase (sing-box chosen instead, see ADR below) | https://github.com/XTLS/Xray-core | 2026-08-09 |
 | Hiddify (Android) | any current release supporting sing-box-format subscriptions (client-side, not pinned by us) | https://github.com/hiddify/hiddify-app | 2026-08-09 |
@@ -24,6 +24,34 @@ reliability), plus an unrelated AnyTLS client-metadata privacy fix in
 1.13.16 (AnyTLS is not used by this deployment). No regressions were
 found reported against any version in this range. See
 `docs/PERFORMANCE_OPTIMIZATION_PLAN.md` for the full write-up.
+
+`1.13.18 -> 1.13.19` patch bump (checked 2026-08-17): full 10-commit
+range audited directly against the upstream repository
+(`v1.13.18..v1.13.19`). None of the 10 commits touch VLESS, REALITY,
+TLS/uTLS, Hysteria2, QUIC, listeners, routing/direct outbound, or the
+configuration schema — every commit is either mobile/Apple/Android
+build-and-release tooling (4 commits), a DHCP DNS *transport* fix (this
+deployment uses no DNS transports at all — DNS resolution for the
+REALITY handshake target and for clients is out of scope of this
+project's generated config), a Tailscale endpoint fix (Tailscale is not
+used), a Clash-API "reset network"/FakeIP-cache fix (Clash API is never
+enabled in generated configs — confirmed no `clash_api`/`cachefile`
+usage anywhere in this repo), an oomkiller service-stub build fix
+(non-Linux build target), or a dependency bump for "default interface
+monitor stuck on system boot" (go.mod/go.sum only, no source change).
+One genuine security-relevant fix landed — "Fix unbounded allocations
+when reading untrusted binary data" — but it is scoped entirely to
+parsing untrusted `.srs` rule-set / geosite binary files
+(`common/srs/*.go`, `common/geosite/reader.go`,
+`experimental/libbox/profile_import.go`); this repository never
+generates or loads `route.rule_set` entries (confirmed: no `rule_set`
+string anywhere in `crates/` or `apps/`), so this deployment's sing-box
+process never parses attacker-controlled binary rule-set data in the
+first place — the fix closes a real upstream vulnerability class but
+does not change this project's actual attack surface. No compatibility
+risk identified; verified with the real pinned 1.13.19 binary's
+`sing-box check` against every config shape this project generates (see
+the interop test suite) before pinning.
 
 ## Why sing-box, not Xray-core, for this phase
 
@@ -88,7 +116,7 @@ assumed compatible by spec conformance.
 `Cargo.toml`/root license file — it never links, statically or
 dynamically, against sing-box.
 
-**sing-box** (`SagerNet/sing-box`, pinned `v1.13.18`) is licensed
+**sing-box** (`SagerNet/sing-box`, pinned `v1.13.19`) is licensed
 **GPL-3.0-only** upstream — verify against the `LICENSE` file at that
 exact tag in the SagerNet/sing-box repository before relying on this
 statement for anything beyond this project's own documentation; this is

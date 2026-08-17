@@ -35,24 +35,85 @@ cat > "$MOCKBIN/ssh" <<'MOCKSSH'
   echo
 } >> "$SSH_LOG"
 cmd="${*: -1}"
+STATE_FILE="$TMPDIR_TEST/singbox_state"
+singbox_state() { cat "$STATE_FILE" 2>/dev/null || echo active; }
 case "$cmd" in
   true) exit 0 ;;
   *os-release*) echo 'ID=almalinux'; exit 0 ;;
   *uname\ -m*) echo x86_64; exit 0 ;;
   *:*grep*) echo 1; exit 0 ;;
+  # The burst-crash-until-failed compound command (stage 13b): a real
+  # multi-line script containing "systemctl show -p MainPID --value
+  # sing-box" and "systemctl is-failed --quiet sing-box" as its LAST
+  # command — matched here, BEFORE the generic MainPID/is-failed
+  # patterns below, specifically so this one opaque invocation can flip
+  # the shared state file to "failed" and report success (real
+  # is-failed's contract: exit 0 means "yes, it is failed").
+  *"seq 1 12"*)
+    echo failed > "$STATE_FILE"
+    exit 0 ;;
+  *"systemctl start vpn-service-watchdog.service"*)
+    # Simulates the real watchdog script: only acts on a FAILED unit.
+    [ "$(singbox_state)" = "failed" ] && echo active > "$STATE_FILE"
+    exit 0 ;;
+  *"systemctl stop sing-box"*)
+    echo stopped > "$STATE_FILE"
+    exit 0 ;;
+  *"systemctl start sing-box"*)
+    echo active > "$STATE_FILE"
+    exit 0 ;;
+  *"is-active --quiet sing-box"*)
+    [ "$(singbox_state)" = "active" ] && exit 0 || exit 1 ;;
+  *"is-failed --quiet sing-box"*)
+    [ "$(singbox_state)" = "failed" ] && exit 0 || exit 1 ;;
+  *MainPID*sing-box*)
+    counter_file="$TMPDIR_TEST/mainpid_counter"
+    n=0
+    [ -f "$counter_file" ] && n="$(cat "$counter_file")"
+    n=$((n + 1))
+    echo "$n" > "$counter_file"
+    echo "$((1000 + n))"
+    exit 0 ;;
   *systemctl\ is-active*sshd*) exit 0 ;;
   *systemctl\ is-active*) exit 0 ;;
   *health-check.sh*) exit 0 ;;
   *ss\ -ltn*) echo ':443 LISTEN'; exit 0 ;;
   *list-timers*) echo 'vpn1-cert-renew.timer'; exit 0 ;;
   *install-state.json*) echo '{"vpn1_version":"mock"}'; exit 0 ;;
-  *doctor\ --protocol*) exit 0 ;;
+  *vpn-benchmark.sh*)
+    cat <<'BENCH'
+Hysteria2 protocol/server-side overhead (sing-box client on THIS VPS -> THIS VPS's public IP; NOT a remote-client network-path measurement)
+--------------------------------------------------------------------------------------------------------------------------------------------
+  throughput (Mbps), 1 run(s):
+    min=42.00 median=42.00 max=42.00 (n=1)
+Assessment
+BENCH
+    exit 0 ;;
+  *doctor\ --protocol*)
+    echo 'protocol self-test: a throwaway sing-box client using the CURRENT REALITY public_key/short_id and an active VLESS user completed a full handshake through 127.0.0.1:443 and returned application bytes end-to-end'
+    exit 0 ;;
+  *"vpn-admin doctor"*)
+    # Bare `doctor` (no --protocol) — stateful so stage 13b's
+    # during-failure check has something real to observe.
+    if [ "$(singbox_state)" = "failed" ]; then
+      echo "[FAIL] [L1  ] sing-box.service is in a FAILED state (restart budget exhausted — see StartLimitBurst in the unit file); vpn-service-watchdog.timer will retry it periodically"
+      exit 1
+    fi
+    exit 0 ;;
+  *"vpn-admin status"*)
+    if [ "$(singbox_state)" = "failed" ]; then
+      echo "sing-box              failed"
+    else
+      echo "sing-box              active"
+    fi
+    exit 0 ;;
   *acceptance-test.sh*) exit 0 ;;
   *systemctl\ reboot*) exit 0 ;;
   *sudo\ systemctl\ reboot*) exit 0 ;;
   *VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox*) exit 1 ;;
   *vpn1-uninstall\ --yes*) echo 'uninstalled'; exit 0 ;;
   *iptables*) exit 0 ;;
+  *vpn-admin\ user\ list*) echo 'mock-id-1 lifecycle-test-user yes'; exit 0 ;;
   *vpn-admin\ user*) exit 0 ;;
   *install.sh*) exit 0 ;;
   *VPN1_LIFECYCLE_GATE_ABORT_AFTER=after_switch*update.sh*) exit 1 ;;
@@ -64,7 +125,7 @@ case "$cmd" in
 esac
 MOCKSSH
 chmod +x "$MOCKBIN/ssh"
-export SSH_LOG
+export SSH_LOG TMPDIR_TEST
 
 cat > "$MOCKBIN/sleep" <<'MOCKSLEEP'
 #!/bin/bash
@@ -137,6 +198,142 @@ else
 fi
 
 echo
+echo "--- test user is created and used for the REALITY/Hysteria2/recovery proofs ---"
+if grep -q -- '--name lifecycle-test-user' "$SSH_LOG"; then
+  ok "a persisted test user is created"
+else
+  fail "no persisted test user was created"
+fi
+if grep -q -- 'doctor --protocol --require-protocol' "$SSH_LOG"; then
+  ok "doctor --protocol is invoked with --require-protocol (hard-fails instead of warning)"
+else
+  fail "doctor --protocol was not invoked with --require-protocol"
+fi
+create_line="$(grep -n -- '--name lifecycle-test-user' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+protocol_line="$(grep -n -- 'doctor --protocol --require-protocol' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$create_line" ] && [ -n "$protocol_line" ] && [ "$create_line" -lt "$protocol_line" ]; then
+  ok "the test user is created before the REALITY protocol proof runs"
+else
+  fail "the test user was not created before the REALITY protocol proof (ordering regression)"
+fi
+
+echo
+echo "--- Hysteria2 real handshake+transfer proof reuses deploy/lib/vpn-benchmark.sh ---"
+if grep -q 'vpn-benchmark.sh' "$SSH_LOG"; then
+  ok "the Hysteria2 proof stage invokes deploy/lib/vpn-benchmark.sh"
+else
+  fail "no invocation of deploy/lib/vpn-benchmark.sh was found"
+fi
+if grep -A6 '=== 12. Hysteria2' "$TMPDIR_TEST/out-2222.log" | grep -q '\[PASS\]'; then
+  ok "the Hysteria2 proof stage reports PASS against a healthy mocked transfer"
+else
+  fail "the Hysteria2 proof stage did not report PASS"
+fi
+
+echo
+echo "--- SIGKILL recovery stage targets a real PID and proves the PID actually changed ---"
+if grep -q -- 'sudo kill -9 1001' "$SSH_LOG"; then
+  ok "sing-box is killed via its own MainPID (kill -9 <pid>), not a broad pkill"
+else
+  fail "sing-box was not killed via its captured MainPID"
+fi
+if [ "$(grep -c 'MainPID' "$SSH_LOG")" -ge 2 ]; then
+  ok "MainPID is queried both before and after the kill (to prove a real respawn)"
+else
+  fail "MainPID was not queried both before and after the kill"
+fi
+if grep -A8 '=== 13. kill sing-box' "$TMPDIR_TEST/out-2222.log" | grep -q 'MainPID changed'; then
+  ok "the recovery stage reports the MainPID actually changed"
+else
+  fail "the recovery stage did not report a MainPID change"
+fi
+
+echo
+echo "--- StartLimitBurst exhaustion + vpn-service-watchdog recovery (stage 13b) ---"
+stage13b_block="$(sed -n '/=== 13b\./,/=== 13c\./p' "$TMPDIR_TEST/out-2222.log")"
+if printf '%s' "$stage13b_block" | grep -q 'reached FAILED state after exhausting StartLimitBurst'; then
+  ok "the harness actually drives sing-box into a FAILED state, not just asserting one exists"
+else
+  fail "stage 13b did not report exhausting StartLimitBurst"
+fi
+if printf '%s' "$stage13b_block" | grep -q 'vpn-admin doctor correctly reports sing-box.service as FAILED'; then
+  ok "vpn doctor is checked for the FAILED state during the outage, not just service state after recovery"
+else
+  fail "stage 13b did not check vpn-admin doctor during the outage"
+fi
+if printf '%s' "$stage13b_block" | grep -q 'vpn-admin status correctly reports sing-box as failed'; then
+  ok "vpn status is also checked for the failed state during the outage"
+else
+  fail "stage 13b did not check vpn-admin status during the outage"
+fi
+if grep -q 'systemctl start vpn-service-watchdog.service' "$SSH_LOG"; then
+  ok "the watchdog service is triggered directly to prove its recovery logic (not just waiting on its timer)"
+else
+  fail "stage 13b never invoked vpn-service-watchdog.service"
+fi
+if printf '%s' "$stage13b_block" | grep -q 'vpn-service-watchdog recovered sing-box.service from its parked FAILED state'; then
+  ok "the harness proves the watchdog actually recovers a parked FAILED unit"
+else
+  fail "stage 13b did not prove watchdog recovery"
+fi
+
+echo
+echo "--- systemctl stop still behaves normally, and the watchdog leaves a stopped unit alone (stage 13c) ---"
+stage13c_block="$(sed -n '/=== 13c\./,/=== 14\./p' "$TMPDIR_TEST/out-2222.log")"
+if printf '%s' "$stage13c_block" | grep -q "is inactive after systemctl stop"; then
+  ok "a deliberate systemctl stop leaves sing-box inactive (not silently auto-restarted)"
+else
+  fail "stage 13c did not confirm sing-box went inactive after systemctl stop"
+fi
+if printf '%s' "$stage13c_block" | grep -q "'inactive', not 'failed', after a deliberate stop"; then
+  ok "a deliberate stop is distinguished from a failure (inactive, never failed)"
+else
+  fail "stage 13c did not distinguish a deliberate stop from a failure"
+fi
+if printf '%s' "$stage13c_block" | grep -q "left the deliberately-stopped sing-box alone"; then
+  ok "the watchdog is proven to never restart a deliberately-stopped unit"
+else
+  fail "stage 13c did not prove the watchdog leaves a stopped unit alone"
+fi
+
+echo
+echo "--- backup is created, survives the destructive uninstall, and is restored afterward ---"
+if grep -q -- 'vpn-admin backup --output /root/vpn1-lifecycle-backup.tar' "$SSH_LOG"; then
+  ok "vpn-admin backup is invoked with an explicit --output path outside vpn1-managed trees"
+else
+  fail "vpn-admin backup was not invoked with the expected --output path"
+fi
+if grep -q -- 'vpn-admin restore /root/vpn1-lifecycle-backup.tar' "$SSH_LOG"; then
+  ok "vpn-admin restore is invoked against the backup created earlier in the run"
+else
+  fail "vpn-admin restore was not invoked against the earlier backup"
+fi
+backup_line="$(grep -n -- '17. create vpn backup' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+uninstall_line="$(grep -n -- '19. uninstall completely' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+restore_line="$(grep -n -- '22. restore backup' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+if [ -n "$backup_line" ] && [ -n "$uninstall_line" ] && [ -n "$restore_line" ] \
+  && [ "$backup_line" -lt "$uninstall_line" ] && [ "$uninstall_line" -lt "$restore_line" ]; then
+  ok "backup happens before the destructive uninstall, restore happens after reinstall"
+else
+  fail "backup/uninstall/restore stages are not in the expected order"
+fi
+
+echo
+echo "--- a final uninstall + residue audit runs after the restore is verified ---"
+if [ "$(grep -c -- 'vpn1-uninstall --yes' "$SSH_LOG")" -ge 2 ]; then
+  ok "vpn1-uninstall runs at least twice (once before restore, once as the true final uninstall)"
+else
+  fail "vpn1-uninstall did not run the expected number of times"
+fi
+final_uninstall_line="$(grep -n -- '25. final uninstall' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+residue_line="$(grep -n -- '27. final uninstall residue audit' "$TMPDIR_TEST/out-2222.log" | head -1 | cut -d: -f1 || true)"
+if [ -n "$final_uninstall_line" ] && [ -n "$residue_line" ] && [ "$final_uninstall_line" -lt "$residue_line" ]; then
+  ok "the residue audit runs after the final uninstall, not the interim one"
+else
+  fail "the residue audit did not run after the final uninstall"
+fi
+
+echo
 echo "--- failure-injection env var reaches the bash process that execs install.sh, not curl ---"
 if grep -qP 'curl[^\t]*\|\tsudo\tVPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox' "$SSH_LOG" \
   || grep -qE 'sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox' "$SSH_LOG"; then
@@ -157,10 +354,10 @@ if grep -q 'vpn1-uninstall --yes' "$SSH_LOG"; then
 else
   fail "offline uninstall stage did not invoke the local vpn1-uninstall binary"
 fi
-if grep -A2 '=== 11. offline uninstall' "$TMPDIR_TEST/out-2222.log" | grep -qi 'uninstall.sh | bash'; then
-  fail "stage 11's own uninstall call still uses curl | bash instead of the offline binary"
+if grep -A2 '=== 19. uninstall completely' "$TMPDIR_TEST/out-2222.log" | grep -qi 'uninstall.sh | bash'; then
+  fail "stage 19's own uninstall call still uses curl | bash instead of the offline binary"
 else
-  ok "stage 11's uninstall call does not use curl | bash"
+  ok "stage 19's uninstall call does not use curl | bash"
 fi
 
 echo

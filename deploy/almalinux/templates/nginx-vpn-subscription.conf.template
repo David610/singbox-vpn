@@ -32,6 +32,13 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/{{SUBSCRIPTION_HOST}}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 
+    # Scoped to this vhost only — does not touch the global nginx.conf
+    # `server_tokens` setting (which may still be on for other vhosts on
+    # this host). Drops the nginx version number from the `Server:`
+    # response header and from any error page, one less free fingerprint
+    # for a scanner probing this endpoint.
+    server_tokens off;
+
     location /sub/ {
         limit_req zone=vpn_subscription burst=10 nodelay;
 
@@ -64,6 +71,20 @@ server {
     }
 
     location /healthz {
+        # Local diagnostics only — install.sh/health-check.sh/
+        # acceptance-test.sh all probe this through `curl --resolve
+        # HOST:PORT:127.0.0.1 https://HOST:PORT/healthz`, which makes a
+        # real TLS connection (so certificate verification is fully
+        # exercised, unlike `curl -k`) but the underlying TCP peer is
+        # always 127.0.0.1 — so those checks pass unchanged. An
+        # arbitrary Internet client hitting the public IP directly does
+        # not match `allow 127.0.0.1`/`allow ::1` and gets 403, closing
+        # off a no-auth endpoint that otherwise reveals nothing but does
+        # not need to answer strangers.
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+
         proxy_pass http://127.0.0.1:{{SUBSCRIPTION_BACKEND_PORT}};
         proxy_set_header Host $host;
     }

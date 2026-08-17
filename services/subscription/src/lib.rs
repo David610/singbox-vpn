@@ -209,7 +209,20 @@ async fn get_subscription(
         Some(u) => u,
     };
 
-    tracing::info!(
+    // Per-request success metadata (which user fetched their subscription,
+    // when, in what format) is not stored by default: the production unit
+    // (deploy/almalinux/systemd/vpn-subscription.service) sets
+    // `RUST_LOG=warn`, so this `debug` event is filtered out before it ever
+    // reaches the journal. An operator troubleshooting a specific
+    // deployment can still see it by explicitly raising the level
+    // (`RUST_LOG=debug systemctl edit vpn-subscription` or an ad hoc
+    // `RUST_LOG=debug vpn-subscription-svc ...` run) — this line is never
+    // deleted, only demoted, so that diagnostic path stays available. Never
+    // include the token itself here — see `find_user_by_token`'s no-user-
+    // enumeration doc comment; `user_id` is not the bearer credential, but
+    // it is still per-user activity metadata, so it does not appear in the
+    // default-on log path either.
+    tracing::debug!(
         user_id = %user.id,
         format = ?query.format,
         profile = ?query.profile,
@@ -519,6 +532,125 @@ mod tests {
         assert!(
             !s.contains("short"),
             "must never leak the raw short_id value"
+        );
+    }
+
+    /// Captures real emitted log output at both the production default
+    /// filter (`warn`, see `deploy/almalinux/systemd/vpn-subscription.service`)
+    /// and an operator-raised filter (`debug`), so this is a behavioral
+    /// regression test against the actual `tracing` output, not a
+    /// source-grep of the macro name used at the call site.
+    fn captured_log_output_for_request(
+        filter: &str,
+        uri: &str,
+        state: std::sync::Arc<AppState>,
+    ) -> String {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buf {
+            type Writer = Buf;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buf = Buf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .finish();
+        // A dedicated current-thread runtime driven from inside
+        // `with_default`'s synchronous closure: `tracing`'s default
+        // subscriber is thread-local, and a multi-thread runtime (or the
+        // ambient `#[tokio::test]` runtime, whose worker thread this
+        // function does not control) could hop the request's future onto
+        // a thread that never had this subscriber installed, silently
+        // capturing nothing and making the test vacuously pass.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let uri = uri.to_string();
+        tracing::subscriber::with_default(subscriber, || {
+            rt.block_on(oneshot_with_addr(state, &uri));
+        });
+        let captured = buf.0.lock().unwrap().clone();
+        String::from_utf8(captured).unwrap()
+    }
+
+    #[test]
+    fn subscription_served_event_is_not_logged_at_the_production_default_level() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let warn_output = captured_log_output_for_request("warn", "/sub/goodtoken", state);
+        assert!(
+            !warn_output.contains("subscription served"),
+            "the per-request success line (user_id/format/profile) must NOT appear at the \
+             production default (warn) log level — it is normal user activity metadata, not a \
+             failure diagnostic:\n{warn_output}"
+        );
+    }
+
+    #[test]
+    fn subscription_served_event_is_still_available_when_an_operator_raises_the_log_level() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let debug_output = captured_log_output_for_request("debug", "/sub/goodtoken", state);
+        assert!(
+            debug_output.contains("subscription served"),
+            "the per-request success line must still be available when an operator explicitly \
+             raises RUST_LOG for troubleshooting — it must be demoted, never deleted:\n{debug_output}"
+        );
+    }
+
+    /// Re-audits every log path this service can emit (rate-limit warning,
+    /// user-store load failure, render failures, and the per-request
+    /// success line) at the most permissive filter (`trace`) — the level
+    /// an operator could plausibly turn on — and confirms none of it ever
+    /// contains a live subscription token, VLESS UUID, or Hysteria2
+    /// password. REALITY private key / TLS private key / obfuscation
+    /// password material is never read by this service at all (only the
+    /// REALITY public key/short_id are loaded into `AppState`, see
+    /// `main.rs`), so it is structurally unable to appear in any log line
+    /// here.
+    #[test]
+    fn no_secret_material_appears_in_any_log_line_at_any_verbosity() {
+        let token = "secret-token-do-not-log-me";
+        let vless_uuid = "22222222-2222-4222-8222-222222222222";
+        let hysteria_password = "hysteria2-secret-do-not-log-me";
+        let user = CompatUser {
+            id: "u_secretcheck".into(),
+            name: "secret-check".into(),
+            enabled: true,
+            vless_uuid: vless_uuid.into(),
+            hysteria2_password: SecretString::new(hysteria_password),
+            subscription_token_hash_hex: credentials::hash_token(token),
+            created_at: 0,
+            expires_at: None,
+        };
+        let state = make_state(vec![user]);
+        let output = captured_log_output_for_request("trace", &format!("/sub/{token}"), state);
+        assert!(
+            !output.contains(token),
+            "the subscription token must never appear in any log line:\n{output}"
+        );
+        assert!(
+            !output.contains(vless_uuid),
+            "the VLESS UUID must never appear in any log line:\n{output}"
+        );
+        assert!(
+            !output.contains(hysteria_password),
+            "the Hysteria2 password must never appear in any log line:\n{output}"
         );
     }
 }

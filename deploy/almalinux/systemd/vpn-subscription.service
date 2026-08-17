@@ -2,6 +2,18 @@
 Description=vpn compatibility subscription HTTP service (loopback only)
 After=network.target
 
+# See sing-box.service's own Restart=/StartLimit* comments for the full
+# rationale — the same reasoning applies here: on-failure (below) covers
+# a plain crash, an unclean signal (SIGKILL included), and a startup
+# failure (e.g. a missing/invalid REALITY key file — see
+# services/subscription/src/main.rs, which refuses to start and serve
+# broken subscriptions rather than binding with bad data). An explicit,
+# generous StartLimit means a burst of startup failures survives without
+# the unit parking itself `failed` forever; vpn-service-watchdog.timer
+# is the safety net if it ever does exhaust this budget.
+StartLimitIntervalSec=300
+StartLimitBurst=8
+
 [Service]
 Type=simple
 User=vpn-subscription
@@ -9,7 +21,26 @@ Group=vpn-subscription
 ExecStart=/usr/local/bin/vpn-subscription-svc --config /etc/vpn/deployment.toml
 Restart=on-failure
 RestartSec=2
-Environment=RUST_LOG=info
+# Production default is warnings/errors only — a successful subscription
+# fetch is per-user activity metadata (which user, when, in what format;
+# see services/subscription/src/lib.rs's `tracing::debug!("subscription
+# served")` call) and is not retained by default. Failure diagnostics
+# (rate-limit engagement, user-store load errors, render errors) are all
+# logged at `warn`/`error` and are unaffected by this change. An operator
+# troubleshooting a specific deployment can still see per-request success
+# lines by temporarily overriding this, e.g.
+# `systemctl edit vpn-subscription` with `Environment=RUST_LOG=debug` (or
+# `=info`), then `systemctl restart vpn-subscription`.
+Environment=RUST_LOG=warn
+# Per-service journal rate limiting (systemd >= 240; does not touch
+# /etc/systemd/journald.conf or any other unit). Conservative but not
+# tight: this service sees at most a handful of requests/second even
+# under nginx's own 5r/s-per-client cap (see the nginx vhost template),
+# so 200 messages/30s comfortably covers real traffic plus a burst of
+# errors, while still capping a scanner/error flood from filling the
+# journal.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 
 # Never needs to write anywhere except read the user store (read-only
 # from this service's perspective — vpn-admin, run as root, is the only

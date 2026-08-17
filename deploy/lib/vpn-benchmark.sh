@@ -38,6 +38,13 @@
 # doesn't have prints "SKIPPED: <reason>" and continues — it never
 # fabricates a number and never aborts the whole report over one
 # unavailable layer.
+#
+# --json emits a flat machine-readable object instead of the prose
+# report (built via kv()/section()/sample_min_median_max() side
+# effects, so JSON and text output can never structurally drift apart —
+# whatever the text report measures is exactly what the JSON contains).
+# --compare A.json B.json diffs two prior --json outputs (jq only, no
+# new runtime dependency) and exits before taking any measurement.
 set -Eeuo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,6 +58,15 @@ DOWNLOAD_URL="https://speed.cloudflare.com/__down?bytes=25000000"
 VPN_BIN="$(command -v vpn || echo /usr/local/bin/vpn)"
 SINGBOX_BIN="$(command -v sing-box || echo /usr/local/bin/sing-box)"
 SKIP_TUNNEL=0
+JSON_MODE=0
+OUTPUT=""
+QUICK=0
+RUNS_EXPLICIT=0
+DOWNLOAD_URL_EXPLICIT=0
+COMPARE_A=""
+COMPARE_B=""
+PING_COUNT=20
+MTR_CYCLES=10
 
 usage() {
   cat <<EOF
@@ -66,6 +82,18 @@ Usage: $(basename "$0") [options]
                          speed-test endpoint)
   --skip-tunnel          skip the VLESS/Hysteria2 layer (no throwaway
                          user is created; useful on a non-production host)
+  --quick                fast, bandwidth-light run: 1 sample per
+                         measurement and a small (~2 MB) download unless
+                         --runs/--download-url are also given explicitly
+                         (those always win over --quick's defaults),
+                         plus fewer ping/mtr probes
+  --json                 emit a single machine-readable JSON object
+                         instead of the prose report
+  --output PATH          also write the report to PATH (in addition to
+                         stdout)
+  --compare A.json B.json
+                         compare two prior --json outputs (numeric keys
+                         get a delta) and exit — takes no measurements
   -h, --help             this text
 EOF
 }
@@ -73,26 +101,118 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --config) CONFIG="$2"; shift 2 ;;
-    --runs) RUNS="$2"; shift 2 ;;
+    --runs) RUNS="$2"; RUNS_EXPLICIT=1; shift 2 ;;
     --target-host) TARGET_HOST="$2"; shift 2 ;;
-    --download-url) DOWNLOAD_URL="$2"; shift 2 ;;
+    --download-url) DOWNLOAD_URL="$2"; DOWNLOAD_URL_EXPLICIT=1; shift 2 ;;
     --skip-tunnel) SKIP_TUNNEL=1; shift ;;
+    --quick) QUICK=1; shift ;;
+    --json) JSON_MODE=1; shift ;;
+    --output) OUTPUT="$2"; shift 2 ;;
+    --compare) COMPARE_A="$2"; COMPARE_B="$3"; shift 3 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
 
-section() { echo; echo "$1"; printf '%s\n' "${1//?/-}"; }
-kv() { printf '%-28s %s\n' "$1:" "$2"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+if [ "$QUICK" -eq 1 ]; then
+  [ "$RUNS_EXPLICIT" -eq 1 ] || RUNS=1
+  [ "$DOWNLOAD_URL_EXPLICIT" -eq 1 ] || DOWNLOAD_URL="https://speed.cloudflare.com/__down?bytes=2000000"
+  PING_COUNT=5
+  MTR_CYCLES=3
+fi
+
+# --compare is a standalone mode: no measurement is taken, no output
+# format flags matter, nothing else in this script runs.
+if [ -n "$COMPARE_A" ]; then
+  if ! have jq; then
+    echo "FAILED: --compare requires jq (not installed)" >&2
+    exit 1
+  fi
+  for f in "$COMPARE_A" "$COMPARE_B"; do
+    [ -r "$f" ] || { echo "FAILED: cannot read $f" >&2; exit 1; }
+  done
+  echo "Comparing A=$COMPARE_A -> B=$COMPARE_B"
+  printf '%-40s %18s %18s %18s\n' "KEY" "A" "B" "DELTA (B-A)"
+  jq -r -n --slurpfile a "$COMPARE_A" --slurpfile b "$COMPARE_B" '
+    ($a[0]) as $A | ($b[0]) as $B |
+    (($A|keys) + ($B|keys) | unique | sort) as $allkeys |
+    $allkeys[] as $k |
+    (if $A[$k] == null then "-" else ($A[$k]|tostring) end) as $av |
+    (if $B[$k] == null then "-" else ($B[$k]|tostring) end) as $bv |
+    (if (($A[$k]|type)=="number") and (($B[$k]|type)=="number")
+     then (($B[$k]-$A[$k])|tostring) else "-" end) as $delta |
+    [$k, $av, $bv, $delta] | @tsv
+  ' | awk -F'\t' '{printf "%-40s %18s %18s %18s\n", $1, $2, $3, $4}'
+  exit 0
+fi
+
+if [ -n "$OUTPUT" ]; then
+  exec > >(tee "$OUTPUT")
+fi
+
+# ---------------------------------------------------------------------
+# JSON accumulation. section()/kv()/sample_min_median_max() are the
+# only output primitives the rest of this script uses, so gating JSON
+# emission inside them (instead of adding separate json_* calls at each
+# call site) guarantees the JSON report can never drift from the prose
+# report — they're built from literally the same calls.
+#
+# Backed by a file, not a bash array: sample_min_median_max() (and
+# raw_dl_result/tunnel_dl_result) are captured via "$(...)" command
+# substitution, which runs in a SUBSHELL — array mutations made by
+# json_add() from inside that subshell would vanish the instant the
+# subshell exits, silently dropping every key it tried to add. A file
+# write is real process-global state and survives that.
+# ---------------------------------------------------------------------
+JSON_ACCUM_FILE=""
+if [ "$JSON_MODE" -eq 1 ]; then
+  JSON_ACCUM_FILE="$(mktemp)"
+  trap 'rm -f "$JSON_ACCUM_FILE"' EXIT
+fi
+json_add() {
+  # $1=key $2=value. A no-op outside --json so every call site can call
+  # this unconditionally without checking JSON_MODE itself.
+  [ "$JSON_MODE" -eq 1 ] || return 0
+  [ -n "$1" ] || return 0
+  jq -n --arg k "$1" --arg v "$2" '{($k): $v}' >> "$JSON_ACCUM_FILE"
+}
+json_emit() {
+  local merged="{}"
+  if [ -s "$JSON_ACCUM_FILE" ]; then
+    merged="$(jq -s 'reduce .[] as $o ({}; . + $o)' "$JSON_ACCUM_FILE")"
+  fi
+  jq -n --argjson merged "$merged" \
+    --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson quick "$([ "$QUICK" -eq 1 ] && echo true || echo false)" '
+    {schema_version: 1, generated_at: $generated_at, quick_mode: $quick} +
+    ( $merged | map_values(if (type=="string") and test("^-?[0-9]+(\\.[0-9]+)?$") then tonumber else . end) )
+  '
+}
+
+section() {
+  [ "$JSON_MODE" -eq 1 ] && return 0
+  echo; echo "$1"; printf '%s\n' "${1//?/-}"
+}
+kv() {
+  # $1=label $2=value $3=optional machine-readable key for --json
+  local label="$1" value="$2" key="${3:-}"
+  json_add "$key" "$value"
+  [ "$JSON_MODE" -eq 1 ] && return 0
+  printf '%-28s %s\n' "$label:" "$value"
+}
+# Prints $* only outside --json — for narrative/detail lines that have
+# no single machine-readable value (mtr tables, notes, etc).
+note() { [ "$JSON_MODE" -eq 1 ] && return 0; printf '%s\n' "$*"; }
 
 # Runs $1 a total of $RUNS times, printing "min / median / max" of the
 # numeric values $2 extracts (a shell function name receiving nothing,
 # printing one number to stdout, or nothing on failure). Never averages
 # across a mix of successes and failures — a failed sample is dropped,
-# not counted as zero.
+# not counted as zero. $2 (optional) is a machine-readable key prefix:
+# when given, also records "<prefix>_min/_median/_max/_n" for --json.
 sample_min_median_max() {
-  local extractor="$1"
+  local extractor="$1" key_prefix="${2:-}"
   local -a values=()
   local i
   for ((i = 0; i < RUNS; i++)); do
@@ -101,6 +221,7 @@ sample_min_median_max() {
     [ -n "$v" ] && values+=("$v")
   done
   if [ "${#values[@]}" -eq 0 ]; then
+    json_add "${key_prefix:+${key_prefix}_n}" "0"
     echo "unavailable"
     return
   fi
@@ -111,7 +232,28 @@ sample_min_median_max() {
   min="$(echo "$sorted" | head -1)"
   max="$(echo "$sorted" | tail -1)"
   median="$(echo "$sorted" | awk -v n="$n" 'NR==int((n+1)/2){print; exit}')"
+  if [ -n "$key_prefix" ]; then
+    json_add "${key_prefix}_min" "$min"
+    json_add "${key_prefix}_median" "$median"
+    json_add "${key_prefix}_max" "$max"
+    json_add "${key_prefix}_n" "$n"
+  fi
   echo "min=$min median=$median max=$max (n=$n)"
+}
+
+# Reads one field ($1, e.g. RcvbufErrors) from /proc/net/snmp's "Udp:"
+# block. That file has two "Udp:" lines: a header naming each column,
+# then the values — this matches by column name, not position, so it
+# can't silently misread if the kernel ever reorders/adds columns.
+udp_snmp_field() {
+  local field="$1"
+  awk -v f="$field" '
+    $1=="Udp:" {
+      n++
+      if (n==1) { for (i=2;i<=NF;i++) if ($i==f) idx=i }
+      else if (idx) { print $idx; exit }
+    }
+  ' /proc/net/snmp 2>/dev/null
 }
 
 # ---------------------------------------------------------------------
@@ -119,15 +261,15 @@ sample_min_median_max() {
 # ---------------------------------------------------------------------
 section "Host"
 if [ -r /proc/cpuinfo ]; then
-  kv "CPU model" "$(awk -F: '/model name/{print $2; exit}' /proc/cpuinfo | sed 's/^ *//')"
+  kv "CPU model" "$(awk -F: '/model name/{print $2; exit}' /proc/cpuinfo | sed 's/^ *//')" "cpu_model"
 fi
-kv "vCPUs" "$(nproc 2>/dev/null || echo unavailable)"
+kv "vCPUs" "$(nproc 2>/dev/null || echo unavailable)" "vcpus"
 if [ -r /proc/loadavg ]; then
-  kv "load average" "$(awk '{print $1, $2, $3}' /proc/loadavg)"
+  kv "load average" "$(awk '{print $1, $2, $3}' /proc/loadavg)" "load_average"
 fi
 if [ -r /proc/meminfo ]; then
-  kv "RAM total" "$(awk '/MemTotal/{print $2, $3}' /proc/meminfo)"
-  kv "swap total" "$(awk '/SwapTotal/{print $2, $3}' /proc/meminfo)"
+  kv "RAM total" "$(awk '/MemTotal/{print $2, $3}' /proc/meminfo)" "ram_total_kb"
+  kv "swap total" "$(awk '/SwapTotal/{print $2, $3}' /proc/meminfo)" "swap_total_kb"
 fi
 if [ -r /proc/stat ]; then
   read -r _ u1 n1 s1 i1 io1 irq1 sirq1 st1 _ < <(awk '/^cpu /{print; exit}' /proc/stat)
@@ -138,38 +280,60 @@ if [ -r /proc/stat ]; then
   dt=$((total2-total1))
   if [ "$dt" -gt 0 ]; then
     steal_pct=$(( (st2-st1) * 100 / dt ))
-    kv "CPU steal (instantaneous)" "${steal_pct}%"
+    kv "CPU steal (instantaneous)" "${steal_pct}" "cpu_steal_pct"
   fi
 fi
 NIC="$(ip -o route get "$TARGET_HOST" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}' | head -1)" || NIC=""
 if [ -n "${NIC:-}" ]; then
-  kv "primary interface" "$NIC"
+  kv "primary interface" "$NIC" "primary_interface"
 else
-  kv "primary interface" "unavailable (ip not found or unreachable)"
+  kv "primary interface" "unavailable (ip not found or unreachable)" "primary_interface"
 fi
+
+# ---------------------------------------------------------------------
+# Kernel tuning (effective values) — a live read of the same knobs
+# deploy/lib/perf-tuning.sh / `vpn doctor --performance` manage, so a
+# benchmark result can be attributed to (or cleared of) kernel tuning
+# without a separate command. Read-only: this never applies anything.
+# ---------------------------------------------------------------------
+section "Kernel tuning (effective)"
+read_sysctl() {
+  local key="$1"
+  if have sysctl; then
+    sysctl -n "$key" 2>/dev/null && return 0
+  fi
+  local path="/proc/sys/${key//./\/}"
+  [ -r "$path" ] && cat "$path" 2>/dev/null
+}
+kv "net.core.rmem_max" "$(read_sysctl net.core.rmem_max || echo unavailable)" "rmem_max"
+kv "net.core.wmem_max" "$(read_sysctl net.core.wmem_max || echo unavailable)" "wmem_max"
+kv "net.ipv4.tcp_congestion_control" "$(read_sysctl net.ipv4.tcp_congestion_control || echo unavailable)" "tcp_congestion_control"
+kv "net.core.default_qdisc" "$(read_sysctl net.core.default_qdisc || echo unavailable)" "default_qdisc"
 
 # ---------------------------------------------------------------------
 # 2. Network path (to --target-host)
 # ---------------------------------------------------------------------
 section "Network path (target: $TARGET_HOST)"
 if have ping; then
-  PING_OUT="$(timeout 15 ping -c 20 -i 0.2 -W 2 -q "$TARGET_HOST" 2>/dev/null || true)"
+  PING_OUT="$(timeout 15 ping -c "$PING_COUNT" -i 0.2 -W 2 -q "$TARGET_HOST" 2>/dev/null || true)"
   if [ -n "$PING_OUT" ]; then
     LOSS="$(echo "$PING_OUT" | awk -F, '/packet loss/{for(i=1;i<=NF;i++) if ($i ~ /loss/) print $i}' | sed 's/^ *//')"
     RTT_LINE="$(echo "$PING_OUT" | awk -F= '/rtt|round-trip/{print $2}')"
-    kv "packet loss" "${LOSS:-unavailable}"
-    kv "RTT min/avg/max/mdev (ms)" "${RTT_LINE:-unavailable}"
+    kv "packet loss" "${LOSS:-unavailable}" "packet_loss"
+    kv "RTT min/avg/max/mdev (ms)" "${RTT_LINE:-unavailable}" "rtt_min_avg_max_mdev_ms"
   else
-    kv "ping" "SKIPPED: target unreachable or ping blocked"
+    kv "ping" "SKIPPED: target unreachable or ping blocked" "ping_status"
   fi
 else
-  kv "ping" "SKIPPED: ping not installed"
+  kv "ping" "SKIPPED: ping not installed" "ping_status"
 fi
 if have mtr; then
-  echo "  mtr summary (10 cycles):"
-  timeout 30 mtr -r -c 10 -n "$TARGET_HOST" 2>/dev/null | sed 's/^/    /' || echo "    SKIPPED: mtr failed or timed out"
+  note "  mtr summary ($MTR_CYCLES cycles):"
+  if [ "$JSON_MODE" -eq 0 ]; then
+    timeout 30 mtr -r -c "$MTR_CYCLES" -n "$TARGET_HOST" 2>/dev/null | sed 's/^/    /' || echo "    SKIPPED: mtr failed or timed out"
+  fi
 else
-  kv "mtr" "SKIPPED: mtr not installed (optional; install for hop-by-hop loss)"
+  kv "mtr" "SKIPPED: mtr not installed (optional; install for hop-by-hop loss)" "mtr_status"
 fi
 
 # ---------------------------------------------------------------------
@@ -196,13 +360,13 @@ if have ping; then
     fi
   done
   if [ "$best" -gt 0 ]; then
-    kv "largest non-fragmenting ICMP payload" "${best} bytes (path MTU ~ $((best + 28)) bytes)"
-    [ "$((best + 28))" -lt 1450 ] && echo "  NOTE: path MTU is below the standard 1500 — this can cause QUIC/Hysteria2 fragmentation symptoms (stalls, poor throughput) independent of anything sing-box-side."
+    kv "largest non-fragmenting ICMP payload" "${best} bytes (path MTU ~ $((best + 28)) bytes)" "path_mtu_probe_bytes"
+    [ "$((best + 28))" -lt 1450 ] && note "  NOTE: path MTU is below the standard 1500 — this can cause QUIC/Hysteria2 fragmentation symptoms (stalls, poor throughput) independent of anything sing-box-side."
   else
-    kv "MTU probe" "unavailable (target may block ICMP-with-DF; not conclusive)"
+    kv "MTU probe" "unavailable (target may block ICMP-with-DF; not conclusive)" "path_mtu_probe_bytes"
   fi
 else
-  kv "MTU probe" "SKIPPED: ping not installed"
+  kv "MTU probe" "SKIPPED: ping not installed" "path_mtu_probe_bytes"
 fi
 
 # ---------------------------------------------------------------------
@@ -215,19 +379,21 @@ if have curl; then
     out="$(curl -o /dev/null -s -w '%{speed_download}' --max-time 30 "$DOWNLOAD_URL" 2>/dev/null)" || return 1
     awk -v b="$out" 'BEGIN{printf "%.2f", b*8/1000000}'
   }
-  echo "  download (Mbps), $RUNS run(s) against $DOWNLOAD_URL:"
-  echo "    $(sample_min_median_max raw_download_mbps)"
+  note "  download (Mbps), $RUNS run(s) against $DOWNLOAD_URL:"
+  raw_dl_result="$(sample_min_median_max raw_download_mbps raw_download_mbps)"
+  note "    $raw_dl_result"
   raw_latency_ms() {
     curl -o /dev/null -s -w '%{time_connect}' --max-time 10 "$DOWNLOAD_URL" 2>/dev/null \
       | awk '{printf "%.1f", $1*1000}'
   }
-  echo "  TCP connect latency (ms), $RUNS run(s):"
-  echo "    $(sample_min_median_max raw_latency_ms)"
-  echo "  NOTE: no public upload-accepting endpoint is assumed to exist; run"
-  echo "  'iperf3 -s' on a second host you control and 'iperf3 -c <host>' here"
-  echo "  for a real symmetric throughput number if upload matters to you."
+  note "  TCP connect latency (ms), $RUNS run(s):"
+  raw_latency_result="$(sample_min_median_max raw_latency_ms raw_tcp_connect_ms)"
+  note "    $raw_latency_result"
+  note "  NOTE: no public upload-accepting endpoint is assumed to exist; run"
+  note "  'iperf3 -s' on a second host you control and 'iperf3 -c <host>' here"
+  note "  for a real symmetric throughput number if upload matters to you."
 else
-  kv "raw throughput" "SKIPPED: curl not installed"
+  kv "raw throughput" "SKIPPED: curl not installed" "raw_download_mbps_status"
 fi
 
 # ---------------------------------------------------------------------
@@ -370,22 +536,83 @@ tunnel_benchmark() {
       --socks5-hostname "127.0.0.1:$local_socks_port" "$DOWNLOAD_URL" 2>/dev/null)" || return 1
     awk -v b="$out" 'BEGIN{printf "%.2f", b*8/1000000}'
   }
-  echo "  throughput (Mbps), $RUNS run(s):"
-  echo "    $(sample_min_median_max tunnel_download_mbps)"
+  local tunnel_dl_result
+  tunnel_dl_result="$(sample_min_median_max tunnel_download_mbps "${transport}_mbps")"
+  kv "throughput (Mbps), $RUNS run(s)" "$tunnel_dl_result"
 
+  # CLIENT-side (this throwaway benchmark process) CPU cost of one
+  # transfer.
   local sb_pid
   sb_pid="$(pgrep -f "sing-box run -c $client_cfg" | head -1 || true)"
-  if [ -n "$sb_pid" ] && [ -r "/proc/$sb_pid/stat" ]; then
-    local t1 t2
-    t1="$(awk '{print $14+$15}' "/proc/$sb_pid/stat")"
-    tunnel_download_mbps >/dev/null 2>&1 || true
-    t2="$(awk '{print $14+$15}' "/proc/$sb_pid/stat")"
-    kv "sing-box client CPU ticks during one transfer" "$((t2 - t1))"
+
+  # SERVER-side (the real production sing-box, distinct from the
+  # throwaway client above) CPU/RSS cost of the same transfer — this is
+  # what tells an operator "does this transport cost the VPS itself
+  # noticeably more", as opposed to the client-side number above, which
+  # is this script's own disposable test process and says nothing about
+  # production server load. MainPID via systemd is authoritative when
+  # available; the pgrep fallback matches the fixed config path every
+  # AlmaLinux deploy/health-check/acceptance-test script agrees on.
+  local server_pid=""
+  if have systemctl; then
+    server_pid="$(systemctl show -p MainPID --value sing-box 2>/dev/null || true)"
+    [ "$server_pid" = "0" ] && server_pid=""
+  fi
+  if [ -z "$server_pid" ]; then
+    server_pid="$(pgrep -f 'sing-box run -c /etc/vpn/compat/sing-box/config.json' | head -1 || true)"
+  fi
+
+  local ct1="" ct2="" st1="" st2=""
+  [ -n "$sb_pid" ] && [ -r "/proc/$sb_pid/stat" ] && ct1="$(awk '{print $14+$15}' "/proc/$sb_pid/stat")"
+  [ -n "$server_pid" ] && [ -r "/proc/$server_pid/stat" ] && st1="$(awk '{print $14+$15}' "/proc/$server_pid/stat")"
+
+  tunnel_download_mbps >/dev/null 2>&1 || true
+
+  if [ -n "$sb_pid" ] && [ -n "$ct1" ] && [ -r "/proc/$sb_pid/stat" ]; then
+    ct2="$(awk '{print $14+$15}' "/proc/$sb_pid/stat")"
+    kv "sing-box client CPU ticks during one transfer" "$((ct2 - ct1))" "${transport}_client_cpu_ticks"
+  fi
+  if [ -n "$server_pid" ] && [ -n "$st1" ] && [ -r "/proc/$server_pid/stat" ]; then
+    st2="$(awk '{print $14+$15}' "/proc/$server_pid/stat")"
+    kv "sing-box SERVER process CPU ticks during one transfer" "$((st2 - st1))" "${transport}_server_cpu_ticks"
+    if [ -r "/proc/$server_pid/status" ]; then
+      kv "sing-box SERVER process RSS" "$(awk '/VmRSS/{print $2}' "/proc/$server_pid/status")" "${transport}_server_rss_kb"
+    fi
+  elif [ -z "$server_pid" ]; then
+    kv "sing-box SERVER process CPU/RSS" "unavailable (production sing-box PID not found — not running under systemd as unit 'sing-box', or config not at /etc/vpn/compat/sing-box/config.json)" "${transport}_server_cpu_ticks_status"
   fi
 }
 
+# Host-wide UDP socket receive/send buffer errors, sampled immediately
+# before and after the tunnel layer's real QUIC/TCP transfers. This is
+# a system-wide kernel counter (not scoped to sing-box specifically —
+# any UDP socket on the box counts), so it can only ever suggest, never
+# prove, that Hysteria2/QUIC hit a UDP buffer limit during this run;
+# treat a nonzero delta as a lead to check `vpn doctor --performance`
+# and the effective net.core.rmem_max/wmem_max above, not a verdict on
+# its own.
+UDP_RCVBUF_ERR_BEFORE="$(udp_snmp_field RcvbufErrors)"
+UDP_SNDBUF_ERR_BEFORE="$(udp_snmp_field SndbufErrors)"
+
 tunnel_benchmark "vless-reality" "VLESS+REALITY"
 tunnel_benchmark "hysteria2" "Hysteria2"
+
+UDP_RCVBUF_ERR_AFTER="$(udp_snmp_field RcvbufErrors)"
+UDP_SNDBUF_ERR_AFTER="$(udp_snmp_field SndbufErrors)"
+
+section "UDP socket buffer errors (host-wide, before/after protocol tests)"
+if [ -n "$UDP_RCVBUF_ERR_BEFORE" ] && [ -n "$UDP_RCVBUF_ERR_AFTER" ]; then
+  kv "RcvbufErrors before -> after" "$UDP_RCVBUF_ERR_BEFORE -> $UDP_RCVBUF_ERR_AFTER (delta +$((UDP_RCVBUF_ERR_AFTER - UDP_RCVBUF_ERR_BEFORE)))" "udp_rcvbuf_errors_delta"
+  kv "SndbufErrors before -> after" "$UDP_SNDBUF_ERR_BEFORE -> $UDP_SNDBUF_ERR_AFTER (delta +$((UDP_SNDBUF_ERR_AFTER - UDP_SNDBUF_ERR_BEFORE)))" "udp_sndbuf_errors_delta"
+  note "  NOTE: host-wide counters, not sing-box-specific — a nonzero delta during this run is a lead, not proof."
+else
+  kv "UDP buffer errors" "unavailable (/proc/net/snmp has no Udp: RcvbufErrors/SndbufErrors fields)" "udp_buf_errors_status"
+fi
+
+if [ "$JSON_MODE" -eq 1 ]; then
+  json_emit
+  exit 0
+fi
 
 section "Assessment"
 cat <<'EOF'
@@ -403,9 +630,14 @@ network path. Read it accordingly:
     protocol/congestion-control overhead intrinsic to the tunnel at this
     RTT, not something this test can attribute to CPU or to the real
     network path (which it cannot see).
-  - Layer-4 hairpin throughput much lower AND sing-box CPU pinned near
-    100% of one core -> likely CPU-bound userspace crypto/QUIC processing
-    -> consider more/better vCPUs (see docs/PERFORMANCE_OPTIMIZATION_PLAN.md).
+  - Layer-4 hairpin throughput much lower AND sing-box CPU (client OR the
+    real SERVER process) pinned near 100% of one core -> likely CPU-bound
+    userspace crypto/QUIC processing -> consider more/better vCPUs (see
+    docs/PERFORMANCE_OPTIMIZATION_PLAN.md).
+  - Nonzero UDP RcvbufErrors/SndbufErrors delta during the Hysteria2 run
+    -> a lead (not proof) that a UDP socket hit a buffer limit; check the
+    effective net.core.rmem_max/wmem_max reported above and
+    `vpn doctor --performance`.
   - High packet loss or RTT/jitter in layer 2 (network path) to
     --target-host -> that IS a real network-path measurement (unlike
     layer 4) -> if --target-host is a real vantage point on your users'
@@ -417,4 +649,7 @@ Re-run with --target-host set to a real vantage point on your users' ISP
 path (not this script's default) for a meaningful network-path reading —
 this is the only layer above that can actually see that path. Layer 4
 cannot, no matter how it's re-run from this VPS alone.
+
+Re-run with --json --output <path> before/after a change and compare with
+--compare <before.json> <after.json> to see exactly what moved.
 EOF
