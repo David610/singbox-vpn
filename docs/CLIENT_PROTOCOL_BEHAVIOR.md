@@ -104,6 +104,11 @@ assumption.
   requires a real device test (see `docs/DEVICE_ACCEPTANCE_TESTS.md`'s
   "Network switch" column and the Telegram matrix's IPv4/IPv6/handover
   rows).
+- **An application-level UDP/443 (QUIC) reject rule was investigated and
+  deliberately not added** as a selectable "Compatibility" profile — see
+  `docs/COMPATIBILITY_QUIC_EXPERIMENT.md` for the full feasibility
+  research and why it stays a manual, operator-run experiment instead of
+  something this project generates and claims works.
 
 ## Failover / selection — honest framing
 

@@ -1162,6 +1162,335 @@ fn render_config_require_applied_succeeds_on_true_noop() {
         .stdout(predicates::str::contains("already current"));
 }
 
+/// Counts how many times the fake `systemctl` in `fake_systemctl`/
+/// `fake_systemctl_failing_reload_on_call` was invoked with
+/// `reload-or-restart` — the actual, unambiguous signal that sing-box's
+/// live data plane was bounced (every reload is a full restart, see
+/// `render_and_apply_singbox_config`'s doc comment). Asserting on this
+/// count directly, rather than on stdout wording alone, is what proves
+/// a "no-op" claim is true and not just printed.
+fn count_reload_or_restart_calls(log_path: &Path) -> usize {
+    std::fs::read_to_string(log_path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("reload-or-restart "))
+        .count()
+}
+
+/// A fake `systemctl` that behaves like `fake_systemctl` (logs every
+/// invocation, reports units as installed/active) except its
+/// `reload-or-restart` call fails on exactly the Nth time it is
+/// invoked (1-indexed) — every other call, before and after, succeeds.
+/// Lets a test simulate "sing-box failed to come back up after this
+/// one specific config change" without making every reload fail.
+#[cfg(unix)]
+fn fake_systemctl_failing_reload_on_call(dir: &Path, fail_on_call: u32) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("systemctl");
+    let counter_file = dir.join("reload-call-count");
+    let script = format!(
+        r#"#!/usr/bin/env bash
+echo "$1 $2" >> "$SYSTEMCTL_LOG"
+case "$1" in
+  --version) exit 0 ;;
+  show) echo "loaded"; exit 0 ;;
+  reload-or-restart)
+    n=$(( $(cat "{counter}" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "{counter}"
+    if [ "$n" -eq {fail_on_call} ]; then
+      exit 1
+    fi
+    exit 0
+    ;;
+  is-active) exit 0 ;;
+esac
+exit 1
+"#,
+        counter = counter_file.display(),
+        fail_on_call = fail_on_call,
+    );
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// Regression test for the expiry-reconciler's actual restart
+/// behavior, not just its printed wording: a no-op `render-config
+/// --require-applied` (what `vpn-expiry-reconcile.service` runs every
+/// 10 minutes, per `deploy/almalinux/systemd/vpn-expiry-reconcile.timer`)
+/// must not issue a SECOND `systemctl reload-or-restart sing-box` call
+/// once the first one already applied the current config — i.e. it
+/// must not bounce every already-connected client's live session on a
+/// tick where nothing actually changed.
+#[test]
+#[cfg(unix)]
+fn render_config_noop_reconcile_does_not_restart_singbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("init")
+        .assert()
+        .success();
+
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args(["render-config", "--require-applied"])
+        .assert()
+        .success();
+    let calls_after_first_apply = count_reload_or_restart_calls(&log_path);
+    assert_eq!(
+        calls_after_first_apply, 1,
+        "the first render-config, which actually applies the initial config, must reload \
+         sing-box exactly once"
+    );
+
+    // Simulate the unattended timer firing again with nothing to
+    // reconcile — exactly what happens every 10 minutes when no user
+    // has expired and no credential changed.
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args(["render-config", "--require-applied"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("already current"));
+    assert_eq!(
+        count_reload_or_restart_calls(&log_path),
+        calls_after_first_apply,
+        "a no-op reconcile must NOT issue another `systemctl reload-or-restart sing-box` call — \
+         doing so would drop every currently-connected client's live session for no reason"
+    );
+}
+
+/// `deploy/almalinux/systemd/vpn-expiry-reconcile.timer` fires
+/// `render-config --require-applied` on every tick for the lifetime of
+/// the deployment, not just once — a fix that only holds for a single
+/// repeat is not good enough. Runs the no-op path three times in a row
+/// (simulating three timer ticks with no expirations in between) and
+/// confirms the sing-box restart count never grows past the one real
+/// apply, and every repeat keeps succeeding (never flips to a failure
+/// after the first no-op, and never regresses to reloading again).
+#[test]
+#[cfg(unix)]
+fn render_config_repeated_timer_execution_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("init")
+        .assert()
+        .success();
+
+    for tick in 1..=4 {
+        admin(dir.path(), &cfg_path)
+            .env("PATH", &augmented_path)
+            .env("SYSTEMCTL_LOG", &log_path)
+            .args(["render-config", "--require-applied"])
+            .assert()
+            .success();
+        let restarts_so_far = count_reload_or_restart_calls(&log_path);
+        assert_eq!(
+            restarts_so_far, 1,
+            "tick {tick}: exactly one real sing-box restart total is expected across any number \
+             of repeated no-op timer runs (only the first tick actually applies anything)"
+        );
+    }
+}
+
+/// The other side of change-detection: reconciliation must still
+/// actually apply and reload when something REAL changed (a new user),
+/// not just correctly no-op when nothing did. Without this, "no-op
+/// detection" could trivially degenerate into "never reload."
+#[test]
+#[cfg(unix)]
+fn render_config_applies_and_restarts_when_a_user_actually_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("init")
+        .assert()
+        .success();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args(["render-config", "--require-applied"])
+        .assert()
+        .success();
+    let restarts_before = count_reload_or_restart_calls(&log_path);
+
+    // A real change: a brand new user, exactly what expiry reconciliation
+    // (removing an expired user's authorization) or `user create` do.
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &augmented_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args(["user", "create", "--name", "alice"])
+        .assert()
+        .success();
+
+    let restarts_after = count_reload_or_restart_calls(&log_path);
+    assert_eq!(
+        restarts_after,
+        restarts_before + 1,
+        "a real authorization change must still trigger exactly one sing-box reload — no-op \
+         detection must never suppress a genuine change"
+    );
+
+    let config_path = dir.path().join("state/sing-box/config.json");
+    let config_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    let vless_user_count = config_json["inbounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ib| ib["type"] == "vless")
+        .and_then(|ib| ib["users"].as_array())
+        .map(|u| u.len())
+        .unwrap_or(0);
+    assert_eq!(
+        vless_user_count, 1,
+        "the reloaded config must actually reflect the newly created user"
+    );
+}
+
+/// If sing-box fails to come back up after a config change is applied
+/// (e.g. a bad reload), the previously-working config must be restored
+/// on disk and reloaded back — a failed reconciliation attempt must
+/// never leave the server running a broken or half-applied
+/// configuration, and must never silently record the new user as
+/// committed. Simulates this by making the SECOND `reload-or-restart`
+/// call fail (the first, from `init`+the baseline `render-config`, must
+/// succeed so there is a known-good config to roll back to).
+#[test]
+#[cfg(unix)]
+fn user_create_reload_failure_restores_previous_working_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let log_path = dir.path().join("systemctl.log");
+
+    // Phase 1: establish a known-good, live-reloaded baseline config
+    // using a systemctl that always succeeds.
+    let good_systemctl = fake_systemctl(dir.path());
+    let good_path = std::env::join_paths(
+        std::iter::once(good_systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &good_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("init")
+        .assert()
+        .success();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &good_path)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args(["render-config", "--require-applied"])
+        .assert()
+        .success();
+
+    let config_path = dir.path().join("state/sing-box/config.json");
+    let users_path = dir.path().join("state/users/users.json");
+    let baseline_config = std::fs::read_to_string(&config_path).unwrap();
+    let baseline_users = std::fs::read_to_string(&users_path).unwrap_or_default();
+
+    // Phase 2: attempt a real change (a new user) with a systemctl whose
+    // very next `reload-or-restart` call fails — simulating sing-box
+    // refusing to come back up for this specific config.
+    let bad_systemctl = fake_systemctl_failing_reload_on_call(dir.path(), 1);
+    let bad_path = std::env::join_paths(
+        std::iter::once(bad_systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &bad_path)
+        .env("SYSTEMCTL_LOG", dir.path().join("systemctl-bad.log"))
+        .args(["user", "create", "--name", "bob"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("did NOT take effect"));
+
+    // The on-disk config must be exactly what it was before the failed
+    // attempt — never left mid-transition and never the new (unreloadable)
+    // candidate.
+    let config_after_failure = std::fs::read_to_string(&config_path).unwrap();
+    assert_eq!(
+        config_after_failure, baseline_config,
+        "a failed reload must restore the exact previous working config, not leave a partially \
+         applied or broken one live"
+    );
+    // users.json must equally never have recorded the new user — the
+    // authorization config is loaded into sing-box BEFORE users.json is
+    // committed specifically so a reload failure never leaves the store
+    // ahead of what the running server will actually authorize.
+    let users_after_failure = std::fs::read_to_string(&users_path).unwrap_or_default();
+    assert_eq!(
+        users_after_failure, baseline_users,
+        "a failed reload must never commit the new user to users.json — the running server \
+         never authorized it"
+    );
+    let restored_json: serde_json::Value = serde_json::from_str(&config_after_failure).unwrap();
+    let vless_user_count = restored_json["inbounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ib| ib["type"] == "vless")
+        .and_then(|ib| ib["users"].as_array())
+        .map(|u| u.len())
+        .unwrap_or(0);
+    assert_eq!(
+        vless_user_count, 0,
+        "the restored config must not contain the user whose reload failed — it must match the \
+         zero-user baseline exactly"
+    );
+}
+
 /// L4 subscription-coherence checks pass once `init` and `render-config`
 /// have together produced a coherent REALITY key file set and a
 /// matching on-disk sing-box config — this is the "everything is fine"

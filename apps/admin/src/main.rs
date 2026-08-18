@@ -1401,6 +1401,24 @@ fn render_and_apply_singbox_config(
     // (including the unattended `vpn-expiry-reconcile.timer` run), and
     // `restore` call goes through, so without this line the automatic
     // timer path bounces the service with zero visibility into why.
+    //
+    // Re-verified 2026-08 against current sing-box behavior: sing-box does
+    // handle SIGHUP by validating the candidate config and, if valid,
+    // closing the current runtime instance and starting a new one in the
+    // same process (no PID change) — but "closing the current instance"
+    // still tears down every inbound listener and in-flight connection
+    // before the new instance comes up (upstream-confirmed: e.g.
+    // SagerNet/sing-box#3731, "reload resets connections of existing
+    // inbounds and outbounds"). It is not a live-connection-preserving
+    // reload for this workload, only a same-PID restart. There is
+    // therefore no safe graceful-reload path to switch to here; the fix
+    // that actually matters is making sure this restart only ever fires
+    // when the effective config genuinely changed — which is exactly what
+    // the `target_already_matches && applied_stamp_matches` short-circuit
+    // above already does, and what
+    // `render_config_noop_reconcile_does_not_restart_singbox` /
+    // `render_config_repeated_timer_execution_is_idempotent`
+    // (apps/admin/tests/cli.rs) hold as a regression.
     let active_now = users.iter().filter(|u| u.is_active(now)).count();
     println!(
         "reloading sing-box ({active_now} active user(s) in the new config) — this is a full \
@@ -3033,6 +3051,8 @@ fn cmd_doctor(
     check_l4_subscription_coherence(cfg, &mut failures);
     check_l4_live_subscription_process_state(cfg, &mut failures);
     check_public_hostname_and_ipv6_policy(cfg, &mut failures);
+    check_conntrack_pressure();
+    check_udp_memory_pressure();
     check_singbox_binary_version_consistency(cfg);
     report_check(
         CheckStatus::Info,
@@ -4069,6 +4089,281 @@ fn ipv6_posture_report(posture: Ipv6Posture) -> (CheckStatus, bool, &'static str
              verified from this host (probe unavailable) — this does NOT confirm IPv6 works, \
              only that it could not be checked here",
         ),
+    }
+}
+
+/// Parses `sysctl -a`-style `key = value` or `/proc/sys` single-value
+/// text into a `u64`. Shared by the conntrack and UDP-memory-pressure
+/// readers below — both read plain integer files under `/proc/sys`.
+fn read_u64_sysctl(path: &str) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Conservative, documented conntrack utilization thresholds (P3 — audit
+/// finding: this project had zero conntrack observability). There is no
+/// single "correct" number in upstream kernel documentation; the
+/// commonly cited operational guidance (Red Hat's own conntrack
+/// tuning docs, and the kernel's own `nf_conntrack` sysctl
+/// documentation) treats sustained utilization above ~80% of
+/// `nf_conntrack_max` as the point where new-connection insertion
+/// failures and premature eviction under load become a real risk, not
+/// merely theoretical — this project reports that as `[WARN]`, never a
+/// `[FAIL]`: a percentage alone proves elevated risk, not an actual
+/// eviction that already happened, and `doctor` must not manufacture a
+/// false-positive failure out of a number that could be entirely normal
+/// for a busier-than-usual moment.
+const CONNTRACK_WARN_THRESHOLD_PCT: f64 = 80.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ConntrackPressure {
+    count: u64,
+    max: u64,
+}
+
+impl ConntrackPressure {
+    fn pct(&self) -> f64 {
+        if self.max == 0 {
+            0.0
+        } else {
+            (self.count as f64 / self.max as f64) * 100.0
+        }
+    }
+}
+
+fn conntrack_pressure_report(pressure: ConntrackPressure) -> (CheckStatus, String) {
+    let pct = pressure.pct();
+    let base = format!(
+        "conntrack: {} / {} entries ({pct:.1}%)",
+        format_thousands(pressure.count),
+        format_thousands(pressure.max),
+    );
+    if pct >= CONNTRACK_WARN_THRESHOLD_PCT {
+        (
+            CheckStatus::Warn,
+            format!(
+                "{base} — utilization is at or above the conservative \
+                 {CONNTRACK_WARN_THRESHOLD_PCT:.0}% warning threshold; sustained UDP/QUIC \
+                 (Hysteria2) traffic may experience entry eviction or new-connection insertion \
+                 failures under load. This does not by itself prove any specific failure — it is \
+                 a utilization measurement, not a verdict on real traffic."
+            ),
+        )
+    } else {
+        (CheckStatus::Ok, base)
+    }
+}
+
+fn format_thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out.chars().rev().collect()
+}
+
+/// `nf_conntrack_count`/`nf_conntrack_max` live under
+/// `/proc/sys/net/netfilter/` on every kernel this project targets
+/// (AlmaLinux 9). Returns `None` if either value is unreadable (e.g.
+/// the `nf_conntrack` module isn't loaded at all — a legitimate state
+/// on a host that has never carried any NAT/connection-tracked traffic,
+/// not itself a failure).
+fn read_conntrack_pressure() -> Option<ConntrackPressure> {
+    let count = read_u64_sysctl("/proc/sys/net/netfilter/nf_conntrack_count")?;
+    let max = read_u64_sysctl("/proc/sys/net/netfilter/nf_conntrack_max")?;
+    Some(ConntrackPressure { count, max })
+}
+
+/// `doctor`'s conntrack observability check (P3). Read-only: reports
+/// utilization and, when available, the UDP-specific conntrack
+/// timeouts — it does not itself change any sysctl. Never increments
+/// `failures`: an elevated conntrack table is a real, actionable
+/// warning (see `conntrack_pressure_report`), never proof of an actual
+/// dropped connection, so it must never fail `doctor`'s exit status the
+/// way a definitively broken listener does.
+fn check_conntrack_pressure() {
+    match read_conntrack_pressure() {
+        Some(pressure) => {
+            let (status, msg) = conntrack_pressure_report(pressure);
+            report_check(status, "L3", msg);
+        }
+        None => report_check(
+            CheckStatus::Info,
+            "L3",
+            "conntrack table size unavailable (nf_conntrack module not loaded, or \
+             /proc/sys/net/netfilter/nf_conntrack_{count,max} unreadable) — not itself a \
+             problem on a host with no connection-tracked traffic yet",
+        ),
+    }
+    for (label, path) in [
+        (
+            "nf_conntrack_udp_timeout",
+            "/proc/sys/net/netfilter/nf_conntrack_udp_timeout",
+        ),
+        (
+            "nf_conntrack_udp_timeout_stream",
+            "/proc/sys/net/netfilter/nf_conntrack_udp_timeout_stream",
+        ),
+    ] {
+        match read_u64_sysctl(path) {
+            Some(seconds) => report_check(
+                CheckStatus::Info,
+                "L3",
+                format!(
+                    "{label}: {seconds}s (a long-lived Hysteria2/QUIC stream idle for longer \
+                     than this can have its conntrack entry evicted and its return path treated \
+                     as untracked)"
+                ),
+            ),
+            None => report_check(
+                CheckStatus::Info,
+                "L3",
+                format!("{label}: unavailable on this kernel"),
+            ),
+        }
+    }
+}
+
+/// UDP memory pressure (P4). `net.ipv4.udp_mem` is three page counts
+/// (`min pressure max`, each in units of the kernel's page size, almost
+/// always 4096 bytes on x86_64/aarch64 — see `man 7 udp`): below `min`
+/// the kernel never constrains UDP memory use; between `pressure` and
+/// `max` the kernel is actively trying to reclaim; at `max` further UDP
+/// socket memory allocation is refused. `/proc/net/sockstat`'s `UDP:`
+/// line reports the CURRENT system-wide page count in use (`mem N`).
+/// Comparing the two gives a real, documented pressure percentage — the
+/// same kind of headroom measurement `check_conntrack_pressure` reports
+/// for the connection table, for the memory ceiling `perf-tuning.sh`
+/// already raises but never itself observes in use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct UdpMemoryPressure {
+    in_use_pages: u64,
+    pressure_pages: u64,
+    max_pages: u64,
+}
+
+impl UdpMemoryPressure {
+    fn pct_of_pressure_threshold(&self) -> f64 {
+        if self.pressure_pages == 0 {
+            0.0
+        } else {
+            (self.in_use_pages as f64 / self.pressure_pages as f64) * 100.0
+        }
+    }
+}
+
+const UDP_MEM_WARN_THRESHOLD_PCT: f64 = 80.0;
+
+fn udp_memory_pressure_report(pressure: UdpMemoryPressure) -> (CheckStatus, String) {
+    let pct = pressure.pct_of_pressure_threshold();
+    let base = format!(
+        "UDP memory: {} / {} pages in use ({pct:.1}% of the pressure threshold, ceiling {} pages)",
+        format_thousands(pressure.in_use_pages),
+        format_thousands(pressure.pressure_pages),
+        format_thousands(pressure.max_pages),
+    );
+    if pct >= UDP_MEM_WARN_THRESHOLD_PCT {
+        (
+            CheckStatus::Warn,
+            format!(
+                "{base} — approaching or past net.ipv4.udp_mem's pressure threshold; the kernel \
+                 may be actively reclaiming UDP socket memory, which can show up as dropped or \
+                 delayed packets for sustained UDP/QUIC (Hysteria2) traffic specifically. This is \
+                 a utilization measurement, not proof of an actual drop."
+            ),
+        )
+    } else {
+        (CheckStatus::Ok, format!("{base} — normal"))
+    }
+}
+
+fn read_udp_memory_pressure() -> Option<UdpMemoryPressure> {
+    let udp_mem = std::fs::read_to_string("/proc/sys/net/ipv4/udp_mem").ok()?;
+    let mut parts = udp_mem.split_whitespace();
+    let min_pages: u64 = parts.next()?.parse().ok()?;
+    let pressure_pages: u64 = parts.next()?.parse().ok()?;
+    let max_pages: u64 = parts.next()?.parse().ok()?;
+    let _ = min_pages; // not used in the pressure calculation, kept for clarity/documentation
+    let sockstat = std::fs::read_to_string("/proc/net/sockstat").ok()?;
+    let in_use_pages: u64 = sockstat
+        .lines()
+        .find(|l| l.starts_with("UDP:"))?
+        .split_whitespace()
+        .skip_while(|w| *w != "mem")
+        .nth(1)?
+        .parse()
+        .ok()?;
+    Some(UdpMemoryPressure {
+        in_use_pages,
+        pressure_pages,
+        max_pages,
+    })
+}
+
+/// `doctor`'s UDP memory pressure check (P4). Read-only measurement,
+/// same non-fatal WARN-only semantics as `check_conntrack_pressure` and
+/// for the same reason: elevated pressure is a real signal worth
+/// surfacing, not proof of an already-broken connection.
+fn check_udp_memory_pressure() {
+    match read_udp_memory_pressure() {
+        Some(pressure) => {
+            let (status, msg) = udp_memory_pressure_report(pressure);
+            report_check(status, "L3", msg);
+        }
+        None => report_check(
+            CheckStatus::Info,
+            "L3",
+            "UDP memory pressure unavailable (/proc/sys/net/ipv4/udp_mem or \
+             /proc/net/sockstat unreadable on this host)",
+        ),
+    }
+    if let Ok(snmp) = std::fs::read_to_string("/proc/net/snmp") {
+        let field = |field_name: &str| -> Option<String> {
+            let mut lines = snmp.lines();
+            while let Some(header) = lines.next() {
+                if !header.starts_with("Udp:") {
+                    continue;
+                }
+                let values = lines.next()?;
+                let names: Vec<&str> = header.split_whitespace().skip(1).collect();
+                let vals: Vec<&str> = values.split_whitespace().skip(1).collect();
+                return names
+                    .iter()
+                    .position(|n| *n == field_name)
+                    .and_then(|i| vals.get(i))
+                    .map(|s| s.to_string());
+            }
+            None
+        };
+        let mut parts = Vec::new();
+        for (label, key) in [
+            ("receive errors", "InErrors"),
+            ("receive buffer errors", "RcvbufErrors"),
+            ("send buffer errors", "SndbufErrors"),
+        ] {
+            if let Some(v) = field(key) {
+                parts.push(format!("{label}={v}"));
+            }
+        }
+        if !parts.is_empty() {
+            report_check(
+                CheckStatus::Info,
+                "L3",
+                format!(
+                    "UDP error counters (cumulative since boot, compare two runs rather than the \
+                     absolute value): {}",
+                    parts.join(", ")
+                ),
+            );
+        }
     }
 }
 
@@ -6470,6 +6765,106 @@ mod ipv6_posture_tests {
         let (status, increment, _msg) = ipv6_posture_report(posture);
         assert_eq!(status, CheckStatus::Warn);
         assert!(!increment);
+    }
+}
+
+/// Pure-logic coverage for the conntrack (P3) and UDP-memory (P4)
+/// pressure classifiers — no real `/proc` access required, so these run
+/// identically in CI and on a real host.
+#[cfg(test)]
+mod pressure_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn conntrack_low_utilization_is_ok() {
+        let (status, msg) = conntrack_pressure_report(ConntrackPressure {
+            count: 1_284,
+            max: 262_144,
+        });
+        assert_eq!(status, CheckStatus::Ok);
+        assert!(msg.contains("1,284"));
+        assert!(msg.contains("262,144"));
+        assert!(msg.contains("0.5%"));
+    }
+
+    #[test]
+    fn conntrack_at_threshold_warns() {
+        let (status, msg) = conntrack_pressure_report(ConntrackPressure {
+            count: 209_716, // exactly 80.0% of 262,144
+            max: 262_144,
+        });
+        assert_eq!(status, CheckStatus::Warn);
+        assert!(msg.contains("warning threshold"));
+    }
+
+    #[test]
+    fn conntrack_just_below_threshold_is_still_ok() {
+        let (status, _msg) = conntrack_pressure_report(ConntrackPressure {
+            count: 209_000, // just under 80% of 262,144
+            max: 262_144,
+        });
+        assert_eq!(status, CheckStatus::Ok);
+    }
+
+    #[test]
+    fn conntrack_high_utilization_warns_never_fails() {
+        let (status, msg) = conntrack_pressure_report(ConntrackPressure {
+            count: 236_000,
+            max: 262_144,
+        });
+        assert_eq!(
+            status,
+            CheckStatus::Warn,
+            "a high but not-yet-catastrophic conntrack table must warn, not fail doctor's exit \
+             status — utilization alone is not proof of an actual dropped connection"
+        );
+        assert!(msg.contains("90.0%") || msg.contains("90.0"));
+    }
+
+    #[test]
+    fn conntrack_pct_handles_zero_max_without_dividing_by_zero() {
+        let pressure = ConntrackPressure { count: 0, max: 0 };
+        assert_eq!(pressure.pct(), 0.0);
+    }
+
+    #[test]
+    fn format_thousands_groups_correctly() {
+        assert_eq!(format_thousands(0), "0");
+        assert_eq!(format_thousands(999), "999");
+        assert_eq!(format_thousands(1_284), "1,284");
+        assert_eq!(format_thousands(262_144), "262,144");
+    }
+
+    #[test]
+    fn udp_memory_low_pressure_is_ok() {
+        let (status, msg) = udp_memory_pressure_report(UdpMemoryPressure {
+            in_use_pages: 100,
+            pressure_pages: 10_000,
+            max_pages: 15_000,
+        });
+        assert_eq!(status, CheckStatus::Ok);
+        assert!(msg.contains("normal"));
+    }
+
+    #[test]
+    fn udp_memory_high_pressure_warns_never_fails() {
+        let (status, msg) = udp_memory_pressure_report(UdpMemoryPressure {
+            in_use_pages: 9_500,
+            pressure_pages: 10_000,
+            max_pages: 15_000,
+        });
+        assert_eq!(status, CheckStatus::Warn);
+        assert!(msg.contains("pressure threshold"));
+    }
+
+    #[test]
+    fn udp_memory_pct_handles_zero_pressure_threshold_without_dividing_by_zero() {
+        let pressure = UdpMemoryPressure {
+            in_use_pages: 0,
+            pressure_pages: 0,
+            max_pages: 0,
+        };
+        assert_eq!(pressure.pct_of_pressure_threshold(), 0.0);
     }
 }
 

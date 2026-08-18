@@ -123,6 +123,90 @@ Idle 5-10 minutes, then reuse the connection: PASS/FAIL (note if it needed a man
 Notes (any stall, unusually slow transfer, or unexpected disconnect):
 ```
 
+## Streaming / real-application matrix (P9)
+
+The reported production symptom this section exists for: Safari plays YouTube
+normally over the tunnel, the native YouTube iOS app does not, on both
+REALITY and Hysteria2, with iCloud Private Relay ruled out as the
+explanation. No single server-side root cause was established by the
+investigation this section follows from — see that investigation's report
+for the ranked hypotheses and evidence. `vpn doctor` and
+`vpn benchmark` passing does **not** establish this matrix as PASS — this is
+exactly the "healthy diagnostics, broken real application" gap those tools
+cannot close (see `deploy/lib/vpn-investigate.sh streaming`/`youtube` for the
+server-side diagnostics that narrow the search, but do not replace this real
+on-device test).
+
+As with every other matrix in this document: a cell only becomes PASS/FAIL
+after it is actually exercised on a real device, never inferred. Run each
+row twice — once with REALITY manually selected, once with Hysteria2
+manually selected — so the two transports are never conflated.
+
+| Test | Reality | Hysteria2 |
+|---|---|---|
+| YouTube — Safari playback | not yet tested | not yet tested |
+| YouTube — native app playback | not yet tested | not yet tested |
+| Large HTTPS download (1+ min) | not yet tested | not yet tested |
+| Large HTTPS upload (1+ min) | not yet tested | not yet tested |
+| Telegram media (photo/video) | not yet tested | not yet tested |
+| Voice call (any app) | not yet tested | not yet tested |
+| Video call (any app) | not yet tested | not yet tested |
+| Idle 5-10 min, then resume | not yet tested | not yet tested |
+| Wi-Fi -> cellular handover | not yet tested | not yet tested |
+| Cellular -> Wi-Fi handover | not yet tested | not yet tested |
+
+Row-filling template (paste as a new dated entry, one per transport
+actually tested):
+
+```
+Date:
+Client + version:
+Device model / OS version:
+VPS provider/region:
+Transport under test: Reality / Hysteria2
+
+YouTube Safari playback:            PASS/FAIL
+YouTube native app playback:        PASS/FAIL
+Large HTTPS download (1+ min):      PASS/FAIL
+Large HTTPS upload (1+ min):        PASS/FAIL
+Telegram media:                     PASS/FAIL
+Voice call:                         PASS/FAIL
+Video call:                         PASS/FAIL
+Idle -> resume:                     PASS/FAIL
+Wi-Fi -> cellular:                  PASS/FAIL
+Cellular -> Wi-Fi:                  PASS/FAIL
+
+Notes (exact failure mode — does playback never start, start then stall, or
+  play at reduced quality? Any error shown in the app? Timestamps help):
+```
+
+### YouTube-specific record (fill in every field — do not mark PASS without a real test)
+
+This is the specific record the reported production symptom needs. Every
+field must be filled in from an actual observation on an actual device — an
+empty or guessed field invalidates the entry.
+
+```
+Date:
+Safari playback:              PASS/FAIL (note if playback starts, stalls, or never starts)
+YouTube app playback:         PASS/FAIL (note if playback starts, stalls, or never starts)
+Reality:                      PASS/FAIL/NOT TESTED (repeat this whole block once per transport)
+Hysteria2:                    PASS/FAIL/NOT TESTED
+IPv4/IPv6:                    (does the device have real IPv6 connectivity before connecting?
+                                run `vpn-admin doctor` on the VPS and record its IPv6 posture line)
+Hiddify version:               (Hiddify -> Settings -> About)
+Bundled sing-box version:      (same screen — this is Hiddify's OWN core, not the VPS's)
+iOS version:
+VPS provider/region:
+
+Server-side diagnostics run (paste the relevant PASS/WARN lines, not the full output):
+  vpn doctor:
+  vpn-investigate.sh streaming:
+  vpn-investigate.sh youtube:
+
+Notes:
+```
+
 ## Telegram-specific matrix
 
 Per `docs/TELEGRAM_RESILIENCE_PLAN.md`: "Telegram works" is not one

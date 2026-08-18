@@ -467,6 +467,32 @@ mod tests {
         );
     }
 
+    /// Locks in the P10 decision recorded in
+    /// `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`: a `route.rules` array
+    /// (e.g. an application-level UDP/443 reject rule to force
+    /// QUIC-preferring apps onto TCP) was investigated and deliberately
+    /// NOT added, because this project cannot verify Hiddify actually
+    /// preserves an imported subscription's route rules from this
+    /// environment — shipping it anyway would be exactly the kind of
+    /// false confidence this project's diagnostics are trying to
+    /// eliminate. If a future change adds `route.rules` for a
+    /// "Compatibility" profile or otherwise, it must deliberately update
+    /// this test and that document together, not silently regress the
+    /// "subscription expresses no unverifiable routing opinion" boundary
+    /// `client_subscription_has_no_dns_block_and_no_inbounds` already
+    /// covers for `dns`/`inbounds`.
+    #[test]
+    fn client_subscription_never_emits_route_rules() {
+        let doc =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        assert!(
+            doc["route"].get("rules").is_none(),
+            "generated subscription must not express route rules the client's actual behavior \
+             cannot be verified against — see docs/COMPATIBILITY_QUIC_EXPERIMENT.md"
+        );
+    }
+
     /// Byte-shape contract for fields that clients are otherwise prone to
     /// silently supplying themselves.  Their absence is intentional: this
     /// outbounds-only document cannot control a client's TUN, DNS, MTU, mux,
