@@ -161,7 +161,7 @@ enum Commands {
     /// secrets — treat the output file as sensitive.
     Backup {
         /// Destination path. Defaults to
-        /// `vpn1-backup-<unix-seconds>.tar` in the current directory.
+        /// `singbox-vpn-backup-<unix-seconds>.tar` in the current directory.
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -324,7 +324,7 @@ fn main() -> Result<()> {
     // interleave their load->mutate->persist->apply->reload sequences.
     let _state_lock = if command_mutates_state(&cli.command) {
         Some(lock::acquire_state_lock().context(
-            "acquiring vpn1 state lock (another vpn-admin/install/update operation is in progress)",
+            "acquiring singbox-vpn state lock (another vpn-admin/install/update operation is in progress)",
         )?)
     } else {
         None
@@ -2150,7 +2150,7 @@ fn cmd_user_subscription(cfg: &DeploymentConfig, id: &str) -> Result<()> {
 }
 
 fn cmd_version(cfg: &DeploymentConfig) -> Result<()> {
-    println!("vpn1 {}", env!("CARGO_PKG_VERSION"));
+    println!("singbox-vpn {}", env!("CARGO_PKG_VERSION"));
     match std::process::Command::new(&cfg.singbox_binary)
         .arg("version")
         .output()
@@ -2175,7 +2175,7 @@ fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
     let active = users.iter().filter(|u| u.is_active(now)).count();
     let disabled = users.iter().filter(|u| !u.enabled).count();
 
-    println!("vpn1 status");
+    println!("singbox-vpn status");
     println!();
     let singbox = CompatibilityServiceManager::new("sing-box");
     println!("sing-box              {}", service_state_label(&singbox));
@@ -3515,7 +3515,7 @@ fn perf_singbox_pid() -> Option<u32> {
 /// read-only tool (`ip`, `tc`, `ss`); nothing is derived by inference.
 /// Always exits 0 — there is no pass/fail concept for a measurement.
 fn cmd_doctor_performance() -> Result<()> {
-    println!("vpn1 performance diagnostics (MEASUREMENTS, not recommendations)");
+    println!("singbox-vpn performance diagnostics (MEASUREMENTS, not recommendations)");
     println!(
         "See docs/PERFORMANCE_OPTIMIZATION_PLAN.md for how to interpret these numbers, and \
          `vpn benchmark` for actual throughput tests these alone cannot provide."
@@ -3678,9 +3678,9 @@ fn cmd_doctor_report(cfg: &DeploymentConfig, output: Option<&std::path::Path>) -
     let mut out = String::new();
     use std::fmt::Write as _;
 
-    let _ = writeln!(out, "vpn1 diagnostic report (sanitized)");
+    let _ = writeln!(out, "singbox-vpn diagnostic report (sanitized)");
     let _ = writeln!(out, "generated: {}", UnixSeconds::now().0);
-    let _ = writeln!(out, "vpn1 version: {}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(out, "singbox-vpn version: {}", env!("CARGO_PKG_VERSION"));
 
     let _ = writeln!(out, "\n[system]");
     match std::process::Command::new("uname").arg("-a").output() {
@@ -3788,7 +3788,7 @@ fn cmd_doctor_report(cfg: &DeploymentConfig, output: Option<&std::path::Path>) -
     match enumerate_listeners() {
         Some(listeners) => {
             let ssh_port = detect_ssh_port(&listeners);
-            let expected = expected_vpn1_ports(cfg);
+            let expected = expected_singbox_vpn_ports(cfg);
             let findings = classify_public_surface(
                 &listeners,
                 ssh_port,
@@ -3860,7 +3860,7 @@ fn cmd_doctor_report(cfg: &DeploymentConfig, output: Option<&std::path::Path>) -
             let _ = writeln!(out, "backend: {backend}");
             let _ = writeln!(
                 out,
-                "vpn1-owned public rules: {}",
+                "singbox-vpn-owned public rules: {}",
                 if owned_rules.is_empty() {
                     "none (every required port pre-existed before install)".to_string()
                 } else {
@@ -5126,7 +5126,7 @@ fn listener_reported_by_ss(port: u16, udp: bool) -> Option<bool> {
 
 // -----------------------------------------------------------------------
 // Expected public surface (read-only): enumerates every real listening
-// socket via `ss` and classifies it against what vpn1 itself expects to
+// socket via `ss` and classifies it against what singbox-vpn itself expects to
 // expose, so an operator can see at a glance whether anything besides
 // SSH/REALITY/Hysteria2/subscription-HTTPS is reachable from the
 // network — without `doctor` ever touching firewall/listener state
@@ -5278,15 +5278,15 @@ fn detect_ssh_port(listeners: &[ListenSocket]) -> Option<u16> {
 
 /// True if `name` (a process name as `ss -p`/`/proc/*/comm` reports it,
 /// possibly truncated to 15 bytes by the kernel) identifies one of
-/// vpn1's own long-running network-facing processes. `vpn-subscript` is
+/// singbox-vpn's own long-running network-facing processes. `vpn-subscript` is
 /// deliberately a prefix, not the full `vpn-subscription-svc` — `comm`
 /// truncates to 15 characters, so the observed name for that binary is
 /// `vpn-subscriptio`.
-fn is_vpn1_process(name: &str) -> bool {
+fn is_singbox_vpn_process(name: &str) -> bool {
     name == "sing-box" || name.starts_with("vpn-subscript")
 }
 
-/// One port vpn1 itself expects to be publicly reachable, and which
+/// One port singbox-vpn itself expects to be publicly reachable, and which
 /// process should legitimately be the one serving it.
 struct ExpectedPort {
     udp: bool,
@@ -5294,11 +5294,11 @@ struct ExpectedPort {
     label: &'static str,
     /// Process name prefixes considered a legitimate owner. Checked
     /// with `starts_with` for the same truncated-`comm` reason as
-    /// `is_vpn1_process`.
+    /// `is_singbox_vpn_process`.
     expected_owner_prefixes: &'static [&'static str],
 }
 
-fn expected_vpn1_ports(cfg: &DeploymentConfig) -> Vec<ExpectedPort> {
+fn expected_singbox_vpn_ports(cfg: &DeploymentConfig) -> Vec<ExpectedPort> {
     vec![
         ExpectedPort {
             udp: false,
@@ -5326,16 +5326,16 @@ fn expected_vpn1_ports(cfg: &DeploymentConfig) -> Vec<ExpectedPort> {
 /// `detect_ssh_port`'s real subprocess calls. Every listener produces
 /// exactly one finding:
 ///   - the vpn-subscription backend: OK if loopback-only, FAIL if not
-///     (spec: "internal vpn1 control/service ports" must never be
+///     (spec: "internal singbox-vpn control/service ports" must never be
 ///     publicly exposed).
 ///   - the detected SSH port: OK (expected, by design, to be public).
-///   - another expected vpn1-facing port, served by the expected
+///   - another expected singbox-vpn-facing port, served by the expected
 ///     process (or process unknown): OK. Served by something else
-///     entirely: FAIL ("port conflict" — the transport vpn1 advertises
+///     entirely: FAIL ("port conflict" — the transport singbox-vpn advertises
 ///     there is not actually what is listening).
-///   - anything else on loopback: not reported at all (not vpn1's
+///   - anything else on loopback: not reported at all (not singbox-vpn's
 ///     concern, not exposed to the network).
-///   - anything else non-loopback, owned by one of vpn1's own
+///   - anything else non-loopback, owned by one of singbox-vpn's own
 ///     processes: FAIL (an internal service leaking out on an
 ///     unexpected port).
 ///   - anything else non-loopback, owned by something else (or
@@ -5421,12 +5421,12 @@ fn classify_public_surface(
         }
 
         if let Some(name) = owner {
-            if is_vpn1_process(name) {
+            if is_singbox_vpn_process(name) {
                 findings.push((
                     CheckStatus::Fail,
                     format!(
-                        "internal vpn1 process ({name}) is listening on {addr_port}/{proto} — a \
-                         port vpn1 does not expect to expose publicly; investigate immediately"
+                        "internal singbox-vpn process ({name}) is listening on {addr_port}/{proto} — a \
+                         port singbox-vpn does not expect to expose publicly; investigate immediately"
                     ),
                 ));
                 continue;
@@ -5439,7 +5439,7 @@ fn classify_public_surface(
             CheckStatus::Warn,
             format!(
                 "unexpected listener on {addr_port}/{proto}, owned by {owner_desc} — not part \
-                 of vpn1's expected public surface. This may be a legitimate unrelated service \
+                 of singbox-vpn's expected public surface. This may be a legitimate unrelated service \
                  on this host; vpn doctor never modifies firewall/listener state automatically."
             ),
         ));
@@ -5448,7 +5448,7 @@ fn classify_public_surface(
 }
 
 /// `vpn doctor`'s expected-public-surface check: enumerates real
-/// listeners, classifies each against what vpn1 expects, and reports
+/// listeners, classifies each against what singbox-vpn expects, and reports
 /// every finding. Read-only end to end.
 fn check_expected_public_surface(cfg: &DeploymentConfig, failures: &mut u32) {
     let listeners = match enumerate_listeners() {
@@ -5472,7 +5472,7 @@ fn check_expected_public_surface(cfg: &DeploymentConfig, failures: &mut u32) {
              listener may still appear as an unrecognized non-loopback listener",
         );
     }
-    let expected = expected_vpn1_ports(cfg);
+    let expected = expected_singbox_vpn_ports(cfg);
     let findings = classify_public_surface(
         &listeners,
         ssh_port,
@@ -5483,7 +5483,7 @@ fn check_expected_public_surface(cfg: &DeploymentConfig, failures: &mut u32) {
         report_check(
             CheckStatus::Warn,
             "L3",
-            "no listening sockets were observed at all — unusual on a running vpn1 host",
+            "no listening sockets were observed at all — unusual on a running singbox-vpn host",
         );
         return;
     }
@@ -5518,7 +5518,7 @@ fn read_firewall_ownership(
     Some(map)
 }
 
-/// Read-only firewall zone + vpn1-owned-rule reporting. The only
+/// Read-only firewall zone + singbox-vpn-owned-rule reporting. The only
 /// firewall-cmd call here is `--get-default-zone`, a pure query;
 /// nothing in this function ever mutates firewall state.
 fn check_firewall_zone_and_ownership() {
@@ -5568,7 +5568,7 @@ fn check_firewall_zone_and_ownership() {
                     CheckStatus::Info,
                     "L3",
                     format!(
-                        "firewall backend: {backend}; vpn1 added no new rules (every required \
+                        "firewall backend: {backend}; singbox-vpn added no new rules (every required \
                          port was already open before install)"
                     ),
                 );
@@ -5577,7 +5577,7 @@ fn check_firewall_zone_and_ownership() {
                     CheckStatus::Info,
                     "L3",
                     format!(
-                        "firewall backend: {backend}; vpn1-owned public rules: {}",
+                        "firewall backend: {backend}; singbox-vpn-owned public rules: {}",
                         owned_rules.join(", ")
                     ),
                 );
@@ -5588,7 +5588,7 @@ fn check_firewall_zone_and_ownership() {
             "L3",
             "no firewall ownership record found at /var/lib/vpn1/firewall-owned.env \
              (firewall.sh/firewall-ufw.sh may not have run yet, or every rule pre-existed \
-             before vpn1)",
+             before singbox-vpn)",
         ),
     }
 }
@@ -6154,8 +6154,9 @@ fn cmd_backup(
     config_path: &std::path::Path,
     output: Option<PathBuf>,
 ) -> Result<()> {
-    let dest = output
-        .unwrap_or_else(|| PathBuf::from(format!("vpn1-backup-{}.tar", UnixSeconds::now().0)));
+    let dest = output.unwrap_or_else(|| {
+        PathBuf::from(format!("singbox-vpn-backup-{}.tar", UnixSeconds::now().0))
+    });
     let staging = tempdir_here()?;
     stage_backup_contents(cfg, config_path, staging.path())?;
 
@@ -7367,7 +7368,7 @@ mod public_surface_tests {
     }
 
     #[test]
-    fn expected_vpn1_listener_is_ok() {
+    fn expected_singbox_vpn_listener_is_ok() {
         let listeners = vec![sock(false, "0.0.0.0", 443, Some("sing-box"))];
         let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
         assert_eq!(findings.len(), 1);
@@ -7409,12 +7410,12 @@ mod public_surface_tests {
     }
 
     #[test]
-    fn internal_vpn1_process_on_an_unexpected_public_port_is_fail() {
+    fn internal_singbox_vpn_process_on_an_unexpected_public_port_is_fail() {
         let listeners = vec![sock(false, "0.0.0.0", 6000, Some("sing-box"))];
         let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, CheckStatus::Fail);
-        assert!(findings[0].1.contains("internal vpn1 process"));
+        assert!(findings[0].1.contains("internal singbox-vpn process"));
     }
 
     #[test]
@@ -7473,13 +7474,13 @@ mod public_surface_tests {
     }
 
     #[test]
-    fn is_vpn1_process_matches_truncated_comm_names() {
-        assert!(is_vpn1_process("sing-box"));
+    fn is_singbox_vpn_process_matches_truncated_comm_names() {
+        assert!(is_singbox_vpn_process("sing-box"));
         // /proc/*/comm truncates to 15 bytes — "vpn-subscription-svc" (21
         // chars) is observed as "vpn-subscriptio".
-        assert!(is_vpn1_process("vpn-subscriptio"));
-        assert!(!is_vpn1_process("nginx"));
-        assert!(!is_vpn1_process("sshd"));
+        assert!(is_singbox_vpn_process("vpn-subscriptio"));
+        assert!(!is_singbox_vpn_process("nginx"));
+        assert!(!is_singbox_vpn_process("sshd"));
     }
 
     #[test]

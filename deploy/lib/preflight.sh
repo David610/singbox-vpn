@@ -8,7 +8,7 @@ preflight_require_root() {
 }
 
 preflight_require_systemd() {
-  command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) not found — vpn1 requires a systemd-based host."
+  command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) not found — singbox-vpn requires a systemd-based host."
   [ -d /run/systemd/system ] || die "systemd does not appear to be the running init system (/run/systemd/system missing)."
 }
 
@@ -88,7 +88,7 @@ preflight_curl_retry() {
 preflight_check_connectivity() {
   local url="${1:-https://github.com}"
   if ! preflight_curl_retry -fsS -o /dev/null "$url"; then
-    die "no outbound internet connectivity (failed to reach $url after retries). vpn1 needs to download sing-box/binaries during install."
+    die "no outbound internet connectivity (failed to reach $url after retries). singbox-vpn needs to download sing-box/binaries during install."
   fi
   log "internet connectivity OK ($url reachable)"
 }
@@ -106,7 +106,7 @@ preflight_check_dns() {
   log "DNS resolution OK ($host)"
 }
 
-# Detect whether a port is already bound by something other than vpn1's
+# Detect whether a port is already bound by something other than singbox-vpn's
 # own services. $1 = proto (tcp|udp), $2 = port.
 preflight_check_port_free() {
   local proto="$1" port="$2" owner="" ss_flag

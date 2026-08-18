@@ -71,8 +71,8 @@ pub fn acquire_state_lock() -> Result<StateLock> {
 
 #[cfg(not(unix))]
 pub fn acquire_state_lock() -> Result<StateLock> {
-    // No advisory-locking equivalent wired up for non-unix targets; vpn1
-    // only ships for systemd Linux hosts (see deploy/lib/os.sh), so this
+    // No advisory-locking equivalent wired up for non-unix targets;
+    // singbox-vpn only ships for systemd Linux hosts (see deploy/lib/os.sh), so this
     // is intentionally a no-op rather than a hard error on platforms
     // this project doesn't deploy to (e.g. `cargo check` on a dev
     // laptop).

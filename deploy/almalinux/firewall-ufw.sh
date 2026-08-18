@@ -5,7 +5,7 @@
 # 8443/tcp). Nothing else —
 # internal Rust services stay off the public interface entirely
 # (spec §33). Never runs `ufw --force reset` or otherwise flushes
-# pre-existing rules; only adds vpn1's own allow rules.
+# pre-existing rules; only adds singbox-vpn's own allow rules.
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }

@@ -1,6 +1,6 @@
 # Client onboarding docs
 
-Per-platform instructions for importing a vpn1 subscription into a
+Per-platform instructions for importing a singbox-vpn subscription into a
 compatible client. All of these assume the administrator has already run
 `vpn-admin user create --name <you>` (or `vpn user create ...` — same
 binary, see `apps/admin/Cargo.toml`) and handed you a subscription URL

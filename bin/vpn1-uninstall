@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stable, offline, local entry point for uninstalling vpn1:
+# Stable, offline, local entry point for uninstalling singbox-vpn:
 #
 #   sudo /opt/vpn1/bin/vpn1-uninstall --yes
 #
@@ -22,7 +22,7 @@ REAL_UNINSTALL="$SELF_DIR/../deploy/almalinux/uninstall.sh"
 
 [ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }
 [ -x "$REAL_UNINSTALL" ] || {
-  echo "ERROR: $REAL_UNINSTALL not found or not executable — this copy of vpn1 at $SELF_DIR/.. looks incomplete." >&2
+  echo "ERROR: $REAL_UNINSTALL not found or not executable — this copy of singbox-vpn at $SELF_DIR/.. looks incomplete." >&2
   echo "As a last resort: curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash" >&2
   exit 1
 }

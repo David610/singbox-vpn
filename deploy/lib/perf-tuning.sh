@@ -23,11 +23,11 @@
 # nothing changed.
 #
 # REVERSIBLE WITHOUT A REBOOT: on the very first apply on a given host,
-# perf_capture_baseline() records this host's pre-vpn1 sysctl values to
+# perf_capture_baseline() records this host's pre-singbox-vpn sysctl values to
 # /var/lib/vpn1/perf-tuning-baseline.env — exactly once, never
 # overwritten by a later run (the whole point is "what this host had
-# before vpn1 touched it", not "what vpn1 last set"). Simply deleting
-# vpn1's own /etc/sysctl.d drop-in and re-running `sysctl --system` is
+# before singbox-vpn touched it", not "what singbox-vpn last set"). Simply deleting
+# singbox-vpn's own /etc/sysctl.d drop-in and re-running `sysctl --system` is
 # NOT sufficient to actually revert the live values: `sysctl --system`
 # only applies settings explicitly listed in some file it processes — a
 # parameter no remaining file mentions stays at whatever its current
@@ -58,7 +58,7 @@ perf_read_sysctl() {
 # Thin wrapper around `sysctl --system`, split out purely so
 # deploy/lib/tests/test-perf-tuning.sh can override it with a no-op —
 # the real command re-reads and applies EVERY /etc/sysctl.d file on the
-# system, not just vpn1's, which is both unsafe to run for real in CI
+# system, not just singbox-vpn's, which is both unsafe to run for real in CI
 # (no root there anyway) and unrelated to what these tests are actually
 # checking (this file's own rendering/state logic, not the kernel's
 # sysctl subsystem itself).
@@ -108,10 +108,10 @@ perf_qdisc_available() {
   return 1
 }
 
-# Captures this host's pre-vpn1 sysctl values EXACTLY ONCE — a no-op on
+# Captures this host's pre-singbox-vpn sysctl values EXACTLY ONCE — a no-op on
 # every call after the first. Must be called before the first
 # perf_tuning_apply ever writes anything, or the "baseline" it records
-# would just be vpn1's own prior tuning instead of the host's true
+# would just be singbox-vpn's own prior tuning instead of the host's true
 # original state (the one known, inherent limitation of this scheme: it
 # cannot recover a baseline retroactively on a host that already ran an
 # older version of this script before this capture step existed — see
@@ -121,7 +121,7 @@ perf_capture_baseline() {
     return 0
   fi
   if [ -f "$PERF_SYSCTL_DROPIN" ]; then
-    warn "vpn1's sysctl tuning ($PERF_SYSCTL_DROPIN) already exists but no baseline was ever recorded — this host likely ran an older vpn1 version before baseline capture existed. Recording CURRENT live values as the baseline; if they already include vpn1's own prior tuning (rather than this host's true pre-vpn1 defaults), rollback will restore vpn1's tuning, not the original distro defaults. If you know the true original values, set them by hand in $PERF_BASELINE_FILE before the next rollback."
+    warn "singbox-vpn's sysctl tuning ($PERF_SYSCTL_DROPIN) already exists but no baseline was ever recorded — this host likely ran an older singbox-vpn version before baseline capture existed. Recording CURRENT live values as the baseline; if they already include singbox-vpn's own prior tuning (rather than this host's true pre-singbox-vpn defaults), rollback will restore singbox-vpn's tuning, not the original distro defaults. If you know the true original values, set them by hand in $PERF_BASELINE_FILE before the next rollback."
   fi
   install -d -m 0755 "$PERF_STATE_DIR" 2>/dev/null || true
   local rmem wmem cc qdisc
@@ -131,7 +131,7 @@ perf_capture_baseline() {
   qdisc="$(perf_read_sysctl net.core.default_qdisc)"
   cat > "$PERF_BASELINE_FILE.tmp" <<EOF
 # Captured once by deploy/lib/perf-tuning.sh, on the first apply on this
-# host — the kernel network values this host had BEFORE vpn1 ever
+# host — the kernel network values this host had BEFORE singbox-vpn ever
 # changed them. Used by perf_tuning_rollback() to restore them without
 # requiring a reboot. Do NOT hand-edit unless you are deliberately
 # correcting a bad baseline (see perf_capture_baseline's doc comment);
@@ -145,7 +145,7 @@ BASELINE_DEFAULT_QDISC="$qdisc"
 EOF
   mv -f "$PERF_BASELINE_FILE.tmp" "$PERF_BASELINE_FILE"
   chmod 0644 "$PERF_BASELINE_FILE"
-  log "recorded pre-vpn1 kernel network baseline at $PERF_BASELINE_FILE"
+  log "recorded pre-singbox-vpn kernel network baseline at $PERF_BASELINE_FILE"
 }
 
 # Renders the sysctl drop-in content. Split out from perf_tuning_apply
@@ -170,8 +170,8 @@ net.core.default_qdisc = ${qdisc}"
     fi
   fi
   cat <<EOF
-# Managed by vpn1 (deploy/lib/perf-tuning.sh) — do not hand-edit. To
-# revert to this host's pre-vpn1 values without a reboot, run
+# Managed by singbox-vpn (deploy/lib/perf-tuning.sh) — do not hand-edit. To
+# revert to this host's pre-singbox-vpn values without a reboot, run
 # 'perf_tuning_rollback' (see this file), not just 'rm' + 'sysctl --system'
 # — see the file-header comment for why the latter is not sufficient.
 #
@@ -251,7 +251,7 @@ perf_tuning_apply() {
   fi
 }
 
-# Restores this host's pre-vpn1 kernel network values, without a reboot.
+# Restores this host's pre-singbox-vpn kernel network values, without a reboot.
 # Requires perf_capture_baseline to have run at least once (i.e.
 # perf_tuning_apply must have run before); if no baseline was ever
 # recorded, there is nothing to roll back TO and this is a no-op, not a
@@ -260,20 +260,20 @@ perf_tuning_apply() {
 # Mechanism: writes an explicit rollback drop-in
 # ($PERF_ROLLBACK_DROPIN) containing the captured baseline values and
 # applies it immediately via `sysctl --system`. This is deliberately NOT
-# just "delete vpn1's drop-in and run sysctl --system": `sysctl --system`
+# just "delete singbox-vpn's drop-in and run sysctl --system": `sysctl --system`
 # only applies values some file explicitly lists — a parameter no
 # remaining file mentions is left at whatever its CURRENT live value
 # already is, it is never reset to a kernel-compiled-in default by
 # omission. Without an explicit rollback file re-asserting the original
-# numbers, deleting vpn1's drop-in alone would leave the live kernel
-# still running vpn1's values indefinitely (until the next reboot, if
+# numbers, deleting singbox-vpn's drop-in alone would leave the live kernel
+# still running singbox-vpn's values indefinitely (until the next reboot, if
 # even then). $PERF_ROLLBACK_DROPIN is left in place afterward (not a
 # transient file) so a later unrelated `sysctl --system` run continues
 # to reassert the restored baseline rather than silently drifting back
-# toward whatever vpn1's now-deleted file used to say.
+# toward whatever singbox-vpn's now-deleted file used to say.
 perf_tuning_rollback() {
   if ! [ -f "$PERF_BASELINE_FILE" ]; then
-    warn "no perf-tuning baseline recorded at $PERF_BASELINE_FILE — either vpn1's kernel tuning was never applied on this host, or the baseline file was deleted. Nothing to roll back."
+    warn "no perf-tuning baseline recorded at $PERF_BASELINE_FILE — either singbox-vpn's kernel tuning was never applied on this host, or the baseline file was deleted. Nothing to roll back."
     return 1
   fi
   # shellcheck disable=SC1090
@@ -283,7 +283,7 @@ perf_tuning_rollback() {
 
   {
     echo "# Written by deploy/lib/perf-tuning.sh's perf_tuning_rollback —"
-    echo "# restores this host's captured pre-vpn1 kernel network values"
+    echo "# restores this host's captured pre-singbox-vpn kernel network values"
     echo "# (from $PERF_BASELINE_FILE). Safe to delete once you've confirmed"
     echo "# the values you want are in effect; deleting it does not itself"
     echo "# change anything further, it just stops re-asserting these numbers"
@@ -343,8 +343,8 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       ;;
     *)
       echo "Usage: $0 {apply|rollback}" >&2
-      echo "  apply    — (re)apply vpn1's kernel network tuning (same as install.sh/update.sh)." >&2
-      echo "  rollback — restore this host's pre-vpn1 kernel network values, without a reboot." >&2
+      echo "  apply    — (re)apply singbox-vpn's kernel network tuning (same as install.sh/update.sh)." >&2
+      echo "  rollback — restore this host's pre-singbox-vpn kernel network values, without a reboot." >&2
       exit 1
       ;;
   esac

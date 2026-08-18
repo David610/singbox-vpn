@@ -45,6 +45,6 @@ Out of scope:
   permission model).
 - Anything that allows a firewall/SSH lockout during install/update.
 - Anything that allows installation of unverified binaries (sing-box,
-  vpn1 release artifacts).
+  singbox-vpn release artifacts).
 - Anything that leaves the running server and the subscription service
   serving mutually inconsistent credentials/keys.

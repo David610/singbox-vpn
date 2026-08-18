@@ -5,10 +5,10 @@
 #   sudo /opt/vpn1/deploy/almalinux/update.sh --latest
 #   sudo /opt/vpn1/deploy/almalinux/update.sh --repair
 #
-# A working vpn1 release either updates COMPLETELY to the requested
+# A working singbox-vpn release either updates COMPLETELY to the requested
 # target release, or returns to the previous working release with
 # COMPATIBLE persistent state. It never requires Cargo/Rust for a normal
-# production update — a fresh vpn1 install using prebuilt release
+# production update — a fresh singbox-vpn install using prebuilt release
 # binaries stays updatable with no Rust toolchain ever installed.
 #
 # Transaction phases (see the block comments at each phase below):
@@ -90,7 +90,7 @@ DEV_REBUILD=0
 
 print_update_help() {
   cat <<'USAGE'
-vpn1 production updater (deploy/almalinux/update.sh).
+singbox-vpn production updater (deploy/almalinux/update.sh).
 
   sudo /opt/vpn1/deploy/almalinux/update.sh --version v1.1.0
   sudo /opt/vpn1/deploy/almalinux/update.sh --latest
@@ -131,7 +131,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -f "$DEPLOYMENT_TOML" ] || die "no existing vpn1 deployment found ($DEPLOYMENT_TOML missing) — update.sh only operates on an existing installation. Use install.sh for a fresh install."
+[ -f "$DEPLOYMENT_TOML" ] || die "no existing singbox-vpn deployment found ($DEPLOYMENT_TOML missing) — update.sh only operates on an existing installation. Use install.sh for a fresh install."
 
 # ---------------------------------------------------------------------
 # Interrupted-transaction detection (checkpoint-3 requirement): a
@@ -456,7 +456,7 @@ download_verified_source_release() {
   local version="$1" tarball="$2"
   local base_url="https://github.com/$VPN1_REPO/releases/download/$version"
   local sums="$STAGING_ROOT/SHA256SUMS"
-  log "downloading vpn1 $version release source archive + checksum manifest..."
+  log "downloading singbox-vpn $version release source archive + checksum manifest..."
   curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$base_url/vpn1-src.tar.gz" \
     || die "could not download release source archive 'vpn1-src.tar.gz' for $version from $VPN1_REPO. Nothing live has been changed."
   curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$sums" "$base_url/SHA256SUMS" \
@@ -472,7 +472,7 @@ download_verified_source_release "$TARGET_VERSION" "$STAGING_ROOT/vpn1-src.tar.g
 tar -xzf "$STAGING_ROOT/vpn1-src.tar.gz" -C "$STAGING_ROOT" || die "failed to extract downloaded source archive. Nothing live has been changed."
 STAGED_SRC_DIR="$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '*.tar.gz' | head -n1)"
 [ -n "$STAGED_SRC_DIR" ] && [ -x "$STAGED_SRC_DIR/deploy/almalinux/install.sh" ] \
-  || die "downloaded release source for $TARGET_VERSION does not look like a valid vpn1 source tree. Nothing live has been changed."
+  || die "downloaded release source for $TARGET_VERSION does not look like a valid singbox-vpn source tree. Nothing live has been changed."
 [ -f "$STAGED_SRC_DIR/deploy/lib/versions.env" ] \
   || die "downloaded release source for $TARGET_VERSION is missing deploy/lib/versions.env. Nothing live has been changed."
 
@@ -487,7 +487,7 @@ TARGET_SINGBOX_SHA256_ARM64="$(grep -E '^SINGBOX_SHA256_ARM64=' "$STAGED_SRC_DIR
 
 TARGET_RUST_TARGET="$(rust_target_for_arch "$ARCH")" || die "unsupported architecture: $ARCH. Nothing live has been changed."
 
-# ---- STAGE: download + verify the target release's prebuilt vpn1
+# ---- STAGE: download + verify the target release's prebuilt singbox-vpn
 # binaries. Production NEVER falls back to Cargo here — see --help. ----
 STAGED_BIN_DIR="$STAGING_ROOT/bin"
 install -d -m 0700 "$STAGED_BIN_DIR"
@@ -507,7 +507,7 @@ stage_prebuilt_binaries() {
   [ -d "$extracted" ] || die "release asset $asset did not contain the expected vpn1-${TARGET_RUST_TARGET}/ directory — packaging bug, not a transient failure. Nothing live has been changed."
   install -m 0755 "$extracted/vpn-admin" "$STAGED_BIN_DIR/vpn-admin"
   install -m 0755 "$extracted/subscription" "$STAGED_BIN_DIR/vpn-subscription-svc"
-  log "staged prebuilt vpn1 $TARGET_VERSION binaries ($TARGET_RUST_TARGET) — no Rust compiler needed."
+  log "staged prebuilt singbox-vpn $TARGET_VERSION binaries ($TARGET_RUST_TARGET) — no Rust compiler needed."
   return 0
 }
 if ! stage_prebuilt_binaries; then

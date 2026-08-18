@@ -12,10 +12,10 @@
 #
 # Build one target at a time from the REPO ROOT as build context (the
 # workspace's Cargo.lock/members span the whole tree):
-#   docker build -f deploy/docker/Dockerfile --target subscription -t vpn1/subscription .
-#   docker build -f deploy/docker/Dockerfile --target rendezvous   -t vpn1/rendezvous   .
-#   docker build -f deploy/docker/Dockerfile --target relay-agent  -t vpn1/relay-agent  .
-#   docker build -f deploy/docker/Dockerfile --target test-service -t vpn1/test-service .
+#   docker build -f deploy/docker/Dockerfile --target subscription -t singbox-vpn/subscription .
+#   docker build -f deploy/docker/Dockerfile --target rendezvous   -t singbox-vpn/rendezvous   .
+#   docker build -f deploy/docker/Dockerfile --target relay-agent  -t singbox-vpn/relay-agent  .
+#   docker build -f deploy/docker/Dockerfile --target test-service -t singbox-vpn/test-service .
 # or use deploy/docker/docker-compose.yml, which does this for you.
 
 # Pinned by digest, not a floating tag — matches rust-toolchain.toml's

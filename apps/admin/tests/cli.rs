@@ -306,7 +306,7 @@ fn spawn_subscription_binary(cfg_path: &Path) -> std::process::Child {
 fn concurrent_user_creates_do_not_lose_an_update() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_deployment_toml(dir.path());
-    let lock_path = dir.path().join("vpn1-test.lock");
+    let lock_path = dir.path().join("singbox-vpn-test.lock");
 
     let spawn_create = |name: &str| {
         std::process::Command::new(env!("CARGO_BIN_EXE_vpn-admin"))
@@ -591,7 +591,7 @@ fn version_prints_own_version() {
         .assert()
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    assert!(stdout.contains("vpn1 "));
+    assert!(stdout.contains("singbox-vpn "));
 }
 
 #[test]

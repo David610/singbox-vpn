@@ -89,7 +89,7 @@ die() {
 stage() { echo; echo "[install] === [$1/18] $2 ==="; }
 
 # Shared curl flags for network fetches below (sing-box release asset,
-# checksums, prebuilt vpn1 release). `--retry` alone does not protect
+# checksums, prebuilt singbox-vpn release). `--retry` alone does not protect
 # against a connection that opens fine but then stalls at zero
 # throughput partway through — curl only retries a *completed* failure,
 # so a stalled transfer just hangs forever with no error. Observed for
@@ -110,7 +110,7 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # Installs $src to a FIXED, well-known destination path (a systemd unit,
 # a certbot renewal hook — anything named identically regardless of
 # who put it there) while tracking, via the ownership manifest, whether
-# something already occupied that exact path before vpn1 touched it. If
+# something already occupied that exact path before singbox-vpn touched it. If
 # so, an exact byte-for-byte backup is taken ONCE (never overwritten by
 # a later repair re-run) so uninstall.sh can restore the precise
 # predecessor instead of guessing or silently adopting/discarding
@@ -162,7 +162,7 @@ VPN1_SSH_PORT="${VPN1_SSH_PORT:-}"
 IS_FRESH_INSTALL=0
 print_install_help() {
   cat <<'USAGE'
-vpn1 installer (deploy/almalinux/install.sh).
+singbox-vpn installer (deploy/almalinux/install.sh).
 
 Normal usage takes no arguments at all:
   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
@@ -177,9 +177,9 @@ Optional flags (all have environment-variable equivalents):
                                     is no safe default.
   --subscription-port PORT         same as SUBSCRIPTION_PORT (default 8443)
   --ssh-port PORT                  same as VPN1_SSH_PORT; explicitly declares
-                                    the port sshd listens on when vpn1 cannot
+                                    the port sshd listens on when singbox-vpn cannot
                                     positively auto-detect it. Required
-                                    whenever detection is inconclusive — vpn1
+                                    whenever detection is inconclusive — singbox-vpn
                                     refuses to activate/modify the host
                                     firewall (and thus never packages_stage's
                                     firewalld activation) without a confirmed
@@ -232,7 +232,7 @@ parse_cli_args() {
 # accurately reflects everything mutated so far. If any stage fails
 # fatally (any unhandled non-zero exit under `set -Eeuo pipefail`) DURING
 # A FRESH INSTALL (nothing existed before this run started), this trap
-# automatically runs the same uninstaller a manual "remove vpn1" run
+# automatically runs the same uninstaller a manual "remove singbox-vpn" run
 # would use, so a failed fresh install is cleaned back up to a pristine
 # state without operator intervention.
 #
@@ -268,7 +268,7 @@ on_fatal_error() {
   set +e
   echo "[install] ERROR: installation failed: stage=$stage function=$function line=$line operation=stage-command exit=$exit_code (command text suppressed to protect secrets)." >&2
   if [ "${VPN1_NO_AUTO_ROLLBACK:-0}" -eq 1 ] 2>/dev/null; then
-    echo "[install] VPN1_NO_AUTO_ROLLBACK=1 set — leaving the host as-is for inspection. Run '$REPO_ROOT/deploy/almalinux/uninstall.sh' to remove everything vpn1 created so far." >&2
+    echo "[install] VPN1_NO_AUTO_ROLLBACK=1 set — leaving the host as-is for inspection. Run '$REPO_ROOT/deploy/almalinux/uninstall.sh' to remove everything singbox-vpn created so far." >&2
     exit "$exit_code"
   fi
   if [ "$(ownership_is_marked INSTALL_ATTEMPTED)" != "1" ]; then
@@ -291,7 +291,7 @@ on_fatal_error() {
     echo "[install] the previous working installation should still be intact; re-run install.sh to retry the repair, or investigate with 'vpn doctor' / 'journalctl -u sing-box -u vpn-subscription'." >&2
     exit "$exit_code"
   fi
-  echo "[install] this was a FRESH install (nothing existed before this run) — rolling back everything vpn1 created during this failed attempt..." >&2
+  echo "[install] this was a FRESH install (nothing existed before this run) — rolling back everything singbox-vpn created during this failed attempt..." >&2
   if [ -x "$REPO_ROOT/deploy/almalinux/uninstall.sh" ]; then
     local rollback_rc=0
     bash "$REPO_ROOT/deploy/almalinux/uninstall.sh" --yes || rollback_rc=$?
@@ -309,7 +309,7 @@ trap 'on_fatal_error $? "${LINENO:-unknown}" "${FUNCNAME[0]:-main}" "${VPN1_STAG
 # [1] preflight
 # ---------------------------------------------------------------------
 existing_install_present() {
-  # Only the manifest proves vpn1 completed and owns the listeners. A
+  # Only the manifest proves singbox-vpn completed and owns the listeners. A
   # foreign sing-box binary or an interrupted partial install must not make
   # us skip conflict checks and overwrite another service.
   [ -f /var/lib/vpn1/install-state.json ]
@@ -318,12 +318,12 @@ existing_install_present() {
 # Positively determine (or accept an explicit operator override for) the
 # SSH port that must remain reachable through any firewall
 # activation/reload. Runs in stage 1, before packages_stage ever
-# installs/enables firewalld — checkpoint-1 requirement: vpn1 must not
+# installs/enables firewalld — checkpoint-1 requirement: singbox-vpn must not
 # activate or meaningfully change a host firewall until this is known.
 # Fails closed (die, zero host mutation) rather than assuming 22 when
 # detection is inconclusive and no override was supplied.
 resolve_ssh_port() {
-  SSH_PORT="$(preflight_resolve_ssh_port)" || die "could not positively determine the SSH port sshd listens on (checked sshd -T, sshd_config, and live listeners — all inconclusive), and no explicit override was supplied. vpn1 refuses to activate or modify the host firewall without a confirmed SSH port — doing so could lock you out of this server. Re-run with --ssh-port <port> (or VPN1_SSH_PORT=<port>) set to sshd's real listening port. Nothing has been mutated on this host yet."
+  SSH_PORT="$(preflight_resolve_ssh_port)" || die "could not positively determine the SSH port sshd listens on (checked sshd -T, sshd_config, and live listeners — all inconclusive), and no explicit override was supplied. singbox-vpn refuses to activate or modify the host firewall without a confirmed SSH port — doing so could lock you out of this server. Re-run with --ssh-port <port> (or VPN1_SSH_PORT=<port>) set to sshd's real listening port. Nothing has been mutated on this host yet."
   export SSH_PORT
   # Propagate the already-confirmed value as the canonical override for
   # firewall.sh/firewall-ufw.sh (invoked as subprocesses later, in
@@ -370,11 +370,11 @@ Either re-run without SUBSCRIPTION_PORT to keep $committed, or change public_por
 
 check_ports_free() {
   resolve_subscription_port
-  # Skip the check for ports vpn1 itself already owns on a re-run — an
-  # already-installed vpn1 legitimately holds 443/tcp+udp and its
+  # Skip the check for ports singbox-vpn itself already owns on a re-run — an
+  # already-installed singbox-vpn legitimately holds 443/tcp+udp and its
   # already-committed SUBSCRIPTION_PORT.
   if existing_install_present; then
-    log "existing installation detected — skipping port-conflict checks (vpn1 owns these ports already)."
+    log "existing installation detected — skipping port-conflict checks (singbox-vpn owns these ports already)."
     return
   fi
   local failed=0
@@ -382,7 +382,7 @@ check_ports_free() {
   preflight_check_port_free udp 443 || failed=1
   preflight_check_port_free tcp "$SUBSCRIPTION_PORT" || failed=1
   if [ "$failed" -eq 1 ]; then
-    die "vpn1 cannot safely continue while a required port is occupied by another service. Free the port(s) above (or move the other service, or set SUBSCRIPTION_PORT=<free-port> to relocate the subscription HTTPS endpoint) and re-run."
+    die "singbox-vpn cannot safely continue while a required port is occupied by another service. Free the port(s) above (or move the other service, or set SUBSCRIPTION_PORT=<free-port> to relocate the subscription HTTPS endpoint) and re-run."
   fi
   log "required ports (443/tcp, 443/udp, ${SUBSCRIPTION_PORT}/tcp) are free."
 }
@@ -417,11 +417,11 @@ persist_source_tree() {
     echo "[install] ERROR: existing $PERSIST_DIR is not a trusted complete source tree; refusing to replace ambiguous data during repair." >&2
     return 1
   fi
-  log "installing a persistent copy of the vpn1 source to $PERSIST_DIR (for future updates/uninstall)..."
+  log "installing a persistent copy of the singbox-vpn source to $PERSIST_DIR (for future updates/uninstall)..."
   local parent stage bad
   parent="$(dirname "$PERSIST_DIR")"
   install -d -o root -g root -m 0755 "$parent"
-  stage="$(mktemp -d "$parent/.vpn1-source.XXXXXX")"
+  stage="$(mktemp -d "$parent/.singbox-vpn-source.XXXXXX")"
   # Extract first, then normalize metadata restored by tar. chmod go-w
   # deliberately preserves every executable bit from the source.
   if ! ( cd "$REPO_ROOT" && tar --exclude=target --exclude=.git -cf - . ) | ( cd "$stage" && tar -xf - ); then
@@ -533,9 +533,9 @@ preflight_stage() {
   # read-only (detection) or a validated operator-supplied value; no
   # host mutation happens here.
   resolve_ssh_port
-  log "confirmed SSH port: $SSH_PORT — will remain allowed through any firewall activation vpn1 performs."
+  log "confirmed SSH port: $SSH_PORT — will remain allowed through any firewall activation singbox-vpn performs."
   if existing_install_present; then
-    log "existing vpn1 installation detected at $DEPLOYMENT_TOML — this run will UPGRADE/REPAIR in place, preserving users and keys."
+    log "existing singbox-vpn installation detected at $DEPLOYMENT_TOML — this run will UPGRADE/REPAIR in place, preserving users and keys."
     IS_FRESH_INSTALL=0
   else
     log "no existing installation detected — this will be a fresh install."
@@ -597,7 +597,7 @@ preflight_stage() {
 # Records, for every package in $1 (name-per-word), whether it was
 # ALREADY installed before this run — via the ownership manifest's
 # PKGS_INSTALLED_BY_VPN1 list — so uninstall.sh can later remove exactly
-# the packages vpn1 introduced and leave everything the operator already
+# the packages singbox-vpn introduced and leave everything the operator already
 # had alone. Must be called with the exact package list BEFORE the
 # package manager installs anything.
 record_package_ownership_rhel() {
@@ -652,11 +652,11 @@ install_dependencies_rhel() {
 # allowing a custom sshd port, closing an active SSH session or new
 # connections to it in between.
 #
-# If firewalld was already active before vpn1 touched this host, its
+# If firewalld was already active before singbox-vpn touched this host, its
 # existing configuration is left completely alone here (checkpoint-1
 # requirement: preserve pre-existing firewall state, never re-activate
 # or flush it) — firewall_stage (deploy/almalinux/firewall.sh) still adds
-# vpn1's own rules on top of it later, unchanged.
+# singbox-vpn's own rules on top of it later, unchanged.
 activate_firewalld_ssh_safe() {
   if systemctl is-active --quiet firewalld 2>/dev/null; then
     log "firewalld is already active on this host — preserving its existing configuration as-is, not re-activating it."
@@ -893,7 +893,7 @@ resolve_reality_handshake_server() {
     [ -n "$reply" ] && REALITY_HANDSHAKE_SERVER="$reply"
   fi
   REALITY_HANDSHAKE_SERVER="$(derive_punycode_host "${REALITY_HANDSHAKE_SERVER:-}")"
-  : "${REALITY_HANDSHAKE_SERVER:?REALITY_HANDSHAKE_SERVER is required and was not supplied. Pass --reality-handshake-server <host> (or set REALITY_HANDSHAKE_SERVER=<host>) to a TLS 1.3 hostname you control or have explicitly selected as the REALITY decoy. There is no universally safe default — vpn1 refuses to guess one, and refuses to make ANY change to this host without it. See docs/ALMALINUX_DEPLOYMENT.md for how to choose a decoy.}"
+  : "${REALITY_HANDSHAKE_SERVER:?REALITY_HANDSHAKE_SERVER is required and was not supplied. Pass --reality-handshake-server <host> (or set REALITY_HANDSHAKE_SERVER=<host>) to a TLS 1.3 hostname you control or have explicitly selected as the REALITY decoy. There is no universally safe default — singbox-vpn refuses to guess one, and refuses to make ANY change to this host without it. See docs/ALMALINUX_DEPLOYMENT.md for how to choose a decoy.}"
   preflight_validate_hostname "$REALITY_HANDSHAKE_SERVER" "REALITY_HANDSHAKE_SERVER" \
     || die "invalid REALITY_HANDSHAKE_SERVER — refusing to make any host changes."
   # Best-effort "is this candidate actually usable for REALITY" check,
@@ -922,7 +922,7 @@ resolve_reality_handshake_server() {
 }
 
 # ---------------------------------------------------------------------
-# [4] vpn1 binaries (prebuilt release, falling back to source build)
+# [4] singbox-vpn binaries (prebuilt release, falling back to source build)
 # ---------------------------------------------------------------------
 fetch_release_binaries() {
   local target version base_url tmp
@@ -966,7 +966,7 @@ fetch_release_binaries() {
   install -m 0755 "$extracted/vpn-admin" "$BIN_DIR/vpn"
   install -m 0755 "$extracted/subscription" "$BIN_DIR/vpn-subscription-svc"
   rm -rf "$tmp"
-  log "installed prebuilt vpn1 $version binaries ($target) — no Rust compiler needed."
+  log "installed prebuilt singbox-vpn $version binaries ($target) — no Rust compiler needed."
   return 0
 }
 
@@ -991,7 +991,7 @@ install_rustup_noninteractive() {
     die "rustup installation failed or exceeded its 15-minute hard deadline"
   fi
   rm -f "$rustup_script"
-  # Track that VPN1 (not the operator) introduced this toolchain, so
+  # Track that singbox-vpn (not the operator) introduced this toolchain, so
   # uninstall can remove it later — but only when no toolchain was
   # already present (checked by build_binaries_from_source before it
   # ever calls this function).
@@ -1025,7 +1025,7 @@ build_binaries_from_source() {
 }
 
 binaries_stage() {
-  stage 4 "vpn1 binaries"
+  stage 4 "singbox-vpn binaries"
   fetch_release_binaries || build_binaries_from_source
 }
 
@@ -1154,9 +1154,9 @@ singbox_install_stage() {
 install_systemd_units() {
   log "installing systemd units..."
   # Each is a FIXED path — install_fixed_path_with_ownership() backs up
-  # (once) and tracks whether something already occupied it before vpn1
+  # (once) and tracks whether something already occupied it before singbox-vpn
   # ever wrote here, so uninstall.sh can restore the exact predecessor
-  # rather than assume every file at these names is always vpn1's own.
+  # rather than assume every file at these names is always singbox-vpn's own.
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/sing-box.service" /etc/systemd/system/sing-box.service SINGBOX_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service VPNSUB_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.service" /etc/systemd/system/vpn-expiry-reconcile.service EXPIRY_SVC_UNIT
@@ -1223,10 +1223,10 @@ users_groups_stage() {
 #   users/                  root:vpn-subscription 02750  (vpn-subscription only)
 #   sing-box/               root:sing-box   02750  (sing-box only)
 create_directories() {
-  # Recorded ONCE, before vpn1 ever touches /etc/vpn — the sole basis
-  # uninstall.sh uses to decide whether the whole directory is vpn1's to
+  # Recorded ONCE, before singbox-vpn ever touches /etc/vpn — the sole basis
+  # uninstall.sh uses to decide whether the whole directory is singbox-vpn's to
   # remove outright (checkpoint-2 requirement: never rm -rf a shared
-  # parent vpn1 did not prove it created).
+  # parent singbox-vpn did not prove it created).
   ownership_set_baseline_once ETC_VPN_PRE_EXISTED "$([ -d /etc/vpn ] && echo 1 || echo 0)"
   install -d -m 0755 /etc/vpn
   install -d -m 02750 -o root -g vpn-compat "$STATE_DIR"
@@ -1263,12 +1263,12 @@ directories_stage() {
 # silently degrading to a cert that client apps will reject.
 # Temporarily allow inbound TCP/80 for certbot's HTTP-01 challenge, and
 # remove EXACTLY that rule again afterwards — never touching any
-# pre-existing firewall rule vpn1 did not add itself
+# pre-existing firewall rule singbox-vpn did not add itself
 # (docs/FINAL_PRODUCTION_AUDIT.md P0-9). firewalld/ufw are already
 # active by the time this runs — packages_stage (stage 2) activates
 # firewalld itself, but only via activate_firewalld_ssh_safe(), which
 # allows the confirmed SSH port as part of that same activation (see its
-# comment) — and vpn1's own permanent rules (443/tcp+udp plus
+# comment) — and singbox-vpn's own permanent rules (443/tcp+udp plus
 # SUBSCRIPTION_PORT, never 80) aren't added until firewall_stage (stage
 # 14) — so without this, certbot's challenge has no way to receive
 # inbound traffic.
@@ -1321,7 +1321,7 @@ attempt_automatic_certbot() {
     if [ "$opened_port_80" -eq 1 ]; then
       firewall_close_port_80_temp
       opened_port_80=0
-      log "removed the temporary TCP/80 rule vpn1 added for the ACME challenge."
+      log "removed the temporary TCP/80 rule singbox-vpn added for the ACME challenge."
     fi
     if [ "$nginx_was_stopped" -eq 1 ]; then
       systemctl start nginx >/dev/null 2>&1 || warn "could not restore nginx after ACME attempt"
@@ -1358,7 +1358,7 @@ attempt_automatic_certbot() {
   fi
   # Local port 80 being free (checked above) is NOT the same as port 80
   # being reachable from the internet — HTTP-01 requires Let's Encrypt's
-  # servers to actually connect in from outside. vpn1 only manages the
+  # servers to actually connect in from outside. singbox-vpn only manages the
   # HOST firewall (firewalld/ufw); it cannot see or touch a cloud
   # provider's separate network-level firewall (AWS security groups,
   # etc.), and a security group with no inbound TCP/80 rule silently
@@ -1372,7 +1372,7 @@ attempt_automatic_certbot() {
   2. TCP/80 is free locally (already checked) but blocked from the
      PUBLIC internet by your cloud provider's separate network firewall
      (e.g. an AWS/EC2 security group, a GCP firewall rule, an Azure NSG)
-     — vpn1 only manages this host's own firewall (firewalld/ufw) and
+     — singbox-vpn only manages this host's own firewall (firewalld/ufw) and
      cannot see or change a cloud-provider-level firewall.
      For automatic certificate issuance (Let's Encrypt HTTP-01), TCP/80
      must be reachable from the public Internet (0.0.0.0/0) — Let's
@@ -1445,9 +1445,9 @@ output for the specific reason. In summary, ALL of the following must be
 true simultaneously for automatic issuance to succeed:
   - DNS for ${PUBLIC_HOST:-<PUBLIC_HOST>} resolves to this server's public IP.
   - TCP/80 is reachable from the public internet, not just locally free.
-    vpn1 only manages the HOST firewall (firewalld/ufw) — a cloud
+    singbox-vpn only manages the HOST firewall (firewalld/ufw) — a cloud
     provider's separate network firewall/security group (AWS, GCP,
-    Azure, ...) may ALSO need an inbound TCP/80 rule; vpn1 cannot see or
+    Azure, ...) may ALSO need an inbound TCP/80 rule; singbox-vpn cannot see or
     change that layer. Test from a DIFFERENT machine:
       curl -sS --max-time 5 http://${PUBLIC_HOST:-<PUBLIC_HOST>}/ -o /dev/null -w '%{http_code}\n'
   - certbot is installed and nothing else is holding TCP/80.
@@ -1501,9 +1501,9 @@ output for the specific reason. In summary, ALL of the following must be
 true simultaneously for automatic issuance to succeed:
   - DNS for ${host} resolves to this server's public IP.
   - TCP/80 is reachable from the public internet, not just locally free.
-    vpn1 only manages the HOST firewall (firewalld/ufw) — a cloud
+    singbox-vpn only manages the HOST firewall (firewalld/ufw) — a cloud
     provider's separate network firewall/security group (AWS, GCP,
-    Azure, ...) may ALSO need an inbound TCP/80 rule; vpn1 cannot see or
+    Azure, ...) may ALSO need an inbound TCP/80 rule; singbox-vpn cannot see or
     change that layer. Test from a DIFFERENT machine:
       curl -sS --max-time 5 http://${host}/ -o /dev/null -w '%{http_code}\n'
   - certbot is installed and nothing else is holding TCP/80.
@@ -1514,7 +1514,7 @@ Provision a certificate for ${host} manually once the above are confirmed:
     --non-interactive --agree-tos -m admin@${host}
 
 Then re-run install.sh. Subscription HTTPS is required for the normal
-vpn1 onboarding path (subscription URL -> Hiddify) — installation does
+singbox-vpn onboarding path (subscription URL -> Hiddify) — installation does
 not complete without it, and never silently falls back to a
 subscription-less deployment.
 EOF
@@ -1686,7 +1686,7 @@ configure_nginx() {
   # otherwise.
   if [ "$OS_FAMILY" = "rhel" ] && command -v semanage >/dev/null 2>&1; then
     if semanage port -l 2>/dev/null | awk '/^http_port_t/' | grep -qw "$port"; then
-      : # already labeled http_port_t — vpn1 did not add this mapping, nothing to undo
+      : # already labeled http_port_t — singbox-vpn did not add this mapping, nothing to undo
     elif semanage port -l 2>/dev/null | grep -w tcp | grep -qw "$port"; then
       die "SELinux port ${port}/tcp is already owned by a non-http type. Refusing to relabel another service's port; choose another SUBSCRIPTION_PORT."
     else
@@ -1721,9 +1721,9 @@ configure_nginx() {
     nginx_had_previous=1
   fi
   # Baseline-once (first install run only — a repair re-run also finds
-  # nginx_had_previous=1 because vpn1's OWN prior file is there, but that
+  # nginx_had_previous=1 because singbox-vpn's OWN prior file is there, but that
   # must never overwrite the true original answer): was this fixed path
-  # already occupied by something ELSE before vpn1 ever touched it, and
+  # already occupied by something ELSE before singbox-vpn ever touched it, and
   # if so, an exact one-time backup for uninstall.sh to restore later
   # (checkpoint-2 requirement — same pattern as
   # install_fixed_path_with_ownership()).
@@ -1837,8 +1837,8 @@ configure_selinux() {
     semanage fcontext -a -t etc_t "$STATE_DIR/sing-box(/.*)?" 2>/dev/null || true
     semanage fcontext -a -t cert_t "$STATE_DIR/hysteria(/.*)?" 2>/dev/null || true
     restorecon -Rv "$STATE_DIR" >/dev/null 2>&1 || true
-    # These three fcontext rules are always vpn1-owned (they name only
-    # vpn1's own paths, which cannot have pre-existed before vpn1 did) —
+    # These three fcontext rules are always singbox-vpn-owned (they name only
+    # singbox-vpn's own paths, which cannot have pre-existed before singbox-vpn did) —
     # unconditional, not baseline-gated.
     ownership_mark SELINUX_FCONTEXT_RULES_ADDED
   else
@@ -2171,7 +2171,7 @@ $fail_lines"
 # or an unrelated diagnostic) left NO manifest on disk at all. A re-run
 # after that then looked exactly like a fresh install: it re-ran the
 # stage-1 port-conflict checks against 443/tcp+udp and SUBSCRIPTION_PORT,
-# which vpn1's own already-running services legitimately hold — turning
+# which singbox-vpn's own already-running services legitimately hold — turning
 # a "just re-run it" repair into a hard failure at stage 1.
 #
 # Fix: write the manifest right after start_stage confirms the data
@@ -2247,7 +2247,7 @@ print_status() {
   cat <<BANNER
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- vpn1 installation complete
+ singbox-vpn installation complete
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Server
   Address: ${PUBLIC_HOST}
