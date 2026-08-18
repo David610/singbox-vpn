@@ -176,6 +176,11 @@ A successful installation prints the first user's **subscription URL and QR code
 
 Your public IP should now be the VPS IP.
 
+**Native YouTube app fails while Safari plays YouTube fine?** See
+`docs/clients/HIDDIFY_IOS.md`'s "Native YouTube app fails while Safari
+plays YouTube fine" section and `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`
+for an opt-in `?compat=tcp-only` diagnostic subscription mode.
+
 # Commands
 
 ## Users

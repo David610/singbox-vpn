@@ -134,6 +134,54 @@ impl SelectionProfile {
     }
 }
 
+/// Explicit, opt-in compatibility mode for the generated sing-box
+/// subscription — orthogonal to `SelectionProfile` (which endpoint the
+/// selector *defaults* to). Where `SelectionProfile` never changes which
+/// endpoints exist, `CompatibilityMode` can.
+///
+/// This exists for one specific, narrow symptom: on some iOS/Hiddify
+/// installs, Safari can play YouTube over the normal subscription while
+/// the native YouTube app cannot, over both VLESS+REALITY and Hysteria2.
+/// The suspected cause is the YouTube app's own application-level
+/// QUIC/UDP behavior, not a server-side or REALITY-key problem (server
+/// protocol diagnostics already pass — see
+/// `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`). `TcpOnly` gives an opt-in
+/// way to test that theory: it removes every UDP-carrying option from
+/// the profile the client can select, rather than adding an unverifiable
+/// `route.rules` reject rule (see that same document for why the latter
+/// was investigated and deliberately not shipped — Hiddify's actual
+/// handling of imported `route.rules` cannot be verified from this
+/// environment). Forcing the transport itself to be TCP-only is
+/// enforced by construction (there is no UDP outbound left to fall back
+/// to), not by a routing rule the client might silently ignore.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CompatibilityMode {
+    /// Unchanged, pre-existing behavior: both VLESS+REALITY and
+    /// Hysteria2 are offered, exactly as before this mode existed.
+    #[default]
+    Normal,
+    /// Hiddify/iOS YouTube-app compatibility mode. Hysteria2 (UDP/443,
+    /// QUIC-based end to end) is dropped from the profile entirely, and
+    /// the VLESS+REALITY outbound is rendered with `"network": "tcp"` —
+    /// disabling sing-box VLESS's UDP-over-TCP relay for that outbound.
+    /// REALITY's own transport connection is already TCP/443 by design
+    /// (see `docs/CLIENT_PROTOCOL_BEHAVIOR.md`'s "UDP / TCP behavior"
+    /// section); this only additionally forbids UDP relay *through* it.
+    /// Everything else about the REALITY endpoint (UUID, flow, TLS,
+    /// uTLS fingerprint, public key, short ID) is unchanged.
+    TcpOnly,
+}
+
+impl CompatibilityMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "normal" => Some(Self::Normal),
+            "tcp-only" => Some(Self::TcpOnly),
+            _ => None,
+        }
+    }
+}
+
 /// Native sing-box client subscription: an `outbounds` array (one per
 /// endpoint) plus a `urltest` selector so Hiddify/sing-box can
 /// automatically pick whichever transport currently measures healthy —
@@ -177,11 +225,39 @@ pub fn render_singbox_client_subscription_with_profile(
     endpoints: &[CompatEndpoint],
     profile: SelectionProfile,
 ) -> Result<serde_json::Value, CompatError> {
+    render_singbox_client_subscription_with_options(
+        user,
+        endpoints,
+        profile,
+        CompatibilityMode::default(),
+    )
+}
+
+/// Same as `render_singbox_client_subscription_with_profile`, additionally
+/// taking a `CompatibilityMode`. `CompatibilityMode::Normal` reproduces the
+/// exact prior behavior unchanged; `CompatibilityMode::TcpOnly` drops
+/// Hysteria2 endpoints before the selector/urltest groups are built and
+/// forces `"network": "tcp"` on the VLESS+REALITY outbound — see
+/// `CompatibilityMode`'s doc comment for why.
+pub fn render_singbox_client_subscription_with_options(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    profile: SelectionProfile,
+    compat_mode: CompatibilityMode,
+) -> Result<serde_json::Value, CompatError> {
+    let filtered: Vec<&CompatEndpoint> = endpoints
+        .iter()
+        .filter(|ep| {
+            !(compat_mode == CompatibilityMode::TcpOnly
+                && matches!(ep.transport, CompatTransport::Hysteria2))
+        })
+        .collect();
+
     let mut outbounds = Vec::new();
     let mut tags = Vec::new();
     let mut reality_tag: Option<String> = None;
     let mut hysteria2_tag: Option<String> = None;
-    for ep in endpoints {
+    for ep in filtered {
         let tag = ep.label.clone();
         tags.push(tag.clone());
         if matches!(ep.transport, CompatTransport::VlessReality) && reality_tag.is_none() {
@@ -195,24 +271,30 @@ pub fn render_singbox_client_subscription_with_profile(
                 public_key_hex,
                 short_id,
                 fingerprint,
-            } => json!({
-                "type": "vless",
-                "tag": tag,
-                "server": ep.host,
-                "server_port": ep.port,
-                "uuid": user.vless_uuid,
-                "flow": "xtls-rprx-vision",
-                "tls": {
-                    "enabled": true,
-                    "server_name": ep.server_name.clone().unwrap_or_else(|| ep.host.clone()),
-                    "utls": { "enabled": true, "fingerprint": fingerprint },
-                    "reality": {
+            } => {
+                let mut ob = json!({
+                    "type": "vless",
+                    "tag": tag,
+                    "server": ep.host,
+                    "server_port": ep.port,
+                    "uuid": user.vless_uuid,
+                    "flow": "xtls-rprx-vision",
+                    "tls": {
                         "enabled": true,
-                        "public_key": public_key_hex,
-                        "short_id": short_id,
+                        "server_name": ep.server_name.clone().unwrap_or_else(|| ep.host.clone()),
+                        "utls": { "enabled": true, "fingerprint": fingerprint },
+                        "reality": {
+                            "enabled": true,
+                            "public_key": public_key_hex,
+                            "short_id": short_id,
+                        }
                     }
+                });
+                if compat_mode == CompatibilityMode::TcpOnly {
+                    ob["network"] = json!("tcp");
                 }
-            }),
+                ob
+            }
             PublicParameters::Hysteria2 { obfs_password } => {
                 let mut ob = json!({
                     "type": "hysteria2",
@@ -810,5 +892,213 @@ mod tests {
              property the live subscription/server coherence check in `vpn-admin doctor` \
              depends on to detect a stale running vpn-subscription process"
         );
+    }
+
+    // --- CompatibilityMode::TcpOnly ---
+
+    #[test]
+    fn compatibility_mode_parse_rejects_unknown_values() {
+        assert_eq!(
+            CompatibilityMode::parse("normal"),
+            Some(CompatibilityMode::Normal)
+        );
+        assert_eq!(
+            CompatibilityMode::parse("tcp-only"),
+            Some(CompatibilityMode::TcpOnly)
+        );
+        assert_eq!(CompatibilityMode::parse("garbage"), None);
+    }
+
+    #[test]
+    fn normal_mode_via_with_options_is_identical_to_existing_renderer() {
+        let via_options = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::Normal,
+        )
+        .unwrap();
+        let existing =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        assert_eq!(
+            via_options, existing,
+            "CompatibilityMode::Normal must reproduce the pre-existing subscription exactly"
+        );
+    }
+
+    #[test]
+    fn normal_mode_keeps_vless_and_hysteria2_and_no_network_field() {
+        let doc =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let types: Vec<&str> = outbounds
+            .iter()
+            .map(|o| o["type"].as_str().unwrap())
+            .collect();
+        assert!(types.contains(&"vless"));
+        assert!(types.contains(&"hysteria2"));
+        let vless = outbounds.iter().find(|o| o["type"] == "vless").unwrap();
+        assert!(
+            vless.get("network").is_none(),
+            "normal mode must not unexpectedly acquire network=tcp on the VLESS outbound"
+        );
+        assert!(
+            doc["route"].get("rules").is_none(),
+            "normal mode must not gain route.rules"
+        );
+    }
+
+    #[test]
+    fn tcp_only_mode_sets_vless_network_tcp_and_drops_hysteria2() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::TcpOnly,
+        )
+        .unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let types: Vec<&str> = outbounds
+            .iter()
+            .map(|o| o["type"].as_str().unwrap())
+            .collect();
+        assert!(types.contains(&"vless"), "REALITY outbound still present");
+        assert!(
+            !types.contains(&"hysteria2"),
+            "TcpOnly must drop Hysteria2 — it depends on UDP end to end"
+        );
+        let vless = outbounds.iter().find(|o| o["type"] == "vless").unwrap();
+        assert_eq!(vless["network"], "tcp");
+        // REALITY parameters must be otherwise unchanged.
+        assert_eq!(vless["uuid"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(vless["flow"], "xtls-rprx-vision");
+        assert_eq!(vless["tls"]["reality"]["public_key"], "abc123");
+        assert_eq!(vless["tls"]["reality"]["short_id"], "0a1b2c3d");
+        assert_eq!(vless["tls"]["utls"]["fingerprint"], "chrome");
+    }
+
+    #[test]
+    fn tcp_only_mode_does_not_add_packet_encoding_xudp() {
+        // xudp is sing-box's normal VLESS UDP behavior — it does not
+        // address the symptom this mode targets, and must not be added
+        // as a supposed fix.
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::TcpOnly,
+        )
+        .unwrap();
+        let encoded = serde_json::to_string(&doc).unwrap();
+        assert!(!encoded.contains("packet_encoding"));
+    }
+
+    #[test]
+    fn tcp_only_mode_selector_lists_only_remaining_tags_and_defaults_to_reality() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::TcpOnly,
+        )
+        .unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let selector = outbounds
+            .iter()
+            .find(|o| o["type"] == "selector")
+            .expect("selector outbound present");
+        assert_eq!(selector["default"], "Germany - Reality");
+        let options: Vec<&str> = selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(options.contains(&"Germany - Reality"));
+        assert!(
+            !options.contains(&"Germany - Hysteria2"),
+            "selector must not reference a dropped Hysteria2 tag: {options:?}"
+        );
+        assert!(options.contains(&"auto"), "auto/urltest must stay valid");
+
+        let urltest = outbounds.iter().find(|o| o["type"] == "urltest").unwrap();
+        let urltest_options: Vec<&str> = urltest["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            urltest_options,
+            vec!["Germany - Reality"],
+            "urltest group must not reference a dropped Hysteria2 tag"
+        );
+    }
+
+    #[test]
+    fn tcp_only_mode_route_final_is_valid_and_emits_no_route_rules() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::TcpOnly,
+        )
+        .unwrap();
+        assert_eq!(doc["route"]["final"], "select");
+        assert!(
+            doc["route"].get("rules").is_none(),
+            "TcpOnly must not add a route.rules UDP/443 reject rule — enforcement is via the \
+             outbound's own network field, not an unverifiable client-side routing rule, see \
+             docs/COMPATIBILITY_QUIC_EXPERIMENT.md"
+        );
+    }
+
+    #[test]
+    fn tcp_only_mode_emits_no_dns_block_or_tun_inbound() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::TcpOnly,
+        )
+        .unwrap();
+        assert!(doc.get("dns").is_none());
+        assert!(doc.get("inbounds").is_none());
+    }
+
+    #[test]
+    fn tcp_only_mode_leaks_no_private_reality_material() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::TcpOnly,
+        )
+        .unwrap();
+        let encoded = serde_json::to_string(&doc).unwrap();
+        assert!(!encoded.to_lowercase().contains("private"));
+        assert!(!encoded.to_lowercase().contains("private_key"));
+    }
+
+    #[test]
+    fn tcp_only_mode_reality_only_deployment_still_produces_valid_profile() {
+        // A reduced endpoint set with only REALITY (no Hysteria2 offered
+        // at all) must still work under TcpOnly — same defensive contract
+        // as the existing `hysteria2_unavailable_reality_only_profile_
+        // remains_fully_usable` test, now also exercised under TcpOnly.
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::TcpOnly,
+        )
+        .unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        assert!(outbounds.iter().any(|o| o["type"] == "vless"));
+        let selector = outbounds.iter().find(|o| o["type"] == "selector").unwrap();
+        assert_eq!(selector["default"], "Germany - Reality");
+        assert_eq!(doc["route"]["final"], "select");
     }
 }

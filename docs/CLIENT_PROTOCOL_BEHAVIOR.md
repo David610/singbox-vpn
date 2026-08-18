@@ -104,11 +104,27 @@ assumption.
   requires a real device test (see `docs/DEVICE_ACCEPTANCE_TESTS.md`'s
   "Network switch" column and the Telegram matrix's IPv4/IPv6/handover
   rows).
-- **An application-level UDP/443 (QUIC) reject rule was investigated and
-  deliberately not added** as a selectable "Compatibility" profile — see
+- **An application-level UDP/443 (QUIC) `route.rules` reject rule was
+  investigated and deliberately not added** — see
   `docs/COMPATIBILITY_QUIC_EXPERIMENT.md` for the full feasibility
-  research and why it stays a manual, operator-run experiment instead of
-  something this project generates and claims works.
+  research and why a routing rule stays a manual, operator-run
+  experiment rather than something this project generates and claims
+  works.
+- **What IS available**: `?compat=tcp-only` on the `format=singbox`
+  subscription endpoint (`compat_config::render::CompatibilityMode::
+  TcpOnly`) — an explicit, opt-in mode for the specific symptom of
+  Safari playing YouTube while the native YouTube iOS app fails, on both
+  VLESS+REALITY and Hysteria2. It drops Hysteria2 from the profile
+  entirely and sets `"network": "tcp"` on the VLESS+REALITY outbound,
+  disabling that outbound's UDP relay — enforced by what the profile
+  *contains*, not by a routing rule a client might not honor. See
+  `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`'s "Shipped implementation"
+  section for exactly what it does, its trade-offs (UDP-dependent
+  traffic — some games, VoIP, WebRTC/STUN — may degrade or fail while
+  it's selected), and why it remains unverified against a real device
+  until tested per `docs/DEVICE_ACCEPTANCE_TESTS.md`. It is opt-in only:
+  the normal profile (both transports) stays the default for
+  `/sub/<token>` and `/sub/<token>?format=singbox`.
 
 ## Failover / selection — honest framing
 

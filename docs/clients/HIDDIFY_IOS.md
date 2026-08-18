@@ -191,6 +191,43 @@ step 9). This project has not yet reproduced the failure on a real
 device end-to-end; treat any specific-cause claim beyond this list as
 unverified until it is.
 
+## Native YouTube app fails while Safari plays YouTube fine
+
+If Safari can play YouTube through the normal subscription but the
+native YouTube iOS app cannot — on both REALITY and Hysteria2 — this is
+a known, narrow symptom with a suspected cause: the YouTube app's own
+application-level QUIC/UDP behavior, not a server-side problem (server
+protocol diagnostics passing does not rule this in or out either way).
+
+An opt-in compatibility mode exists to test that theory: import a
+**new, separate** Hiddify profile from
+`https://<host>:<subscription-port>/sub/<your-token>?format=singbox&compat=tcp-only`
+(note: `format=singbox`, not `format=hiddify` — this mode is not
+available as a share-link import). This profile offers only
+VLESS+REALITY with UDP relay disabled through it; Hysteria2 is not
+included, since Hysteria2 itself depends on UDP end to end. See
+`docs/COMPATIBILITY_QUIC_EXPERIMENT.md` for exactly what this mode
+changes and why.
+
+**This is not a proven fix and not a Hiddify repair** — it is a
+diagnostic profile whose actual effect on the YouTube app symptom has
+not yet been confirmed against a real device. Test it as its own
+profile, alongside (not instead of) your normal one, and record the
+result per `docs/DEVICE_ACCEPTANCE_TESTS.md`:
+
+1. Import the `compat=tcp-only` subscription as a **new** Hiddify
+   profile (do not overwrite your normal one).
+2. Select/connect it; confirm your public IP changed to the VPS IP.
+3. Fully kill the YouTube app (not just background it), reopen it, and
+   play a video you previously confirmed fails. Test at least two
+   videos.
+4. Compare against the normal REALITY profile on the same network.
+
+Because this mode disables UDP relay through the selected profile, any
+UDP-dependent app — some games, VoIP, WebRTC/STUN, and similar — may
+degrade or fail while it's selected. Switch back to the normal profile
+for everyday use once you're done testing.
+
 ## Other things to check if it doesn't connect at all
 
 - In Hiddify's server list, try manually switching between the
