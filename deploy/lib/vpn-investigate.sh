@@ -334,11 +334,13 @@ mtu() {
   # problem well beyond ordinary encapsulation overhead.
   local sizes=(1472 1400 1372 1300 1200)
   local largest_ok=0
-  local family payload flag cmd
+  local family payload
 
   if [[ -n "$resolved_v4" ]]; then
     echo "IPv4 ($resolved_v4):"
     for payload in "${sizes[@]}"; do
+      # "-M do" is ping's own flag value ("Do not fragment"), not a shell `do` keyword.
+      # shellcheck disable=SC1010
       if ping -4 -M do -c 2 -W 2 -s "$payload" "$resolved_v4" >/dev/null 2>&1; then
         echo "  payload ${payload}B (~$((payload + 28))B on the wire): OK"
         (( payload > largest_ok )) && largest_ok=$payload
@@ -358,6 +360,8 @@ mtu() {
     # ping6 implementations map to disabling fragmentation and surfacing
     # a Packet Too Big response instead.
     for payload in "${sizes[@]}"; do
+      # "-M do" is ping's own flag value, not a shell `do` keyword.
+      # shellcheck disable=SC1010
       if ping -6 -M do -c 2 -W 2 -s "$payload" "$resolved_v6" >/dev/null 2>&1; then
         echo "  payload ${payload}B (~$((payload + 48))B on the wire): OK"
         (( payload > largest_ok_v6 )) && largest_ok_v6=$payload
