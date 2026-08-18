@@ -11,14 +11,14 @@ spec conformance alone — see `docs/CLIENT_COMPATIBILITY.md` and
 against a real client/device versus what remains a documented, honest
 assumption.
 
-## What vpn1 generates vs. what the client controls
+## What singbox-vpn generates vs. what the client controls
 
-| Layer | Who controls it | vpn1's role |
+| Layer | Who controls it | singbox-vpn's role |
 |---|---|---|
-| VLESS+REALITY / Hysteria2 outbound config (server, port, UUID/password, keys, SNI) | vpn1 (subscription renderer, `crates/compat-config/src/render.rs`) | Generates it; server and client always agree because both are rendered from the same `CompatUser`/`RealityServerParams`/`Hysteria2ServerParams` state — see `server_and_client_configs_agree_on_reality_key_material` in `crates/compat-config/tests/reality_interop.rs`. |
-| Which transport is selected by default | vpn1 (a `selector` outbound with `default` set — see `render.rs`'s `SelectionProfile`) | Deterministic (REALITY by default), never a silent race — but the client can always override it by hand, and a manual `urltest` (`auto`) option is offered, never forced. |
+| VLESS+REALITY / Hysteria2 outbound config (server, port, UUID/password, keys, SNI) | singbox-vpn (subscription renderer, `crates/compat-config/src/render.rs`) | Generates it; server and client always agree because both are rendered from the same `CompatUser`/`RealityServerParams`/`Hysteria2ServerParams` state — see `server_and_client_configs_agree_on_reality_key_material` in `crates/compat-config/tests/reality_interop.rs`. |
+| Which transport is selected by default | singbox-vpn (a `selector` outbound with `default` set — see `render.rs`'s `SelectionProfile`) | Deterministic (REALITY by default), never a silent race — but the client can always override it by hand, and a manual `urltest` (`auto`) option is offered, never forced. |
 | **Full-device tunneling (TUN/VPN mode vs. proxy-only)** | **The client app + client OS**, entirely | **Not present anywhere in the generated config.** The subscription contains only `outbounds` + `route.final` — no `inbounds`, no TUN/interface directive. Whether traffic actually leaves the device through the tunnel depends 100% on the client's own "Service Mode: VPN/TUN" setting (Hiddify) and the OS granting a VPN permission. This is documented per-client (see `docs/clients/HIDDIFY_IOS.md`'s "Four different claims" table) rather than assumed. |
-| DNS resolution while connected | The client app's own DNS handling | **The generated config has no `dns` block.** vpn1 does not choose a resolver, does not force DNS through the tunnel, and cannot detect or prevent a client/OS-level DNS bypass (e.g. a device-wide "private DNS" setting that ignores the VPN's DNS). Any DNS behavior is whatever Hiddify's own template/defaults do with the imported outbounds — untested by this project on a real device (see below). |
+| DNS resolution while connected | The client app's own DNS handling | **The generated config has no `dns` block.** singbox-vpn does not choose a resolver, does not force DNS through the tunnel, and cannot detect or prevent a client/OS-level DNS bypass (e.g. a device-wide "private DNS" setting that ignores the VPN's DNS). Any DNS behavior is whatever Hiddify's own template/defaults do with the imported outbounds — untested by this project on a real device (see below). |
 | IPv4 / IPv6 | Server: dual-stack listener. Client: entirely its own routing behavior | Server-side: both inbounds bind `"listen": "::"` (dual-stack wildcard — accepts IPv4 and IPv6 client connections if the OS/network provide both). The generated config has no `route` rules restricting/preferring either family for the client's own traffic, and no explicit AAAA/A DNS handling — that's the client's own resolver + OS routing, not something this config expresses. |
 | MTU / fragmentation | The client app + OS network stack | No MTU/MSS override is set anywhere in this repo's generated config. Upstream sing-box's own defaults are used unless a reproducible failure demonstrates otherwise — none has been observed or reported as of this writing. |
 | Kill switch / leak prevention if the tunnel drops | The client app | Not something a server-side subscription can express or enforce at all — sing-box's client-side "on connection failure" behavior (if any) is entirely Hiddify's own implementation, untested here. |
@@ -69,7 +69,7 @@ assumption.
   general routing but the server domain only has an A record, standard
   DNS resolution falls back to the IPv4 address like any other IPv4-only
   service — this is normal DNS/happy-eyeballs behavior, not something
-  vpn1 needs to special-case.
+  singbox-vpn needs to special-case.
 - **No partial/ambiguous dual-stack behavior is introduced by this
   project**: the server config is deliberately silent on IPv4-vs-IPv6
   preference: it does not force one, does not disable one, does not
@@ -82,7 +82,7 @@ assumption.
 - **VLESS+REALITY**: runs over TCP/443 by design (the REALITY disguise
   requires a real TCP TLS handshake with a decoy). sing-box's VLESS
   implementation supports UDP relay multiplexed over that same TCP
-  connection (standard sing-box/VLESS behavior, not a vpn1-specific
+  connection (standard sing-box/VLESS behavior, not a singbox-vpn-specific
   configuration) — no separate UDP listener or config is added for it.
 - **Hysteria2**: UDP/443 end to end (QUIC-based) — this is the entire
   point of offering it as a secondary transport. **UDP/443 is

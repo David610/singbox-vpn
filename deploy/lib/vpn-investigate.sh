@@ -290,7 +290,7 @@ streaming_ip_family() {
 streaming() {
   local seconds=${1:-20}
   [[ "$seconds" =~ ^[0-9]+$ ]] && ((seconds >= 5 && seconds <= 120)) || { echo "seconds must be 5..120" >&2; return 2; }
-  echo "vpn1 sustained-flow diagnostics (~${seconds}s TCP window, ~${seconds}s UDP window)"
+  echo "singbox-vpn sustained-flow diagnostics (~${seconds}s TCP window, ~${seconds}s UDP window)"
   echo "Purpose: catch failures that only appear under a real, minutes-not-milliseconds flow —"
   echo "a healthy \`vpn doctor\` or a bound-socket check can coexist with exactly this class of break."
   echo

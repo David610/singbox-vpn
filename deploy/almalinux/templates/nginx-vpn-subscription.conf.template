@@ -1,4 +1,4 @@
-# /etc/nginx/conf.d/vpn-subscription.conf — fully managed by vpn1.
+# /etc/nginx/conf.d/vpn-subscription.conf — fully managed by singbox-vpn.
 # Terminates public HTTPS for the subscription endpoint and proxies to
 # the loopback-only Rust subscription service. install.sh regenerates
 # this file from this template on EVERY run (not just the first) so it

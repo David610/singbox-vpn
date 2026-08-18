@@ -174,7 +174,7 @@ and host PID/systemd access to do its job.
 Build one image:
 
 ```bash
-docker build -f deploy/docker/Dockerfile --target subscription -t vpn1/subscription .
+docker build -f deploy/docker/Dockerfile --target subscription -t singbox-vpn/subscription .
 ```
 
 or bring up a whole profile with Compose (both validated end-to-end in a

@@ -1,6 +1,6 @@
 # IMPLEMENTATION_AUDIT.md
 
-Audit of the repository against the "make vpn1 production-ready and
+Audit of the repository against the "make singbox-vpn production-ready and
 end-user friendly" spec, written before this session's changes. Purpose:
 avoid duplicating work that already exists, and give an honest baseline
 for what this session adds on top of it.

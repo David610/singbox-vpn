@@ -74,16 +74,16 @@ entirely inside the Hiddify app and iOS's own permission system.
 
 ### Full tunnel versus Russia-region split routing
 
-vpn1's normal acceptance target is a **full tunnel**. For that test select
+singbox-vpn's normal acceptance target is a **full tunnel**. For that test select
 **Region = Other** (or otherwise disable Russia/RU bypass rules), remove custom
 split-tunnel exclusions, use VPN/TUN rather than Proxy Only, manually select
 REALITY, and reconnect after every setting change. Hiddify's global routing
-policy is client state; the vpn1 subscription cannot override it.
+policy is client state; the singbox-vpn subscription cannot override it.
 
 Record the public IP before and after connecting at both a neutral,
 non-Russian IP-check endpoint and a `.ru` endpoint. If the neutral endpoint
 uses the VPS exit but the `.ru` endpoint retains the Russian ISP address, that
-is client-side region bypass/split routing, **not** a vpn1 server failure.
+is client-side region bypass/split routing, **not** a singbox-vpn server failure.
 Never include the subscription URL, UUID, token, or key in a diagnostic report.
 
 As a client-independent control, run the same raw profile with upstream

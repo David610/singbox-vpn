@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vpn1 performance benchmark: a repeatable, multi-layer measurement of
+# singbox-vpn performance benchmark: a repeatable, multi-layer measurement of
 # where time/bytes actually go, so a performance decision can be made
 # from evidence instead of guessing. See
 # docs/PERFORMANCE_OPTIMIZATION_PLAN.md for how to read this output.

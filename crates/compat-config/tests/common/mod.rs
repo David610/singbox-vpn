@@ -44,7 +44,7 @@ pub fn spawn_local_http_target() -> LocalHttpTarget {
             std::thread::spawn(move || {
                 let mut buf = [0u8; 1024];
                 let _ = stream.read(&mut buf);
-                let body = b"hello from vpn1 interop test target";
+                let body = b"hello from singbox-vpn interop test target";
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()

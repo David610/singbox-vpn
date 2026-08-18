@@ -23,8 +23,8 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       target: subscription
-    image: vpn1/subscription:local
-    container_name: vpn1-subscription
+    image: singbox-vpn/subscription:local
+    container_name: singbox-vpn-subscription
     restart: unless-stopped
     # subscription's own code binds 127.0.0.1 only, by design (never meant
     # to be reachable except via the host's own loopback — see
@@ -64,8 +64,8 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       target: rendezvous
-    image: vpn1/rendezvous:local
-    container_name: vpn1-rendezvous
+    image: singbox-vpn/rendezvous:local
+    container_name: singbox-vpn-rendezvous
     command: ["--bind", "0.0.0.0:9000", "--pool-file", "/tmp/relay-pool.json"]
     # Mounted inside /tmp (tmpfs, writable), not its own read-only
     # directory: with no --key-dir given, rendezvous falls back to an
@@ -77,7 +77,7 @@ services:
       - ../local/relay-pool.json:/tmp/relay-pool.json:ro,z
     ports:
       - "127.0.0.1:9000:9000" # local dev slice only — never a public bind
-    networks: ["vpn1-dev"]
+    networks: ["singbox-vpn-dev"]
     read_only: true
     tmpfs:
       - /tmp
@@ -91,14 +91,14 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       target: relay-agent
-    image: vpn1/relay-agent:local
-    container_name: vpn1-relay-agent
+    image: singbox-vpn/relay-agent:local
+    container_name: singbox-vpn-relay-agent
     command: ["--role", "combined", "--bind-tls", "0.0.0.0:9443"]
     environment:
       RELAY_TLS_PORT: "9443"
     ports:
       - "127.0.0.1:9443:9443" # local dev slice only — never a public bind
-    networks: ["vpn1-dev"]
+    networks: ["singbox-vpn-dev"]
     read_only: true
     tmpfs:
       - /tmp
@@ -112,11 +112,11 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       target: test-service
-    image: vpn1/test-service:local
-    container_name: vpn1-test-service
+    image: singbox-vpn/test-service:local
+    container_name: singbox-vpn-test-service
     ports:
       - "127.0.0.1:8081:8081" # local dev slice only — never a public bind
-    networks: ["vpn1-dev"]
+    networks: ["singbox-vpn-dev"]
     read_only: true
     tmpfs:
       - /tmp
@@ -125,5 +125,5 @@ services:
       - "no-new-privileges:true"
 
 networks:
-  vpn1-dev:
+  singbox-vpn-dev:
     driver: bridge

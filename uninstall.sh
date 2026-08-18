@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vpn1 one-command bootstrap uninstaller.
+# singbox-vpn one-command bootstrap uninstaller.
 #
 #   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash
 #
@@ -7,11 +7,11 @@
 # already cloned or that a persistent copy still exists at /opt/vpn1. It
 # never requires the operator to know about (or invoke)
 # deploy/almalinux/uninstall.sh directly. It downloads a fresh copy of
-# the vpn1 source (the same ref/version this host was installed from,
+# the singbox-vpn source (the same ref/version this host was installed from,
 # when that can be determined, otherwise the requested/default branch)
 # into a secure temporary directory, then hands off to the real
 # implementation at deploy/almalinux/uninstall.sh, which removes
-# EVERYTHING vpn1 created — completely, by default, no extra flags
+# EVERYTHING singbox-vpn created — completely, by default, no extra flags
 # needed.
 #
 # Supported overrides (all optional; a plain `curl | sudo bash` needs
@@ -40,11 +40,11 @@ while [ $# -gt 0 ]; do
     --ref=*) VPN1_REF="${1#*=}"; VPN1_REF_EXPLICIT=1; shift ;;
     -h|--help)
       cat <<'USAGE'
-vpn1 one-command bootstrap uninstaller.
+singbox-vpn one-command bootstrap uninstaller.
 
   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash
 
-Removes EVERYTHING vpn1 created on this host, completely, by default —
+Removes EVERYTHING singbox-vpn created on this host, completely, by default —
 no other flags are needed. Bootstrap-specific options:
   --repo owner/repo   uninstall a fork's deployment
   --ref branch-name   source branch to fetch (default: main)
@@ -111,10 +111,10 @@ run_legacy_uninstaller() {
 # missing — the stable, documented, offline entry point is
 # `sudo /opt/vpn1/bin/vpn1-uninstall --yes` directly.
 if [ -x /opt/vpn1/bin/vpn1-uninstall ]; then
-  log "found the persistent vpn1 install at /opt/vpn1 — using its own uninstaller (no download needed)."
+  log "found the persistent singbox-vpn install at /opt/vpn1 — using its own uninstaller (no download needed)."
   exec /opt/vpn1/bin/vpn1-uninstall "${PASSTHROUGH_ARGS[@]}"
 elif [ -x /opt/vpn1/deploy/almalinux/uninstall.sh ]; then
-  log "found the persistent vpn1 install at /opt/vpn1 (older layout, no bin/vpn1-uninstall) — using its own uninstaller (no download needed)."
+  log "found the persistent singbox-vpn install at /opt/vpn1 (older layout, no bin/vpn1-uninstall) — using its own uninstaller (no download needed)."
   run_legacy_uninstaller /opt/vpn1/deploy/almalinux/uninstall.sh "${PASSTHROUGH_ARGS[@]}"
 fi
 
@@ -144,9 +144,9 @@ if [ -z "${VPN1_REF_EXPLICIT:-}" ] && [ -f "$INSTALL_STATE_MANIFEST" ]; then
 fi
 VPN1_REF_IS_TAG="${VPN1_REF_IS_TAG:-0}"
 
-log "no persistent install found at /opt/vpn1 — downloading vpn1 source to run its uninstaller (repo=$VPN1_REPO, ref=$VPN1_REF)..."
+log "no persistent install found at /opt/vpn1 — downloading singbox-vpn source to run its uninstaller (repo=$VPN1_REPO, ref=$VPN1_REF)..."
 
-TMPDIR="$(mktemp -d /tmp/vpn1-uninstall.XXXXXXXX)" || die "mktemp failed"
+TMPDIR="$(mktemp -d /tmp/singbox-vpn-uninstall.XXXXXXXX)" || die "mktemp failed"
 cleanup() {
   local rc=$?
   rm -rf "$TMPDIR"
@@ -170,7 +170,7 @@ SRC_DIR="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
 [ -n "$SRC_DIR" ] || die "extracted archive did not contain the expected repository directory."
 [ -x "$SRC_DIR/deploy/almalinux/uninstall.sh" ] || die "downloaded source is missing deploy/almalinux/uninstall.sh — cannot continue."
 
-log "running uninstaller (removes everything vpn1 created — no further steps needed)..."
+log "running uninstaller (removes everything singbox-vpn created — no further steps needed)..."
 echo
 
 set +e

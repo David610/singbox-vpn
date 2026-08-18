@@ -138,7 +138,7 @@ using facilities that already exist:
    this section follows from).
 5. Record the result using `docs/DEVICE_ACCEPTANCE_TESTS.md`'s
    streaming/YouTube matrix, noting explicitly that "Compatibility mode"
-   was a manual client-side override, not a vpn1-issued profile.
+   was a manual client-side override, not a singbox-vpn-issued profile.
 
 This gives the same diagnostic value (does forcing QUIC-preferring apps
 onto TCP change the YouTube-app symptom?) without asking every user's

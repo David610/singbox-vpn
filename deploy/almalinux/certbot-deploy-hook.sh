@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# certbot deploy-hook: keeps the Hysteria2 TLS cert/key vpn1 reads from
+# certbot deploy-hook: keeps the Hysteria2 TLS cert/key singbox-vpn reads from
 # /etc/vpn/compat/hysteria/{cert,key}.pem in sync with certbot's renewed
 # certificate. Installed by install.sh into
 # /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh, which certbot
@@ -9,13 +9,13 @@
 # Why this exists (docs/FINAL_PRODUCTION_AUDIT.md P0-11): install.sh only
 # ever copies the cert/key ONCE, at install time. sing-box never reads
 # /etc/letsencrypt directly (it isn't in sing-box's ReadOnlyPaths, and the
-# vpn1 state dir has its own explicit ownership matrix), so without this
+# singbox-vpn state dir has its own explicit ownership matrix), so without this
 # hook the copied files silently go stale ~90 days after install and
 # Hysteria2 starts failing TLS handshakes with no visible warning.
 #
 # certbot exports $RENEWED_LINEAGE (the live cert directory that was just
 # renewed) and $RENEWED_DOMAINS when it runs deploy hooks; this script
-# only acts if $RENEWED_LINEAGE matches vpn1's configured PUBLIC_HOST, so
+# only acts if $RENEWED_LINEAGE matches singbox-vpn's configured PUBLIC_HOST, so
 # it never touches unrelated certificates on a host running certbot for
 # other purposes too.
 set -euo pipefail
@@ -35,7 +35,7 @@ warn() { echo "[certbot-deploy-hook] WARNING: $*" >&2; }
 die() { echo "[certbot-deploy-hook] ERROR: $*" >&2; exit 1; }
 
 [ -n "${RENEWED_LINEAGE:-}" ] || die "expected to be run by certbot as a deploy hook (RENEWED_LINEAGE not set)."
-[ -f "$DEPLOYMENT_TOML" ] || { log "no $DEPLOYMENT_TOML — vpn1 not installed on this host, nothing to do."; exit 0; }
+[ -f "$DEPLOYMENT_TOML" ] || { log "no $DEPLOYMENT_TOML — singbox-vpn not installed on this host, nothing to do."; exit 0; }
 
 public_host="$(grep -E '^public_host' "$DEPLOYMENT_TOML" | sed -E 's/^public_host *= *"([^"]*)".*/\1/')"
 renewed_host="$(basename "$RENEWED_LINEAGE")"
@@ -60,7 +60,7 @@ if [ -n "$subscription_host" ] && [ "$renewed_host" = "$subscription_host" ]; th
 fi
 
 if [ "$renewed_host" != "$public_host" ]; then
-  log "renewed certificate is for '$renewed_host', vpn1's PUBLIC_HOST is '$public_host' — not this deployment's cert, skipping."
+  log "renewed certificate is for '$renewed_host', singbox-vpn's PUBLIC_HOST is '$public_host' — not this deployment's cert, skipping."
   exit 0
 fi
 
@@ -106,7 +106,7 @@ key_bak="$key.renew-bak"
 # A backup file existing here can ONLY be a leftover from a PREVIOUS run of
 # this exact hook that was killed (SIGKILL, OOM, host power loss) before it
 # could clean up after itself — never a currently-active concurrent
-# transaction. Every vpn1 tool that mutates this state (this hook,
+# transaction. Every singbox-vpn tool that mutates this state (this hook,
 # `vpn-admin`, install.sh, update.sh) takes the SAME `/run/lock/vpn1.lock`
 # before touching it, and we are holding that lock exclusively right now
 # (line above); a genuinely concurrent writer would still be blocked on

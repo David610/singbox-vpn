@@ -72,7 +72,7 @@ Required:
                                         Refuses localhost/127.0.0.1/::1 and this repo's own
                                         configured production PUBLIC_HOST.
   --i-understand-this-is-destructive   explicit acknowledgement; this WIPES the target host's
-                                        vpn1 state (and, on failure-injection stages, more).
+                                        singbox-vpn state (and, on failure-injection stages, more).
 
 Options:
   --ssh-port PORT        SSH port to use for the initial connection AND to pass to install.sh
@@ -156,10 +156,10 @@ fail_required() { printf "[FAIL][required] %-45s %s\n" "$1" "${2:-}"; failures=$
 mark_unverified() { printf "[UNVERIFIED] %-49s %s\n" "$1" "${2:-}"; unverified=$((unverified + 1)); }
 section() { echo; echo "=== $1 ==="; }
 
-echo "vpn1 destructive lifecycle acceptance gate"
+echo "singbox-vpn destructive lifecycle acceptance gate"
 echo "target: $HOST"
 echo "source ref: $BRANCH"
-echo "THIS WILL WIPE vpn1 STATE ON THE TARGET HOST. 5s to Ctrl-C..."
+echo "THIS WILL WIPE singbox-vpn STATE ON THE TARGET HOST. 5s to Ctrl-C..."
 sleep 5
 
 section "0. connectivity + OS baseline"
@@ -184,9 +184,9 @@ section "1b. host baseline (sanitized, no secrets)"
 # uninstall (section 13/18) — file/dir existence, unit/package/user
 # presence, not content, so nothing sensitive is captured.
 BASELINE="$(ssh_run '
-  echo "opt_vpn1=$([ -e /opt/vpn1 ] && echo 1 || echo 0)"
+  echo "opt_singbox-vpn=$([ -e /opt/vpn1 ] && echo 1 || echo 0)"
   echo "etc_vpn=$([ -e /etc/vpn ] && echo 1 || echo 0)"
-  echo "var_lib_vpn1=$([ -e /var/lib/vpn1 ] && echo 1 || echo 0)"
+  echo "var_lib_singbox-vpn=$([ -e /var/lib/vpn1 ] && echo 1 || echo 0)"
   echo "user_singbox=$(id sing-box >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
@@ -250,7 +250,7 @@ else
   fail_required "install.sh (idempotent re-run) + SSH reconnect"
 fi
 
-section "7. failed/interrupted install cleanup (scratch scenario; ends with vpn1 fully removed)"
+section "7. failed/interrupted install cleanup (scratch scenario; ends with singbox-vpn fully removed)"
 # Failure-injection hook: install.sh honors VPN1_LIFECYCLE_GATE_ABORT_AFTER
 # (a stage-name substring) to deliberately die mid-install, purely for this
 # gate — see install.sh's own comment at the check. The env var MUST be set
@@ -274,7 +274,7 @@ if ssh_run 'sudo /opt/vpn1/bin/vpn1-uninstall --yes' 2>/dev/null \
   && ssh_run '[ ! -e /etc/vpn ] && [ ! -e /opt/vpn1 ] && [ ! -e /var/lib/vpn1 ] \
       && ! systemctl list-unit-files 2>/dev/null | grep -q "^sing-box\.service\|^vpn-subscription\.service" \
       && ! id sing-box >/dev/null 2>&1 && ! id vpn-subscription >/dev/null 2>&1' 2>/dev/null; then
-  pass "cleanup after interrupted install (offline vpn1-uninstall)"
+  pass "cleanup after interrupted install (offline singbox-vpn-uninstall)"
 else
   fail "cleanup after interrupted install"
 fi
@@ -485,7 +485,7 @@ else
 fi
 
 if [ -n "$UPDATE_TO_REF" ]; then
-  # No real tagged vpn1 release exists yet to exercise update.sh's actual
+  # No real tagged singbox-vpn release exists yet to exercise update.sh's actual
   # production release-to-release transaction (--version/--latest) —
   # that remains a real-release UNVERIFIED item (see
   # docs/IMPLEMENTATION_STATUS.md). Until one is published, this
@@ -498,10 +498,10 @@ if [ -n "$UPDATE_TO_REF" ]; then
   # ignored invocation) never actually changed anything.
   section "16. safe update path -> $UPDATE_TO_REF (--dev-rebuild; this is VERIFIED-TEST for the transactional updater machinery only — a real GitHub release A->B transition remains UNVERIFIED until a tagged release exists, see docs/IMPLEMENTATION_STATUS.md)"
   version_before="$(ssh_run 'sudo /opt/vpn1/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
-  if ssh_run "curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/vpn1-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$UPDATE_TO_REF \
-      && rm -rf /tmp/vpn1-update-ref && mkdir -p /tmp/vpn1-update-ref \
-      && tar -xzf /tmp/vpn1-update-ref.tar.gz -C /tmp/vpn1-update-ref --strip-components=1 \
-      && sudo rsync -a --delete --exclude target --exclude .git /tmp/vpn1-update-ref/ /opt/vpn1/ \
+  if ssh_run "curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/singbox-vpn-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$UPDATE_TO_REF \
+      && rm -rf /tmp/singbox-vpn-update-ref && mkdir -p /tmp/singbox-vpn-update-ref \
+      && tar -xzf /tmp/singbox-vpn-update-ref.tar.gz -C /tmp/singbox-vpn-update-ref --strip-components=1 \
+      && sudo rsync -a --delete --exclude target --exclude .git /tmp/singbox-vpn-update-ref/ /opt/vpn1/ \
       && sudo /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild" \
     && ssh_reconnect 'true' 2>/dev/null; then
     version_after="$(ssh_run 'sudo /opt/vpn1/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
@@ -558,18 +558,18 @@ else
   mark_unverified "certbot renew --dry-run" "(failed or certbot/ACME conditions on this host prevent a dry-run — not faked)"
 fi
 
-section "19. uninstall completely (offline vpn1-uninstall)"
+section "19. uninstall completely (offline singbox-vpn-uninstall)"
 # Genuinely offline: the local binary only, no curl/GitHub/DNS/package-repo.
 # Best-effort proof of no outbound network use: block egress to github.com
 # for the duration of this one command (ignored if iptables/firewalld isn't
 # available/permitted — the "local binary only" invocation itself is the
 # primary guarantee either way). $BACKUP_PATH lives under /root, which
-# vpn1-uninstall never touches, so the backup survives this step.
+# singbox-vpn-uninstall never touches, so the backup survives this step.
 ssh_run 'sudo iptables -I OUTPUT -d github.com -j REJECT 2>/dev/null; sudo iptables -I OUTPUT -d raw.githubusercontent.com -j REJECT 2>/dev/null' >/dev/null 2>&1 || true
 if ssh_run 'sudo /opt/vpn1/bin/vpn1-uninstall --yes'; then
-  pass "vpn1-uninstall --yes (offline, local binary only)"
+  pass "singbox-vpn-uninstall --yes (offline, local binary only)"
 else
-  fail_required "vpn1-uninstall --yes (offline, local binary only)"
+  fail_required "singbox-vpn-uninstall --yes (offline, local binary only)"
 fi
 ssh_run 'sudo iptables -D OUTPUT -d github.com -j REJECT 2>/dev/null; sudo iptables -D OUTPUT -d raw.githubusercontent.com -j REJECT 2>/dev/null' >/dev/null 2>&1 || true
 
@@ -616,22 +616,22 @@ else
   fail_required "REALITY handshake self-test against restored key material" "(exit=$post_restore_rc; see remote output above)"
 fi
 
-section "25. final uninstall (offline vpn1-uninstall)"
+section "25. final uninstall (offline singbox-vpn-uninstall)"
 ssh_run "sudo rm -f $BACKUP_PATH" >/dev/null 2>&1 || true
 if ssh_run 'sudo /opt/vpn1/bin/vpn1-uninstall --yes'; then
-  pass "final vpn1-uninstall --yes (offline, local binary only)"
+  pass "final singbox-vpn-uninstall --yes (offline, local binary only)"
 else
-  fail_required "final vpn1-uninstall --yes (offline, local binary only)"
+  fail_required "final singbox-vpn-uninstall --yes (offline, local binary only)"
 fi
 
 section "26. SSH after final uninstall (new connection, port $SSH_PORT)"
 if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH still active post-uninstall"; else fail_required "SSH still active post-uninstall"; fi
 
-section "27. final uninstall residue audit (vs. host baseline from stage 1b) — no vpn1-owned services/binaries/state/firewall rules/sysctl or other residue"
+section "27. final uninstall residue audit (vs. host baseline from stage 1b) — no singbox-vpn-owned services/binaries/state/firewall rules/sysctl or other residue"
 RESIDUE="$(ssh_run '
-  echo "opt_vpn1=$([ -e /opt/vpn1 ] && echo 1 || echo 0)"
+  echo "opt_singbox-vpn=$([ -e /opt/vpn1 ] && echo 1 || echo 0)"
   echo "etc_vpn=$([ -e /etc/vpn ] && echo 1 || echo 0)"
-  echo "var_lib_vpn1=$([ -e /var/lib/vpn1 ] && echo 1 || echo 0)"
+  echo "var_lib_singbox-vpn=$([ -e /var/lib/vpn1 ] && echo 1 || echo 0)"
   echo "user_singbox=$(id sing-box >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
@@ -642,9 +642,9 @@ RESIDUE="$(ssh_run '
   echo "locks=$(ls /run/lock/vpn1* 2>/dev/null | wc -l)"
 ' 2>/dev/null || true)"
 if [ "$RESIDUE" = "$BASELINE" ]; then
-  pass "no vpn1 residue vs. pre-install host baseline"
+  pass "no singbox-vpn residue vs. pre-install host baseline"
 else
-  fail_required "no vpn1 residue vs. pre-install host baseline" "(baseline: $BASELINE | after uninstall: $RESIDUE)"
+  fail_required "no singbox-vpn residue vs. pre-install host baseline" "(baseline: $BASELINE | after uninstall: $RESIDUE)"
 fi
 
 section "manual-only / out-of-scope gates (cannot be automated here — UNVERIFIED, not PASS)"

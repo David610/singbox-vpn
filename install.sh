@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vpn1 one-command bootstrap installer.
+# singbox-vpn one-command bootstrap installer.
 #
 #   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
 #
@@ -7,7 +7,7 @@
 # designed to be piped directly from `curl` into `bash` via stdin, in
 # which case `$0` does not point at a real file and `${BASH_SOURCE[0]}`
 # is unreliable. It never reads its own path; it downloads a fresh copy
-# of the vpn1 source (a tagged release if one exists, otherwise the
+# of the singbox-vpn source (a tagged release if one exists, otherwise the
 # requested branch) into a secure temporary directory, then hands off to
 # the real implementation at deploy/almalinux/install.sh (which, despite
 # the directory name, supports the RHEL and Debian OS families — see
@@ -96,7 +96,7 @@ while [ $# -gt 0 ]; do
       VPN1_REF="${1#*=}"; shift ;;
     -h|--help)
       cat <<'USAGE'
-vpn1 one-command bootstrap installer.
+singbox-vpn one-command bootstrap installer.
 
   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
 
@@ -142,14 +142,14 @@ done
 command -v curl >/dev/null 2>&1 || die "curl is required but not found. Install curl and re-run."
 command -v tar >/dev/null 2>&1 || die "tar is required but not found. Install tar and re-run."
 
-[ -f /etc/os-release ] || die "cannot detect OS (/etc/os-release missing) — vpn1 requires a modern systemd Linux distribution."
+[ -f /etc/os-release ] || die "cannot detect OS (/etc/os-release missing) — singbox-vpn requires a modern systemd Linux distribution."
 
-log "vpn1 bootstrap installer starting (repo=$VPN1_REPO)"
+log "singbox-vpn bootstrap installer starting (repo=$VPN1_REPO)"
 
 # ---------------------------------------------------------------------
 # secure temp workspace, always cleaned up
 # ---------------------------------------------------------------------
-TMPDIR="$(mktemp -d /tmp/vpn1-install.XXXXXXXX)" || die "mktemp failed"
+TMPDIR="$(mktemp -d /tmp/singbox-vpn-install.XXXXXXXX)" || die "mktemp failed"
 cleanup() {
   local rc=$?
   rm -rf "$TMPDIR"
@@ -178,7 +178,7 @@ download_verified_source_release() {
   local version="$1" tarball="$2"
   local base_url="https://github.com/$VPN1_REPO/releases/download/$version"
   local sums="$TMPDIR/SHA256SUMS"
-  log "downloading vpn1 $version release source archive + checksum manifest..."
+  log "downloading singbox-vpn $version release source archive + checksum manifest..."
   curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$base_url/vpn1-src.tar.gz" \
     || die "could not download release source archive 'vpn1-src.tar.gz' for $version from $VPN1_REPO. Check that this release exists and was published by .github/workflows/release.yml (which includes this asset)."
   curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$sums" "$base_url/SHA256SUMS" \
@@ -208,7 +208,7 @@ download_source() {
     download_verified_source_release "$VPN1_VERSION" "$tarball"
   else
     url="https://codeload.github.com/$VPN1_REPO/tar.gz/refs/heads/$ref"
-    log "downloading UNVERIFIED vpn1 branch source (ref=$ref, VPN1_CHANNEL=dev — no checksum verification, development/testing only)..."
+    log "downloading UNVERIFIED singbox-vpn branch source (ref=$ref, VPN1_CHANNEL=dev — no checksum verification, development/testing only)..."
     curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$url" \
       || die "could not download source from $url. Check network connectivity and that $VPN1_REPO/$ref exists."
   fi

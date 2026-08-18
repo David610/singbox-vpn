@@ -191,11 +191,11 @@ renewal will silently start failing until someone notices the
 certificate is approaching expiry. `install.sh` only opens TCP/80
 *temporarily* during the install itself (see "Cloud provider firewalls /
 security groups" below) — it does not leave it open permanently, since
-vpn1's own protocols (VLESS+REALITY, Hysteria2, the subscription HTTPS
+singbox-vpn's own protocols (VLESS+REALITY, Hysteria2, the subscription HTTPS
 vhost) never use port 80. Either:
   - permanently allow inbound TCP/80 at both the host firewall layer
     (the installer does **not** leave its temporary issuance rule in place)
-    and, if applicable, the separate cloud-provider firewall layer (vpn1
+    and, if applicable, the separate cloud-provider firewall layer (singbox-vpn
     cannot manage that layer — see below). On AlmaLinux:
 
     ```bash
@@ -212,11 +212,11 @@ vhost) never use port 80. Either:
 
 ### Cloud provider firewalls / security groups
 
-vpn1's firewall stages (`firewall.sh`/`firewall-ufw.sh`) only manage
+singbox-vpn's firewall stages (`firewall.sh`/`firewall-ufw.sh`) only manage
 this **host's own** firewall (`firewalld` or `ufw`). Most cloud
 providers (AWS EC2 security groups, GCP firewall rules, Azure NSGs, ...)
 enforce a **separate**, network-level firewall in front of the VM that
-vpn1 cannot see or change — both layers must independently allow a port
+singbox-vpn cannot see or change — both layers must independently allow a port
 before traffic reaches the service. If automatic certificate issuance
 fails, or Hysteria2/VLESS+REALITY seem to work locally but no client can
 ever connect, check the cloud-provider layer first:
@@ -245,7 +245,7 @@ not — check the cloud-provider firewall layer next.
 ## Fresh install (manual, own domain)
 
 ```bash
-git clone <this-repo-url> vpn1 && cd vpn1
+git clone <this-repo-url> singbox-vpn && cd singbox-vpn
 sudo PUBLIC_HOST=vpn.example.com SUBSCRIPTION_HOST=sub.example.com \
   REALITY_HANDSHAKE_SERVER=www.google.com \
   ./deploy/almalinux/install.sh
@@ -261,7 +261,7 @@ printed):
    `nginx`, `firewalld`/`ufw`, `certbot`)
 3. host configuration (uses `PUBLIC_HOST` if set; otherwise
    auto-detects the public IP and assigns an `sslip.io` hostname)
-4. vpn1 binaries (prebuilt release if available and checksum-verified;
+4. singbox-vpn binaries (prebuilt release if available and checksum-verified;
    otherwise `cargo build --release`, auto-installing `rustup` if
    `cargo` is missing)
 5. sing-box installation (pinned version, checksum-verified when
@@ -463,7 +463,7 @@ storage and protect it like the live server. Restore only a trusted archive and
 follow the command's confirmation prompts:
 
 ```bash
-sudo vpn restore /path/to/vpn1-backup-<timestamp>.tar
+sudo vpn restore /path/to/singbox-vpn-backup-<timestamp>.tar
 ```
 
 See [RECOVERY.md](RECOVERY.md) for full-host recovery and the exact limitations
@@ -506,17 +506,17 @@ terminal attached, asks first). Online fallback, only needed if
 curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
-This removes **everything** vpn1 created by default — `/etc/vpn`
+This removes **everything** singbox-vpn created by default — `/etc/vpn`
 (REALITY private key, `users.json`, TLS material), `/opt/vpn1`,
-`/var/lib/vpn1`, all vpn1 systemd units, the nginx vhost, the sing-box
-binary (if vpn1 installed it), certbot's vpn1 renewal hook and any
-certificate lineages vpn1 issued, vpn1's firewall rules, the Rust
-toolchain (if vpn1 installed it), and vpn1's kernel network tuning
-(restored to the host's pre-vpn1 baseline via
+`/var/lib/vpn1`, all singbox-vpn systemd units, the nginx vhost, the sing-box
+binary (if singbox-vpn installed it), certbot's singbox-vpn renewal hook and any
+certificate lineages singbox-vpn issued, singbox-vpn's firewall rules, the Rust
+toolchain (if singbox-vpn installed it), and singbox-vpn's kernel network tuning
+(restored to the host's pre-singbox-vpn baseline via
 `deploy/lib/perf-tuning.sh`'s rollback). There is no `--purge-state`/
 `--purge-firewall` opt-in anymore — complete removal is simply what
 "uninstall" means now. It is ownership-aware: anything that already
-existed on the host before vpn1 (nginx, certbot, firewalld/ufw, a
+existed on the host before singbox-vpn (nginx, certbot, firewalld/ufw, a
 pre-existing Rust toolchain, unrelated certificates, pre-existing users)
 is left alone or restored to its previous enabled/state, never deleted.
 Manifest-sourced values (certificate hostnames, the Rust toolchain path)
@@ -526,7 +526,7 @@ refuses to run from a directory it does not itself control (not
 root-owned, or group/world-writable) as a defense-in-depth check. Safe
 to run more than once. It prints a checklist at the end for the one
 thing it genuinely cannot touch: your cloud provider's network-level
-firewall/security group, if you opened one for vpn1 there.
+firewall/security group, if you opened one for singbox-vpn there.
 
 `deploy/almalinux/uninstall.sh` is the real implementation both entry
 points above hand off to — running it directly works identically.

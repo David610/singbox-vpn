@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# vpn1 ownership manifest — the single source of truth for "did vpn1
-# create/change this, or did it already exist on this host before vpn1
+# singbox-vpn ownership manifest — the single source of truth for "did singbox-vpn
+# create/change this, or did it already exist on this host before singbox-vpn
 # touched it". Sourced by deploy/almalinux/install.sh (writes it,
 # incrementally, starting at stage 1 — never only at the end) and
 # deploy/almalinux/uninstall.sh (reads it to decide exactly what is safe
@@ -10,9 +10,9 @@
 #   - Written incrementally, one fact at a time, as each mutation
 #     happens — a crash at ANY stage still leaves an accurate record of
 #     everything done so far, not just a snapshot taken at the very end.
-#   - Every fact recorded here is either "vpn1 created/changed this and
+#   - Every fact recorded here is either "singbox-vpn created/changed this and
 #     therefore owns cleaning it up" or "this already existed before
-#     vpn1, so uninstall must leave/restore it". Never guessed.
+#     singbox-vpn, so uninstall must leave/restore it". Never guessed.
 #   - Plain KEY="value" lines, one per line, values restricted to
 #     already-validated tokens (booleans, ports, space-joined package/
 #     hostname lists that have already passed preflight_validate_* or
@@ -67,7 +67,7 @@ ownership_get() {
 }
 
 # Boolean fact: once true, callers should never flip it back to false —
-# only ever call this to RECORD "vpn1 did this", never to un-record it.
+# only ever call this to RECORD "singbox-vpn did this", never to un-record it.
 ownership_mark() { ownership_set "$1" "1"; }
 ownership_is_marked() {
   [ "$(ownership_get "$1" "0")" = "1" ] && printf '%s' "1" || printf '%s' "0"
@@ -91,7 +91,7 @@ ownership_list_get() {
 # Record a fact only the FIRST time it is observed on this host (i.e. a
 # baseline) — never overwritten by a later run, exactly like
 # perf_capture_baseline in perf-tuning.sh. Use for "was X already true
-# before vpn1 ever touched this host", which must reflect the ORIGINAL
+# before singbox-vpn ever touched this host", which must reflect the ORIGINAL
 # state, not whatever the most recent run happened to see.
 ownership_set_baseline_once() {
   local key="$1" value="$2"

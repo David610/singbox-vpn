@@ -1,6 +1,6 @@
 name: Release
 
-# Builds prebuilt vpn1 binaries (vpn-admin, subscription) so
+# Builds prebuilt singbox-vpn binaries (vpn-admin, subscription) so
 # deploy/almalinux/install.sh (and the root install.sh bootstrap) can
 # install a production VPS without a Rust toolchain. Triggered on
 # `v*` tags; each tag produces one GitHub Release with per-arch tarballs

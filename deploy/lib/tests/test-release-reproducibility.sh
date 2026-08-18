@@ -331,7 +331,7 @@ rm -rf "$TMPDIR_SRC_TEST"
 
 echo
 echo "--- static: VPN1_CHANNEL=dev branch-source path remains explicitly documented as unverified/dev-only, not silently equivalent to a verified install ---"
-if grep -q 'UNVERIFIED vpn1 branch source' "$BOOTSTRAP_SH"; then
+if grep -q 'UNVERIFIED singbox-vpn branch source' "$BOOTSTRAP_SH"; then
   ok "install.sh labels the branch-source download path as unverified at the point it runs, not just in --help text"
 else
   fail "install.sh no longer labels the branch-source download as unverified"
