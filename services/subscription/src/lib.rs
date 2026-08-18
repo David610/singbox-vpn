@@ -155,6 +155,15 @@ pub struct SubQuery {
     /// — a typo in a query parameter must not break someone's VPN
     /// subscription.
     pub profile: Option<String>,
+    /// Opt-in compatibility mode: `tcp-only` drops Hysteria2 and forces
+    /// the VLESS+REALITY outbound to `"network": "tcp"` — see
+    /// `compat_config::render::CompatibilityMode` and
+    /// `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`. Unlike `profile`, an
+    /// unrecognized `compat` value is REJECTED (400) rather than silently
+    /// falling back — this parameter changes which transports are even
+    /// offered, so a typo here must not silently degrade someone's
+    /// working subscription to a mode they didn't ask for.
+    pub compat: Option<String>,
 }
 
 async fn get_subscription(
@@ -226,6 +235,7 @@ async fn get_subscription(
         user_id = %user.id,
         format = ?query.format,
         profile = ?query.profile,
+        compat = ?query.compat,
         "subscription served"
     );
 
@@ -235,11 +245,31 @@ async fn get_subscription(
         .as_deref()
         .and_then(render::SelectionProfile::parse)
         .unwrap_or_default();
+
+    // Unlike `profile`, an unrecognized `compat` value is rejected rather
+    // than silently falling back — this parameter can remove transports
+    // from the profile entirely, so a typo must not silently hand someone
+    // a degraded subscription they didn't ask for.
+    let compat_mode = match query.compat.as_deref() {
+        None => render::CompatibilityMode::default(),
+        Some(s) => match render::CompatibilityMode::parse(s) {
+            Some(mode) => mode,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "unknown compat value (expected \"tcp-only\" or \"normal\")",
+                )
+                    .into_response()
+            }
+        },
+    };
+
     match format {
-        "singbox" => match render::render_singbox_client_subscription_with_profile(
+        "singbox" => match render::render_singbox_client_subscription_with_options(
             &user,
             &state.endpoints,
             profile,
+            compat_mode,
         ) {
             Ok(doc) => (
                 StatusCode::OK,
@@ -252,18 +282,34 @@ async fn get_subscription(
                 (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
             }
         },
-        "uri" | "hiddify" => match render::render_uri_list(&user, &state.endpoints) {
-            Ok(body) => (
-                StatusCode::OK,
-                [("content-type", "text/plain; charset=utf-8")],
-                body,
-            )
-                .into_response(),
-            Err(e) => {
-                tracing::error!(error = %e, "failed to render uri list");
-                (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+        "uri" | "hiddify" => {
+            if compat_mode != render::CompatibilityMode::Normal {
+                // The share-link (`vless://`/`hysteria2://`) syntax has no
+                // reliable way to enforce TCP-only VLESS across supported
+                // clients, so silently degrading to a normal profile — or
+                // silently ignoring `compat` — would misrepresent what was
+                // requested. Reject explicitly instead; ?format=singbox is
+                // the supported way to get the TCP-only compatibility mode.
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "compat=tcp-only is only supported with format=singbox — the uri/hiddify \
+                     share-link format cannot reliably enforce a TCP-only VLESS outbound",
+                )
+                    .into_response();
             }
-        },
+            match render::render_uri_list(&user, &state.endpoints) {
+                Ok(body) => (
+                    StatusCode::OK,
+                    [("content-type", "text/plain; charset=utf-8")],
+                    body,
+                )
+                    .into_response(),
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to render uri list");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+                }
+            }
+        }
         _ => (StatusCode::BAD_REQUEST, "unknown format").into_response(),
     }
 }
@@ -424,6 +470,69 @@ mod tests {
             .unwrap();
         let s = String::from_utf8(body.to_vec()).unwrap();
         assert!(s.starts_with("vless://"));
+    }
+
+    #[tokio::test]
+    async fn compat_tcp_only_with_singbox_format_returns_200_and_tcp_only_json() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=singbox&compat=tcp-only").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        assert!(outbounds.iter().any(|o| o["type"] == "vless"));
+        assert!(
+            !outbounds.iter().any(|o| o["type"] == "hysteria2"),
+            "compat=tcp-only must drop Hysteria2 from the generated subscription"
+        );
+        let vless = outbounds.iter().find(|o| o["type"] == "vless").unwrap();
+        assert_eq!(vless["network"], "tcp");
+    }
+
+    #[tokio::test]
+    async fn normal_subscription_unchanged_when_compat_param_absent() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let with_compat_normal =
+            oneshot_with_addr(state.clone(), "/sub/goodtoken?format=singbox&compat=normal").await;
+        let without_compat = oneshot_with_addr(state, "/sub/goodtoken?format=singbox").await;
+        assert_eq!(with_compat_normal.status(), StatusCode::OK);
+        assert_eq!(without_compat.status(), StatusCode::OK);
+        let a = axum::body::to_bytes(with_compat_normal.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let b = axum::body::to_bytes(without_compat.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            a, b,
+            "compat=normal must render byte-identical output to omitting compat entirely"
+        );
+        let s = String::from_utf8(b.to_vec()).unwrap();
+        assert!(s.contains("vless"));
+        assert!(s.contains("hysteria2"));
+    }
+
+    #[tokio::test]
+    async fn unknown_compat_value_returns_400() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=singbox&compat=garbage").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn compat_tcp_only_with_uri_format_is_rejected_not_silently_degraded() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri&compat=tcp-only").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn compat_tcp_only_with_hiddify_format_is_rejected_not_silently_degraded() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&compat=tcp-only").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

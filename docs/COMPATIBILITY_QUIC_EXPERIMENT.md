@@ -7,14 +7,93 @@ QUIC-capable apps fall back to TCP, as a controlled experiment for
 isolating whether application-level QUIC is involved in the reported
 "Safari plays YouTube, the native YouTube app does not" symptom.
 
-**Decision: not implemented in the subscription renderer.** The
-mechanism is real and expressible in current sing-box syntax (verified
-below), but this project cannot verify the one precondition that
-actually matters — whether Hiddify preserves it — from this development
-environment, and shipping it anyway would silently cross a boundary this
-project has deliberately held and tested since the compatibility stack
-was built. See "Why not" below for the specific, itemized reasons, and
-"Safe alternative" for what to do instead.
+**Decision: the `route.rules` mechanism described in this document was
+not implemented.** The mechanism is real and expressible in current
+sing-box syntax (verified below), but this project cannot verify the one
+precondition that actually matters — whether Hiddify preserves it — from
+this development environment, and shipping it anyway would silently
+cross a boundary this project has deliberately held and tested since the
+compatibility stack was built. See "Why not" below for the specific,
+itemized reasons.
+
+**What shipped instead: `compat=tcp-only`.** The underlying goal — give
+an affected user a way to test whether forcing QUIC-preferring apps onto
+TCP changes the native-YouTube-app symptom — is now available as an
+explicit, opt-in query parameter on the subscription endpoint, but
+implemented at the **outbound** layer instead of a `route.rules` rule.
+See "Shipped implementation" below for what it does and why that
+sidesteps every objection in "Why not".
+
+## Shipped implementation: `compat=tcp-only`
+
+`GET /sub/<token>?format=singbox&compat=tcp-only` renders a sing-box
+subscription (`compat_config::render::CompatibilityMode::TcpOnly`,
+`crates/compat-config/src/render.rs`) that:
+
+- Includes the VLESS+REALITY outbound, unchanged (UUID, flow, TLS,
+  uTLS fingerprint, REALITY public key/short ID — every existing working
+  parameter is untouched), with `"network": "tcp"` added to it. This
+  disables sing-box VLESS's UDP-over-TCP relay for that outbound —
+  REALITY's own transport connection was already TCP/443 by design (see
+  `docs/CLIENT_PROTOCOL_BEHAVIOR.md`), so this only additionally
+  forbids UDP relay *through* it.
+- **Omits Hysteria2 entirely.** Hysteria2 is UDP/QUIC end to end — there
+  is no partial "TCP-only Hysteria2"; keeping it in a TCP-only profile
+  alongside a `select`/`auto` group would just hand the user a second
+  transport that reintroduces the exact UDP path the mode exists to
+  remove.
+- Does **not** add `route.rules`, `packet_encoding: "xudp"` (already
+  sing-box's normal VLESS UDP behavior — irrelevant to this symptom, not
+  a fix for it), a `dns` block, or a TUN `inbounds` entry. Same
+  boundary as the normal profile — see
+  `docs/CLIENT_PROTOCOL_BEHAVIOR.md`.
+
+`?format=uri`/`?format=hiddify` reject `compat=tcp-only` with HTTP 400
+rather than silently ignoring it or silently falling back to the normal
+profile — the share-link (`vless://`) syntax has no reliably-enforced
+way to express "no UDP relay" across supported clients, so this project
+will not claim it does. An unrecognized `compat` value (e.g.
+`compat=garbage`) is also rejected with 400, not silently treated as
+"normal" — seen `services/subscription/src/lib.rs`.
+
+### Why the outbound-level approach avoids "Why not"'s objections
+
+Every point in "Why not" below is about a `route.rules` entry: a rule
+that only takes effect if Hiddify's TUN mode is active *and* Hiddify
+actually preserves an imported `route.rules` array *and* its bundled
+sing-box core parses it as expected — none of which this project can
+verify. `compat=tcp-only` needs none of that. `"network": "tcp"` is a
+property of the **outbound itself** — sing-box's VLESS transport
+implementation, not a routing decision layered on top of it — and
+dropping Hysteria2 from `outbounds` means there is no UDP-carrying
+outbound left in the profile at all, regardless of TUN mode, DNS
+handling, or any other client-side routing policy. There is no separate
+mechanism whose behavior needs to be trusted; the constraint is
+enforced by what the profile *contains*, not by an instruction a client
+could ignore.
+
+**This is still not a proven fix.** It has not yet been verified against
+the actual affected iPhone. See `docs/DEVICE_ACCEPTANCE_TESTS.md` for
+the acceptance procedure and record the result there before treating
+this as anything more than "the profile the theory predicts should
+help, generated correctly." It does not repair Hiddify itself, and it
+does not touch server-side listeners, firewall rules, or credentials —
+selecting it only changes which outbounds this one subscription profile
+offers.
+
+**Trade-off, stated plainly:** `compat=tcp-only` disables UDP relay
+through the selected VLESS profile. Any application that depends on
+UDP through the tunnel — some games, VoIP, WebRTC/STUN, and similar —
+may degrade or fail while this profile is selected. It is opt-in, not a
+fleet-wide default, and the normal profile (both transports, no
+`network` restriction) remains what `/sub/<token>` and
+`/sub/<token>?format=singbox` serve unless `compat=tcp-only` is
+explicitly requested.
+
+## Why the `route.rules` mechanism was rejected (historical record)
+
+The rest of this document is retained as the record of that
+investigation.
 
 ## What is technically real
 
