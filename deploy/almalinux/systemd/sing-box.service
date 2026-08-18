@@ -74,6 +74,42 @@ Nice=-5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
+# Cgroup resource protection (P8 — this project had none at all before).
+# Deliberately conservative in the opposite direction from a typical
+# "resource limit": the goal here is ONLY to stop a runaway/compromised
+# sing-box process from being able to take the whole host down (starving
+# sshd, cron, the admin/subscription binaries, or triggering the
+# system-wide OOM killer, which picks victims with no regard for which
+# process actually caused the pressure), never to constrain sing-box's
+# own legitimate traffic handling. For a <=10-user deployment, sing-box's
+# real steady-state CPU/memory/thread footprint is small and mostly flat
+# regardless of load (Go's goroutine scheduler does not spawn one OS
+# thread per connection), so every value below sits far above anything
+# real usage should ever reach:
+#   - MemoryHigh is a SOFT throttle (the kernel reclaims/pressures the
+#     cgroup's memory harder as usage climbs past it) — it never kills
+#     the process by itself, so it cannot manifest as a dropped VPN
+#     connection the way a hard memory kill could.
+#   - MemoryMax is the hard ceiling, set high enough (90% of total RAM)
+#     that only a genuine leak or a deliberate memory-exhaustion attempt
+#     would ever reach it — at that point cgroup-scoped OOM killing this
+#     one service is a strictly better outcome than the alternative
+#     (the kernel's global OOM killer choosing an arbitrary victim
+#     process on the host, sing-box included, with no isolation at all).
+#   - TasksMax bounds the number of threads/goroutine-backed OS tasks
+#     this cgroup may create — 512 is generous for any real sing-box
+#     workload at this scale and exists only to cap a fork-bomb-shaped
+#     bug or exploit, not to constrain normal operation.
+# Deliberately NOT added: CPUQuota. sing-box's Hysteria2/QUIC path does
+# real per-packet crypto work and can legitimately need every available
+# CPU cycle during a burst; any CPU quota tight enough to matter is
+# exactly the kind of "protection" that would throttle real streaming/
+# voice traffic and reproduce the silent-degradation failure class this
+# project is trying to eliminate, not prevent it. Left unset on purpose.
+MemoryHigh=75%
+MemoryMax=90%
+TasksMax=512
+
 # Hardening. Documented exceptions:
 #  - ProtectSystem=strict + explicit ReadOnlyPaths for the config dir
 #    (sing-box only needs to *read* config/certs, never write there).

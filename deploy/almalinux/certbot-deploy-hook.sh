@@ -20,9 +20,15 @@
 # other purposes too.
 set -euo pipefail
 
-STATE_DIR="/etc/vpn/compat"
-DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
-SINGBOX_BIN="/usr/local/bin/sing-box"
+# Overridable via environment purely so
+# deploy/lib/tests/test-certbot-renewal-recovery.sh can point every path
+# this script touches at a throwaway temp directory instead of real system
+# paths — certbot itself never sets these, so a production run always gets
+# the real paths below.
+: "${STATE_DIR:=/etc/vpn/compat}"
+: "${DEPLOYMENT_TOML:=/etc/vpn/deployment.toml}"
+: "${SINGBOX_BIN:=/usr/local/bin/sing-box}"
+: "${VPN1_LOCK_FILE:=/run/lock/vpn1.lock}"
 
 log() { echo "[certbot-deploy-hook] $*"; }
 warn() { echo "[certbot-deploy-hook] WARNING: $*" >&2; }
@@ -92,12 +98,49 @@ key_pub="$(openssl pkey -in "$tmp_key" -pubout -outform DER 2>/dev/null \
 # Serialize with backup/restore/key rotation and retain exact predecessors
 # until both services have accepted the new pair. The EXIT trap covers
 # validation/reload failures and INT/TERM between the two renames.
-exec 201>/run/lock/vpn1.lock
+exec 201>"$VPN1_LOCK_FILE"
 flock -x 201
 cert_bak="$cert.renew-bak"
 key_bak="$key.renew-bak"
-[ ! -e "$cert_bak" ] && [ ! -e "$key_bak" ] \
-  || die "stale certificate transaction backup exists; recover it before renewal."
+
+# A backup file existing here can ONLY be a leftover from a PREVIOUS run of
+# this exact hook that was killed (SIGKILL, OOM, host power loss) before it
+# could clean up after itself — never a currently-active concurrent
+# transaction. Every vpn1 tool that mutates this state (this hook,
+# `vpn-admin`, install.sh, update.sh) takes the SAME `/run/lock/vpn1.lock`
+# before touching it, and we are holding that lock exclusively right now
+# (line above); a genuinely concurrent writer would still be blocked on
+# `flock`, not racing past it. This used to `die` unconditionally and
+# permanently block every future renewal until an operator intervened by
+# hand — recover automatically instead, distinguishing "the interrupted
+# run's swap already completed" (nothing to restore, just clear the stale
+# marker) from "it was interrupted mid-swap" (restore the last known-good
+# pair from the backup) so this can never install or leave live a
+# certificate/key pair that doesn't actually match.
+if [ -e "$cert_bak" ] || [ -e "$key_bak" ]; then
+  warn "found a leftover certificate transaction backup from an interrupted previous renewal (${cert_bak} / ${key_bak}) — recovering automatically before proceeding."
+  pubkey_hash() { openssl x509 -in "$1" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}'; }
+  privkey_pubkey_hash() { openssl pkey -in "$1" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}'; }
+  live_pair_is_valid() {
+    [ -s "$cert" ] && [ -s "$key" ] \
+      && openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1 \
+      && [ -n "$(pubkey_hash "$cert")" ] \
+      && [ "$(pubkey_hash "$cert")" = "$(privkey_pubkey_hash "$key")" ]
+  }
+  if live_pair_is_valid; then
+    log "current live certificate/key are present, matched, and not expired — the interrupted run's swap (if any) already completed safely. Discarding the now-unnecessary backup and continuing with this renewal."
+    rm -f "$cert_bak" "$key_bak"
+  else
+    warn "current live certificate/key are missing, mismatched, or expired — restoring the last known-good pair from the interrupted transaction's backup."
+    [ -f "$cert_bak" ] && mv -f "$cert_bak" "$cert"
+    [ -f "$key_bak" ] && mv -f "$key_bak" "$key"
+    if live_pair_is_valid; then
+      log "recovered a matched certificate/key pair from the backup. Continuing with this renewal to install a fresh certificate."
+    else
+      die "could not recover a valid certificate/key pair from either the live files or the interrupted transaction's backup — manual intervention required. Check $cert / $key by hand before retrying (sing-box will fail Hysteria2 TLS handshakes until a valid pair is in place)."
+    fi
+  fi
+fi
 [ -f "$cert" ] && cp -a "$cert" "$cert_bak"
 [ -f "$key" ] && cp -a "$key" "$key_bak"
 swap_started=0

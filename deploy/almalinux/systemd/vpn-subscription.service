@@ -42,6 +42,21 @@ Environment=RUST_LOG=warn
 LogRateLimitIntervalSec=30s
 LogRateLimitBurst=200
 
+# Cgroup resource protection (P8 — this project had none at all before).
+# Same rationale as sing-box.service's own block (see that file for the
+# full explanation of why MemoryHigh is a soft throttle rather than a
+# kill, and why no CPUQuota is set) — scaled down here because this is a
+# small, loopback-only, rate-limited HTTP service (see
+# services/subscription/src/lib.rs's own deployment-wide token-bucket
+# backstop) with a much smaller legitimate footprint than sing-box's data
+# plane. These values are still deliberately generous relative to this
+# service's actual usage, not a tight budget: the goal is only to stop a
+# bug or abuse of this one service from being able to affect the rest of
+# the host, never to throttle a real subscription fetch.
+MemoryHigh=50%
+MemoryMax=75%
+TasksMax=256
+
 # Never needs to write anywhere except read the user store (read-only
 # from this service's perspective — vpn-admin, run as root, is the only
 # writer) and bind loopback only, so this can be sandboxed tightly.
