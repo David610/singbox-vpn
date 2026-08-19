@@ -220,3 +220,328 @@ AlmaLinux lifecycle/reboot/SELinux/firewalld, and Russian acceptance remain
 **UNVERIFIED**. The next architecture decision gate is a complete synchronized
 Outline/REALITY/Hysteria2/raw-sing-box matrix—not another speculative protocol
 setting change.
+
+## 2026-08-19 addendum: repo re-audit, Aug-15 diff, Xray-core A/B path
+
+**Status: implemented, server-tested, awaiting Russian verification. Nothing
+in this addendum claims the connectivity problem is fixed.**
+
+### Symptom recap
+
+Production (Ubuntu 24.04.4, upstream sing-box VLESS+REALITY on TCP/443,
+Hysteria2 on UDP/443) passes server-side self-tests (`vpn-admin doctor
+--protocol` and a throwaway upstream sing-box client completing a full
+REALITY handshake locally against the live config), but real Russian
+Hiddify clients repeatedly get `inbound/vless[vless-reality-in]: process
+connection from <IP>:<port>: TLS handshake: REALITY: processed invalid
+connection`, including from a freshly reinstalled profile (rules out a
+stale-credentials theory). Outline behavior (MagicOS partial, iPhone/
+Android failing on Wi-Fi and mobile data) is tracked as a probably-separate
+network-layer issue — no shared root cause is assumed.
+
+### What `processed invalid connection` means (from source/behavior
+knowledge, not a live capture)
+
+Per `docs/INCIDENT_2026-08-10_REALITY_HANDSHAKE_TIMEOUT.md` §2 and
+`docs/INCIDENT_2026-08-11_REALITY_HANDSHAKE_INCONCLUSIVE.md` §2, this line
+is logged by the SERVER's REALITY layer (`github.com/metacubex/utls`'s
+`reality.go`, vendored into sing-box) when it cannot authenticate a
+connection's REALITY handshake — the connection is not dropped, it is
+transparently proxied through to the real decoy `handshake_server` instead
+(REALITY's core design property: a rejected connection is indistinguishable
+from an ordinary TLS session with the decoy). It does NOT by itself
+distinguish: an unauthenticated probe/scanner, a client presenting a
+mismatched/stale public key or short_id, active DPI interference, or a
+client-side TLS/REALITY implementation difference (e.g. a different core
+engine's ClientHello shape). Treating it alone as proof of DPI or bad
+credentials would be exactly the overclaim both incident documents warn
+against. The new `vpn-investigate.sh client <IP>` command (below) surfaces
+the host-wide count of these events alongside accepted/reset counts and
+recent per-IP journal lines, explicitly labeled FACT/INFERENCE/UNKNOWN, as
+the safe minimal diagnostic for narrowing this — no sing-box fork, no
+protocol change.
+
+### Exact versions
+
+- sing-box: pinned `1.13.19` (`deploy/lib/versions.env`; matches
+  `docs/COMPATIBILITY_VERSIONS.md`'s 2026-08-17 entry). Bumped from
+  `1.13.18` in commit `f1dd376` ("Bump pinned sing-box 1.13.18 -> 1.13.19
+  (stable patch release)") — a routine patch bump, not a protocol change;
+  no changelog evidence was available in this session to say whether it
+  touched REALITY handling.
+- Hysteria2: sing-box's bundled inbound (not the standalone
+  `apernet/hysteria` binary) — unchanged.
+- Xray-core: not used server-side; see "Why sing-box, not Xray-core" in
+  `docs/COMPATIBILITY_VERSIONS.md` and `docs/ADR/0002-transport-portfolio.md`.
+  No concrete server-side incompatibility with Xray-core has ever been
+  found — the seam (`CompatibilityBackend`) exists but was never exercised.
+- Hiddify client version/build: **UNVERIFIED** — not supplied this session.
+
+### Hiddify `core=xray` / `xvless://` support — UNVERIFIED, not assumed
+
+This session had no web access to check current Hiddify release notes or
+source for whether it exposes a distinct `core=xray` import path, an
+`xvless://` URI scheme, or any other Xray-specific import syntax. Per the
+task's own instruction, that syntax was **not invented**. Instead, Step 5
+below ships the already-standard `vless://` share-link shape (which both
+sing-box-core and Xray-core already parse identically — see
+`crates/compat-config/src/render.rs`'s existing
+`render_vless_reality_uri`) under an explicit, separately-labeled link, so
+a Russian tester can deliberately import "the other one" as a control, and
+the operator can tell from the endpoint label (never sent over the wire —
+purely an operator/tester bookkeeping aid, e.g. in
+`vpn-investigate.sh client`'s output) which one was used. If real Russian
+testing later shows Hiddify needs different import syntax to force its
+Xray-core engine specifically, that must be verified against real Hiddify
+source/docs before being added — not guessed.
+
+### Aug-15 (last known-working) vs current: exact REALITY-path diff
+
+The task named a prior-repo commit hash that does not exist in this repo's
+history (a mistyped/concatenated hash across the `vpn1`→`singbox-vpn`
+migration). The actual migration point is commit `7392990` ("Migrate
+repository to singbox-vpn", 2026-08-15), preceded by `29e1e5c` (2026-08-14,
+"Merge pull request #25 ... perform-production-hardening-pass") — the last
+`vpn1`-era commit before the rebrand. `29e1e5c..HEAD` is therefore the
+honest "Aug-15 baseline vs current" diff window.
+
+**`crates/compat-config/src/model.rs`, `deployment.rs`, `credentials.rs`:
+zero diff.** REALITY key generation/validation (base64url-no-pad X25519
+keys — see `credentials.rs`'s `validate_reality_keypair`/
+`validate_reality_public_key_shape`), the `RealityServerParams`/
+`PublicParameters::Reality` shapes, and server-side inbound rendering are
+byte-identical to the Aug-15 state.
+
+**`crates/compat-config/src/render.rs`: one material change, additive and
+opt-in.** `CompatibilityMode`/`render_singbox_client_subscription_with_options`
+were added (commit `e958e79`, iOS YouTube TCP-only compat mode) — but
+`render.rs`'s own test `normal_mode_via_with_options_is_identical_to_existing_renderer`
+proves `CompatibilityMode::Normal` (the default; unrelated to REALITY
+authentication) reproduces the pre-existing subscription byte-for-byte.
+Every REALITY-relevant field — `encryption=none`, `security=reality`,
+`sni`, `fp` (uTLS fingerprint), `pbk` (public key), `sid` (short_id),
+`type=tcp`, `flow=xtls-rprx-vision`, and the native JSON's
+`tls.reality`/`tls.utls` blocks — is unchanged in both value and encoding.
+The REALITY decoy `handshake_server` default (`www.google.com`) predates
+`29e1e5c` (commit `2d4575f`, before the diff window).
+
+**`services/subscription/src/lib.rs`, `apps/admin/src/main.rs`:
+substantial diffs, none touching REALITY handshake material.** Grepping
+the diff for REALITY-related additions/removals surfaces only cosmetic
+label text (e.g. `"VLESS+REALITY"` display strings) and reload-messaging
+changes around `reality-rotate`; no change to key generation, validation,
+encoding, or the fields sent to sing-box.
+
+**Conclusion: no material regression was found in the REALITY rendering/
+credential path between the Aug-15 baseline and current HEAD.** This does
+NOT prove there is no regression anywhere (client-side behavior, a
+sing-box upstream behavior change between whatever version was live around
+Aug-15 and `1.13.19`, or a deployment/config-file drift on the actual
+production VPS are all still open and unverified) — it narrows the search:
+this repository's own generated-profile code is not the differentiator.
+
+### Generated client profile audit (field-by-field, confirms
+`docs/RUSSIA_PRODUCTION_INVESTIGATION.md`'s existing "Generated profile
+audit" section)
+
+Re-verified directly against `crates/compat-config/src/render.rs`:
+- Share-link (`render_vless_reality_uri`, line ~26): `vless://{uuid}@{host}:{port}?encryption=none&security=reality&sni={sni}&fp={fp}&pbk={pbk}&sid={sid}&type=tcp&flow=xtls-rprx-vision#{label}`.
+- Native JSON (`render_singbox_client_subscription_with_options`, line
+  ~242): `type: vless`, `uuid`, `flow: xtls-rprx-vision`,
+  `tls.enabled: true`, `tls.server_name`, `tls.utls.enabled: true`,
+  `tls.utls.fingerprint`, `tls.reality.enabled: true`,
+  `tls.reality.public_key`, `tls.reality.short_id`.
+- Encoding: `public_key_hex`/`short_id` are misleadingly named (`_hex`
+  suffix) but are actually base64url-no-padding
+  (`credentials.rs::URL_SAFE_NO_PAD`, matching sing-box's
+  `base64.RawURLEncoding` expectation for REALITY public keys) — verified
+  correct despite the naming; no encoding bug found. No trailing
+  whitespace, no case-folding, no padding characters (`=`) are introduced
+  anywhere in the render path.
+- Fingerprint (`fp=`/`utls.fingerprint`): hardcoded `"chrome"`
+  (`render.rs::standard_endpoints`). No concrete evidence was found in
+  this session that `chrome` is incompatible with any client/network —
+  left unchanged per the task's own instruction not to change it without
+  evidence. If a future Russian A/B test shows a specific fingerprint
+  value correlates with success/failure, that is the trigger to revisit
+  this, not a guess made now.
+
+### What was implemented this session
+
+1. **`?format=xray` subscription variant** (`services/subscription/src/
+   lib.rs`, new `"xray"` arm in `get_subscription`;
+   `crates/compat-config/src/render.rs`'s new
+   `render_vless_reality_uri_xray_labeled`/`render_xray_uri_list`). Reuses
+   the exact same UUID/pbk/sid/SNI/port/fingerprint/flow as the existing
+   `?format=uri`/`?format=hiddify` share links — only the VLESS+REALITY
+   line's label gets an explicit `" (Xray)"` suffix (percent-encoded as
+   `%28Xray%29` in the URI fragment). Hysteria2 lines are unchanged/
+   unlabeled (Hysteria2's URI syntax is not core-specific). The default
+   `?format=singbox` (native JSON) and existing `?format=uri`/`hiddify`
+   outputs are provably byte-for-byte unchanged (regression test below).
+   `vpn-admin user create` now also prints/JSON-emits this link
+   (`subscription_url_xray`, additive field in `--json` output) alongside
+   the existing Hiddify/sing-box links — nothing existing was removed or
+   reordered.
+2. **`vpn-investigate.sh client <IP>`** (`deploy/lib/vpn-investigate.sh`):
+   gathers, from THIS server only: `vpn-admin doctor --protocol` result;
+   TCP/443 and UDP/443 listener presence (`ss`); recent (2h) sing-box
+   journal lines mentioning the IP; host-wide counts of REALITY
+   `processed invalid connection` / accepted / `connection reset` events;
+   a suggested-but-not-run bounded `capture`/`summarize` command reusing
+   the existing helpers; read-only firewall state
+   (firewalld/nftables/iptables, whichever is present). Every line is
+   labeled FACT/INFERENCE/UNKNOWN; no secret (REALITY key material, VLESS
+   UUID, Hysteria2 password) is ever printed; nothing is mutated, captured,
+   or invoked automatically.
+3. **Fixed a real defect in `vpn-benchmark.sh`'s VLESS+REALITY/Hysteria2
+   protocol-overhead section** (`deploy/lib/vpn-benchmark.sh`,
+   `deploy/lib/vpn-benchmark-lib.sh`): the benchmark's throwaway-user
+   subscription URL always carries an explicit `?format=...` query string
+   (`apps/admin/src/main.rs::subscription_url`), but the section extracted
+   its "token" with a bare `${sub_url##*/}`, which strips only up to the
+   *last* `/` — leaving the query string attached to the token (e.g.
+   `AbC123token?format=hiddify`). The section then re-appended its own
+   `?format=singbox`, producing a doubled query string
+   (`.../sub/TOKEN?format=hiddify?format=singbox`) that
+   `services/subscription`'s `Query<SubQuery>` extractor parses as one
+   literal `format` value matching none of `singbox`/`uri`/`hiddify`/
+   `xray` — a guaranteed 400 that `curl -f` silently turned into "could
+   not reach the local subscription backend", permanently and silently
+   SKIPPING the entire section on every run. This is a strong plausible
+   contributor to the reported `jq: parse error: Invalid numeric literal`
+   symptom in that section: a malformed/empty response body reaching an
+   un-redirected `jq` call downstream of a future change to this path
+   would surface exactly that class of error; regardless of the precise
+   trigger, the token-extraction bug itself was real and is fixed. New
+   `vpn_benchmark_extract_token()` helper
+   (`deploy/lib/vpn-benchmark-lib.sh`) correctly strips both the `/sub/`
+   prefix and the `?...` suffix, with a regression test in
+   `deploy/lib/tests/test-vpn-benchmark-lib.sh`.
+
+### Tests added and results
+
+- `crates/compat-config/src/render.rs`: 6 new unit tests for
+  `render_vless_reality_uri_xray_labeled`/`render_xray_uri_list` (exact
+  field contents, no-private-key, wrong-transport rejection, label-only
+  diff from the default URI list). `cargo test -p compat-config --lib`:
+  **all 100 tests pass** (94 pre-existing + 6 new). `cargo test -p
+  compat-config` (including the `tests/*.rs` integration suites —
+  `reality_interop`, `reality_decoy_budget`, `hysteria2_interop`): all
+  pass.
+- `services/subscription/src/lib.rs`: 6 new tests for `?format=xray`
+  (200 + exact fields + no private key, identical-credentials-to-`uri`,
+  `compat=tcp-only` rejection, and an explicit
+  `default_and_existing_format_outputs_are_byte_for_byte_unchanged`
+  regression test). `cargo test -p subscription --lib`: **all 26 tests
+  pass** (20 pre-existing + 6 new); the crate's `tests/startup_validation.rs`
+  integration suite also passes unchanged.
+- `deploy/lib/tests/test-vpn-benchmark-lib.sh`: 5 new assertions for
+  `vpn_benchmark_extract_token` (with/without/multiple query params, no
+  `/sub/` segment, empty token) — **all pass**.
+- `deploy/lib/tests/test-vpn-investigate.sh`: extended for the new
+  `client` subcommand (input validation, FACT/INFERENCE labeling present,
+  no secret-shaped output) — **all pass**.
+- `cargo test -p admin --test cli`: 5 pre-existing failures, **not caused
+  by this session's changes** — `apply_restored_file_policy()` performs a
+  real `getgrnam("vpn-subscription")` lookup when running as root (this
+  sandbox is root), and that group only exists on a real installed host;
+  already documented as a "Blockers" entry in
+  `docs/IMPLEMENTATION_STATUS.md` before this session. The 4
+  `user_create_*` tests most relevant to this session's
+  `apps/admin/src/main.rs` changes pass. `cargo test -p admin --test cli
+  user_create` and the full targeted suite were re-run after this
+  session's edits specifically to confirm no new failure was introduced —
+  none was.
+- `cargo fmt --check`: clean. `git diff --check`: clean (no whitespace
+  errors).
+
+### Unresolved risks / what remains UNVERIFIED
+
+- Whether the Xray-core-oriented A/B link actually changes real-device
+  behavior — **UNVERIFIED**, requires a real Russian device test (see the
+  A/B/C/D template below).
+- Whether Hiddify exposes any Xray-specific import syntax beyond the
+  standard `vless://` shape — **UNVERIFIED**, no web access this session.
+- Whether the `vpn-benchmark.sh` token-extraction fix is the actual root
+  cause of the previously-reported `jq: parse error: Invalid numeric
+  literal` (as opposed to a different, still-latent jq call) —
+  **UNVERIFIED**; the fix removes a confirmed real defect on this code
+  path regardless, but was not reproduced against a live host in this
+  session (no disposable AlmaLinux 9 host / production VPS available).
+- The core hypothesis tree in this document's earlier sections (client
+  TUN/routing, Hiddify integration/version defect, post-handshake
+  interference, stale/mismatched REALITY state, UDP blocking) remains
+  **UNVERIFIED** exactly as before — this addendum narrows "is it the
+  server-side renderer/credential path" to NO (see the Aug-15 diff above)
+  without resolving which of those remaining hypotheses is correct.
+- Outline's inconsistent behavior remains untouched and unexplained by
+  this addendum — tracked separately per the task's own framing.
+
+### Exact VPS deployment commands for this revision
+
+Safe: does not rotate any key/UUID/password, does not touch MTU/BBR/
+sysctls/firewall/DNS/SSH/TLS/certs/ports, does not remove REALITY or
+Hysteria2, does not wipe users or config. This is a normal
+release-to-release update — see `docs/IMPLEMENTATION_STATUS.md`
+"Checkpoint 3" for the full transactional update contract.
+
+```bash
+# On the VPS, as the existing production install:
+sudo /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild   # dev/unreleased checkout
+# or, once a tagged release containing this branch's commit exists:
+sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z
+
+# Verify nothing regressed:
+sudo vpn-admin doctor --protocol --require-protocol
+sudo deploy/lib/vpn-benchmark.sh --skip-tunnel=0   # confirm the jq fix: no more
+                                                    # "could not reach the local
+                                                    # subscription backend" SKIP
+```
+
+### Exact commands to generate each profile variant
+
+```bash
+# Normal REALITY + Hysteria2 (unchanged default — sing-box-core-oriented):
+vpn-admin user create --name "russia-test-A"
+# prints both the Hiddify (?format=hiddify) and native (?format=singbox)
+# links, plus the new Xray A/B link (?format=xray), for one user/one set
+# of credentials — see subscription_url_xray in apps/admin/src/main.rs.
+
+# Fetch each format directly (TOKEN from the created user's printed URLs):
+curl -s "https://<host>:<port>/sub/<TOKEN>?format=hiddify"   # share-link list (unchanged)
+curl -s "https://<host>:<port>/sub/<TOKEN>?format=singbox"   # native JSON (unchanged)
+curl -s "https://<host>:<port>/sub/<TOKEN>?format=xray"      # NEW: Xray-labeled A/B share-link list
+
+# Hysteria2 only (already part of every format above; no separate command
+# needed — Hysteria2 is not part of this session's A/B change).
+```
+
+### Russian A/B/C/D test sequence template
+
+One row per attempt. Fill every column; use `UNVERIFIED`/`N/A` explicitly
+rather than leaving a cell blank. A = Hiddify default link (sing-box
+core), B = Hiddify Xray A/B link (`?format=xray`), C = raw upstream
+sing-box (minimal client, no Hiddify), D = Outline (separate credential/
+listener, tracked for comparison only, not expected to share a root
+cause).
+
+| Variant | Device | App version | Core (sing-box/Xray/unknown) | Network (Wi-Fi/mobile) | Carrier | Server log result (accepted / processed invalid connection / no attempt seen) | Public IP before | Public IP after connect | Sustained >10MB download (Y/N, MB, duration) |
+|---|---|---|---|---|---|---|---|---|---|
+| A |  |  |  |  |  |  |  |  |  |
+| B |  |  |  |  |  |  |  |  |  |
+| C |  |  |  |  |  |  |  |  |  |
+| D |  |  |  |  |  |  |  |  |  |
+
+Run `sudo vpn-investigate.sh client <observed-IP>` on the VPS immediately
+after each attempt (within the same UTC minute if possible) and attach its
+FACT-labeled output (event counts, listener presence, recent log lines) to
+the corresponding row instead of paraphrasing it.
+
+### Step 11 — explicitly deferred, not implemented
+
+New transport protocols (XHTTP, WSS, or any other REALITY/Hysteria2
+alternative) are NOT implemented in this session. This is gated on real
+Russian testing of the Xray-core A/B path (above) also failing — only
+then does the evidence justify the cost of a new transport. This is a
+documented next step, not a decision made now.

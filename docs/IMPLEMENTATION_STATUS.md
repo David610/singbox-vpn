@@ -6,6 +6,30 @@ Release-readiness evidence is recorded in this file and in
 dated historical audit snapshot.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
+## Release readiness update (2026-08-19)
+
+- Russia connectivity regression investigation: real Russian Hiddify
+  clients report repeated `REALITY: processed invalid connection` despite
+  passing server-side self-tests, even on a freshly reinstalled profile.
+  Re-audited the actual renderer/credential path against the last
+  known-working (pre-rebrand, `29e1e5c`) state — no material REALITY-path
+  regression was found (`crates/compat-config/src/model.rs`/
+  `deployment.rs`/`credentials.rs` are byte-identical; `render.rs`'s only
+  change is the additive, opt-in `CompatibilityMode::TcpOnly`, proven
+  byte-identical to the prior default when unused). Implemented an opt-in
+  `?format=xray` subscription variant (same UUID/pbk/sid/SNI/port/
+  fingerprint/flow, distinctly labeled) as an A/B path for real Russian
+  device testing against Hiddify's alternate core engine where one exists;
+  extended `vpn-investigate.sh` with a `client <IP>` command (FACT/
+  INFERENCE/UNKNOWN-labeled, no secrets, nothing mutated); fixed a real
+  token-extraction defect in `vpn-benchmark.sh` that silently skipped its
+  entire VLESS+REALITY/Hysteria2 protocol-overhead section on every run.
+  Full detail, exact versions, Hiddify-syntax UNVERIFIED caveats, tests,
+  and the Russian A/B/C/D test template are in
+  `docs/RUSSIA_PRODUCTION_INVESTIGATION.md`'s 2026-08-19 addendum.
+  **Status: implemented, server-tested, awaiting Russian verification —
+  not claimed fixed.**
+
 ## Release readiness update (2026-08-17)
 
 - **`deploy/almalinux/lifecycle-acceptance.sh` was substantially expanded**

@@ -90,6 +90,73 @@ pub fn render_uri_list(
     Ok(lines.join("\n"))
 }
 
+/// Explicit, opt-in A/B share link for Xray-core-oriented clients
+/// (`?format=xray` — see `services/subscription/src/lib.rs`). This exists
+/// for the 2026-08-19 Russia connectivity investigation
+/// (`docs/RUSSIA_PRODUCTION_INVESTIGATION.md`): production self-tests pass
+/// (a throwaway upstream sing-box client completes REALITY locally) but
+/// real Russian clients see `REALITY: processed invalid connection`. One
+/// untested variable is the client's TLS/REALITY implementation itself —
+/// Hiddify on some platforms can bundle an Xray-core engine instead of
+/// sing-box's own core, and the two are independent REALITY
+/// implementations. This function renders the SAME UUID, public key,
+/// short_id, SNI, host, and port as `render_vless_reality_uri` — it
+/// changes NOTHING about server-side credentials or the wire format
+/// (encryption=none, security=reality, type=tcp, flow=xtls-rprx-vision,
+/// fp/pbk/sid/sni — that is already the standard `vless://` share-link
+/// syntax both sing-box-core and Xray-core clients accept). It only
+/// distinguishes the link with a separate, explicit "(Xray)" label suffix
+/// so a Russian tester can import this link specifically to exercise
+/// Hiddify's Xray-core engine, and the server operator can distinguish
+/// which core connected in `sing-box` logs / `vpn-investigate.sh client`
+/// output (endpoint label is not sent over the wire — the distinction is
+/// operational bookkeeping for the person running the A/B test, not a
+/// protocol-level difference).
+///
+/// **UNVERIFIED**: whether current Hiddify iOS/Android actually exposes a
+/// distinct `core=xray` import path, an `xvless://` URI scheme, or any
+/// other Xray-specific import syntax was NOT confirmed — this session had
+/// no web access to check current Hiddify release notes/source. Rather
+/// than invent unverified syntax, this deliberately emits the standard
+/// `vless://` share-link (which both cores already consume identically)
+/// under a distinct label, so it is safe to ship and test today. If real
+/// Russian testing later shows Hiddify needs a different URI shape to
+/// force its Xray-core engine specifically, that shape must be verified
+/// against real Hiddify source/docs before being added here — see
+/// `docs/RUSSIA_PRODUCTION_INVESTIGATION.md`.
+pub fn render_vless_reality_uri_xray_labeled(
+    user: &CompatUser,
+    endpoint: &CompatEndpoint,
+) -> Result<String, CompatError> {
+    let mut xray_endpoint = endpoint.clone();
+    xray_endpoint.label = format!("{} (Xray)", endpoint.label);
+    render_vless_reality_uri(user, &xray_endpoint)
+}
+
+/// `?format=xray` subscription body: every VLESS+REALITY endpoint rendered
+/// via `render_vless_reality_uri_xray_labeled` (same credentials, "(Xray)"
+/// label suffix); every Hysteria2 endpoint rendered unchanged via
+/// `render_hysteria2_uri` (Hysteria2's URI syntax is not sing-box/Xray-core
+/// specific, so no separate labeling is needed there). See
+/// `render_vless_reality_uri_xray_labeled`'s doc comment for the full
+/// rationale and the explicit UNVERIFIED Hiddify-syntax caveat.
+pub fn render_xray_uri_list(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+) -> Result<String, CompatError> {
+    let mut lines = Vec::with_capacity(endpoints.len());
+    for ep in endpoints {
+        let uri = match ep.transport {
+            crate::model::CompatTransport::VlessReality => {
+                render_vless_reality_uri_xray_labeled(user, ep)?
+            }
+            crate::model::CompatTransport::Hysteria2 => render_hysteria2_uri(user, ep)?,
+        };
+        lines.push(uri);
+    }
+    Ok(lines.join("\n"))
+}
+
 /// Which endpoint the manual `select` outbound defaults to. This picks
 /// ONLY the default — every profile still lists every real endpoint tag
 /// plus `auto` (urltest) in the selector, so a user can always override
@@ -793,6 +860,90 @@ mod tests {
     fn label_with_spaces_is_percent_encoded() {
         let uri = render_vless_reality_uri(&user(), &reality_endpoint()).unwrap();
         assert!(uri.ends_with("Germany%20-%20Reality"));
+    }
+
+    // --- Xray-core-oriented A/B share link (?format=xray) ---
+
+    #[test]
+    fn xray_labeled_uri_has_xray_suffix_and_same_credentials_as_normal_uri() {
+        let normal = render_vless_reality_uri(&user(), &reality_endpoint()).unwrap();
+        let xray = render_vless_reality_uri_xray_labeled(&user(), &reality_endpoint()).unwrap();
+        assert_ne!(
+            normal, xray,
+            "xray-labeled URI must differ from the normal one (label only)"
+        );
+        assert!(
+            xray.starts_with("vless://11111111-1111-4111-8111-111111111111@vpn.example.com:443?"),
+            "same UUID/host/port: {xray}"
+        );
+        assert!(xray.contains("security=reality"));
+        assert!(xray.contains("encryption=none"));
+        assert!(xray.contains("type=tcp"));
+        assert!(xray.contains("sni=www.google.com"));
+        assert!(xray.contains("fp=chrome"));
+        assert!(xray.contains("pbk=abc123"));
+        assert!(xray.contains("sid=0a1b2c3d"));
+        assert!(xray.contains("flow=xtls-rprx-vision"));
+        assert!(
+            xray.ends_with("Germany%20-%20Reality%20%28Xray%29"),
+            "label must be distinctly suffixed (percent-encoded parens): {xray}"
+        );
+        assert!(!xray.to_lowercase().contains("private"));
+    }
+
+    #[test]
+    fn xray_labeled_uri_never_leaks_private_key() {
+        let xray = render_vless_reality_uri_xray_labeled(&user(), &reality_endpoint()).unwrap();
+        assert!(!xray.to_lowercase().contains("private"));
+        assert!(!xray.to_lowercase().contains("private_key"));
+    }
+
+    #[test]
+    fn xray_labeled_uri_rejects_wrong_transport() {
+        assert!(render_vless_reality_uri_xray_labeled(&user(), &hysteria_endpoint()).is_err());
+    }
+
+    #[test]
+    fn xray_uri_list_labels_only_reality_endpoints() {
+        let list =
+            render_xray_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
+        let lines: Vec<&str> = list.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("vless://"));
+        assert!(
+            lines[0].contains("%28Xray%29"),
+            "REALITY line must carry the percent-encoded Xray label: {}",
+            lines[0]
+        );
+        assert!(lines[1].starts_with("hysteria2://"));
+        assert!(
+            !lines[1].contains("Xray"),
+            "Hysteria2 line must be unchanged/unlabeled: {}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn xray_uri_list_never_leaks_private_key() {
+        let list =
+            render_xray_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
+        assert!(!list.to_lowercase().contains("private"));
+    }
+
+    #[test]
+    fn xray_uri_list_uses_exact_same_credentials_as_default_uri_list_besides_label() {
+        let normal = render_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
+        let xray =
+            render_xray_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
+        // Strip only the trailing label fragment (after '#') and compare —
+        // everything before it (uuid/host/port/query params) must be identical.
+        let strip_label = |uri: &str| uri.split('#').next().unwrap().to_string();
+        let normal_lines: Vec<String> = normal.lines().map(strip_label).collect();
+        let xray_lines: Vec<String> = xray.lines().map(strip_label).collect();
+        assert_eq!(
+            normal_lines, xray_lines,
+            "only the fragment/label may differ between the default and Xray-oriented URI lists"
+        );
     }
 
     #[test]

@@ -149,6 +149,33 @@ case "$tag" in
   *) echo "ok: discovered tag '$tag' is not a selector/urltest/direct outbound" ;;
 esac
 
+
+# --- vpn_benchmark_extract_token ---
+# Regression for the real double-query-string bug this helper replaces
+# an inline "${sub_url##*/}" with — see the function's doc comment in
+# vpn-benchmark-lib.sh.
+
+token="$(vpn_benchmark_extract_token 'https://vpn.example.com:8443/sub/AbC123token?format=hiddify')"
+assert_eq "token extracted without the query string" "AbC123token" "$token"
+
+token="$(vpn_benchmark_extract_token 'https://vpn.example.com:8443/sub/AbC123token?format=singbox&profile=performance')"
+assert_eq "token extracted with multiple query params present" "AbC123token" "$token"
+
+token="$(vpn_benchmark_extract_token 'https://vpn.example.com:8443/sub/AbC123token')"
+assert_eq "token extracted with no query string at all" "AbC123token" "$token"
+
+set +e
+vpn_benchmark_extract_token 'https://vpn.example.com:8443/nope/AbC123token?format=hiddify' >/dev/null 2>/dev/null
+rc=$?
+set -e
+assert_eq "URL with no /sub/ segment: rejected (rc=2)" "2" "$rc"
+
+set +e
+vpn_benchmark_extract_token 'https://vpn.example.com:8443/sub/?format=hiddify' >/dev/null 2>/dev/null
+rc=$?
+set -e
+assert_eq "empty token after /sub/: rejected (rc=2)" "2" "$rc"
+
 echo
 if [ "$failures" -eq 0 ]; then
   echo "all vpn-benchmark-lib tests passed"
