@@ -109,9 +109,31 @@ jobs:
             bash -n "$f"
           done
       - name: shellcheck
+        # ubuntu-latest already ships shellcheck and jq; only idn2 is ever
+        # actually missing. Installing unconditionally forced `apt-get
+        # update` + `install` on every run, and that step has hung for the
+        # full job timeout at least once in practice (apt-get update
+        # stalling, and/or the `needrestart` interactive service-restart
+        # prompt Ubuntu 24.04 runner images ship, which blocks
+        # non-interactive installs waiting on a TTY that never answers).
+        # Skip the network round-trip entirely when nothing is missing,
+        # and when it IS needed, force it non-interactive and bound it
+        # with `timeout` so a hang fails fast with a clear error instead
+        # of silently eating the whole 10-minute job budget.
         run: |
-          sudo apt-get update -y >/dev/null
-          sudo apt-get install -y shellcheck jq idn2 >/dev/null
+          set -euo pipefail
+          missing=()
+          for tool in shellcheck jq idn2; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "installing missing tools: ${missing[*]}"
+            export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
+            timeout 120 sudo apt-get update -y >/dev/null
+            timeout 180 sudo apt-get install -y "${missing[@]}" >/dev/null
+          else
+            echo "shellcheck, jq, idn2 already present — skipping apt-get"
+          fi
           shellcheck -S warning install.sh uninstall.sh bin/vpn1-uninstall deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
       # Run the complete deterministic suite rather than maintaining a
       # second hand-written list here. The old list omitted transactional
