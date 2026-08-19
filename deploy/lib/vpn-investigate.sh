@@ -12,6 +12,7 @@ Usage:
   vpn-investigate.sh streaming [SECONDS]
   vpn-investigate.sh mtu HOST
   vpn-investigate.sh youtube
+  vpn-investigate.sh client CLIENT_IP
 
 target validates a REALITY handshake candidate from this host over IPv4 and
 IPv6. capture records only CLIENT_IP and TCP/443 or UDP/443 for at most 300s.
@@ -34,6 +35,13 @@ it) QUIC/UDP/443 reachability to a fixed set of YouTube/Google domains, and
 reports IPv4/IPv6 results separately. It never attempts to bypass any
 restriction — it diagnoses network behavior only, and it explicitly does
 NOT verify the YouTube app, Hiddify, or iOS.
+
+client gathers this server's own view of one reported client IP's connection
+attempts: protocol self-test result, TCP/443 and UDP/443 listener presence,
+recent sing-box journal entries mentioning that IP, host-wide counts of
+REALITY invalid-connection/accepted/reset events, a suggested (not run)
+bounded capture command, and read-only firewall state. Every line is labeled
+FACT/INFERENCE/UNKNOWN; no secret is ever printed; nothing is mutated.
 EOF
 }
 
@@ -99,6 +107,140 @@ summarize() {
   echo "Timeline (epoch, protocol, frame length, TCP flags; no payload):"
   tshark -n -r "$input" -T fields -e frame.time_epoch -e _ws.col.Protocol -e frame.len -e tcp.flags
   echo "Authentication/application state requires synchronized sing-box logs; packet metadata alone cannot label DPI or credential failure."
+}
+
+# ---------------------------------------------------------------------------
+# client — remote client investigation. Gathers everything this host can
+# see about ONE reported client IP's connection attempts, without ever
+# printing secrets (REALITY private/public key, VLESS UUID, Hysteria2
+# password) or running any capture/mutation itself — it only suggests the
+# `capture` command above, it never invokes it. Every line is labeled
+# FACT (directly observed on this host right now), INFERENCE (a
+# conclusion drawn from those facts, clearly hedged), or UNKNOWN (this
+# host cannot determine it) — see docs/RUSSIA_PRODUCTION_INVESTIGATION.md
+# and docs/INCIDENT_2026-08-11_REALITY_HANDSHAKE_INCONCLUSIVE.md for why
+# `processed invalid connection` alone must never be silently upgraded to
+# a DPI/censorship/bad-credential verdict.
+# ---------------------------------------------------------------------------
+client() {
+  local ip=${1:-}
+  valid_ip "$ip" || { echo "invalid client IP" >&2; return 2; }
+  echo "Client investigation for $ip"
+  echo "======================================================================"
+  echo "Every line below is labeled FACT, INFERENCE, or UNKNOWN. No secret"
+  echo "(REALITY key material, VLESS UUID, Hysteria2 password) is ever printed."
+  echo
+
+  echo "--- Protocol self-test ---"
+  if command -v vpn-admin >/dev/null; then
+    if OUT="$(vpn-admin doctor --protocol 2>&1)"; then
+      echo "FACT: vpn-admin doctor --protocol exited 0."
+    else
+      echo "FACT: vpn-admin doctor --protocol exited non-zero."
+    fi
+    echo "$OUT" | grep -Ei 'reality|hysteria|PASS|FAIL|INCONCLUSIVE' | sed 's/^/FACT (doctor output): /' || true
+    echo "INFERENCE: this proves the server's own REALITY/Hysteria2 stack is (or is not)"
+    echo "  self-consistent from THIS host, dialing itself. It does NOT prove any"
+    echo "  specific remote client (including $ip) can complete the same handshake —"
+    echo "  see docs/INCIDENT_2026-08-11_REALITY_HANDSHAKE_INCONCLUSIVE.md."
+  else
+    echo "UNKNOWN: vpn-admin not found on PATH — protocol self-test not run."
+  fi
+  echo
+
+  echo "--- Listener presence (TCP/443, UDP/443) ---"
+  if command -v ss >/dev/null; then
+    local tcp_listen udp_listen
+    tcp_listen="$(ss -H -tln 'sport = :443' 2>/dev/null || true)"
+    udp_listen="$(ss -H -uln 'sport = :443' 2>/dev/null || true)"
+    if [[ -n "$tcp_listen" ]]; then
+      echo "FACT: a TCP listener is bound on :443 on this host."
+      echo "$tcp_listen" | sed 's/^/FACT (ss): /'
+    else
+      echo "FACT: no TCP listener observed bound on :443 on this host."
+    fi
+    if [[ -n "$udp_listen" ]]; then
+      echo "FACT: a UDP listener is bound on :443 on this host."
+      echo "$udp_listen" | sed 's/^/FACT (ss): /'
+    else
+      echo "FACT: no UDP listener observed bound on :443 on this host."
+    fi
+  else
+    echo "UNKNOWN: ss not found — listener presence not checked."
+  fi
+  echo
+
+  echo "--- Recent sing-box log entries mentioning $ip ---"
+  if command -v journalctl >/dev/null; then
+    local matches
+    matches="$(journalctl -u sing-box --since '2 hours ago' --no-pager 2>/dev/null | grep -F "$ip" | tail -50 || true)"
+    if [[ -n "$matches" ]]; then
+      echo "FACT: the following journal lines (last 2h, most recent 50) mention $ip:"
+      echo "$matches" | sed 's/^/FACT (journal): /'
+    else
+      echo "FACT: no journal lines in the last 2h mention $ip (does not prove no attempt"
+      echo "  occurred — sing-box logging may not include the client IP for every event"
+      echo "  type, or the attempt may be older than 2h)."
+    fi
+  else
+    echo "UNKNOWN: journalctl not found — recent log entries not checked."
+  fi
+  echo
+
+  echo "--- REALITY/Hysteria2 event counts (last 2h, host-wide, not scoped to $ip) ---"
+  if command -v journalctl >/dev/null; then
+    local invalid accepted reset
+    invalid="$(journalctl -u sing-box --since '2 hours ago' --no-pager 2>/dev/null | grep -Fc 'processed invalid connection' || true)"
+    accepted="$(journalctl -u sing-box --since '2 hours ago' --no-pager 2>/dev/null | grep -Eic 'inbound/(vless|hysteria2).*(accepted|connection from)' || true)"
+    reset="$(journalctl -u sing-box --since '2 hours ago' --no-pager 2>/dev/null | grep -Fic 'connection reset' || true)"
+    echo "FACT: REALITY 'processed invalid connection' occurrences: ${invalid:-0}"
+    echo "FACT: inbound accepted/connection-from occurrences: ${accepted:-0}"
+    echo "FACT: 'connection reset' occurrences: ${reset:-0}"
+    echo "INFERENCE: 'processed invalid connection' means the SERVER's REALITY layer"
+    echo "  could not complete the hijack for that connection and transparently"
+    echo "  proxied it to the decoy handshake target instead — it does NOT by itself"
+    echo "  distinguish an unauthenticated probe, a stale/mismatched client credential,"
+    echo "  DPI interference, or a client-side TLS/REALITY implementation difference."
+    echo "  See docs/INCIDENT_2026-08-10_REALITY_HANDSHAKE_TIMEOUT.md and"
+    echo "  docs/INCIDENT_2026-08-11_REALITY_HANDSHAKE_INCONCLUSIVE.md."
+  else
+    echo "UNKNOWN: journalctl not found — event counts not computed."
+  fi
+  echo
+
+  echo "--- Suggested bounded capture (NOT run automatically) ---"
+  echo "INFERENCE: to capture only this client's TCP/443 and UDP/443 packets"
+  echo "  (metadata via 'summarize', never payload beyond 160 bytes), an operator"
+  echo "  can run, for up to 300s:"
+  echo "    sudo $0 capture $ip /root/${ip//[:.]/_}.pcap 120"
+  echo "    sudo $0 summarize /root/${ip//[:.]/_}.pcap"
+  echo
+
+  echo "--- Firewall state (read-only) ---"
+  if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+    echo "FACT: firewalld is active."
+    firewall-cmd --list-ports 2>/dev/null | sed 's/^/FACT (firewalld ports): /' || true
+  elif command -v nft >/dev/null; then
+    if nft list ruleset >/dev/null 2>&1; then
+      echo "FACT: nftables ruleset is present (not printed in full here to avoid noise —"
+      echo "  run 'nft list ruleset' directly on this host for the full table)."
+    else
+      echo "UNKNOWN: nftables present but ruleset could not be read (permissions?)."
+    fi
+  elif command -v iptables >/dev/null; then
+    echo "FACT: iptables is present."
+    iptables -S INPUT 2>/dev/null | grep -E '443' | sed 's/^/FACT (iptables INPUT rule): /' || \
+      echo "FACT: no iptables INPUT rule explicitly mentions port 443 (may still be allowed by a default policy or a rule matching by other criteria)."
+  else
+    echo "UNKNOWN: no recognized firewall tool (firewalld/nft/iptables) found."
+  fi
+  echo
+
+  echo "======================================================================"
+  echo "This investigation characterizes THIS SERVER's own state and logs only."
+  echo "It cannot observe the client device's TUN state, DNS, routing, or"
+  echo "application behavior — see docs/RUSSIA_PRODUCTION_INVESTIGATION.md's"
+  echo "evidence-boundary conventions before drawing a conclusion from it alone."
 }
 
 # ---------------------------------------------------------------------------
@@ -487,6 +629,7 @@ case ${1:-} in
   streaming) shift; streaming "$@" ;;
   mtu) shift; mtu "$@" ;;
   youtube) shift; youtube "$@" ;;
+  client) shift; client "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

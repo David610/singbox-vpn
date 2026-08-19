@@ -145,6 +145,16 @@ fn find_user_by_token(users: &[CompatUser], token: &str, now_unix: i64) -> Optio
 
 #[derive(serde::Deserialize)]
 pub struct SubQuery {
+    /// `singbox` (default): native sing-box client JSON. `uri`/`hiddify`:
+    /// newline-separated `vless://`/`hysteria2://` share links, unchanged
+    /// pre-existing behavior. `xray`: an opt-in, distinctly-labeled A/B
+    /// variant of the share-link list for the 2026-08-19 Russia
+    /// connectivity investigation (`docs/RUSSIA_PRODUCTION_INVESTIGATION.md`)
+    /// — same UUID/pbk/sid/SNI/host/port/fingerprint/flow as `uri`, only
+    /// the VLESS+REALITY line's label gets an explicit "(Xray)" suffix so
+    /// a tester/operator can tell which link was imported. See
+    /// `compat_config::render::render_xray_uri_list`'s doc comment for the
+    /// full rationale and the explicit UNVERIFIED-Hiddify-syntax caveat.
     pub format: Option<String>,
     /// Which transport the `format=singbox` subscription's manual
     /// selector defaults to: `reliability` (default, unchanged — REALITY),
@@ -306,6 +316,34 @@ async fn get_subscription(
                     .into_response(),
                 Err(e) => {
                     tracing::error!(error = %e, "failed to render uri list");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+                }
+            }
+        }
+        // Opt-in Xray-core-oriented A/B share-link variant — see
+        // `SubQuery::format`'s doc comment and
+        // `compat_config::render::render_xray_uri_list`. Same credentials
+        // as `format=uri`/`format=hiddify`, only the REALITY line's label
+        // differs, so it inherits the same TCP-only-mode restriction for
+        // the same reason.
+        "xray" => {
+            if compat_mode != render::CompatibilityMode::Normal {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "compat=tcp-only is only supported with format=singbox — the xray share-link \
+                     format cannot reliably enforce a TCP-only VLESS outbound",
+                )
+                    .into_response();
+            }
+            match render::render_xray_uri_list(&user, &state.endpoints) {
+                Ok(body) => (
+                    StatusCode::OK,
+                    [("content-type", "text/plain; charset=utf-8")],
+                    body,
+                )
+                    .into_response(),
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to render xray uri list");
                     (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
                 }
             }
@@ -551,6 +589,126 @@ mod tests {
         assert_eq!(
             uri_body, hiddify_body,
             "?format=hiddify must render exactly what ?format=uri renders"
+        );
+    }
+
+    // --- format=xray (Xray-core-oriented A/B share link) ---
+
+    #[tokio::test]
+    async fn xray_format_returns_200_plaintext_with_reality_and_hysteria2_lines() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.contains("vless://"));
+        assert!(s.contains("hysteria2://"));
+        assert!(
+            s.contains("%28Xray%29"),
+            "REALITY line must carry the percent-encoded Xray label: {s}"
+        );
+    }
+
+    #[tokio::test]
+    async fn xray_format_contains_exact_expected_reality_fields_and_no_private_key() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        let reality_line = s.lines().find(|l| l.starts_with("vless://")).unwrap();
+        assert!(reality_line
+            .starts_with("vless://11111111-1111-4111-8111-111111111111@vpn.example.com:443?"));
+        assert!(reality_line.contains("security=reality"));
+        assert!(reality_line.contains("encryption=none"));
+        assert!(reality_line.contains("type=tcp"));
+        assert!(reality_line.contains("flow=xtls-rprx-vision"));
+        assert!(reality_line.contains("sni=www.google.com"));
+        assert!(reality_line.contains("fp=chrome"));
+        assert!(reality_line.contains("pbk=pub"));
+        assert!(reality_line.contains("sid=short"));
+        assert!(!s.to_lowercase().contains("private"));
+    }
+
+    #[tokio::test]
+    async fn xray_format_uses_identical_credentials_to_uri_format_besides_label() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let uri_resp = oneshot_with_addr(state.clone(), "/sub/goodtoken?format=uri").await;
+        let xray_resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray").await;
+        assert_eq!(uri_resp.status(), StatusCode::OK);
+        assert_eq!(xray_resp.status(), StatusCode::OK);
+        let uri_body = String::from_utf8(
+            axum::body::to_bytes(uri_resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        let xray_body = String::from_utf8(
+            axum::body::to_bytes(xray_resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        let strip_label = |s: &str| -> Vec<String> {
+            s.lines()
+                .map(|l| l.split('#').next().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(
+            strip_label(&uri_body),
+            strip_label(&xray_body),
+            "only the fragment/label may differ between ?format=uri and ?format=xray"
+        );
+    }
+
+    #[tokio::test]
+    async fn compat_tcp_only_with_xray_format_is_rejected_not_silently_degraded() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray&compat=tcp-only").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Regression: adding `format=xray` must not change what
+    /// `format=singbox` (the default) or `format=uri`/`format=hiddify`
+    /// serve — byte-for-byte identical to before this change existed.
+    #[tokio::test]
+    async fn default_and_existing_format_outputs_are_byte_for_byte_unchanged() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let default_resp = oneshot_with_addr(state.clone(), "/sub/goodtoken").await;
+        assert_eq!(default_resp.status(), StatusCode::OK);
+        let default_body = axum::body::to_bytes(default_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(default_body.to_vec()).unwrap();
+        // Exact shape asserted here (not just "contains vless/hysteria2")
+        // so a future accidental change to the default renderer path
+        // (e.g. leaking the new xray-labeling helper into the default
+        // one) would be caught.
+        assert!(s.contains("\"outbounds\""));
+        assert!(s.contains("\"type\": \"vless\""));
+        assert!(s.contains("\"type\": \"hysteria2\""));
+        assert!(s.contains("\"type\": \"urltest\""));
+        assert!(s.contains("\"type\": \"selector\""));
+        assert!(
+            !s.contains("Xray"),
+            "default subscription must never carry the Xray A/B label"
+        );
+
+        let uri_resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri").await;
+        assert_eq!(uri_resp.status(), StatusCode::OK);
+        let uri_body = axum::body::to_bytes(uri_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let uri_s = String::from_utf8(uri_body.to_vec()).unwrap();
+        assert!(
+            !uri_s.contains("Xray"),
+            "?format=uri must never carry the Xray A/B label"
         );
     }
 

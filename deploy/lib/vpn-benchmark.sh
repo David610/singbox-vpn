@@ -460,7 +460,14 @@ tunnel_benchmark() {
   bench_user_id="$(echo "$create_json" | jq -r .id)"
   local sub_url token subscription_backend_port
   sub_url="$(echo "$create_json" | jq -r .subscription_url)"
-  token="${sub_url##*/}"
+  # See vpn-benchmark-lib.sh's vpn_benchmark_extract_token doc comment:
+  # the subscription URL always carries a "?format=..." query string, so
+  # a bare "${sub_url##*/}" left it attached to the token, which broke
+  # this section's own "?format=singbox" re-append below.
+  if ! token="$(vpn_benchmark_extract_token "$sub_url")"; then
+    kv "$label" "FAILED: could not extract a subscription token from the created user's URL"
+    return
+  fi
   subscription_backend_port="$(awk -F'=' '/^\[subscription\]/{f=1;next} f && /listen_port/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$CONFIG")"
   [ -n "$subscription_backend_port" ] || subscription_backend_port=9100
 

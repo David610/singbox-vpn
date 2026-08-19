@@ -109,9 +109,27 @@ jobs:
             bash -n "$f"
           done
       - name: shellcheck
+        # ubuntu-latest already ships shellcheck and jq, so installing them
+        # unconditionally only ever bought idn2 — and idn2 is NOT actually
+        # required: deploy/lib/tests/test-idn-punycode.sh explicitly treats
+        # its absence as a valid SKIP that exercises a real, intentional
+        # code path (derive_punycode_host()'s fallback-to-unchanged-input
+        # behavior), not a weakened test. Unconditionally running
+        # `apt-get update && apt-get install` here bought nothing but a
+        # flaky network round-trip on every run — it has hung for the full
+        # job timeout more than once (an `apt-get update` mirror stall
+        # that a bounded `timeout` turned into a clean but still-fatal
+        # exit 124 rather than fixing). Only install what's genuinely
+        # missing and required (shellcheck itself), bounded and
+        # non-interactive, so a real gap still fails fast instead of
+        # hanging, but the common case never touches the network.
         run: |
-          sudo apt-get update -y >/dev/null
-          sudo apt-get install -y shellcheck jq idn2 >/dev/null
+          set -euo pipefail
+          if ! command -v shellcheck >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
+            timeout 60 sudo apt-get update -y >/dev/null
+            timeout 90 sudo apt-get install -y shellcheck >/dev/null
+          fi
           shellcheck -S warning install.sh uninstall.sh bin/vpn1-uninstall deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
       # Run the complete deterministic suite rather than maintaining a
       # second hand-written list here. The old list omitted transactional

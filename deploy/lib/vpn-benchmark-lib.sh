@@ -94,3 +94,48 @@ vpn_benchmark_discover_outbound_tag() {
   esac
   printf '%s\n' "$tag"
 }
+
+# Extracts the bare subscription token from `vpn-admin user create --json`'s
+# `subscription_url` field (e.g.
+# "https://host:8443/sub/AbC123token?format=hiddify"), for the
+# --socks5-hostname hairpin the VLESS+REALITY/Hysteria2 sections of
+# vpn-benchmark.sh build against the LOCAL subscription backend.
+#
+# Fixes a real defect: the previous inline `${sub_url##*/}` stripped only
+# up to the last '/', which — because the URL always carries an explicit
+# `?format=...` query string (see apps/admin/src/main.rs's
+# `subscription_url` doc comment) — left the query string attached to the
+# "token" (e.g. "AbC123token?format=hiddify"). vpn-benchmark.sh then
+# re-appended its OWN `?format=singbox`, producing a doubled query string
+# (".../sub/AbC123token?format=hiddify?format=singbox") that
+# services/subscription's `Query<SubQuery>` extractor parses as a single
+# literal `format` value that matches none of `singbox`/`uri`/`hiddify`/
+# `xray` — a guaranteed 400, which `curl -f` then silently swallowed as
+# "could not reach the local subscription backend", permanently and
+# silently SKIPPING the entire VLESS+REALITY/Hysteria2 server-side
+# protocol-overhead section on every run (see also the malformed-JSON
+# path this could otherwise feed into `vpn_benchmark_discover_outbound_tag`
+# above, whose un-redirected `jq` calls downstream of that stage can
+# surface as a confusing "jq: parse error: Invalid numeric literal" if a
+# future caller ever removes the `-f`/`2>/dev/null` guards this defect
+# happened to hide behind).
+#
+# Exit codes: 0 on success (token printed on stdout); 2 if `sub_url`
+# doesn't contain "/sub/" at all (malformed input, never guess).
+vpn_benchmark_extract_token() {
+  local sub_url="$1"
+  case "$sub_url" in
+    */sub/*) ;;
+    *)
+      echo "vpn_benchmark_extract_token: URL has no /sub/ path segment: $sub_url" >&2
+      return 2
+      ;;
+  esac
+  local token="${sub_url#*/sub/}"
+  token="${token%%\?*}"
+  if [ -z "$token" ]; then
+    echo "vpn_benchmark_extract_token: extracted an empty token from: $sub_url" >&2
+    return 2
+  fi
+  printf '%s\n' "$token"
+}

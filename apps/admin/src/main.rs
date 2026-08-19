@@ -1722,6 +1722,23 @@ fn subscription_url_singbox(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
+/// Opt-in Xray-core-oriented A/B share-link URL (`?format=xray`, see
+/// `compat_config::render::render_xray_uri_list`). Same UUID/pbk/sid/SNI/
+/// host/port as `subscription_url`'s `?format=hiddify` link — only the
+/// REALITY line's label carries an explicit "(Xray)" suffix. This exists
+/// for the 2026-08-19 Russia connectivity investigation
+/// (`docs/RUSSIA_PRODUCTION_INVESTIGATION.md`): it gives a tester an
+/// explicit second link to import specifically to exercise a client's
+/// Xray-core engine (where the client offers one) as a control against
+/// the default sing-box-core-oriented link, without touching that default
+/// link or the default subscription output at all.
+fn subscription_url_xray(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}?format=xray",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
 /// Print a terminal QR code encoding `data`. QR codes intentionally
 /// encode only the subscription URL, never the full server
 /// configuration (spec §6). PNG file output is not implemented — kept
@@ -1776,6 +1793,9 @@ fn cmd_user_create(
             "name": name,
             "enabled": true,
             "subscription_url": url,
+            // Additive field, existing keys/values above are unchanged —
+            // see subscription_url_xray's doc comment.
+            "subscription_url_xray": subscription_url_xray(cfg, &token),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
@@ -1802,6 +1822,12 @@ fn cmd_user_create(
         "Native sing-box clients (not Hiddify) should use the ?format=singbox variant instead:"
     );
     println!("  {}", subscription_url_singbox(cfg, &token));
+    println!();
+    println!(
+        "Optional A/B testing link (Xray-core-oriented, same credentials, distinctly labeled \
+         \"(Xray)\" — see docs/RUSSIA_PRODUCTION_INVESTIGATION.md):"
+    );
+    println!("  {}", subscription_url_xray(cfg, &token));
     if qr {
         println!();
         println!("Scan this QR code in Hiddify (Add profile -> Scan QR code):");
