@@ -172,6 +172,15 @@ if [ -z "$ACTIVATE_FIREWALLD_SSH_SAFE_BODY" ]; then
   echo "FAIL: could not extract activate_firewalld_ssh_safe() from $INSTALL_SH — has it been renamed/moved?"
   failures=$((failures + 1))
 fi
+# install_dependencies_rhel() also calls install_certbot_repo_rhel() —
+# on OS_ID=amzn (this file's subject) it is a real no-op (AL2023 ships
+# certbot directly and does not support EPEL), so it is extracted and
+# eval'd here too rather than stubbed away.
+INSTALL_CERTBOT_REPO_RHEL_BODY="$(sed -n '/^install_certbot_repo_rhel() {/,/^}/p' "$INSTALL_SH")"
+if [ -z "$INSTALL_CERTBOT_REPO_RHEL_BODY" ]; then
+  echo "FAIL: could not extract install_certbot_repo_rhel() from $INSTALL_SH — has it been renamed/moved?"
+  failures=$((failures + 1))
+fi
 
 run_install_dependencies_rhel() {
   local curl_present="$1" # "yes" or "no"
@@ -179,6 +188,8 @@ run_install_dependencies_rhel() {
     set -Eeuo pipefail
     log() { :; }
     warn() { :; }
+    OS_ID="amzn"
+    OS_PRETTY_NAME="Amazon Linux 2023"
     OWNERSHIP_DIR="$TMPDIR_TEST/var-lib-vpn1-$curl_present-$$"
     # shellcheck disable=SC2034 # read by deploy/lib/ownership.sh on source
     OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
@@ -211,6 +222,7 @@ run_install_dependencies_rhel() {
     export -f firewall-cmd 2>/dev/null || true
     eval "$RECORD_PKG_OWNERSHIP_RHEL_BODY"
     eval "$ACTIVATE_FIREWALLD_SSH_SAFE_BODY"
+    eval "$INSTALL_CERTBOT_REPO_RHEL_BODY"
     eval "$INSTALL_DEPS_RHEL_BODY"
     install_dependencies_rhel
     cat "$DNF_CALLS_FILE"

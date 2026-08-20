@@ -613,8 +613,28 @@ record_package_ownership_debian() {
   done
 }
 
+# certbot is not shipped in BaseOS/AppStream on AlmaLinux/Rocky/RHEL/CentOS
+# Stream 9 — it lives in EPEL only. Without this, a completely stock image
+# (no EPEL enabled by some other means beforehand) fails outright at `dnf
+# install ... certbot` with "No package certbot available", well before any
+# host mutation — but it is also easy to miss in manual testing on an image
+# that already happens to have EPEL enabled. Amazon Linux 2023 is the one
+# RHEL-family OS_ID this does NOT apply to: it ships `certbot` directly in
+# its own repos, and does not support EPEL/EPEL-like repos at all (AWS
+# docs) — calling this on AL2023 would just fail to enable a repo it
+# neither needs nor can use.
+install_certbot_repo_rhel() {
+  [ "$OS_ID" = "amzn" ] && return 0
+  rpm -q epel-release >/dev/null 2>&1 && return 0
+  log "enabling EPEL (required for the 'certbot' package on $OS_PRETTY_NAME; not present in BaseOS/AppStream)..."
+  record_package_ownership_rhel epel-release
+  dnf install -y epel-release >/dev/null \
+    || die "could not enable the EPEL repository (required for the 'certbot' package on $OS_PRETTY_NAME). Check network connectivity/DNS and that this host can reach the EPEL mirrors, or pre-install epel-release yourself before re-running."
+}
+
 install_dependencies_rhel() {
   log "installing OS packages (dnf)..."
+  install_certbot_repo_rhel
   local pkgs=(gcc gcc-c++ make pkgconf-pkg-config openssl-devel openssl
     firewalld policycoreutils-python-utils tar jq nginx certbot)
   # Amazon Linux 2023 ships `curl-minimal` preinstalled, providing
@@ -687,7 +707,35 @@ install_dependencies_debian() {
   record_package_ownership_debian "${pkgs[@]}"
   apt-get update -y >/dev/null
   apt-get install -y --no-install-recommends "${pkgs[@]}" >/dev/null
-  systemctl enable --now ufw >/dev/null 2>&1 || true
+  activate_ufw_ssh_safe
+}
+
+# Debian-family counterpart of activate_firewalld_ssh_safe() above. A bare
+# `systemctl enable --now ufw` here (the previous behavior) activates ufw's
+# packet filtering immediately — starting the ufw systemd unit applies its
+# configured policy (default-deny incoming on a stock Ubuntu/Debian image)
+# regardless of whether `ufw enable` was ever run — with NO SSH allow rule
+# yet, because firewall_stage (stage 14, deploy/almalinux/firewall-ufw.sh)
+# does not run until much later. Any operator connected over SSH — the
+# normal way this installer is run on a VPS — could lose their session (or
+# be unable to reconnect) between stage 2 and stage 14, and a custom SSH
+# port is even more exposed since ufw's default rules never cover it.
+# Mirrors activate_firewalld_ssh_safe(): explicitly allow the confirmed
+# SSH port as part of the SAME activation, and leave an already-active ufw
+# (and its existing rules) completely untouched.
+activate_ufw_ssh_safe() {
+  if ufw status 2>/dev/null | grep -q 'Status: active'; then
+    log "ufw is already active on this host — preserving its existing configuration as-is, not re-activating it."
+    return
+  fi
+  : "${SSH_PORT:?activate_ufw_ssh_safe called before SSH_PORT was resolved in preflight_stage — refusing to activate the firewall.}"
+  log "activating ufw with SSH port ${SSH_PORT}/tcp explicitly allowed as part of this same activation..."
+  ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null 2>&1
+  if [ "$SSH_PORT" != "22" ]; then
+    ufw allow "${SSH_PORT}/tcp" >/dev/null 2>&1
+  fi
+  ufw --force enable >/dev/null
+  log "ufw active; SSH port ${SSH_PORT}/tcp confirmed allowed before any further firewall changes."
 }
 
 install_packages() {

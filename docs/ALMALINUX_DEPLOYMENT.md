@@ -1,24 +1,19 @@
 # ALMALINUX_DEPLOYMENT.md
 
+> **This is an extended AlmaLinux/RHEL-family reference** (stage-by-stage
+> internals, file ownership matrix, credential rotation table, historical
+> audit trail). For the canonical, distro-agnostic installation and
+> operations doc, start with **[docs/INSTALLATION.md](INSTALLATION.md)**.
+> [SUPPORTED_PRODUCT.md](SUPPORTED_PRODUCT.md) is authoritative for the
+> server support matrix whenever another document or an installer code path
+> suggests a broader or narrower scope.
+
 Production runbook for the Hiddify/VLESS-REALITY/Hysteria2 compatibility
-stack. The supported v1.0 server target is deliberately limited to
-**AlmaLinux 9 x86-64**; [SUPPORTED_PRODUCT.md](SUPPORTED_PRODUCT.md) is
-authoritative whenever another document or an installer code path suggests a
-broader scope.
-
-### Public support matrix
-
-| OS | v1.0 status | Basis |
-|---|---|---|
-| AlmaLinux 9 x86-64 | **supported** | authoritative v1.0 target; supported-path CI uses the real pinned `sing-box` binary |
-| Rocky Linux 9 / RHEL 9 | **unsupported / unverified** | installer family branches exist, but that is not a public support claim |
-| Amazon Linux 2023 | **unsupported / fixture-tested only** | OS detection and dependency fixtures exist; no live-host validation |
-| Ubuntu 22.04/24.04 / Debian 12/13 | **unsupported / unverified** | installer family branches exist, but they are outside v1.0 support |
-| anything else | **unsupported / unverified** | no guarantee |
-
-`OS_SUPPORT` in `deploy/lib/os.sh` controls installer warnings and code-path
-selection. It is an internal implementation classification, not the public
-v1.0 support contract.
+stack, focused on the AlmaLinux/RHEL family. See
+[INSTALLATION.md's support matrix](INSTALLATION.md#supported-linux-distributions)
+or [SUPPORTED_PRODUCT.md](SUPPORTED_PRODUCT.md) for the full, authoritative
+per-distribution tier table — it is not repeated here to avoid two documents
+drifting out of sync.
 
 Every command below is copy-pasteable. This deploys the compatibility
 (sing-box) data plane only — the native `direct-tls`/`noise-quic` stack
@@ -149,7 +144,7 @@ step is simpler and has fewer moving parts for a boring V1). Provision
 them with certbot (or your own ACME client of choice):
 
 ```bash
-sudo dnf install -y certbot
+sudo dnf install -y epel-release certbot  # certbot ships via EPEL on this OS family, not BaseOS/AppStream
 # Hysteria2 cert (consumed directly by sing-box):
 sudo certbot certonly --standalone -d vpn.example.com \
   --non-interactive --agree-tos -m admin@vpn.example.com
