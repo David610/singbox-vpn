@@ -703,6 +703,51 @@ of a proxied TLS session, so a Vision-off profile is more
 fingerprintable to DPI. This is a time-boxed diagnostic and must never
 become a default; revert with `--off` when the run is finished.
 
+**Do not assume "Vision blocks QUIC" going into this experiment — that
+claim is core-specific, and the wrong core for sing-box.** Source-level
+research (Xray-core `proxy/vless/outbound/outbound.go`, main branch;
+sing-vmess `vless/client.go`/`vless/service.go` at the exact commit
+sing-box v1.13.19 pins) found:
+
+- **Xray-core's `xtls-rprx-vision` intercepts and rejects application
+  UDP/443 by design** — `"XTLS rejected UDP/443 traffic"`, documented at
+  https://xtls.github.io/en/config/outbounds/vless.html, specifically to
+  force QUIC-preferring apps onto TCP. Xray-core's own docs describe a
+  *separate* flow value, `xtls-rprx-vision-udp443`, for when that
+  interception is NOT wanted.
+- **sing-box's `xtls-rprx-vision` does not reproduce this.** No
+  port-443/QUIC special case exists anywhere in sing-box's/sing-vmess's
+  VLESS outbound or Vision implementation as of the pinned version — a
+  full-tree search of the `v1.13.19` checkout for any UDP/443-rejection
+  logic in the Vision path found nothing. sing-box's Vision is
+  functionally closer to Xray's `-udp443` variant than to plain
+  `xtls-rprx-vision`.
+- sing-box's VLESS server does reject Vision combined with the *raw*
+  UDP relay command (`vmess.NetworkUDP`) — see the `service.go` snippet
+  above — but allows Vision combined with `CommandMux` (XUDP, sing-box's
+  default packet encoding, which this project's generated config always
+  uses since it never sets `packet_encoding`). So even on sing-box-core,
+  UDP relay through a Vision-flow VLESS outbound is not blocked by
+  default.
+- Hiddify iOS defaults to its sing-box-based core; Xray-core is opt-in
+  only, via an explicit `core=xray`/`xvless://` selection
+  (hiddify-app v2.0.4+ release notes) that this project's generated
+  links never set.
+
+**Consequence for interpretation**: if Vision-off (this experiment)
+fixes the YouTube-app symptom on a normal, sing-box-core Hiddify
+install, the mechanism is *not* "Vision was blocking QUIC" — that
+mechanism doesn't exist in sing-box. It would have to be something else
+Vision changes (its TLS-layer padding/splitting, or its XUDP-only
+handling of relayed UDP) — investigate which, don't default to the
+Xray-specific explanation. Conversely, if the *actual* core in use turns
+out to be Xray (verify per §9.5, don't assume), the Xray UDP/443
+interception mechanism becomes directly applicable and is the more
+likely explanation. Which core is actually active is therefore one of
+the highest-value facts to establish before drawing any conclusion from
+this experiment's result — see §13.3 for why this matters again for
+Russia-side testing specifically.
+
 ### 9.6 — Phase 6: same-VPS control protocol (WireGuard/Outline)
 
 The highest-value remaining control after 9.1: deploy a temporary
@@ -802,7 +847,113 @@ later joined by `udp-egress-verdict`, which reads an existing pcap and
 prints a labeled A/B/C/D verdict instead of leaving that read to the
 operator) and this document.
 
+## 13. Russia verification protocol — confirm the Berlin fix, don't re-litigate it
+
+This section exists for the moment a Berlin experiment (§9.1–§9.5a)
+identifies which mode fixes the native YouTube app there. Once that
+happens, the Russia-side question changes shape: it is no longer "what
+causes this," it is **"does the Berlin-proven fix continue to work under
+Russian network interference?"** Treat these as different questions with
+different failure modes, and do not silently collapse them.
+
+### 13.1 Isolate the variable Russia actually introduces
+
+A Russia test result is only interpretable if everything except the
+network path is held constant against the Berlin run that produced the
+fix:
+
+```
+same generated subscription   (identical /sub/<token>?... URL/link,
+                                identical compat= mode if one was used)
+        +
+same Hiddify build/core        (exact app version, exact core — see
+                                §9.5's "client implementation isolation"
+                                and §9.5a's server-side finding that
+                                Vision-off requires a matching per-user
+                                server opt-in; if the Russia device is a
+                                different phone/app install, record that
+                                explicitly as an added variable, not a
+                                controlled repeat)
+        +
+same iPhone
+        +
+same reset procedure (§9.7)
+```
+
+If any of those four differ from the Berlin run, a Russia
+failure/success cannot be attributed to "the network" — it could equally
+be attributed to whichever of those four changed. Record all four
+explicitly for every Russia attempt, the same way §5's WARP table
+already requires for the Berlin/WARP comparison.
+
+### 13.2 Do not reopen hypotheses Berlin already disproved
+
+If Berlin established that, say, `compat=tcp-only` fixes the symptom
+and `compat=vision-off` does not (or vice versa), a Russia test's job is
+to confirm that same mode still fixes it under Russian conditions — not
+to re-run the full §3 hypothesis tree from a blank slate. Re-opening a
+Berlin-disproved hypothesis by default (e.g. re-litigating IPv6 or DNS
+in Russia when Berlin already isolated the cause to the VLESS/Vision
+path) wastes the highest-value information Berlin already produced and
+risks attributing a Russia-specific failure to the wrong mechanism.
+
+The correct framing for a Russia run, once a Berlin fix exists:
+
+- **Berlin-proven fix works in Russia too** → the mechanism generalizes;
+  the remaining question is whether it's safe to promote from
+  EXPERIMENTAL toward a documented, still-opt-in recommendation (never a
+  new default without the censorship-resistance review §9.5a already
+  flags for Vision-off specifically).
+- **Berlin-proven fix works in Berlin but NOT in Russia** → do not
+  conclude the Berlin diagnosis was wrong. This result means Russia adds
+  a *second*, independent failure mode on top of whatever Berlin's fix
+  addressed — most plausibly DPI/active-probing behavior specific to
+  the Russian path (§3.6/§3.7/§9.6-style exit-IP reasoning, or genuine
+  network interference that has no Berlin equivalent), not a reason to
+  distrust the Berlin measurement. Investigate what's *different* about
+  the Russian network path itself (§9.6's same-VPS control, run from
+  Russia instead of Berlin, is the next highest-value step here) rather
+  than re-deriving §3 from scratch.
+- **Normal profile already worked in Russia even though it failed in
+  Berlin** → this would indicate the two locations are not failing for
+  the same reason at all; do not force a shared explanation (§10's rule
+  already applies across YouTube/TikTok, and applies identically across
+  Berlin/Russia for the same app).
+
+### 13.3 Do not assume Vision/core behavior transfers without evidence
+
+§9.5a already establishes, from source (sing-box v1.13.19 pinned by
+this deployment, `deploy/lib/versions.env`), that sing-box's
+`xtls-rprx-vision` does **not** reproduce Xray-core's UDP/443-interception
+behavior — that is an Xray-specific mechanism, not a sing-box one. This
+holds regardless of which country the client is in; Russia does not
+change which core Hiddify executes. **Do not explain a Russia-specific
+YouTube result with "Vision blocks QUIC" unless packet evidence (§9.1's
+`udp-egress-verdict`, run against the Russia session) or a confirmed
+core identification (§9.5) from the *exact* active core in that Russia
+session proves it.** If the Russia tester's Hiddify build/core is
+unverified, say so explicitly (UNKNOWN) rather than inferring it matches
+the Berlin session's core.
+
+### 13.4 TikTok stays a separate track
+
+Per §10, TikTok's own investigation (`docs/TIKTOK_INVESTIGATION.md`) is
+not re-opened by a YouTube Russia result. If Berlin's YouTube testing
+confirms the transport stack (VLESS+REALITY, Hysteria2, Hiddify's
+sing-box core) behaves cleanly end-to-end there, that is evidence
+*against* a generic sing-box/Hiddify transport bug as TikTok's
+explanation — it does not prove TikTok's cause, but it further weakens
+one candidate relative to `docs/TIKTOK_INVESTIGATION.md`'s
+already-top-ranked hypothesis G (TikTok's own Russia service policy /
+exit-IP-ASN reputation) and its interaction with Russia-specific network
+filtering. See that document's §5 ranking, which this section does not
+override — only reinforces the direction it already pointed.
+
 ## Sources
 
 - [Rule Action - sing-box](https://sing-box.sagernet.org/configuration/route/rule_action/) — `reject` action `method: default` (TCP RST / ICMP port-unreachable) vs. `method: drop` (silent), and the 50-triggers/30s auto-escalation to `drop`. Cited in §6.3.
 - [About Routing Rules: Limitations & Alternatives - Hiddify Next](https://hiddifynext.app/en/guides/routing-rules/) — supporting evidence only (not a primary sing-box/Hiddify-core spec) that a current Hiddify build line ships an in-app Route Rules UI. Cited in §6.4 as a reason to re-verify, not reverse, the prior `route.rules` rejection.
+- [VLESS - Project X (Xray)](https://xtls.github.io/en/config/outbounds/vless.html) — documents `xtls-rprx-vision` intercepting UDP/443 and the separate `xtls-rprx-vision-udp443` flow that does not. Cited in §9.5a/§13.3.
+- [Xray-core `proxy/vless/outbound/outbound.go`](https://github.com/XTLS/Xray-core/blob/main/proxy/vless/outbound/outbound.go) — the `"XTLS rejected UDP/443 traffic"` rejection path. Cited in §9.5a/§13.3.
+- [sing-vmess `vless/service.go`/`vless/client.go`](https://github.com/SagerNet/sing-vmess) at the commit sing-box v1.13.19 pins (`v0.2.8-0.20250909125414-3aed155119a1`) — no UDP/443-rejection logic in the Vision path; the `flow != userFlow` mismatch check and the Vision+raw-UDP rejection quoted in §9.5a. Cited in §9.5a/§13.3.
+- [hiddify-app releases](https://github.com/hiddify/hiddify-app/releases) — v2.0.4+ notes describing `core=xray`/`xvless://` as an explicit opt-in, sing-box-based core as the default. Cited in §9.5a/§13.3.

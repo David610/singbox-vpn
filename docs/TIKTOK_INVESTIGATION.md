@@ -396,6 +396,35 @@ ranking the task description warned against reusing without evidence:
    connections (checkable server-side via `vpn-investigate.sh client
    <ip>` if/when a specific tester IP is known).
 
+### 5.1 2026-08-20 addendum: cross-reference to the YouTube investigation
+
+`docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` (a separate, independently-run
+investigation into the native YouTube-app symptom) reached Berlin-side
+findings worth cross-referencing here, without collapsing TikTok's
+distinct diagnosis into YouTube's:
+
+- **INFERENCE, not FACT**: to whatever extent Berlin testing establishes
+  that this deployment's VLESS+REALITY/Hysteria2/Hiddify transport stack
+  behaves cleanly end-to-end for YouTube there, that is evidence
+  *against* a generic sing-box/Hiddify transport bug as TikTok's
+  explanation too — it does not prove TikTok's cause, but it further
+  weakens hypothesis A (3, above) relative to hypothesis G (1, above),
+  which already outranks it. This does not change the ranking order
+  above; it reinforces the direction it already pointed, and should not
+  be read as new evidence that lets hypothesis A be promoted or
+  dismissed outright — TikTok's own reproduction procedure (§4) is still
+  what settles it, not an inference borrowed from YouTube.
+- **FACT** (see the YouTube document's §9.5a/§13.3, source-verified
+  against sing-box v1.13.19 and Xray-core): sing-box's `xtls-rprx-vision`
+  does not reproduce Xray-core's UDP/443-interception behavior. If
+  hypothesis A (QUIC/UDP) is ever tested for TikTok via `?compat=tcp-only`
+  or a Vision-related profile, do not explain the result with "Vision
+  blocks QUIC" unless the exact active core for that test is confirmed —
+  the same caveat the YouTube document now applies to its own testing.
+- Russia-specific network filtering and TikTok's own service policy
+  (hypothesis G) remain non-exclusive and possibly interacting, per this
+  document's own §"G" analysis — nothing above changes that.
+
 ## 6. Proposed first experiment
 
 **Exactly one experiment, as required.** It is a data-collection pass,
