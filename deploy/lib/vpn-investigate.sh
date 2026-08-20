@@ -8,6 +8,7 @@ usage() {
 Usage:
   vpn-investigate.sh target HOST [PORT]
   vpn-investigate.sh capture CLIENT_IP OUTPUT.pcap [SECONDS]
+  vpn-investigate.sh udp-egress-capture CLIENT_IP OUTPUT.pcap [SECONDS]
   vpn-investigate.sh summarize INPUT.pcap
   vpn-investigate.sh streaming [SECONDS]
   vpn-investigate.sh mtu HOST
@@ -18,6 +19,13 @@ Usage:
 target validates a REALITY handshake candidate from this host over IPv4 and
 IPv6. capture records only CLIENT_IP and TCP/443 or UDP/443 for at most 300s.
 summarize reports packet metadata only; it never prints payload or secrets.
+
+udp-egress-capture records CLIENT_IP's TCP/443 tunnel traffic together with
+ALL host-wide UDP/443 (the VPS's own application-QUIC egress, if any) for at
+most 300s, so an operator can correlate "phone was using the tunnel" against
+"VPS emitted/received UDP/443" by timestamp — see
+docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md's Phase-1 experiment for why this is
+a different question than `capture` answers.
 
 streaming runs a sustained (default 20s) outbound TCP transfer and a
 sustained repeated-UDP probe from THIS HOST, plus local listener/conntrack/
@@ -102,6 +110,42 @@ capture() {
   echo "Capturing only host $ip and TCP/443 or UDP/443 for ${seconds}s -> $output"
   timeout --signal=INT "${seconds}s" tcpdump -i any -nn -s 160 -w "$output" \
     "host $ip and (tcp port 443 or udp port 443)" || [[ $? -eq 124 ]]
+  chmod 600 "$output"
+}
+
+# ---------------------------------------------------------------------------
+# udp-egress-capture — the Phase-1 "does application UDP/443 actually leave
+# the VPS" experiment from docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md. A plain
+# `capture CLIENT_IP` (above) only sees traffic to/from CLIENT_IP — under
+# VLESS+REALITY that is TCP/443 tunnel traffic, never the VPS's OWN outbound
+# UDP/443 toward Google/YouTube (that traffic's IP layer is CLIENT_IP <->
+# VPS on the tunnel side, and VPS <-> Google on the egress side — two
+# different conversations that never share a src/dst pair). This captures
+# BOTH legs in one bounded window so an operator can correlate them by
+# timestamp: the client's REALITY TCP/443 tunnel traffic (proves when the
+# phone was actively using the VPN) and ALL UDP/443 host-wide (proves
+# whether the VPS emitted/received any application QUIC during that same
+# window, from ANY relayed session, not just this one client — this host
+# only has one client's tunnel active per capture in practice, so a
+# host-wide UDP/443 filter is the closest bounded proxy for "traffic this
+# client's relayed session generated" without payload inspection or
+# per-flow NAT-table correlation, which this tool deliberately does not
+# attempt). Same safety envelope as `capture`: metadata only via
+# `summarize`, bounded duration, no service/firewall/route mutation.
+# ---------------------------------------------------------------------------
+udp_egress_capture() {
+  local ip=${1:-} output=${2:-} seconds=${3:-60}
+  valid_ip "$ip" || { echo "invalid client IP" >&2; return 2; }
+  [[ "$output" == *.pcap ]] || { echo "output must end in .pcap" >&2; return 2; }
+  [[ "$seconds" =~ ^[0-9]+$ ]] && ((seconds >= 1 && seconds <= 300)) || { echo "seconds must be 1..300" >&2; return 2; }
+  command -v tcpdump >/dev/null || { echo "tcpdump is required" >&2; return 3; }
+  umask 077
+  echo "Capturing (host $ip and tcp port 443) or (udp port 443), host-wide, for ${seconds}s -> $output"
+  echo "This is two DIFFERENT conversations in one file: the client's REALITY tunnel (TCP/443"
+  echo "to/from $ip) and ANY host-wide UDP/443 (the VPS's own application-QUIC egress, if any)."
+  echo "Correlate by timestamp with 'summarize', not by src/dst pair — they will not match."
+  timeout --signal=INT "${seconds}s" tcpdump -i any -nn -s 160 -w "$output" \
+    "(host $ip and tcp port 443) or udp port 443" || [[ $? -eq 124 ]]
   chmod 600 "$output"
 }
 
@@ -744,6 +788,7 @@ tiktok() {
 case ${1:-} in
   target) shift; target "$@" ;;
   capture) shift; capture "$@" ;;
+  udp-egress-capture) shift; udp_egress_capture "$@" ;;
   summarize) shift; summarize "$@" ;;
   streaming) shift; streaming "$@" ;;
   mtu) shift; mtu "$@" ;;

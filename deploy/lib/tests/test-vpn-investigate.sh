@@ -14,6 +14,12 @@ if "$TOOL" capture 192.0.2.1 /tmp/no.pcap 301 2>/dev/null; then exit 1; fi
 if "$TOOL" target 'bad host!' 443 2>/dev/null; then exit 1; fi
 if "$TOOL" target example.com 70000 2>/dev/null; then exit 1; fi
 
+# udp-egress-capture: same input-validation contract as capture.
+"$TOOL" --help | grep -q 'udp-egress-capture'
+if "$TOOL" udp-egress-capture 'not-an-ip' /tmp/no.pcap 1 2>/dev/null; then exit 1; fi
+if "$TOOL" udp-egress-capture 192.0.2.1 /tmp/no.pcap 301 2>/dev/null; then exit 1; fi
+if "$TOOL" udp-egress-capture 192.0.2.1 /tmp/no.notpcap 1 2>/dev/null; then exit 1; fi
+
 # streaming: input validation (P2). Real network behavior is not exercised
 # here — this sandbox/CI has no representative sustained-flow network path
 # to assert timing/throughput numbers against, so only the argument-bounds
