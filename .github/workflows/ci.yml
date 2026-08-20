@@ -192,7 +192,14 @@ jobs:
       # actions/checkout needs git inside the container; the base images
       # above ship neither by default. Installed non-interactively before
       # checkout can run.
+      # `shell: bash` is required, not cosmetic: GitHub Actions defaults
+      # container-job `run:` steps to `sh`, and on Debian/Ubuntu images
+      # `/bin/sh` is dash, which does not support `set -o pipefail` (RHEL-
+      # family images happen to alias `/bin/sh` to bash, so they passed
+      # here by luck before this was pinned explicitly) — caught by this
+      # job's own first real run.
       - name: Install git (minimal container images ship neither by default)
+        shell: bash
         run: |
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
@@ -207,6 +214,7 @@ jobs:
           fi
       - uses: actions/checkout@v4
       - name: L1/L2 OS regression check (deploy/lib/os-matrix-check.sh)
+        shell: bash
         env:
           EXPECT_OS_ID: ${{ matrix.expect_os_id }}
         run: bash deploy/lib/os-matrix-check.sh
