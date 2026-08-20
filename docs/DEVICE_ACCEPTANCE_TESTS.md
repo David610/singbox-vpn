@@ -207,6 +207,93 @@ Server-side diagnostics run (paste the relevant PASS/WARN lines, not the full ou
 Notes:
 ```
 
+### WARP control comparison (see `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §5)
+
+Run on the SAME phone, SAME network, immediately before/after the
+REALITY YouTube-app test above, following the same reset procedure
+(§9.7 of that document — force-quit the app, verify public IP, fresh
+launch). This is a control, not a fix: WARP working does not by itself
+identify the cause, only which of the variables below actually differ.
+
+```
+Date:
+Public IPv4 (singbox-vpn / WARP):
+Public IPv6 (singbox-vpn / WARP, or "none" if unavailable):
+DNS resolver observed (singbox-vpn / WARP, via a DNS-leak-test page):
+YouTube app result — singbox-vpn (full breakdown per this doc's
+  "Streaming / real-application matrix" row list):
+YouTube app result — WARP (same breakdown):
+Safari YouTube — singbox-vpn:
+Safari YouTube — WARP:
+TikTok result — singbox-vpn (see docs/TIKTOK_INVESTIGATION.md's breakdown):
+TikTok result — WARP:
+
+Which variables actually differed between singbox-vpn and WARP (not
+just "WARP worked"):
+```
+
+## TikTok-specific matrix
+
+Per `docs/TIKTOK_INVESTIGATION.md`: YouTube works (including native
+playback); TikTok is the one known application-specific failure. "TikTok
+doesn't work" is not one test — a cell only becomes PASS/FAIL after it
+is exercised on a real device on a real Russian network, broken down
+exactly as `docs/TIKTOK_INVESTIGATION.md` section 4 specifies (app
+opens, feed loads, thumbnails load, video starts, video stalls, comments
+load, login works — never collapsed into a single verdict).
+
+| Test | Reality | Hysteria2 | tcp-only |
+|---|---|---|---|
+| App opens | not yet tested | not yet tested | not yet tested |
+| Feed metadata / thumbnails load | not yet tested | not yet tested | not yet tested |
+| Video playback starts | not yet tested | not yet tested | not yet tested |
+| Video playback sustains (10+ videos, scrolling) | not yet tested | not yet tested | not yet tested |
+| Comments load | not yet tested | not yet tested | not yet tested |
+| Login works | not yet tested | not yet tested | not yet tested |
+| TikTok web (browser) — same breakdown | not yet tested | not yet tested | not yet tested |
+| Mobile network, VPN off (baseline, no VPN involved) | n/a | n/a | n/a |
+| Cross-VPN comparison (another VPN/Outline, same device) | not yet tested | n/a | n/a |
+
+Row-filling template (paste as a new dated entry, one per profile
+actually tested — see `docs/TIKTOK_INVESTIGATION.md` section 4 for full
+methodology, including the mobile-vs-Wi-Fi and VPN-off baseline steps):
+
+```
+Date:
+Location (country/network — "Russian residential" / "Russian mobile" /
+  other, do NOT record exact GPS/address):
+ISP / mobile carrier:
+Wi-Fi or mobile data:
+TikTok app version:
+Client + version (Hiddify, etc.):
+Device model / OS version:
+Profile under test: Reality / Hysteria2 / tcp-only
+
+Baseline — mobile network, VPN OFF:
+  TikTok app opens/works at all:  PASS/FAIL (record exactly what happens)
+
+With VPN on, this profile:
+App opens:                        PASS/FAIL
+Feed metadata / thumbnails:       PASS/FAIL
+Video playback starts:            PASS/FAIL
+Video playback sustains:          PASS/FAIL (note stall point if any)
+Comments load:                    PASS/FAIL
+Login:                            PASS/FAIL
+TikTok web (browser):             PASS/FAIL (same breakdown)
+
+Cross-VPN comparison (if run): other VPN/product used, and TikTok result
+  through it, same device/SIM/network:
+
+Exact error message(s), if any:
+Does it fail immediately or time out? (note approx seconds)
+
+Server-side diagnostics run (paste the relevant OK/WARN lines, not the
+  full output):
+  vpn-investigate.sh tiktok:
+
+Notes:
+```
+
 ## Telegram-specific matrix
 
 Per `docs/TELEGRAM_RESILIENCE_PLAN.md`: "Telegram works" is not one

@@ -196,6 +196,40 @@ every rendered profile (`client_subscription_never_emits_route_rules`),
 so a future change cannot silently add this without deliberately
 revisiting this decision.
 
+## 2026-08-20 addendum: re-verify, don't reverse
+
+A follow-up investigation
+(`docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md`, prompted by real-device
+evidence that Cloudflare WARP fixes the native YouTube app on the same
+phone where singbox-vpn does not) found supporting, non-primary-source
+evidence that a current Hiddify build line ("Hiddify Next") now ships an
+in-app Route Rules editor UI, which did not exist (or was not known to
+exist) when the rejection above was written. This does **not** by
+itself satisfy objection 1 above — an in-app rule editor is not
+confirmed to mean "imports and executes a raw `route.rules` array
+pasted into a custom JSON config, unmodified" — but it is new
+information that changes the confidence of that objection and is worth
+re-checking against the actual installed Hiddify build on an affected
+device before treating the rejection as still fully current.
+
+This decision is **not reversed** by that addendum. `render.rs`'s
+`client_subscription_never_emits_route_rules` test still holds, and
+nothing here is shipped automatically. `docs/
+YOUTUBE_NATIVE_APP_INVESTIGATION.md` §6.5 lays out a manual, single-
+device A/B/C test (normal / `tcp-only` / a hand-pasted `route.rules`
+reject rule) that reuses this document's "Safe alternative" procedure
+below unchanged, specifically to determine whether `tcp-only`'s
+`network: "tcp"` approach is sufficient or whether an explicit
+fast-failure UDP reject (verified sing-box semantics — `method:
+"default"` replies with ICMP port-unreachable, not a silent drop) is
+needed instead. If that manual test ever shows `route.rules` genuinely
+survives Hiddify's import path and improves the outcome over
+`tcp-only`, formalizing it into `services/subscription` would still
+need to independently clear every objection in "Why not" above, item 5
+included — the test asserting `route.rules` stays absent from every
+generated profile would need to be deliberately and explicitly updated,
+not silently regressed.
+
 ## Safe alternative (what to do instead, today)
 
 None of the above blocks a **manual, operator-run, clearly-labeled
