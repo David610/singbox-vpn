@@ -675,6 +675,71 @@ vpn-admin user links <user_id>
 
 See `docs/RECOVERY.md` for the full disaster-recovery procedure.
 
+## v0.1.2 field incident: post-install acceptance flake + rollback gap — fixed this session
+
+Reproduced on a real fresh AlmaLinux 8.10 `v0.1.2` install
+(`vpn.xn--p1aen4b.com`): DNS, the Let's Encrypt certificate, the
+trusted subscription HTTPS fetch, and a real end-to-end VLESS+REALITY
+handshake all passed, but `vpn doctor --protocol --require-protocol`
+then hit one transient `getaddrinfo` failure re-resolving the same
+already-proven hostname and failed the whole install — and the
+installer's advertised automatic rollback did not run.
+
+- **Bounded DNS retry in `vpn doctor`**
+  (`apps/admin/src/main.rs`,
+  `check_public_hostname_and_ipv6_policy`/`resolve_hostname_with_retry`):
+  public-hostname resolution now retries up to 3 times (300ms apart,
+  bounded — never unbounded waiting) before reporting `[FAIL]`. A
+  hostname that only resolves after a retry still reports `[OK]`, plus
+  one `[INFO]` line noting the transient recovery so operators can see
+  it happened. A hostname that still does not resolve after all
+  attempts (NXDOMAIN, zero addresses, a consistently broken resolver)
+  still hard-fails exactly as before — this is resilience against a
+  flake, not a weakening of the check. See
+  `hostname_resolution_tests` in `apps/admin/src/main.rs`.
+- **`die()` now reliably triggers rollback**: bash never re-fires a
+  `trap ... ERR` for the `exit` builtin that is itself the cause of a
+  shell exiting — only a command's own nonzero status does. `die()`
+  (`deploy/almalinux/install.sh`) called `exit 1` directly, so every
+  `foo || die "..."` fatal path — including stage 17's real acceptance
+  gate (`acceptance_stage`) — silently bypassed `on_fatal_error()`'s
+  automatic fresh-install rollback. `die()` now calls `on_fatal_error()`
+  itself before exiting, so both the ERR-trap path and every explicit
+  `die()` path go through the same single rollback decision point
+  (idempotent via the existing `ROLLBACK_HANDLER_ACTIVE` guard, and
+  still deferred to the root installer shell for subshell/command-
+  substitution contexts via the existing `BASHPID` guard). Repair-run
+  safety, the `VPN1_NO_AUTO_ROLLBACK=1` escape hatch, and reporting a
+  rollback failure alongside (never instead of) the original error were
+  already correctly handled by `on_fatal_error()` and are unchanged.
+  See `deploy/lib/tests/test-installer-rollback.sh` (extended this
+  session to exercise the real `die()` and `acceptance_stage()` call
+  sites, repair-mode non-destruction, the no-auto-rollback escape
+  hatch, and the re-entrancy guard, in addition to the pre-existing
+  ERR-trap-inheritance coverage).
+- **REALITY decoy TLS 1.3 preflight probe false-positive fixed**: the
+  preflight probe (`resolve_reality_handshake_server` in
+  `deploy/almalinux/install.sh`) grepped `openssl s_client` output for a
+  `Protocol.*TLSv1.3` line that a plain (non-`-state`) `s_client`
+  invocation never prints on OpenSSL 1.1.1 or 3.x — so it warned
+  "did not confirm TLS 1.3" against genuine TLS 1.3 decoys (reproduced
+  against `www.google.com`, whose real REALITY handshake later passed
+  cleanly at stage 17). Extracted into
+  `reality_decoy_openssl_output_confirms_tls13()`, which matches the
+  line `s_client` actually always prints for a completed handshake
+  (`New, TLSv1.3, ...` / `Reused, TLSv1.3, ...`), while still correctly
+  rejecting a real TLS 1.2-only or unreachable decoy. This is a
+  preflight-only, informational probe — the real accept/reject gate
+  remains stage 17's actual sing-box REALITY handshake self-test, which
+  this change does not touch. See
+  `deploy/lib/tests/test-reality-decoy-tls13-probe.sh`.
+
+Not changed: REALITY, Hysteria2, routing, MTU, DNS configuration,
+firewall defaults, certificates, credentials, ports, or protocol
+parameters. The unrelated `[WARN]`s for other services already running
+on the reproducing VPS (Node on 8443, Outline, WireGuard, nginx on 80)
+are correct `doctor` behavior and were not touched.
+
 ## Next logical checkpoint
 
 Run `deploy/almalinux/lifecycle-acceptance.sh` against a real disposable

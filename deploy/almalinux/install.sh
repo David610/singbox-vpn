@@ -84,6 +84,24 @@ die() {
   echo "[install] Useful diagnostics:" >&2
   echo "  journalctl -u sing-box -u vpn-subscription --no-pager -n 100" >&2
   echo "  vpn doctor" >&2
+  # `exit 1` here would NOT run the ERR trap below (bash never re-fires
+  # a trap for the `exit` builtin that is itself the direct cause of the
+  # shell exiting — only a command's own nonzero status triggers ERR).
+  # A fresh install that fails via an explicit `foo || die "..."` check
+  # (as opposed to an unguarded command failing on its own) would
+  # therefore skip on_fatal_error()'s automatic rollback entirely,
+  # silently violating the "a failed fresh install is always rolled
+  # back" guarantee documented above on_fatal_error/on the ERR trap.
+  # Route through the exact same fatal-error/rollback handler the ERR
+  # trap uses, so every fatal path — trap-caught or explicitly
+  # `die`d — goes through one single decision point. on_fatal_error
+  # itself is idempotent (ROLLBACK_HANDLER_ACTIVE guard) and defers to
+  # the root shell for subshell/command-substitution contexts (the
+  # BASHPID guard), so calling it directly here is safe even though the
+  # ERR trap is still installed at this point.
+  if command -v on_fatal_error >/dev/null 2>&1; then
+    on_fatal_error 1 "${BASH_LINENO[0]:-unknown}" "${FUNCNAME[1]:-main}" "${VPN1_STAGE:-initialization}"
+  fi
   exit 1
 }
 stage() { echo; echo "[install] === [$1/18] $2 ==="; }
@@ -925,6 +943,26 @@ host_config_stage() {
 # --reality-handshake-server/REALITY_HANDSHAKE_SERVER and fails
 # immediately, with zero host mutation, if it's absent.
 # ---------------------------------------------------------------------
+# Parses `openssl s_client -tls1_3 ...` output (given as $1, or stdin
+# when $1 is omitted) and returns success iff it shows a completed TLS
+# 1.3 negotiation. NOT the same as grepping for a "Protocol  :" line —
+# a plain `openssl s_client` invocation (no `-state`/session-reuse flags)
+# never prints that "SSL-Session:" block at all on OpenSSL 1.1.1 or 3.x;
+# the actual, always-present line for a completed handshake is
+# "New, TLSv1.3, Cipher is ..." (or "Reused, TLSv1.3, Cipher is ..." on
+# session resumption). The old `grep -q 'Protocol.*TLSv1.3'` therefore
+# reported a false "did not confirm TLS 1.3" WARN for every real TLS 1.3
+# decoy on a stock `s_client` probe — reproduced against a genuine TLS
+# 1.3 host (www.google.com) whose later real REALITY handshake (stage
+# 17's actual acceptance gate) passed cleanly, proving the decoy itself
+# was fine and only this preflight probe's pattern was wrong. Kept as a
+# standalone function (no I/O) so this parsing is unit-testable against
+# canned openssl output — see deploy/lib/tests/test-reality-decoy-tls13-probe.sh.
+reality_decoy_openssl_output_confirms_tls13() {
+  local probe_out="${1:-$(cat)}"
+  printf '%s\n' "$probe_out" | grep -qE '^(New|Reused), TLSv1\.3,'
+}
+
 resolve_reality_handshake_server() {
   # A re-run against an already-committed deployment.toml already has a
   # validated, working value baked in — render_deployment_toml() leaves
@@ -956,7 +994,7 @@ resolve_reality_handshake_server() {
     probe_out="$(mktemp)"
     if timeout 8 openssl s_client -connect "${REALITY_HANDSHAKE_SERVER}:443" \
         -tls1_3 -servername "$REALITY_HANDSHAKE_SERVER" </dev/null >"$probe_out" 2>&1; then
-      if grep -q 'Protocol.*TLSv1.3' "$probe_out"; then
+      if reality_decoy_openssl_output_confirms_tls13 "$(cat "$probe_out")"; then
         log "REALITY_HANDSHAKE_SERVER=$REALITY_HANDSHAKE_SERVER answered with TLS 1.3 on 443/tcp — looks usable as a decoy."
       else
         warn "REALITY_HANDSHAKE_SERVER=$REALITY_HANDSHAKE_SERVER is reachable on 443/tcp but did not confirm TLS 1.3 in this probe — REALITY requires a genuine TLS 1.3 server. Double-check this is really the host you intend before continuing (the real acceptance gate runs later, at the end of install)."
