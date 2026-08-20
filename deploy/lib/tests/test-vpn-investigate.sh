@@ -7,6 +7,7 @@ bash -n "$TOOL"
 "$TOOL" --help | grep -q 'streaming'
 "$TOOL" --help | grep -q 'mtu'
 "$TOOL" --help | grep -q 'youtube'
+"$TOOL" --help | grep -q 'tiktok'
 "$TOOL" --help | grep -q 'client'
 if "$TOOL" capture 'not-an-ip' /tmp/no.pcap 1 2>/dev/null; then exit 1; fi
 if "$TOOL" capture 192.0.2.1 /tmp/no.pcap 301 2>/dev/null; then exit 1; fi
@@ -48,5 +49,9 @@ fi
 # input-validation path of its own to test in isolation — CI/this sandbox
 # has no guaranteed representative path to those domains, so it is
 # exercised manually against a real VPS rather than asserted on here.
+
+# tiktok: same shape/rationale as youtube above (real outbound network
+# calls, no bounded input-validation path of its own) — exercised
+# manually against a real VPS. Not asserted on here.
 
 echo 'vpn-investigate validation tests: PASS'

@@ -12,6 +12,7 @@ Usage:
   vpn-investigate.sh streaming [SECONDS]
   vpn-investigate.sh mtu HOST
   vpn-investigate.sh youtube
+  vpn-investigate.sh tiktok
   vpn-investigate.sh client CLIENT_IP
 
 target validates a REALITY handshake candidate from this host over IPv4 and
@@ -35,6 +36,17 @@ it) QUIC/UDP/443 reachability to a fixed set of YouTube/Google domains, and
 reports IPv4/IPv6 results separately. It never attempts to bypass any
 restriction — it diagnoses network behavior only, and it explicitly does
 NOT verify the YouTube app, Hiddify, or iOS.
+
+tiktok checks DNS, TCP/443 TLS, and (where this host's curl build supports
+it) QUIC/UDP/443 reachability to a fixed set of TikTok control-plane
+(www.tiktok.com/tiktok.com) and CDN/media (tiktokcdn.com/tiktokv.com)
+root domains, reported separately so a control-plane-reachable /
+media-CDN-unreachable split is visible instead of one merged verdict. It
+reports IPv4/IPv6 results separately. It never attempts to bypass any
+restriction — it diagnoses network behavior only, and it explicitly does
+NOT verify the TikTok app, Hiddify, or iOS/Android, and it does NOT
+determine whether TikTok's own regional service policy (see
+docs/TIKTOK_INVESTIGATION.md) applies independently of this result.
 
 client gathers this server's own view of one reported client IP's connection
 attempts: protocol self-test result, TCP/443 and UDP/443 listener presence,
@@ -622,6 +634,113 @@ youtube() {
   echo "network path to these domains, dialed directly (not through this deployment's own tunnel)."
 }
 
+# ---------------------------------------------------------------------------
+# tiktok — TikTok reachability diagnosis, structured the same way as
+# `youtube` above but split into control-plane (www.tiktok.com,
+# tiktok.com) vs. CDN/media (tiktokcdn.com, tiktokv.com) root domains —
+# see docs/TIKTOK_INVESTIGATION.md hypothesis E ("TikTok API works but
+# video CDN fails is a different problem from TikTok cannot establish any
+# connection"). Root domains only, deliberately: TikTok's real app/web
+# traffic uses many rotating regional subdomains (v16-webapp-prime,
+# p16-sign-va, api16-normal-c-useast1a, and similar) that cannot be
+# enumerated reliably without a live capture from an actual TikTok
+# client — see docs/TIKTOK_INVESTIGATION.md's "why not hard-code more
+# domains" note. A PASS here only proves this host's own network path to
+# TikTok's root infrastructure is not blocked at the DNS/TCP/QUIC level;
+# it does NOT verify the TikTok app, Hiddify, or any client-side
+# behavior, and it does NOT determine whether TikTok's own Russia
+# service policy (independent of network reachability — see
+# docs/TIKTOK_INVESTIGATION.md hypothesis G) applies.
+# ---------------------------------------------------------------------------
+
+TIKTOK_CONTROL_DOMAINS=(www.tiktok.com tiktok.com)
+TIKTOK_MEDIA_DOMAINS=(tiktokcdn.com tiktokv.com)
+
+tiktok_dns() {
+  local host=$1
+  local a aaaa
+  a=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd, - || true)
+  aaaa=$(getent ahostsv6 "$host" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd, - || true)
+  if [[ -n "$a" ]]; then
+    echo "[OK]   $host DNS (A): $a"
+  else
+    echo "[WARN] $host DNS (A): no result"
+  fi
+  if [[ -n "$aaaa" ]]; then
+    echo "[OK]   $host DNS (AAAA): $aaaa"
+  else
+    echo "[INFO] $host DNS (AAAA): no result (host may simply not publish one)"
+  fi
+}
+
+tiktok_tcp() {
+  local host=$1 family=$2
+  command -v curl >/dev/null || return
+  # Transport-level probe only, same convention as youtube_tcp: TikTok's
+  # bare-domain HTTP response code is not evaluated, only whether the TCP
+  # connection and TLS handshake completed at all.
+  if curl -s"${family}" --output /dev/null --connect-timeout 5 --max-time 10 \
+      -w '' "https://${host}/" >/dev/null 2>&1; then
+    echo "[OK]   $host IPv${family}/TCP/443+TLS: PASS (connection + TLS handshake completed; HTTP status is not evaluated)"
+  else
+    local rc=$?
+    echo "[WARN] $host IPv${family}/TCP/443+TLS: FAIL (curl exit $rc — connection or TLS handshake did not complete)"
+  fi
+}
+
+tiktok_quic() {
+  local host=$1
+  command -v curl >/dev/null || { echo "[INFO] $host QUIC/UDP/443: curl unavailable"; return; }
+  if ! curl --version 2>/dev/null | head -1 | grep -qi 'HTTP3'; then
+    echo "[INFO] $host QUIC/UDP/443: not tested — this host's curl build has no HTTP/3 support, so there is no standards-compliant QUIC client available here. This is a tooling gap, not a network result."
+    return
+  fi
+  if curl --http3-only -s --output /dev/null --connect-timeout 5 --max-time 10 "https://${host}/" 2>/dev/null; then
+    echo "[OK]   $host QUIC/UDP/443: PASS (HTTP/3 request completed over QUIC)"
+  else
+    echo "[WARN] $host QUIC/UDP/443: FAIL (HTTP/3-only request did not complete — does not by itself distinguish UDP blocking from a server declining HTTP/3 for this request)"
+  fi
+}
+
+tiktok() {
+  echo "TikTok endpoint investigation (server-side network diagnosis only)"
+  echo "This does NOT attempt to bypass any restriction, and does NOT verify the TikTok app,"
+  echo "Hiddify, or iOS/Android — it only characterizes this host's own network path to a small"
+  echo "set of TikTok root domains, dialed directly (not through this deployment's own tunnel)."
+  echo "See docs/TIKTOK_INVESTIGATION.md for how to interpret this alongside a real-device test."
+  echo
+  echo "--- Control-plane domains (web/API) ---"
+  local host
+  for host in "${TIKTOK_CONTROL_DOMAINS[@]}"; do
+    tiktok_dns "$host"
+  done
+  echo
+  for host in "${TIKTOK_CONTROL_DOMAINS[@]}"; do
+    tiktok_tcp "$host" 4
+    tiktok_tcp "$host" 6
+  done
+  echo
+  echo "--- CDN/media domains (image/video delivery) ---"
+  for host in "${TIKTOK_MEDIA_DOMAINS[@]}"; do
+    tiktok_dns "$host"
+  done
+  echo
+  for host in "${TIKTOK_MEDIA_DOMAINS[@]}"; do
+    tiktok_tcp "$host" 4
+    tiktok_tcp "$host" 6
+  done
+  echo
+  for host in "${TIKTOK_MEDIA_DOMAINS[@]}"; do
+    tiktok_quic "$host"
+  done
+  echo
+  echo "Server-side connectivity is characterized above, split control-plane vs. CDN/media. This"
+  echo "does NOT verify the TikTok app, Hiddify's TUN/routing behavior, or anything on the client"
+  echo "device — only this host's own network path to these root domains. It also does NOT rule"
+  echo "out TikTok's own Russia service policy applying independently of network reachability —"
+  echo "see docs/TIKTOK_INVESTIGATION.md hypothesis G."
+}
+
 case ${1:-} in
   target) shift; target "$@" ;;
   capture) shift; capture "$@" ;;
@@ -629,6 +748,7 @@ case ${1:-} in
   streaming) shift; streaming "$@" ;;
   mtu) shift; mtu "$@" ;;
   youtube) shift; youtube "$@" ;;
+  tiktok) shift; tiktok "$@" ;;
   client) shift; client "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
