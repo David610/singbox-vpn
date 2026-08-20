@@ -289,6 +289,7 @@ mod tests {
             subscription_token_hash_hex: "deadbeef".into(),
             created_at: 0,
             expires_at: None,
+            vision_off_experiment: false,
         }
     }
 
@@ -298,6 +299,40 @@ mod tests {
         let path = dir.path().join("users.json");
         let users = load_users(&path).unwrap();
         assert!(users.is_empty());
+    }
+
+    /// The EXPERIMENTAL per-user Vision-off flag must be invisible on
+    /// disk for every deployment that never runs the experiment: no new
+    /// key in `users.json`, and a `users.json` written before the field
+    /// existed still loads (it defaults to `false`).
+    #[test]
+    fn vision_off_experiment_flag_is_absent_on_disk_unless_set_and_defaults_to_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        save_users_atomic(&path, &[sample_user("u1")]).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !written.contains("vision_off_experiment"),
+            "an untouched user must serialize exactly as before this field existed: {written}"
+        );
+
+        // A pre-existing (legacy, bare-array) file without the field.
+        let legacy = dir.path().join("legacy.json");
+        std::fs::write(
+            &legacy,
+            r#"[{"id":"u1","name":"t","enabled":true,"vless_uuid":"11111111-1111-4111-8111-111111111111","hysteria2_password":"pw","subscription_token_hash_hex":"deadbeef","created_at":0,"expires_at":null}]"#,
+        )
+        .unwrap();
+        let loaded = load_users(&legacy).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(!loaded[0].vision_off_experiment);
+
+        let mut opted_in = sample_user("u2");
+        opted_in.vision_off_experiment = true;
+        save_users_atomic(&path, &[opted_in]).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\"vision_off_experiment\": true"));
+        assert!(load_users(&path).unwrap()[0].vision_off_experiment);
     }
 
     #[test]

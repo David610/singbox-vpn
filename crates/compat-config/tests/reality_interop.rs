@@ -77,6 +77,7 @@ fn test_user() -> CompatUser {
         vless_uuid: "841cac4a-efe4-48ac-92b8-d11f4c98c45e".into(),
         hysteria2_password: SecretString::new("unused-in-this-test"),
         subscription_token_hash_hex: "unused".into(),
+        vision_off_experiment: false,
         created_at: 0,
         expires_at: None,
     }

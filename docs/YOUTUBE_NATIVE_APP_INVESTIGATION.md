@@ -631,6 +631,58 @@ selection actually changed**; this must be confirmed by checking
 Hiddify's own UI/settings for which core is actually executing before
 trusting any A/B result from it.
 
+### 9.5a — Phase 5b: XTLS Vision on vs. off (`compat=vision-off`)
+
+A second client-layer isolation that changes only ONE variable: whether
+VLESS requests the `xtls-rprx-vision` flow. Vision alters VLESS's
+TLS-layer behavior (its padding/splitting, and it carries relayed UDP
+only as XUDP), so it is a plausible — and until now untestable —
+suspect. This is materially different from `compat=tcp-only`, which
+removes UDP relay entirely; `compat=vision-off` keeps every transport
+and every other field exactly as production.
+
+Shipped as of this pass (previously the "implementation gap" this
+section called out), opt-in and additive:
+
+```
+tester link:  https://<host>:<port>/sub/<token>?format=hiddify&compat=vision-off
+              (?format=singbox&compat=vision-off also supported;
+               ?format=xray&compat=vision-off is rejected — two A/B
+               variables in one link would be unattributable)
+server side:  vpn-admin user vision-off-experiment <user-id>
+                            [--off to revert]
+```
+
+**Finding — the server side is NOT neutral here.** sing-box's VLESS
+server compares the client's requested flow with the flow configured for
+that user and rejects any difference:
+
+```go
+// sing-vmess vless/service.go (sing-box v1.13.19 pins
+// sing-vmess v0.2.8-0.20250909125414-3aed155119a1)
+userFlow := s.userFlow[user]
+if request.Flow == FlowVision && request.Command == vmess.NetworkUDP {
+    return E.New(FlowVision, " flow does not support UDP")
+} else if request.Flow != userFlow {
+    return E.New("flow mismatch: expected ", flowName(userFlow),
+                 ", but got ", flowName(request.Flow))
+}
+```
+
+There is no "accept either flow" setting, and the inbound's user map is
+keyed by UUID (one flow per entry), so the same UUID cannot be offered
+both ways at once. The experiment is therefore per-user and mutually
+exclusive: while a user is opted in, their inbound entry renders with an
+empty flow and ONLY the Vision-off link works for them; every other user
+keeps `xtls-rprx-vision` untouched. Nothing else changes — same VPS,
+same exit IP, same REALITY keys/SNI/short ID, same ports, same routing,
+same DNS, Hysteria2 unchanged.
+
+Cost, to state plainly: Vision is what conceals the TLS-in-TLS pattern
+of a proxied TLS session, so a Vision-off profile is more
+fingerprintable to DPI. This is a time-boxed diagnostic and must never
+become a default; revert with `--off` when the run is finished.
+
 ### 9.6 — Phase 6: same-VPS control protocol (WireGuard/Outline)
 
 The highest-value remaining control after 9.1: deploy a temporary

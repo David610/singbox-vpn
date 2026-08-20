@@ -638,6 +638,119 @@ fn user_create_json_output_has_no_server_secrets() {
     assert!(parsed.get("private_key").is_none());
 }
 
+/// The EXPERIMENTAL Vision-off link is emitted additively — every
+/// pre-existing key keeps its previous value, and the new link points at
+/// the same token with `compat=vision-off` (see
+/// `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5a).
+#[test]
+fn user_create_json_output_carries_the_experimental_vision_off_link_additively() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "berlin", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let json_start = stdout.find('{').expect("JSON object in output");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout[json_start..]).expect("valid JSON");
+
+    // Pre-existing keys, unchanged.
+    assert_eq!(parsed["name"], "berlin");
+    assert_eq!(parsed["enabled"], true);
+    let normal = parsed["subscription_url"].as_str().unwrap();
+    assert!(normal.ends_with("?format=hiddify"));
+    assert!(parsed["subscription_url_xray"]
+        .as_str()
+        .unwrap()
+        .ends_with("?format=xray"));
+
+    // New, additive key: same token, only the query differs.
+    let vision_off = parsed["subscription_url_vision_off"].as_str().unwrap();
+    assert!(vision_off.ends_with("?format=hiddify&compat=vision-off"));
+    assert_eq!(parsed["subscription_url_vision_off_is_experimental"], true);
+    let token_of = |url: &str| {
+        url.split("/sub/")
+            .nth(1)
+            .unwrap()
+            .split('?')
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(token_of(normal), token_of(vision_off));
+    assert!(parsed.get("private_key").is_none());
+}
+
+/// The server-side half of the experiment: flips exactly one user's
+/// VLESS flow to empty, and `--off` restores it. Everything else in
+/// `users.json` — and every other user — is untouched.
+#[test]
+fn user_vision_off_experiment_toggles_only_that_users_flow() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    for name in ["tester", "bystander"] {
+        admin(dir.path(), &cfg_path)
+            .args(["user", "create", "--name", name])
+            .assert()
+            .success();
+    }
+    let users_path = dir.path().join("state/users/users.json");
+    let read_users = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&users_path).unwrap()).unwrap()
+    };
+    let id_of = |doc: &serde_json::Value, name: &str| -> String {
+        doc["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let tester_id = id_of(&read_users(), "tester");
+    let bystander_id = id_of(&read_users(), "bystander");
+
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "vision-off-experiment", &tester_id])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("vision_off_experiment=true"));
+    assert!(stdout.contains("EXPERIMENTAL"));
+
+    let doc = read_users();
+    let user_of = |doc: &serde_json::Value, id: &str| -> serde_json::Value {
+        doc["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(user_of(&doc, &tester_id)["vision_off_experiment"], true);
+    assert!(
+        user_of(&doc, &bystander_id)
+            .get("vision_off_experiment")
+            .is_none(),
+        "an unrelated user's record must be completely untouched"
+    );
+
+    admin(dir.path(), &cfg_path)
+        .args(["user", "vision-off-experiment", &tester_id, "--off"])
+        .assert()
+        .success();
+    assert!(
+        user_of(&read_users(), &tester_id)
+            .get("vision_off_experiment")
+            .is_none(),
+        "turning the experiment off must leave no trace on disk"
+    );
+}
+
 #[test]
 fn user_create_qr_prints_a_qr_code() {
     let dir = tempfile::tempdir().unwrap();
