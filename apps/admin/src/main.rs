@@ -287,6 +287,22 @@ enum UserCommands {
     Remove {
         user_id: String,
     },
+    /// EXPERIMENTAL, one user at a time: render this user's VLESS
+    /// inbound entry with an EMPTY flow instead of `xtls-rprx-vision`,
+    /// so the `?compat=vision-off` subscription profile can actually
+    /// connect. This is required, not cosmetic — sing-box's VLESS server
+    /// rejects any client flow that does not equal the configured
+    /// per-user flow ("flow mismatch"), and one UUID can only carry one
+    /// flow, so while this is ON that user's NORMAL (Vision) profile
+    /// stops working. Every other user is unaffected. Diagnostic for
+    /// docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md section 9.5 only; `--off`
+    /// restores the normal Vision flow.
+    VisionOffExperiment {
+        user_id: String,
+        /// Turn the experiment off again (restore `xtls-rprx-vision`).
+        #[arg(long)]
+        off: bool,
+    },
     /// Print connection material for a user. The subscription URL itself
     /// requires the raw token, which (by design, spec §26) is not
     /// persisted — only shown at `create`/`rotate-token` time. This
@@ -372,6 +388,9 @@ fn main() -> Result<()> {
         }
         Commands::User(UserCommands::Disable { user_id }) => {
             cmd_user_set_enabled(&cfg, &user_id, false)
+        }
+        Commands::User(UserCommands::VisionOffExperiment { user_id, off }) => {
+            cmd_user_vision_off_experiment(&cfg, &user_id, !off)
         }
         Commands::User(UserCommands::RotateToken { user_id, qr }) => {
             cmd_user_rotate_token(&cfg, &user_id, qr)
@@ -1739,6 +1758,30 @@ fn subscription_url_xray(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
+/// EXPERIMENTAL opt-in Vision-off subscription URL
+/// (`?format=hiddify&compat=vision-off`, see
+/// `compat_config::render::CompatibilityMode::VisionOff`). Same
+/// UUID/pbk/sid/SNI/host/port/fingerprint as `subscription_url`'s
+/// `?format=hiddify` link — the ONLY differences are that the
+/// VLESS+REALITY line omits `flow=xtls-rprx-vision` and its label
+/// carries an explicit EXPERIMENTAL suffix. `?format=hiddify` (not
+/// `?format=singbox`) for the same reason `subscription_url` uses it:
+/// that is the representation Hiddify actually imports reliably.
+///
+/// This link only connects once the SAME user has been opted in
+/// server-side with `vpn-admin user vision-off-experiment <id>` —
+/// sing-box's VLESS server rejects a flow that does not equal the
+/// configured per-user flow. It is a diagnostic for
+/// `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5, never a default:
+/// without Vision, a proxied TLS session's TLS-in-TLS pattern is more
+/// visible to DPI.
+fn subscription_url_vision_off(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}?format=hiddify&compat=vision-off",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
 /// Print a terminal QR code encoding `data`. QR codes intentionally
 /// encode only the subscription URL, never the full server
 /// configuration (spec §6). PNG file output is not implemented — kept
@@ -1782,6 +1825,7 @@ fn cmd_user_create(
         subscription_token_hash_hex: credentials::hash_token(&token),
         created_at: UnixSeconds::now().0 as i64,
         expires_at,
+        vision_off_experiment: false,
     };
     users.push(user);
     apply_users_and_save(cfg, &previous_users, &users)?;
@@ -1796,6 +1840,11 @@ fn cmd_user_create(
             // Additive field, existing keys/values above are unchanged —
             // see subscription_url_xray's doc comment.
             "subscription_url_xray": subscription_url_xray(cfg, &token),
+            // Additive field, existing keys/values above are unchanged —
+            // EXPERIMENTAL, and inert until this user is also opted in
+            // server-side; see subscription_url_vision_off's doc comment.
+            "subscription_url_vision_off": subscription_url_vision_off(cfg, &token),
+            "subscription_url_vision_off_is_experimental": true,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
@@ -1828,6 +1877,18 @@ fn cmd_user_create(
          \"(Xray)\" — see docs/RUSSIA_PRODUCTION_INVESTIGATION.md):"
     );
     println!("  {}", subscription_url_xray(cfg, &token));
+    println!();
+    println!(
+        "EXPERIMENTAL diagnostic link (XTLS Vision flow OFF, same credentials, labeled \
+         \"(EXPERIMENTAL Vision-off)\" — see docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md \u{a7}9.5):"
+    );
+    println!("  {}", subscription_url_vision_off(cfg, &token));
+    println!(
+        "  This link does NOT work until you also run `vpn-admin user \
+         vision-off-experiment {id}`, which flips this ONE user's server-side flow (their \
+         normal Vision profile stops working while it is on). Not a fix, not a default: \
+         without Vision, a proxied TLS session is easier for DPI to fingerprint."
+    );
     if qr {
         println!();
         println!("Scan this QR code in Hiddify (Add profile -> Scan QR code):");
@@ -1897,6 +1958,47 @@ fn cmd_user_set_enabled(cfg: &DeploymentConfig, id: &str, enabled: bool) -> Resu
                  until that reload actually happens. Do not treat this as revoked yet."
             );
         }
+    }
+    Ok(())
+}
+
+/// `vpn-admin user vision-off-experiment ID [--off]`: the server-side
+/// half of the EXPERIMENTAL Vision-off diagnostic
+/// (docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §9.5). Goes through the
+/// exact same validate-then-apply-then-reload path as every other
+/// mutating user command — it changes one field of one user, nothing
+/// else: no REALITY key, no port, no routing, no other user.
+fn cmd_user_vision_off_experiment(cfg: &DeploymentConfig, id: &str, on: bool) -> Result<()> {
+    let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
+    find_user_mut(&mut users, id)?.vision_off_experiment = on;
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
+    println!("{id}: vision_off_experiment={on} (EXPERIMENTAL)");
+    if on {
+        println!(
+            "This user's VLESS inbound entry now carries an EMPTY flow instead of \
+             xtls-rprx-vision. sing-box's VLESS server compares the client's flow against this \
+             value exactly, so from now on this user MUST import the Vision-off subscription \
+             link (?format=hiddify&compat=vision-off) — their normal Vision profile will fail \
+             with a flow mismatch until you run this command again with --off. No other user is \
+             affected."
+        );
+        println!(
+            "This is a diagnostic, not a fix: XTLS Vision is what conceals the TLS-in-TLS \
+             pattern of a proxied TLS session, so this profile is easier for DPI to \
+             fingerprint. Turn it off again as soon as the experiment is done."
+        );
+    } else {
+        println!(
+            "Normal xtls-rprx-vision flow restored for this user — they must go back to their \
+             normal subscription link."
+        );
+    }
+    if !went_live {
+        println!(
+            "WARNING: the new config was written but NOT reloaded live (see the warning above) \
+             — the RUNNING server still enforces the previous flow for this user."
+        );
     }
     Ok(())
 }
@@ -4618,6 +4720,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         subscription_token_hash_hex: String::new(),
         created_at: 0,
         expires_at: None,
+        vision_off_experiment: false,
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
     let endpoints = compat_config::render::standard_endpoints(

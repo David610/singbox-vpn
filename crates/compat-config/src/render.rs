@@ -49,6 +49,86 @@ pub fn render_vless_reality_uri(
     ))
 }
 
+/// Label suffix carried by every EXPERIMENTAL Vision-off artifact this
+/// module renders (share link and native-JSON outbound tag alike), so a
+/// tester can always tell which profile is actually selected in their
+/// client's UI. Follows the existing `" (Xray)"` labeling precedent: the
+/// label is never sent over the wire, it is operator/tester bookkeeping.
+pub const VISION_OFF_LABEL_SUFFIX: &str = " (EXPERIMENTAL Vision-off)";
+
+/// EXPERIMENTAL, opt-in share link identical to `render_vless_reality_uri`
+/// except that the `flow` parameter is OMITTED entirely (no
+/// `flow=xtls-rprx-vision`) and the label carries
+/// `VISION_OFF_LABEL_SUFFIX`. Same UUID, host, port, SNI, uTLS
+/// fingerprint, REALITY public key and short ID — nothing else differs.
+///
+/// This exists for `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5, whose
+/// requirement is a profile where ONLY the Vision flow differs from
+/// production. The existing `?compat=tcp-only` mode tests "disable UDP
+/// relay entirely"; this tests a materially different variable — keep
+/// UDP relay (Hysteria2 stays offered, VLESS keeps its normal network
+/// handling), remove only XTLS Vision, which is what changes VLESS's
+/// TLS-layer behavior (Vision's padding/splitting and its XUDP-only
+/// handling of relayed UDP).
+///
+/// This is a DIAGNOSTIC, not a fix, and it is not free: Vision is
+/// exactly the mechanism that hides the "TLS in TLS" pattern of a
+/// proxied TLS session from a DPI observer, so a Vision-off profile is
+/// more fingerprintable. It must not become anyone's default — see
+/// `docs/clients/HIDDIFY_IOS.md`.
+///
+/// It also requires a matching server-side opt-in for the same user
+/// (`CompatUser::vision_off_experiment`): sing-box's VLESS server
+/// rejects a flow that does not equal the configured per-user flow.
+pub fn render_vless_reality_uri_vision_off(
+    user: &CompatUser,
+    endpoint: &CompatEndpoint,
+) -> Result<String, CompatError> {
+    let PublicParameters::Reality {
+        public_key_hex,
+        short_id,
+        fingerprint,
+    } = &endpoint.public_parameters
+    else {
+        return Err(CompatError::WrongTransportForEndpoint);
+    };
+    let sni = endpoint.server_name.as_deref().unwrap_or(&endpoint.host);
+    Ok(format!(
+        "vless://{uuid}@{host}:{port}?encryption=none&security=reality&sni={sni}&fp={fp}&pbk={pbk}&sid={sid}&type=tcp#{label}",
+        uuid = user.vless_uuid,
+        host = endpoint.host,
+        port = endpoint.port,
+        sni = sni,
+        fp = fingerprint,
+        pbk = public_key_hex,
+        sid = short_id,
+        label = percent_encode_label(&format!("{}{VISION_OFF_LABEL_SUFFIX}", endpoint.label)),
+    ))
+}
+
+/// `?format=uri&compat=vision-off` subscription body: every VLESS+REALITY
+/// endpoint rendered via `render_vless_reality_uri_vision_off` (no `flow`
+/// parameter, EXPERIMENTAL label suffix); every Hysteria2 endpoint
+/// rendered unchanged via `render_hysteria2_uri` (Hysteria2 has no flow
+/// concept, and this experiment deliberately does NOT remove UDP —
+/// that's what `compat=tcp-only` is for).
+pub fn render_vision_off_uri_list(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+) -> Result<String, CompatError> {
+    let mut lines = Vec::with_capacity(endpoints.len());
+    for ep in endpoints {
+        let uri = match ep.transport {
+            crate::model::CompatTransport::VlessReality => {
+                render_vless_reality_uri_vision_off(user, ep)?
+            }
+            crate::model::CompatTransport::Hysteria2 => render_hysteria2_uri(user, ep)?,
+        };
+        lines.push(uri);
+    }
+    Ok(lines.join("\n"))
+}
+
 /// `hysteria2://password@host:port?...#label`
 pub fn render_hysteria2_uri(
     user: &CompatUser,
@@ -237,6 +317,27 @@ pub enum CompatibilityMode {
     /// Everything else about the REALITY endpoint (UUID, flow, TLS,
     /// uTLS fingerprint, public key, short ID) is unchanged.
     TcpOnly,
+    /// EXPERIMENTAL diagnostic for
+    /// `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5: the VLESS+REALITY
+    /// outbound is rendered with NO `flow` field (instead of
+    /// `xtls-rprx-vision`) and its tag carries
+    /// `VISION_OFF_LABEL_SUFFIX`. Nothing else changes — same UUID, same
+    /// REALITY public key/short ID, same SNI/uTLS fingerprint, same
+    /// host/port, Hysteria2 still offered, no `network` restriction, no
+    /// route rules. That is the point: `TcpOnly` tests "remove UDP relay
+    /// entirely", this tests the materially different variable "keep UDP
+    /// relay, remove only XTLS Vision".
+    ///
+    /// Two things make this mode more than a client-side toggle, and
+    /// both are deliberate:
+    ///  - It needs a matching per-user server-side opt-in
+    ///    (`CompatUser::vision_off_experiment`, `server.rs`), because
+    ///    sing-box's VLESS server rejects any flow that does not equal
+    ///    the configured per-user flow ("flow mismatch").
+    ///  - Vision is what conceals the TLS-in-TLS pattern of a proxied
+    ///    TLS session, so a Vision-off profile is more fingerprintable
+    ///    to DPI. Diagnostic only; never a default.
+    VisionOff,
 }
 
 impl CompatibilityMode {
@@ -244,6 +345,7 @@ impl CompatibilityMode {
         match s {
             "normal" => Some(Self::Normal),
             "tcp-only" => Some(Self::TcpOnly),
+            "vision-off" => Some(Self::VisionOff),
             _ => None,
         }
     }
@@ -304,8 +406,11 @@ pub fn render_singbox_client_subscription_with_profile(
 /// taking a `CompatibilityMode`. `CompatibilityMode::Normal` reproduces the
 /// exact prior behavior unchanged; `CompatibilityMode::TcpOnly` drops
 /// Hysteria2 endpoints before the selector/urltest groups are built and
-/// forces `"network": "tcp"` on the VLESS+REALITY outbound — see
-/// `CompatibilityMode`'s doc comment for why.
+/// forces `"network": "tcp"` on the VLESS+REALITY outbound;
+/// `CompatibilityMode::VisionOff` instead keeps every endpoint and every
+/// other field and only drops the VLESS+REALITY outbound's `flow`
+/// (labeling its tag EXPERIMENTAL) — see `CompatibilityMode`'s doc
+/// comment for why each exists.
 pub fn render_singbox_client_subscription_with_options(
     user: &CompatUser,
     endpoints: &[CompatEndpoint],
@@ -325,7 +430,15 @@ pub fn render_singbox_client_subscription_with_options(
     let mut reality_tag: Option<String> = None;
     let mut hysteria2_tag: Option<String> = None;
     for ep in filtered {
-        let tag = ep.label.clone();
+        // Only the VLESS+REALITY endpoint is labeled in VisionOff mode —
+        // Hysteria2 has no flow concept and is rendered unchanged there.
+        let tag = if compat_mode == CompatibilityMode::VisionOff
+            && matches!(ep.transport, CompatTransport::VlessReality)
+        {
+            format!("{}{VISION_OFF_LABEL_SUFFIX}", ep.label)
+        } else {
+            ep.label.clone()
+        };
         tags.push(tag.clone());
         if matches!(ep.transport, CompatTransport::VlessReality) && reality_tag.is_none() {
             reality_tag = Some(tag.clone());
@@ -359,6 +472,15 @@ pub fn render_singbox_client_subscription_with_options(
                 });
                 if compat_mode == CompatibilityMode::TcpOnly {
                     ob["network"] = json!("tcp");
+                }
+                if compat_mode == CompatibilityMode::VisionOff {
+                    // Removed, not set to "" — an absent `flow` is
+                    // sing-box's own default for a VLESS outbound, so
+                    // this profile differs from the normal one by
+                    // exactly one thing: Vision is not requested.
+                    if let Some(obj) = ob.as_object_mut() {
+                        obj.remove("flow");
+                    }
                 }
                 ob
             }
@@ -509,6 +631,7 @@ mod tests {
             subscription_token_hash_hex: "hash".into(),
             created_at: 0,
             expires_at: None,
+            vision_off_experiment: false,
         }
     }
 
@@ -1251,5 +1374,297 @@ mod tests {
         let selector = outbounds.iter().find(|o| o["type"] == "selector").unwrap();
         assert_eq!(selector["default"], "Germany - Reality");
         assert_eq!(doc["route"]["final"], "select");
+    }
+
+    // --- CompatibilityMode::VisionOff (EXPERIMENTAL, §9.5 diagnostic) ---
+
+    #[test]
+    fn compatibility_mode_parse_accepts_vision_off_and_still_rejects_unknown_values() {
+        assert_eq!(
+            CompatibilityMode::parse("vision-off"),
+            Some(CompatibilityMode::VisionOff)
+        );
+        // Near-misses must not silently resolve to the experimental mode.
+        assert_eq!(CompatibilityMode::parse("vision_off"), None);
+        assert_eq!(CompatibilityMode::parse("visionoff"), None);
+        assert_eq!(CompatibilityMode::parse("garbage"), None);
+    }
+
+    /// The critical guarantee: adding VisionOff must not have changed the
+    /// pre-existing default output by a single byte. Mirrors
+    /// `normal_mode_via_with_options_is_identical_to_existing_renderer`.
+    #[test]
+    fn normal_mode_output_is_byte_for_byte_unchanged_by_the_vision_off_mode_existing() {
+        let via_options = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::Normal,
+        )
+        .unwrap();
+        let existing =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        assert_eq!(
+            serde_json::to_string(&via_options).unwrap(),
+            serde_json::to_string(&existing).unwrap(),
+            "CompatibilityMode::Normal must still serialize byte-for-byte identically to the \
+             pre-existing renderer"
+        );
+        let encoded = serde_json::to_string(&existing).unwrap();
+        assert!(
+            encoded.contains("\"flow\":\"xtls-rprx-vision\""),
+            "the normal profile must still request Vision: {encoded}"
+        );
+        assert!(
+            !encoded.contains("EXPERIMENTAL"),
+            "the normal profile must never carry the experimental label: {encoded}"
+        );
+    }
+
+    #[test]
+    fn vision_off_mode_omits_flow_and_changes_nothing_else_about_the_reality_outbound() {
+        let normal = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::Normal,
+        )
+        .unwrap();
+        let vision_off = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::VisionOff,
+        )
+        .unwrap();
+
+        let find = |doc: &serde_json::Value, ty: &str| {
+            doc["outbounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["type"] == ty)
+                .cloned()
+                .expect("outbound present")
+        };
+        let normal_vless = find(&normal, "vless");
+        let mut vision_off_vless = find(&vision_off, "vless");
+
+        assert!(
+            vision_off_vless.get("flow").is_none(),
+            "vision-off must omit the flow field entirely: {vision_off_vless}"
+        );
+        assert_eq!(normal_vless["flow"], "xtls-rprx-vision");
+        assert!(
+            vision_off_vless.get("network").is_none(),
+            "vision-off must NOT restrict the network — that's compat=tcp-only's job"
+        );
+
+        // Everything except `flow` and the deliberately-labeled tag must
+        // be identical to the normal profile's REALITY outbound.
+        let mut expected = normal_vless.clone();
+        expected.as_object_mut().unwrap().remove("flow");
+        expected["tag"] = json!(format!("Germany - Reality{VISION_OFF_LABEL_SUFFIX}"));
+        assert_eq!(
+            vision_off_vless, expected,
+            "only `flow` (removed) and the EXPERIMENTAL tag suffix may differ"
+        );
+
+        // ... and the tag difference really is only the suffix.
+        assert_eq!(
+            vision_off_vless["tag"],
+            "Germany - Reality (EXPERIMENTAL Vision-off)"
+        );
+        vision_off_vless["tag"] = json!("Germany - Reality");
+        expected["tag"] = json!("Germany - Reality");
+        assert_eq!(vision_off_vless, expected);
+    }
+
+    #[test]
+    fn vision_off_mode_keeps_hysteria2_and_udp_capability_unlike_tcp_only() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::VisionOff,
+        )
+        .unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let types: Vec<&str> = outbounds
+            .iter()
+            .map(|o| o["type"].as_str().unwrap())
+            .collect();
+        assert!(
+            types.contains(&"hysteria2"),
+            "vision-off tests a different variable than tcp-only: UDP transports stay offered"
+        );
+        // Hysteria2's own outbound must be byte-identical to normal mode.
+        let normal =
+            render_singbox_client_subscription(&user(), &[reality_endpoint(), hysteria_endpoint()])
+                .unwrap();
+        let hy2 = |doc: &serde_json::Value| {
+            doc["outbounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["type"] == "hysteria2")
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(hy2(&doc), hy2(&normal));
+    }
+
+    #[test]
+    fn vision_off_mode_selector_and_urltest_reference_the_labeled_reality_tag() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::VisionOff,
+        )
+        .unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let selector = outbounds
+            .iter()
+            .find(|o| o["type"] == "selector")
+            .expect("selector outbound present");
+        assert_eq!(
+            selector["default"], "Germany - Reality (EXPERIMENTAL Vision-off)",
+            "the selector must default to a tag that actually exists"
+        );
+        let options: Vec<&str> = selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(options.contains(&"Germany - Reality (EXPERIMENTAL Vision-off)"));
+        assert!(options.contains(&"Germany - Hysteria2"));
+        assert!(options.contains(&"auto"));
+
+        let urltest = outbounds.iter().find(|o| o["type"] == "urltest").unwrap();
+        let urltest_options: Vec<&str> = urltest["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            urltest_options,
+            vec![
+                "Germany - Reality (EXPERIMENTAL Vision-off)",
+                "Germany - Hysteria2"
+            ],
+            "no group may reference a tag no outbound carries"
+        );
+        assert_eq!(doc["route"]["final"], "select");
+    }
+
+    #[test]
+    fn vision_off_mode_adds_no_route_rules_dns_inbounds_or_client_owned_fields() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::VisionOff,
+        )
+        .unwrap();
+        assert!(doc["route"].get("rules").is_none());
+        assert!(doc.get("dns").is_none());
+        assert!(doc.get("inbounds").is_none());
+        let encoded = serde_json::to_string(&doc).unwrap();
+        for forbidden in ["packet_encoding", "multiplex", "mux", "fragment", "mtu"] {
+            assert!(
+                !encoded.contains(&format!("\"{forbidden}\"")),
+                "vision-off unexpectedly emitted {forbidden}: {encoded}"
+            );
+        }
+    }
+
+    #[test]
+    fn vision_off_mode_leaks_no_private_reality_material() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::VisionOff,
+        )
+        .unwrap();
+        let encoded = serde_json::to_string(&doc).unwrap().to_lowercase();
+        assert!(!encoded.contains("private"));
+    }
+
+    #[test]
+    fn vision_off_uri_omits_flow_and_keeps_every_other_parameter_identical() {
+        let normal = render_vless_reality_uri(&user(), &reality_endpoint()).unwrap();
+        let vision_off = render_vless_reality_uri_vision_off(&user(), &reality_endpoint()).unwrap();
+        assert!(
+            !vision_off.contains("flow="),
+            "vision-off share link must carry no flow parameter: {vision_off}"
+        );
+        assert!(normal.contains("flow=xtls-rprx-vision"));
+        assert!(
+            vision_off
+                .starts_with("vless://11111111-1111-4111-8111-111111111111@vpn.example.com:443?"),
+            "same UUID/host/port: {vision_off}"
+        );
+        assert!(vision_off.contains("encryption=none"));
+        assert!(vision_off.contains("security=reality"));
+        assert!(vision_off.contains("type=tcp"));
+        assert!(vision_off.contains("sni=www.google.com"));
+        assert!(vision_off.contains("fp=chrome"));
+        assert!(vision_off.contains("pbk=abc123"));
+        assert!(vision_off.contains("sid=0a1b2c3d"));
+        assert!(
+            vision_off.ends_with("Germany%20-%20Reality%20%28EXPERIMENTAL%20Vision-off%29"),
+            "label must be distinctly suffixed (percent-encoded): {vision_off}"
+        );
+        assert!(!vision_off.to_lowercase().contains("private"));
+
+        // Query strings must be identical apart from the removed `flow`.
+        let strip = |uri: &str| {
+            uri.split('#')
+                .next()
+                .unwrap()
+                .replace("&flow=xtls-rprx-vision", "")
+        };
+        assert_eq!(strip(&normal), strip(&vision_off));
+    }
+
+    #[test]
+    fn vision_off_uri_rejects_wrong_transport() {
+        assert!(render_vless_reality_uri_vision_off(&user(), &hysteria_endpoint()).is_err());
+    }
+
+    #[test]
+    fn vision_off_uri_list_labels_only_reality_endpoints_and_leaves_hysteria2_unchanged() {
+        let normal = render_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
+        let list = render_vision_off_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()])
+            .unwrap();
+        let lines: Vec<&str> = list.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("vless://"));
+        assert!(!lines[0].contains("flow="));
+        assert!(lines[0].contains("%28EXPERIMENTAL%20Vision-off%29"));
+        assert_eq!(
+            lines[1],
+            normal.lines().nth(1).unwrap(),
+            "the Hysteria2 line must be byte-identical to the normal list"
+        );
+        assert!(!list.to_lowercase().contains("private"));
+    }
+
+    /// The normal share-link list must be untouched by the existence of
+    /// the vision-off one — same guarantee the native-JSON path gets.
+    #[test]
+    fn normal_uri_list_is_unchanged_and_still_requests_vision() {
+        let normal = render_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
+        assert!(normal
+            .lines()
+            .next()
+            .unwrap()
+            .contains("flow=xtls-rprx-vision"));
+        assert!(!normal.contains("EXPERIMENTAL"));
     }
 }

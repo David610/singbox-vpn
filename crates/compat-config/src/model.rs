@@ -72,6 +72,33 @@ pub struct CompatUser {
     pub subscription_token_hash_hex: String,
     pub created_at: i64,
     pub expires_at: Option<i64>,
+    /// EXPERIMENTAL, opt-in, per-user, default `false`: render THIS
+    /// user's VLESS inbound entry with an EMPTY flow instead of
+    /// `xtls-rprx-vision` (see `server::render_singbox_server_config`).
+    ///
+    /// This exists only for the "Vision-off" experiment of
+    /// `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5, and it is
+    /// required rather than optional: sing-box's VLESS server validates
+    /// the client's requested flow against the configured per-user flow
+    /// with a plain inequality (sing-vmess `vless/service.go`:
+    /// `else if request.Flow != userFlow { return E.New("flow mismatch:
+    /// ...") }`), so a client that omits the flow CANNOT connect to a
+    /// user provisioned with `xtls-rprx-vision`. There is no way to
+    /// accept both flows for one UUID — the inbound's user map is keyed
+    /// by UUID, one flow per entry — so this is deliberately a per-user
+    /// toggle: while it is on, that ONE user connects with the
+    /// Vision-off client profile (`?compat=vision-off`) and their normal
+    /// Vision profile stops working; every other user is untouched.
+    ///
+    /// Skipped during serialization when `false`, so `users.json` for a
+    /// deployment that never runs this experiment stays byte-identical
+    /// to what it was before this field existed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub vision_off_experiment: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl CompatUser {

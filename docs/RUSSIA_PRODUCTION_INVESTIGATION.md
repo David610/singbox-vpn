@@ -295,6 +295,21 @@ testing later shows Hiddify needs different import syntax to force its
 Xray-core engine specifically, that must be verified against real Hiddify
 source/docs before being added — not guessed.
 
+**"identically" above needs a caveat added later and cross-referenced
+here, not silently left standing**: the two cores parse the *same
+share-link syntax* identically (same fields accepted, same encoding) —
+that is what was actually verified. Their **runtime behavior** for
+`xtls-rprx-vision` is NOT identical: `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md`
+§9.5a/§13.3 (a later pass, source-verified against sing-box v1.13.19 and
+Xray-core) found Xray-core's `xtls-rprx-vision` actively intercepts and
+rejects application UDP/443, while sing-box's does not. This A/B link
+therefore isolates more than "which core parsed the link" — it also
+isolates that specific behavioral difference, which is directly relevant
+if a Russian YouTube-app test ever uses this `?format=xray` link. See
+§13.3 there for why a Russia-side Vision/UDP result must not be
+attributed to "Vision blocks QUIC" without confirming which core was
+actually active for that specific test.
+
 ### Aug-15 (last known-working) vs current: exact REALITY-path diff
 
 The task named a prior-repo commit hash that does not exist in this repo's
