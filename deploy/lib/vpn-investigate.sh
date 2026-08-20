@@ -10,6 +10,7 @@ Usage:
   vpn-investigate.sh capture CLIENT_IP OUTPUT.pcap [SECONDS]
   vpn-investigate.sh udp-egress-capture CLIENT_IP OUTPUT.pcap [SECONDS]
   vpn-investigate.sh summarize INPUT.pcap
+  vpn-investigate.sh udp-egress-verdict INPUT.pcap CLIENT_IP
   vpn-investigate.sh streaming [SECONDS]
   vpn-investigate.sh mtu HOST
   vpn-investigate.sh youtube
@@ -26,6 +27,19 @@ most 300s, so an operator can correlate "phone was using the tunnel" against
 "VPS emitted/received UDP/443" by timestamp — see
 docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md's Phase-1 experiment for why this is
 a different question than `capture` answers.
+
+udp-egress-verdict reads an INPUT.pcap produced by udp-egress-capture (or
+capture) and CLIENT_IP, and prints a single labeled Phase-1 verdict —
+Case A/D (no UDP/443 observed at all — cannot distinguish "client never
+attempted QUIC" from "client attempted it but it was never relayed" from
+server-side packet metadata alone), Case B (UDP/443 left this host but no
+reply ever returned), or Case C (bidirectional UDP/443 present) — by
+correlating the client's REALITY TCP/443 tunnel window against host-wide
+UDP/443 packet direction, all timestamps in UTC. It does not itself decide
+the fix; see docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §8's decision tree
+for what each case means next. Reuse the exact iPhone reset procedure in
+that document's §9.1/§9.7 before capturing — this command only reads an
+existing pcap, it starts no capture and changes nothing on the phone.
 
 streaming runs a sustained (default 20s) outbound TCP transfer and a
 sustained repeated-UDP probe from THIS HOST, plus local listener/conntrack/
@@ -163,6 +177,122 @@ summarize() {
   echo "Timeline (epoch, protocol, frame length, TCP flags; no payload):"
   tshark -n -r "$input" -T fields -e frame.time_epoch -e _ws.col.Protocol -e frame.len -e tcp.flags
   echo "Authentication/application state requires synchronized sing-box logs; packet metadata alone cannot label DPI or credential failure."
+}
+
+# ---------------------------------------------------------------------------
+# udp-egress-verdict — Phase-1 A/B/C/D verdict from
+# docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §9.1/§8. `summarize` above prints
+# raw packet metadata and leaves the A/B/C/D read to the operator; this
+# function does that correlation itself so a single command answers the
+# Phase-1 question instead of requiring a human to eyeball a timeline.
+#
+# Correlation method (deliberately simple, no per-flow NAT-table
+# reconstruction, same restraint as udp-egress-capture's own comment):
+#   - TCP/443 packets to/from CLIENT_IP prove the REALITY tunnel was in use
+#     during the window (same signal `client CLIENT_IP` already reports).
+#   - Because the capture is host-wide for UDP/443 (see udp-egress-capture),
+#     THIS HOST is always one endpoint of every captured UDP/443 packet —
+#     there is no third party being captured. So udp.dstport==443 packets
+#     are this host acting as the SENDER (egress toward some external
+#     UDP/443 service — outbound) and udp.srcport==443 packets are this
+#     host acting as the RECEIVER (a reply arriving FROM some external
+#     UDP/443 service — inbound). This needs no local-IP enumeration.
+#   - "host-wide" UDP/443 is a proxy for "traffic this client's relayed
+#     session generated", not a proven per-flow attribution — restated
+#     explicitly in the verdict output, not just this comment.
+#
+# What this can and cannot distinguish (the documented gap this function
+# exists to close): it can tell outbound-only (Case B) from bidirectional
+# (Case C) from neither (Case A/D) with the tunnel active. It CANNOT tell
+# Case A (client attempted QUIC, Hiddify/sing-box never relayed it) from
+# Case D (client never attempted QUIC at all) — both look identical from
+# this host's own NIC, because both mean zero UDP/443 packets appear here.
+# That is stated as UNKNOWN in the output, never guessed at.
+# ---------------------------------------------------------------------------
+udp_egress_verdict() {
+  local input=${1:-} client_ip=${2:-}
+  valid_ip "$client_ip" || { echo "invalid client IP" >&2; return 2; }
+  [[ -f "$input" ]] || { echo "pcap not found" >&2; return 2; }
+  command -v tshark >/dev/null || { echo "tshark is required" >&2; return 3; }
+
+  echo "Phase-1 A/B/C/D verdict for $input, client $client_ip"
+  echo "======================================================================"
+  echo "All timestamps below are UTC, to correlate with 'journalctl -u sing-box' output"
+  echo "captured separately (see docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §9.1)."
+  echo "Every line is labeled FACT, INFERENCE, or UNKNOWN. No secret is ever printed."
+  echo
+
+  local tcp_count
+  tcp_count=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.number 2>/dev/null | wc -l)
+  if [[ "$tcp_count" -eq 0 ]]; then
+    echo "FACT: 0 TCP/443 packets to/from ${client_ip} (the REALITY tunnel) observed in this capture."
+    echo "INFERENCE: this is a PROCEDURAL FAILURE, not a network finding — the experiment did not"
+    echo "  actually run (wrong CLIENT_IP, phone not connected during the window, or the reset"
+    echo "  procedure in docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §9.1/§9.7 was skipped or not"
+    echo "  immediately followed by opening the app). Per §9.1's FAIL interpretation: redo the"
+    echo "  capture, do not record this as evidence."
+    echo
+    echo "VERDICT: INCONCLUSIVE — no tunnel activity observed; UDP/443 egress cannot be evaluated."
+    return 0
+  fi
+
+  local tcp_first tcp_last
+  tcp_first=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | head -1)
+  tcp_last=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | tail -1)
+  echo "FACT: ${tcp_count} TCP/443 packets to/from ${client_ip} observed — the REALITY tunnel was"
+  echo "  active during this capture."
+  echo "FACT: tunnel window (UTC): $(date -u -d "@${tcp_first%.*}" '+%Y-%m-%dT%H:%M:%SZ') .. $(date -u -d "@${tcp_last%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
+  echo
+
+  local udp_out udp_in
+  udp_out=$(tshark -n -r "$input" -Y 'udp.dstport==443' -T fields -e frame.number 2>/dev/null | wc -l)
+  udp_in=$(tshark -n -r "$input" -Y 'udp.srcport==443' -T fields -e frame.number 2>/dev/null | wc -l)
+  echo "FACT: host-wide UDP/443 packets with THIS HOST as sender (dst port 443 — egress toward"
+  echo "  some external UDP/443 service): ${udp_out}"
+  echo "FACT: host-wide UDP/443 packets with THIS HOST as receiver (src port 443 — a reply"
+  echo "  arriving from some external UDP/443 service): ${udp_in}"
+  echo "INFERENCE: 'host-wide' means ANY relayed session on this VPS during the window, not"
+  echo "  provably traffic relayed from ${client_ip} specifically — see udp-egress-capture's"
+  echo "  own comment for why this proxy is used instead of per-flow NAT-table correlation."
+  if [[ "$udp_out" -gt 0 ]]; then
+    local udp_out_first
+    udp_out_first=$(tshark -n -r "$input" -Y 'udp.dstport==443' -T fields -e frame.time_epoch 2>/dev/null | head -1)
+    echo "FACT: first outbound UDP/443 packet (UTC): $(date -u -d "@${udp_out_first%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
+  fi
+  if [[ "$udp_in" -gt 0 ]]; then
+    local udp_in_first
+    udp_in_first=$(tshark -n -r "$input" -Y 'udp.srcport==443' -T fields -e frame.time_epoch 2>/dev/null | head -1)
+    echo "FACT: first inbound UDP/443 reply (UTC): $(date -u -d "@${udp_in_first%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
+  fi
+  echo
+
+  echo "======================================================================"
+  if [[ "$udp_out" -eq 0 && "$udp_in" -eq 0 ]]; then
+    echo "VERDICT — Case A/D: no UDP/443 observed (cannot distinguish client-not-attempted from"
+    echo "  client-not-relayed from server side alone)."
+    echo "INFERENCE: the REALITY tunnel was active throughout the window (see the FACT above), but"
+    echo "  genuinely zero UDP/443 packets crossed this host's egress interface in either direction."
+    echo "UNKNOWN: whether the YouTube app never attempted QUIC/UDP at all (Case D) or attempted it"
+    echo "  but Hiddify/sing-box never relayed it (Case A) — that distinction requires client-side"
+    echo "  (Hiddify/iOS) instrumentation this server cannot observe. Proceed to §6.5's A/B/C"
+    echo "  reject-rule test per docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §8's decision tree."
+  elif [[ "$udp_out" -gt 0 && "$udp_in" -eq 0 ]]; then
+    echo "VERDICT — Case B: UDP/443 outbound only, no replies."
+    echo "INFERENCE: application UDP/443 left this VPS but no reply was ever observed returning —"
+    echo "  consistent with a VPS/provider/upstream egress problem (§3.3/§7 of that document), not"
+    echo "  a client or relay problem. Does not by itself rule out a reply arriving after the"
+    echo "  capture window closed; re-run with a longer window if this result is unexpected."
+  else
+    echo "VERDICT — Case C: bidirectional UDP/443 present."
+    echo "INFERENCE: application UDP/443 both left and returned to this VPS during the window. If"
+    echo "  the app still failed during this same window, that points downstream — relay/TUN/"
+    echo "  session/MTU behavior (§3.2/§3.4/§3.11 of that document) — not VPS egress reachability."
+  fi
+  echo
+  echo "UNKNOWN: this verdict characterizes packets crossing THIS HOST's own interfaces only. It"
+  echo "  cannot observe the phone's TUN state, whether the YouTube app actually attempted QUIC,"
+  echo "  or Hiddify/sing-box's internal relay decision — see"
+  echo "  docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §1's client/server observability boundary."
 }
 
 # ---------------------------------------------------------------------------
@@ -790,6 +920,7 @@ case ${1:-} in
   capture) shift; capture "$@" ;;
   udp-egress-capture) shift; udp_egress_capture "$@" ;;
   summarize) shift; summarize "$@" ;;
+  udp-egress-verdict) shift; udp_egress_verdict "$@" ;;
   streaming) shift; streaming "$@" ;;
   mtu) shift; mtu "$@" ;;
   youtube) shift; youtube "$@" ;;

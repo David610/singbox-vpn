@@ -515,7 +515,15 @@ NIC.
 `deploy/lib/vpn-investigate.sh udp-egress-capture` (read-only,
 bounded-duration `tcpdump`, same safety envelope as the pre-existing
 `capture`/`summarize` commands — no service, firewall, or route is
-touched) plus its `--help`/validation-test coverage.
+touched) plus its `--help`/validation-test coverage. A later pass added
+`deploy/lib/vpn-investigate.sh udp-egress-verdict INPUT.pcap CLIENT_IP`:
+`summarize` alone reports raw packet metadata and left the A/B/C/D read
+to a human eyeballing a timeline — `udp-egress-verdict` reads the same
+pcap and CLIENT_IP, correlates the REALITY TCP/443 tunnel window against
+host-wide UDP/443 direction (outbound vs. inbound), and prints one
+FACT/INFERENCE/UNKNOWN-labeled verdict, all timestamps UTC (to
+correlate with `journalctl -u sing-box` output captured separately).
+Also read-only, no capture of its own, no service/firewall/route touched.
 
 **Exact server commands**:
 
@@ -556,6 +564,7 @@ and the output of:
 
 ```bash
 deploy/lib/vpn-investigate.sh summarize /root/youtube_udp_test.pcap
+deploy/lib/vpn-investigate.sh udp-egress-verdict /root/youtube_udp_test.pcap "$CLIENT_IP"
 ```
 
 **What must be redacted before sharing this anywhere**: nothing in the
@@ -584,6 +593,17 @@ branches the result lands in:
   anywhere and playback still fails → Case D: QUIC is not sufficient to
   explain the failure by itself; do not keep treating it as the sole
   cause.
+
+Cases A and D above share the exact same server-side observation — zero
+UDP/443 packets, tunnel active — because the difference between them
+("client attempted QUIC but it was never relayed" vs. "client never
+attempted QUIC at all") lives entirely on the client device, which this
+server cannot see. `udp-egress-verdict` therefore always reports this
+combined observation as one labeled case, **"Case A/D"**, and says so
+explicitly rather than guessing which one applies — do not read a
+zero-UDP result as proving Case A specifically; §6.5's A/B/C reject-rule
+test is what actually separates client-routing causes from a healthy
+tunnel that simply carries no QUIC.
 
 **FAIL interpretation**: if `$CLIENT_IP` cannot be identified, or the
 capture shows no REALITY tunnel traffic at all during the window, the
@@ -725,8 +745,10 @@ subscription (`client_subscription_never_emits_route_rules` still holds
 — unchanged). No claim that `tcp-only` is proven to fix or not fix the
 YouTube-app symptom — that remains exactly as unproven as `docs/
 clients/HIDDIFY_IOS.md` already, correctly, says it is. The only change
-in this pass is a read-only diagnostic tool (`udp-egress-capture`) and
-this document.
+in this pass is a read-only diagnostic tool (`udp-egress-capture`,
+later joined by `udp-egress-verdict`, which reads an existing pcap and
+prints a labeled A/B/C/D verdict instead of leaving that read to the
+operator) and this document.
 
 ## Sources
 
