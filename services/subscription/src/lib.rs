@@ -168,7 +168,15 @@ pub struct SubQuery {
     /// Opt-in compatibility mode: `tcp-only` drops Hysteria2 and forces
     /// the VLESS+REALITY outbound to `"network": "tcp"` — see
     /// `compat_config::render::CompatibilityMode` and
-    /// `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`. Unlike `profile`, an
+    /// `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`. `vision-off` is the
+    /// EXPERIMENTAL §9.5 diagnostic of
+    /// `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md`: everything stays as
+    /// in the normal profile except that the VLESS+REALITY profile omits
+    /// the `xtls-rprx-vision` flow (and is labeled EXPERIMENTAL). It
+    /// requires the matching per-user server-side opt-in
+    /// (`vpn-admin user vision-off-experiment <id>`), because sing-box's
+    /// VLESS server rejects a flow that does not equal the configured
+    /// per-user flow. Unlike `profile`, an
     /// unrecognized `compat` value is REJECTED (400) rather than silently
     /// falling back — this parameter changes which transports are even
     /// offered, so a typo here must not silently degrade someone's
@@ -260,19 +268,18 @@ async fn get_subscription(
     // than silently falling back — this parameter can remove transports
     // from the profile entirely, so a typo must not silently hand someone
     // a degraded subscription they didn't ask for.
-    let compat_mode = match query.compat.as_deref() {
-        None => render::CompatibilityMode::default(),
-        Some(s) => match render::CompatibilityMode::parse(s) {
-            Some(mode) => mode,
-            None => {
-                return (
+    let compat_mode =
+        match query.compat.as_deref() {
+            None => render::CompatibilityMode::default(),
+            Some(s) => match render::CompatibilityMode::parse(s) {
+                Some(mode) => mode,
+                None => return (
                     StatusCode::BAD_REQUEST,
-                    "unknown compat value (expected \"tcp-only\" or \"normal\")",
+                    "unknown compat value (expected \"normal\", \"tcp-only\" or \"vision-off\")",
                 )
-                    .into_response()
-            }
-        },
-    };
+                    .into_response(),
+            },
+        };
 
     match format {
         "singbox" => match render::render_singbox_client_subscription_with_options(
@@ -293,19 +300,39 @@ async fn get_subscription(
             }
         },
         "uri" | "hiddify" => {
-            if compat_mode != render::CompatibilityMode::Normal {
+            if compat_mode == render::CompatibilityMode::TcpOnly {
                 // The share-link (`vless://`/`hysteria2://`) syntax has no
                 // reliable way to enforce TCP-only VLESS across supported
                 // clients, so silently degrading to a normal profile — or
                 // silently ignoring `compat` — would misrepresent what was
                 // requested. Reject explicitly instead; ?format=singbox is
                 // the supported way to get the TCP-only compatibility mode.
+                //
+                // `compat=vision-off` is NOT subject to this: `flow` is a
+                // first-class `vless://` share-link parameter, so omitting
+                // it expresses that mode exactly, in the representation
+                // Hiddify actually imports (see the `vision-off` arm
+                // below).
                 return (
                     StatusCode::BAD_REQUEST,
                     "compat=tcp-only is only supported with format=singbox — the uri/hiddify \
                      share-link format cannot reliably enforce a TCP-only VLESS outbound",
                 )
                     .into_response();
+            }
+            if compat_mode == render::CompatibilityMode::VisionOff {
+                return match render::render_vision_off_uri_list(&user, &state.endpoints) {
+                    Ok(body) => (
+                        StatusCode::OK,
+                        [("content-type", "text/plain; charset=utf-8")],
+                        body,
+                    )
+                        .into_response(),
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to render vision-off uri list");
+                        (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+                    }
+                };
             }
             match render::render_uri_list(&user, &state.endpoints) {
                 Ok(body) => (
@@ -328,10 +355,17 @@ async fn get_subscription(
         // the same reason.
         "xray" => {
             if compat_mode != render::CompatibilityMode::Normal {
+                // Deliberately not combined: `format=xray` is itself an
+                // A/B variable (which client core executes) and
+                // `compat=vision-off` is another (whether Vision is
+                // requested). Serving both at once would produce a
+                // result no single experiment could attribute — see
+                // docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §9.5.
                 return (
                     StatusCode::BAD_REQUEST,
-                    "compat=tcp-only is only supported with format=singbox — the xray share-link \
-                     format cannot reliably enforce a TCP-only VLESS outbound",
+                    "compat is only supported with format=singbox (tcp-only) or \
+                     format=uri/hiddify/singbox (vision-off) — the xray share-link format is \
+                     itself an A/B variable and must not be combined with another one",
                 )
                     .into_response();
             }
@@ -433,6 +467,7 @@ mod tests {
             subscription_token_hash_hex: credentials::hash_token(token),
             created_at: 0,
             expires_at: None,
+            vision_off_experiment: false,
         }
     }
 
@@ -712,6 +747,135 @@ mod tests {
         );
     }
 
+    // --- compat=vision-off (EXPERIMENTAL §9.5 diagnostic) ---
+
+    #[tokio::test]
+    async fn compat_vision_off_with_singbox_format_omits_flow_and_keeps_hysteria2() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=singbox&compat=vision-off").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let vless = outbounds.iter().find(|o| o["type"] == "vless").unwrap();
+        assert!(
+            vless.get("flow").is_none(),
+            "compat=vision-off must omit the flow field: {vless}"
+        );
+        assert!(
+            vless.get("network").is_none(),
+            "compat=vision-off must not restrict the network — that is compat=tcp-only"
+        );
+        assert_eq!(vless["uuid"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(vless["tls"]["reality"]["public_key"], "pub");
+        assert_eq!(vless["tls"]["reality"]["short_id"], "short");
+        assert_eq!(vless["tls"]["utls"]["fingerprint"], "chrome");
+        assert!(
+            outbounds.iter().any(|o| o["type"] == "hysteria2"),
+            "compat=vision-off keeps every transport offered"
+        );
+        assert!(String::from_utf8(body.to_vec())
+            .unwrap()
+            .contains("EXPERIMENTAL Vision-off"));
+    }
+
+    #[tokio::test]
+    async fn compat_vision_off_with_hiddify_format_returns_share_links_without_flow() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&compat=vision-off").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let s = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        let reality_line = s.lines().find(|l| l.starts_with("vless://")).unwrap();
+        assert!(
+            !reality_line.contains("flow="),
+            "vision-off share link must carry no flow parameter: {reality_line}"
+        );
+        assert!(reality_line
+            .starts_with("vless://11111111-1111-4111-8111-111111111111@vpn.example.com:443?"));
+        assert!(reality_line.contains("security=reality"));
+        assert!(reality_line.contains("encryption=none"));
+        assert!(reality_line.contains("type=tcp"));
+        assert!(reality_line.contains("sni=www.google.com"));
+        assert!(reality_line.contains("fp=chrome"));
+        assert!(reality_line.contains("pbk=pub"));
+        assert!(reality_line.contains("sid=short"));
+        assert!(reality_line.contains("%28EXPERIMENTAL%20Vision-off%29"));
+        assert!(
+            s.contains("hysteria2://"),
+            "Hysteria2 stays offered under vision-off"
+        );
+        assert!(!s.to_lowercase().contains("private"));
+    }
+
+    #[tokio::test]
+    async fn compat_vision_off_uri_and_hiddify_formats_are_identical() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let uri =
+            oneshot_with_addr(state.clone(), "/sub/goodtoken?format=uri&compat=vision-off").await;
+        let hiddify =
+            oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&compat=vision-off").await;
+        assert_eq!(uri.status(), StatusCode::OK);
+        assert_eq!(hiddify.status(), StatusCode::OK);
+        let a = axum::body::to_bytes(uri.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let b = axum::body::to_bytes(hiddify.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// Two independent A/B variables must not be combined in one link —
+    /// a result from it could not be attributed to either.
+    #[tokio::test]
+    async fn compat_vision_off_with_xray_format_is_rejected() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray&compat=vision-off").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Regression: adding `compat=vision-off` must not change what the
+    /// default/normal endpoints serve, byte for byte.
+    #[tokio::test]
+    async fn existing_outputs_are_byte_for_byte_unchanged_by_the_vision_off_mode_existing() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        for uri in [
+            "/sub/goodtoken",
+            "/sub/goodtoken?format=singbox",
+            "/sub/goodtoken?format=singbox&compat=normal",
+            "/sub/goodtoken?format=uri",
+            "/sub/goodtoken?format=hiddify",
+        ] {
+            let resp = oneshot_with_addr(state.clone(), uri).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+            let s = String::from_utf8(
+                axum::body::to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert!(
+                s.contains("xtls-rprx-vision"),
+                "{uri} must still request Vision: {s}"
+            );
+            assert!(
+                !s.contains("EXPERIMENTAL"),
+                "{uri} must never carry the experimental label: {s}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn user_id_is_never_accepted_where_a_subscription_token_is_expected() {
         // Regression for the user-id/token confusion: a user's public ID
@@ -904,6 +1068,7 @@ mod tests {
             subscription_token_hash_hex: credentials::hash_token(token),
             created_at: 0,
             expires_at: None,
+            vision_off_experiment: false,
         };
         let state = make_state(vec![user]);
         let output = captured_log_output_for_request("trace", &format!("/sub/{token}"), state);

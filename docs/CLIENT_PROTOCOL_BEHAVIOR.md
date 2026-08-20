@@ -125,6 +125,21 @@ assumption.
   until tested per `docs/DEVICE_ACCEPTANCE_TESTS.md`. It is opt-in only:
   the normal profile (both transports) stays the default for
   `/sub/<token>` and `/sub/<token>?format=singbox`.
+- **Also available, EXPERIMENTAL**: `?compat=vision-off`
+  (`CompatibilityMode::VisionOff`), on `format=singbox` and on
+  `format=uri`/`format=hiddify` — the `flow` parameter is a first-class
+  `vless://` share-link field, so unlike `compat=tcp-only` this mode can
+  be expressed in the share-link representation Hiddify imports. It
+  renders the VLESS+REALITY profile with NO `xtls-rprx-vision` flow and
+  an `(EXPERIMENTAL Vision-off)` label; every other field, and every
+  other endpoint (Hysteria2 included), is unchanged. Unlike every other
+  subscription option, it is not client-side only: the same user must
+  also be opted in server-side (`vpn-admin user vision-off-experiment
+  <id>`), because sing-box's VLESS server rejects a flow that differs
+  from the one configured for that user. Diagnostic for
+  `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5a only — Vision is what
+  hides a proxied TLS session's TLS-in-TLS pattern, so this profile is
+  more fingerprintable and must not be used as a default.
 
 ## Failover / selection — honest framing
 

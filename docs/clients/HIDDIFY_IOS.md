@@ -228,6 +228,36 @@ UDP-dependent app — some games, VoIP, WebRTC/STUN, and similar — may
 degrade or fail while it's selected. Switch back to the normal profile
 for everyday use once you're done testing.
 
+### A second, different experiment: XTLS Vision off (`compat=vision-off`)
+
+`compat=tcp-only` above tests "remove UDP relay entirely". A separate,
+equally unproven hypothesis is the XTLS Vision flow itself, which
+changes VLESS's TLS-layer behavior. `compat=vision-off` tests exactly
+that variable and nothing else: import
+`https://<host>:<subscription-port>/sub/<your-token>?format=hiddify&compat=vision-off`
+as a **new, separate** profile. It carries the same UUID, REALITY public
+key, short ID, SNI, fingerprint, host and port as your normal profile;
+the only differences are that the VLESS line requests no
+`flow=xtls-rprx-vision` and is labeled `(EXPERIMENTAL Vision-off)`.
+Hysteria2 and UDP relay stay available, unlike `compat=tcp-only`.
+
+Two caveats before asking for it:
+
+- **Your administrator must opt your account in first**
+  (`vpn-admin user vision-off-experiment <your-id>`). The server rejects
+  a connection whose flow doesn't match the one configured for your
+  account, so while the experiment is on, this link is the only one that
+  works for you — your normal profile fails until the admin turns it off
+  again. Nobody else's account is affected.
+- **Vision off is weaker against DPI.** Vision is what conceals the
+  TLS-in-TLS pattern of a proxied TLS session, so this profile is easier
+  to fingerprint. It is a time-boxed diagnostic, never a daily driver.
+
+Like `compat=tcp-only`, this is **not a proven fix** — test it with the
+same procedure (new profile, cold-start the YouTube app, at least two
+videos, compare against the normal profile on the same network) and
+record the result. See `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5.
+
 ## Other things to check if it doesn't connect at all
 
 - In Hiddify's server list, try manually switching between the

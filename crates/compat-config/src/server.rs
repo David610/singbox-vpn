@@ -28,13 +28,22 @@ pub fn render_singbox_server_config(
 ) -> serde_json::Value {
     let active: Vec<&CompatUser> = users.iter().filter(|u| u.is_active(now_unix)).collect();
 
+    // `flow` is per-user and MUST match what the client sends: sing-box's
+    // VLESS server compares them directly (sing-vmess `vless/service.go`
+    // — `else if request.Flow != userFlow { return E.New("flow mismatch:
+    // expected ", ..., ", but got ", ...) }`), so a Vision-off client
+    // profile (`?compat=vision-off`, see `render.rs`) can only connect if
+    // this user's server-side entry also carries an empty flow. Default
+    // stays `xtls-rprx-vision` for every user — only a user explicitly
+    // opted into the EXPERIMENTAL `vision_off_experiment` flag renders
+    // differently, and only for as long as that flag is set.
     let vless_users: Vec<_> = active
         .iter()
         .map(|u| {
             json!({
                 "name": u.id,
                 "uuid": u.vless_uuid,
-                "flow": "xtls-rprx-vision",
+                "flow": if u.vision_off_experiment { "" } else { "xtls-rprx-vision" },
             })
         })
         .collect();
@@ -292,6 +301,7 @@ mod tests {
                 subscription_token_hash_hex: "h1".into(),
                 created_at: 0,
                 expires_at: None,
+                vision_off_experiment: false,
             },
             CompatUser {
                 id: "u-disabled".into(),
@@ -302,6 +312,7 @@ mod tests {
                 subscription_token_hash_hex: "h2".into(),
                 created_at: 0,
                 expires_at: None,
+                vision_off_experiment: false,
             },
             CompatUser {
                 id: "u-expired".into(),
@@ -312,6 +323,7 @@ mod tests {
                 subscription_token_hash_hex: "h3".into(),
                 created_at: 0,
                 expires_at: Some(100),
+                vision_off_experiment: false,
             },
         ]
     }
@@ -352,6 +364,93 @@ mod tests {
         let vless_users = cfg["inbounds"][0]["users"].as_array().unwrap();
         assert_eq!(vless_users.len(), 1);
         assert_eq!(vless_users[0]["name"], "u-active");
+    }
+
+    /// Default, unchanged behavior: every user's inbound entry keeps the
+    /// production `xtls-rprx-vision` flow. This is the guarantee the
+    /// EXPERIMENTAL per-user Vision-off toggle must never regress.
+    #[test]
+    fn every_user_keeps_the_vision_flow_by_default() {
+        let cfg = render_singbox_server_config(
+            &users(),
+            &reality(),
+            &hysteria(),
+            ServerPorts {
+                vless_reality_port: 443,
+                hysteria2_port: 443,
+            },
+            1000,
+        );
+        for u in cfg["inbounds"][0]["users"].as_array().unwrap() {
+            assert_eq!(u["flow"], "xtls-rprx-vision");
+        }
+    }
+
+    /// sing-box's VLESS server compares the client's requested flow
+    /// against the configured per-user flow directly (sing-vmess
+    /// `vless/service.go`: `else if request.Flow != userFlow { ... "flow
+    /// mismatch" }`), so the EXPERIMENTAL `?compat=vision-off` client
+    /// profile can only connect when that ONE user's server-side entry
+    /// also carries an empty flow. Opting one user in must not touch any
+    /// other user's flow, or anything else in the config.
+    #[test]
+    fn vision_off_experiment_empties_only_that_users_flow() {
+        let mut users = users();
+        users.push(CompatUser {
+            id: "u-vision-off".into(),
+            name: "vision-off".into(),
+            enabled: true,
+            vless_uuid: "44444444-4444-4444-8444-444444444444".into(),
+            hysteria2_password: SecretString::new("pw4"),
+            subscription_token_hash_hex: "h4".into(),
+            created_at: 0,
+            expires_at: None,
+            vision_off_experiment: true,
+        });
+        let ports = ServerPorts {
+            vless_reality_port: 443,
+            hysteria2_port: 443,
+        };
+        let cfg = render_singbox_server_config(&users, &reality(), &hysteria(), ports, 1000);
+        let vless_users = cfg["inbounds"][0]["users"].as_array().unwrap();
+        assert_eq!(vless_users.len(), 2, "only active users are rendered");
+        let normal = vless_users
+            .iter()
+            .find(|u| u["name"] == "u-active")
+            .unwrap();
+        let experimental = vless_users
+            .iter()
+            .find(|u| u["name"] == "u-vision-off")
+            .unwrap();
+        assert_eq!(
+            normal["flow"], "xtls-rprx-vision",
+            "an unrelated user must be completely unaffected"
+        );
+        assert_eq!(
+            experimental["flow"], "",
+            "the opted-in user's flow must be empty so a Vision-off client is accepted"
+        );
+        assert_eq!(
+            experimental["uuid"], "44444444-4444-4444-8444-444444444444",
+            "the experiment changes only the flow — not the UUID"
+        );
+
+        // Nothing outside the per-user flow may change: REALITY key
+        // material, ports, listen addresses, handshake target, and the
+        // Hysteria2 inbound must all be identical to the same render
+        // with the flag off.
+        let mut users_off = users.clone();
+        users_off.last_mut().unwrap().vision_off_experiment = false;
+        let cfg_off =
+            render_singbox_server_config(&users_off, &reality(), &hysteria(), ports, 1000);
+        assert_eq!(cfg["inbounds"][0]["tls"], cfg_off["inbounds"][0]["tls"]);
+        assert_eq!(
+            cfg["inbounds"][0]["listen_port"],
+            cfg_off["inbounds"][0]["listen_port"]
+        );
+        assert_eq!(cfg["inbounds"][1], cfg_off["inbounds"][1]);
+        assert_eq!(cfg["outbounds"], cfg_off["outbounds"]);
+        assert_eq!(cfg["log"], cfg_off["log"]);
     }
 
     #[test]
