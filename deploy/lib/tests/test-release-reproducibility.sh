@@ -279,7 +279,9 @@ fi
 
 echo
 echo "--- static: every published source/binary archive receives GitHub provenance ---"
-if [ "$(grep -c 'uses: actions/attest-build-provenance@v2' .github/workflows/release.yml)" -eq 2 ] \
+# Actions are pinned to immutable full commit SHAs with the mutable ref
+# kept as a trailing comment — count the pinned form, never a bare tag.
+if [ "$(grep -cE 'uses: actions/attest-build-provenance@[0-9a-f]{40} # v2' .github/workflows/release.yml)" -eq 2 ] \
   && grep -q 'attestations: write' .github/workflows/release.yml \
   && grep -q 'id-token: write' .github/workflows/release.yml; then
   ok "release build attests both binary and source archives with narrowly-scoped OIDC/attestation permissions"

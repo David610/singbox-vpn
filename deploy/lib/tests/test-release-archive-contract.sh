@@ -45,10 +45,15 @@ assert_eq "release.yml build matrix targets == os.sh rust_target_for_arch() targ
 echo
 echo "--- static: release target installation uses the repository's pinned Rust toolchain ---"
 rust_channel="$(sed -nE 's/^channel = "([^"]+)"$/\1/p' "$REPO_ROOT/rust-toolchain.toml")"
-if [ -n "$rust_channel" ] && grep -q "uses: dtolnay/rust-toolchain@${rust_channel}" "$RELEASE_YML"; then
-  echo "ok: release.yml installs cross targets for pinned Rust $rust_channel"
+# Actions are pinned to immutable full commit SHAs; the mutable ref each SHA
+# resolves to is preserved as a trailing comment on the same line. The
+# channel rust-toolchain.toml pins must appear in that comment, so a
+# toolchain bump that updates one side but not the other still fails here.
+if [ -n "$rust_channel" ] \
+  && grep -Eq "^[-[:space:]]*uses: dtolnay/rust-toolchain@[0-9a-f]{40} # ${rust_channel}\$" "$RELEASE_YML"; then
+  echo "ok: release.yml installs cross targets for pinned Rust $rust_channel (immutable SHA pin, mutable ref kept as trailing comment)"
 else
-  echo "FAIL: release.yml does not install targets for rust-toolchain.toml's pinned channel ($rust_channel)"
+  echo "FAIL: release.yml does not install targets for rust-toolchain.toml's pinned channel ($rust_channel) as a SHA-pinned ref with a trailing '# $rust_channel' comment"
   failures=$((failures + 1))
 fi
 
