@@ -21,7 +21,8 @@ fi
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-mkdir -p "$TEST_TMP/source/vpn1-src/deploy/almalinux" "$TEST_TMP/fakebin"
+mkdir -p "$TEST_TMP/source/vpn1-src/deploy/almalinux" "$TEST_TMP/source/vpn1-src/apps/admin" "$TEST_TMP/fakebin"
+printf 'version = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/vpn1-src/apps/admin/Cargo.toml"
 
 cat > "$TEST_TMP/source/vpn1-src/deploy/almalinux/install.sh" <<'INSTALLER'
 #!/usr/bin/env bash
@@ -47,6 +48,19 @@ else
 fi
 FAKE_ID
 chmod 0755 "$TEST_TMP/fakebin/id"
+
+cat > "$TEST_TMP/fakebin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[ "$1" = attestation ] && [ "$2" = verify ]
+[ "$4" = --repo ] && [ "$5" = David610/singbox-vpn ]
+case "${GH_ATTESTATION_RESULT:-valid}" in
+  valid) exit 0 ;;
+  missing) echo "no attestations found" >&2; exit 1 ;;
+  wrong) echo "attestation identity did not match" >&2; exit 1 ;;
+esac
+FAKE_GH
+chmod 0755 "$TEST_TMP/fakebin/gh"
 
 cat > "$TEST_TMP/fakebin/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
@@ -114,10 +128,38 @@ actual_args="$(cat "$TEST_MARKER")"
 }
 
 grep -q 'source archive checksum verified' "$TEST_TMP/bootstrap.log"
+grep -q 'artifact attestation verified' "$TEST_TMP/bootstrap.log"
 grep -q 'handing off to deploy/almalinux/install.sh' "$TEST_TMP/bootstrap.log"
 if grep -q 'downloaded source is missing' "$TEST_TMP/bootstrap.log"; then
   echo "FAIL: verified source directory was corrupted by command output" >&2
   exit 1
 fi
+
+for bad_result in missing wrong; do
+  rm -f "$TEST_MARKER"
+  rc=0
+  GH_ATTESTATION_RESULT="$bad_result" PATH="$TEST_TMP/fakebin:$PATH" bash "$BOOTSTRAP" \
+    --version "$FIXTURE_VERSION" --non-interactive --allow-ip-hostname \
+    --reality-handshake-server www.cloudflare.com \
+    >"$TEST_TMP/bootstrap-$bad_result.log" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || { echo "FAIL: $bad_result attestation was accepted" >&2; exit 1; }
+  [ ! -e "$TEST_MARKER" ] || { echo "FAIL: installer handoff ran after $bad_result attestation" >&2; exit 1; }
+  grep -q 'attestation verification failed or is missing' "$TEST_TMP/bootstrap-$bad_result.log"
+done
+
+# Even a valid repository attestation is not enough if a release page is wired
+# to an archive built for a different package version.
+printf 'version = "9.9.9"\n' > "$TEST_TMP/source/vpn1-src/apps/admin/Cargo.toml"
+tar -czf "$TEST_TMP/wrong-version.tar.gz" -C "$TEST_TMP/source" vpn1-src
+printf '%s  vpn1-src.tar.gz\n' "$(sha256sum "$TEST_TMP/wrong-version.tar.gz" | awk '{print $1}')" > "$TEST_TMP/wrong-version-SHA256SUMS"
+rm -f "$TEST_MARKER"
+rc=0
+FIXTURE_TAR="$TEST_TMP/wrong-version.tar.gz" FIXTURE_SUMS="$TEST_TMP/wrong-version-SHA256SUMS" \
+  PATH="$TEST_TMP/fakebin:$PATH" bash "$BOOTSTRAP" --version "$FIXTURE_VERSION" \
+  --non-interactive --allow-ip-hostname --reality-handshake-server www.cloudflare.com \
+  >"$TEST_TMP/bootstrap-wrong-version.log" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "FAIL: wrong-version authenticated source was accepted" >&2; exit 1; }
+[ ! -e "$TEST_MARKER" ] || { echo "FAIL: wrong-version source reached installer handoff" >&2; exit 1; }
+grep -q 'does not match requested release' "$TEST_TMP/bootstrap-wrong-version.log"
 
 echo "bootstrap verified-release source handoff: PASS"

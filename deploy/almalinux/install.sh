@@ -1010,6 +1010,19 @@ resolve_reality_handshake_server() {
 # ---------------------------------------------------------------------
 # [4] singbox-vpn binaries (prebuilt release, falling back to source build)
 # ---------------------------------------------------------------------
+verify_release_attestation() {
+  local artifact="$1" version="$2"
+  if [ "${VPN1_ALLOW_LEGACY_CHECKSUM_ONLY:-0}" = "1" ]; then
+    warn "LEGACY OVERRIDE: accepting $version with checksum-only verification; provenance is not authenticated."
+    return 0
+  fi
+  command -v gh >/dev/null 2>&1 \
+    || die "GitHub CLI ('gh') is required to authenticate stable release artifacts. Re-run through the top-level install.sh bootstrap or install gh manually."
+  gh attestation verify "$artifact" --repo "$VPN1_RELEASE_REPO" --signer-workflow "$VPN1_RELEASE_REPO/.github/workflows/release.yml" >/dev/null \
+    || die "artifact attestation verification failed or is missing for $version/$VPN1_RELEASE_REPO — refusing to install stable binaries."
+  log "artifact attestation verified for repository $VPN1_RELEASE_REPO."
+}
+
 fetch_release_binaries() {
   local target version base_url tmp
   target="$(rust_target_for_arch "$ARCH")" || return 1
@@ -1035,6 +1048,7 @@ fetch_release_binaries() {
   if curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmp/SHA256SUMS" "$base_url/SHA256SUMS" 2>/dev/null; then
     ( cd "$tmp" && sha256sum --ignore-missing -c SHA256SUMS ) || die "checksum verification failed for $asset — refusing to install unverified binaries."
     log "checksum verified against release SHA256SUMS."
+    verify_release_attestation "$tmp/$asset" "$version"
   else
     die "release asset $asset was found but SHA256SUMS was not — refusing to install a binary with no integrity verification."
   fi
@@ -1048,6 +1062,12 @@ fetch_release_binaries() {
   # if they ever diverge again (docs/FINAL_PRODUCTION_AUDIT.md P0-6).
   local extracted="$tmp/vpn1-${target}"
   [ -d "$extracted" ] || die "release asset $asset did not contain the expected vpn1-${target}/ directory — archive layout does not match what install.sh expects. This is a packaging bug, not a transient failure; see docs/FINAL_PRODUCTION_AUDIT.md P0-6."
+  local expected_package_version="${version#v}"
+  expected_package_version="${expected_package_version%%-*}"
+  local binary_package_version
+  binary_package_version="$("$extracted/vpn-admin" --version 2>/dev/null | awk '{print $NF}')"
+  [ "$binary_package_version" = "$expected_package_version" ] \
+    || die "authenticated binary archive reports version '$binary_package_version', expected '$expected_package_version' for release $version — refusing wrong-version binaries."
   install -m 0755 "$extracted/vpn-admin" "$BIN_DIR/vpn-admin"
   install -m 0755 "$extracted/vpn-admin" "$BIN_DIR/vpn"
   install -m 0755 "$extracted/subscription" "$BIN_DIR/vpn-subscription-svc"

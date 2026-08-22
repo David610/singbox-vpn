@@ -21,15 +21,13 @@
 # otherwise. What IS verified: once a pinned release (VPN1_VERSION, or
 # the latest tag auto-resolved in the default stable channel) is
 # selected, its SOURCE ARCHIVE is downloaded from that release's GitHub
-# Release assets and checksum-verified against a SHA256SUMS manifest
-# published by `.github/workflows/release.yml` for that exact tag before
-# it is extracted or executed — see download_verified_source_release()
-# below. This is SHA-256 integrity verification, not cryptographic
-# signing: it protects against a corrupted/tampered-in-transit download
-# or a codeload mirror serving different bytes than the release, not
-# against someone who has compromised the GitHub release itself (who
-# could republish both the archive and its checksum together). No
-# signing infrastructure is implemented for this checkpoint.
+# Release assets, checksum-verified against SHA256SUMS, and authenticated
+# with GitHub artifact provenance bound to this repository before extraction
+# or execution — see download_verified_source_release() below. SHA-256 alone
+# is integrity, not publisher authentication: archive and digest share one
+# GitHub trust root. Provenance prevents an asset-only replacement, but not a
+# compromised trusted workflow legitimately attesting malicious output. See
+# docs/SUPPLY_CHAIN_SECURITY.md.
 # VPN1_CHANNEL=dev (unpinned branch source, no VPN1_VERSION resolved)
 # remains intentionally weaker: it downloads a live branch tarball via
 # codeload with NO checksum verification at all, because a branch has no
@@ -164,6 +162,36 @@ cleanup() {
 trap cleanup EXIT
 trap 'die "interrupted"' INT TERM
 
+# GitHub artifact attestations bind an artifact digest to this repository and
+# an Actions OIDC identity. This is authentication/provenance in addition to
+# SHA256SUMS integrity; it does not make a compromised release workflow safe.
+ensure_attestation_verifier() {
+  command -v gh >/dev/null 2>&1 && return 0
+  log "GitHub CLI is required to authenticate stable release artifacts; installing the distribution package..."
+  if command -v dnf >/dev/null 2>&1; then
+    dnf -y install gh >/dev/null 2>&1 \
+      || die "could not install the 'gh' package required for release-attestation verification. Install GitHub CLI from https://cli.github.com/ and retry."
+  elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y >/dev/null 2>&1 && apt-get install -y gh >/dev/null 2>&1 \
+      || die "could not install the 'gh' package required for release-attestation verification. Install GitHub CLI from https://cli.github.com/ and retry."
+  else
+    die "GitHub CLI ('gh') is required for release-attestation verification and no supported package manager was found."
+  fi
+  command -v gh >/dev/null 2>&1 || die "the 'gh' package installation completed but gh is still unavailable."
+}
+
+verify_release_attestation() {
+  local artifact="$1" version="$2"
+  if [ "${VPN1_ALLOW_LEGACY_CHECKSUM_ONLY:-0}" = "1" ]; then
+    warn "LEGACY OVERRIDE: accepting $version with checksum-only verification. Artifact and SHA256SUMS share one GitHub trust root; this is not authenticated provenance."
+    return 0
+  fi
+  ensure_attestation_verifier
+  gh attestation verify "$artifact" --repo "$VPN1_REPO" --signer-workflow "$VPN1_REPO/.github/workflows/release.yml" >/dev/null \
+    || die "artifact attestation verification failed or is missing for $version/$VPN1_REPO — refusing stable installation. For a pre-attestation historical release only, explicitly set VPN1_ALLOW_LEGACY_CHECKSUM_ONLY=1 and accept checksum-only trust."
+  log "artifact attestation verified for repository $VPN1_REPO."
+}
+
 # ---------------------------------------------------------------------
 # Download and SHA-256-verify the source archive published for a pinned
 # release tag by .github/workflows/release.yml (asset "vpn1-src.tar.gz"
@@ -194,6 +222,7 @@ download_verified_source_release() {
   ( cd "$TMPDIR" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) >&2 \
     || die "checksum verification failed for vpn1-src.tar.gz against $version's published SHA256SUMS — refusing to extract/execute an unverified source archive."
   log "source archive checksum verified against release SHA256SUMS."
+  verify_release_attestation "$tarball" "$version"
 }
 
 # ---------------------------------------------------------------------
@@ -222,6 +251,14 @@ download_source() {
   local extracted
   extracted="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
   [ -n "$extracted" ] || die "extracted archive did not contain the expected repository directory."
+  if [ -n "$VPN1_VERSION" ]; then
+    local expected_package_version="${VPN1_VERSION#v}"
+    expected_package_version="${expected_package_version%%-*}"
+    local source_package_version
+    source_package_version="$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$extracted/apps/admin/Cargo.toml" 2>/dev/null | head -n1)"
+    [ "$source_package_version" = "$expected_package_version" ] \
+      || die "authenticated source archive version '$source_package_version' does not match requested release '$VPN1_VERSION' — refusing a wrong-version release asset."
+  fi
   # Return through a shell variable, not stdout. This deliberately makes the
   # handoff immune to informational output from curl/tar/checksum tools.
   DOWNLOADED_SOURCE_DIR="$extracted"

@@ -40,6 +40,38 @@ if grep -q 'Already at .*nothing to update' "$UPDATE_SH"; then
 else
   fail "update.sh does not handle the same-version case cleanly"
 fi
+
+echo
+echo "--- functional: normal updates reject downgrade; explicit rollback requires --allow-downgrade ---"
+version_fn="$(sed -n '/^version_is_older() {/,/^}/p' "$UPDATE_SH")"
+if [ -n "$version_fn" ]; then
+  eval "$version_fn"
+  version_is_older v0.1.2 v0.1.3 \
+    && ok "version ordering identifies v0.1.2 as older than v0.1.3" \
+    || fail "version ordering did not identify an older release"
+  if version_is_older v0.1.3 v0.1.2; then
+    fail "version ordering misclassified an upgrade as a downgrade"
+  else
+    ok "version ordering permits a normal upgrade"
+  fi
+  version_is_older v0.1.3-rc.1 v0.1.3 \
+    && ok "SemVer prerelease is older than its final release" \
+    || fail "prerelease/final ordering is incorrect"
+  if version_is_older v0.1.3 v0.1.3-rc.1; then
+    fail "final release was misclassified as older than its prerelease"
+  else
+    ok "final release is newer than its prerelease"
+  fi
+else
+  fail "could not extract version_is_older() from the real updater"
+fi
+if grep -q 'refusing unintended downgrade' "$UPDATE_SH" \
+  && grep -q -- '--allow-downgrade) ALLOW_DOWNGRADE=1' "$UPDATE_SH" \
+  && grep -q 'valid only with an explicit --version target' "$UPDATE_SH"; then
+  ok "normal downgrade fails closed and intentional rollback requires the explicit flag plus version"
+else
+  fail "explicit downgrade semantics are not fully enforced"
+fi
 same_version_line="$(grep -n 'Already at .*nothing to update' "$UPDATE_SH" | head -1 | cut -d: -f1)"
 first_backup_dir_line="$(grep -n 'install -d -m 0700 -o root -g root "\$BACKUP_DIR"' "$UPDATE_SH" | tail -1 | cut -d: -f1)"
 if [ -n "$same_version_line" ] && [ -n "$first_backup_dir_line" ] && [ "$same_version_line" -lt "$first_backup_dir_line" ]; then

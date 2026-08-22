@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -56,7 +56,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
@@ -66,7 +66,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
       - uses: taiki-e/install-action@cargo-audit
       # Blocking (docs/PRODUCTION_HARDENING_PLAN.md #12): no `|| true`.
       # If an advisory genuinely cannot be fixed yet, add a narrowly
@@ -89,7 +89,7 @@ jobs:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
       - run: cargo doc --locked --workspace --no-deps
 
   shell:
@@ -246,7 +246,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
 
       # deploy/lib/versions.env is the single authoritative source for

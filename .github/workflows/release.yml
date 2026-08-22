@@ -23,6 +23,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Default every release job to read-only. Build narrows in OIDC/attestation
+# writes; publish narrows in contents:write. No other job receives write scope.
+permissions:
+  contents: read
+
 jobs:
   # Checkpoint 6 §8: a manual workflow_dispatch run must build the exact
   # tagged commit it claims to publish, never whatever ref happened to
@@ -86,6 +91,10 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -117,7 +126,7 @@ jobs:
           EOF
 
       - name: Build release binaries
-        run: cargo build --release --target ${{ matrix.target }} -p admin -p subscription
+        run: cargo build --locked --release --target ${{ matrix.target }} -p admin -p subscription
 
       - name: Package
         run: |
@@ -129,6 +138,11 @@ jobs:
           cp README.md LICENSE "$out/"
           tar -czf "${out}.tar.gz" "$out"
           sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
+
+      - name: Attest binary archive provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: vpn1-${{ matrix.target }}.tar.gz
 
       # Archive/installer contract test (docs/FINAL_PRODUCTION_AUDIT.md
       # P0-6): extract the archive we JUST built using the exact same
@@ -185,6 +199,12 @@ jobs:
             exit 1
           }
           rm -rf "$tmp"
+
+      - name: Attest source archive provenance
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: vpn1-src.tar.gz
 
       - uses: actions/upload-artifact@v4
         if: matrix.target == 'x86_64-unknown-linux-gnu'

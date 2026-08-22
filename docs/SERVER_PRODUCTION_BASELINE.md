@@ -101,6 +101,9 @@ The subscription certificate provides no REALITY camouflage benefit.
 
 * **KNOWN ISSUE:** GitHub-hosted checksums detect corruption but do not
   independently authenticate a publisher that can replace artifact and digest.
+  New releases also require GitHub artifact provenance; its remaining trust
+  assumptions and the explicit historical-release override are documented in
+  `docs/SUPPLY_CHAIN_SECURITY.md`.
 * **KNOWN ISSUE:** `curl | sudo bash` initially trusts HTTPS and GitHub account
   security. Mutable dev source now requires the two explicit opt-ins
   `VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1`.
