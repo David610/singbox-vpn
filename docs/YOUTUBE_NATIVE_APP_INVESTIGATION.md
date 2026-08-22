@@ -7,6 +7,12 @@ device." Nothing here proposes changing REALITY keys/SNI, DNS, MTU,
 BBR/sysctls, Hysteria2 parameters, firewall rules, or the server
 transport. Exactly one experiment is proposed to run next (section 9).
 
+**Evidence classification:** the Safari/native-app/WARP behavior below is a
+USER-REPORTED historical observation, not DEVICE-VERIFIED. It has no complete
+dated record containing device, OS, client version, network, transport, and
+commit. All resulting root-cause explanations are HYPOTHESES. Current
+acceptance status is recorded only in `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+
 ## The question
 
 > Why does Safari play YouTube through singbox-vpn, the native YouTube
@@ -291,7 +297,7 @@ individually rather than credited to "WARP" as a whole:
 | DNS resolver in use | An on-device DNS-leak-test page/app while each VPN is connected | DNS hypothesis (§3.7) |
 | IPv6 availability | Does the phone have real IPv6 connectivity at all before connecting? | Baseline for §3.6 |
 | YouTube app result | Full §4 breakdown, not pass/fail | The actual target symptom |
-| Safari YouTube result | Full §4 breakdown | Control — already known PASS on singbox-vpn |
+| Safari YouTube result | Full §4 breakdown | Control — previously USER-REPORTED PASS; reproduce it |
 | TikTok result | `docs/TIKTOK_INVESTIGATION.md` §4 breakdown | Whether WARP also fixes TikTok (tells us if the two failures share a cause) |
 
 Record this full table for **both** singbox-vpn (REALITY, manually

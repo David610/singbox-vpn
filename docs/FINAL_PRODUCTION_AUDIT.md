@@ -4,6 +4,10 @@ Date: 2026-08-09
 Scope: `install.sh`, `deploy/almalinux/*`, `deploy/lib/*`, `crates/compat-config/*`,
 `apps/admin/*`, `services/subscription/*`, `.github/workflows/*`.
 
+> **Historical audit snapshot.** Do not treat a result in this file as current
+> production or device acceptance. The canonical current evidence ledger is
+> `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+
 Method: every item below was verified against the actual current source tree
 (commit `c4a31bc` at audit start) by direct file reads and, where noted,
 targeted `grep`. No item is asserted from the original task description

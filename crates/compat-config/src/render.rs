@@ -807,6 +807,44 @@ mod tests {
         }
     }
 
+    /// Production responsibility-boundary contract. Optional compatibility
+    /// modes may change offered transports, but none may turn the subscription
+    /// into server-controlled client policy.
+    #[test]
+    fn every_subscription_mode_omits_client_owned_policy() {
+        for mode in [
+            CompatibilityMode::Normal,
+            CompatibilityMode::TcpOnly,
+            CompatibilityMode::VisionOff,
+        ] {
+            let doc = render_singbox_client_subscription_with_options(
+                &user(),
+                &[reality_endpoint(), hysteria_endpoint()],
+                SelectionProfile::Reliability,
+                mode,
+            )
+            .unwrap();
+
+            assert!(doc.get("dns").is_none(), "{mode:?} emitted DNS policy");
+            assert!(
+                doc.get("inbounds").is_none(),
+                "{mode:?} emitted client inbound/TUN policy"
+            );
+            assert!(
+                doc["route"].get("rules").is_none(),
+                "{mode:?} emitted route rules"
+            );
+
+            let encoded = serde_json::to_string(&doc).unwrap();
+            for field in ["mtu", "auto_route", "strict_route"] {
+                assert!(
+                    !encoded.contains(&format!("\"{field}\"")),
+                    "{mode:?} emitted client-owned field {field}: {encoded}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn route_final_points_at_manual_selector_not_urltest() {
         let doc =

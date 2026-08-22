@@ -1,9 +1,9 @@
 # Implementation Status (v1.0 baseline)
 
 Compact engineering handoff. Full boundary definition: `docs/SUPPORTED_PRODUCT.md`.
-Release-readiness evidence is recorded in this file and in
-`docs/DEVICE_ACCEPTANCE_TESTS.md`; `docs/PRODUCTION_ACCEPTANCE_REPORT.md` is a
-dated historical audit snapshot.
+The canonical current evidence ledger is `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+This file describes implementation history; `docs/PRODUCTION_ACCEPTANCE_REPORT.md`
+is a dated historical audit snapshot. Neither may upgrade ledger evidence.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
 ## Release readiness update (2026-08-19)

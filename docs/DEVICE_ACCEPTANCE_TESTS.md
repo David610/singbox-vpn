@@ -1,4 +1,51 @@
-# DEVICE_ACCEPTANCE_TESTS.md
+# Production evidence ledger and device acceptance tests
+
+This is the **one canonical current evidence ledger** for production and
+device claims. Other audit and investigation documents are historical or
+narrative records and must link here rather than independently upgrading a
+claim. A code path existing, a config rendering, or a server-side probe passing
+never proves that a real application works on a real Russian device.
+
+## Evidence vocabulary
+
+Use exactly these labels for behavioral claims:
+
+- **USER-REPORTED** — preserved report without the complete reproducible test
+  record required below. Useful evidence, never a production guarantee.
+- **REPRODUCED** — repeated in a described environment, but not necessarily at
+  the server/device layer required by the claim.
+- **CODE-VERIFIED** — source inspection plus an executable code test.
+- **SERVER-VERIFIED** — executed on a named real VPS with dated evidence.
+- **DEVICE-VERIFIED** — executed on a named real device/network with dated
+  version and commit evidence.
+- **UNVERIFIED** — the required evidence does not exist in this ledger.
+- **HYPOTHESIS** — a proposed explanation, not an observed capability.
+
+CI-VERIFIED is used below as a more specific CODE-VERIFIED status for tests
+executed in CI. `STATICALLY INSPECTED` means source/prose inspection only and
+is not equivalent to any runtime verification.
+
+## Canonical evidence ledger
+
+Current as of 2026-08-22 for commit
+`5370a30325bf9d95ab1d5250648809699b6eefff` (the audit baseline). Entries with
+missing device/VPS/version data stay USER-REPORTED or UNVERIFIED.
+
+| Claim | Scope | Status | Evidence | Date | Commit | Environment |
+|---|---|---|---|---|---|---|
+| Subscription JSON contains transport connection fields and selector/default hints, but no DNS, inbounds/TUN, MTU, IP-family policy, or `route.rules` | Renderer output | CODE-VERIFIED | `compat-config` renderer regression tests, including every compatibility mode | 2026-08-22 | `5370a30325bf9d95ab1d5250648809699b6eefff` | Local Rust tests; serialization layer only |
+| VLESS server/client rendering agrees on REALITY public connection material and is accepted by the pinned sing-box configuration checks | Config generation/schema | CI-VERIFIED | `crates/compat-config/tests/reality_interop.rs`; CI sing-box validation | 2026-08-22 | `5370a30325bf9d95ab1d5250648809699b6eefff` | CI/config validation, not a public network |
+| Hysteria2 loopback handshake/transfer interoperability | Protocol loopback | CI-VERIFIED | Existing compatibility/benchmark tests and CI | 2026-08-22 | `5370a30325bf9d95ab1d5250648809699b6eefff` | CI loopback, not a real device/network |
+| Fresh AlmaLinux 9 installation of current HEAD | Full deployment lifecycle | UNVERIFIED | No dated disposable-host run for current HEAD | — | — | Required: fresh public AlmaLinux 9 x86-64 VPS |
+| AlmaLinux 9 install and Hiddify connection succeeded | Prior deployment smoke observation | USER-REPORTED | Owner report retained in the dated entry below; required versions/transport/commit absent | 2026-08-16 | unknown | Reported real VPS + iPhone; incomplete record |
+| Current subscription imports and tunnels on a real iOS/Android device | Current device compatibility | UNVERIFIED | No complete matrix entry | — | — | Required: named device/client/network/current commit |
+| YouTube native playback over a Russian network | Application/device behavior | UNVERIFIED | Prior narrative reports lack device, network, client version, transport, date, and commit evidence | — | — | Required: Russian cellular and Wi-Fi runs |
+| TikTok native playback over Russian Wi-Fi or cellular | Application/device behavior | UNVERIFIED | No completed TikTok matrix entry | — | — | Required: Russian Android/iOS device runs |
+| DNS, IPv4/IPv6 leak prevention, MTU, kill switch, per-app routing, handover, or failover behavior | Client-owned runtime behavior | UNVERIFIED | Subscription intentionally does not control these fields; no complete device entry | — | — | Required per client/OS/network combination |
+
+The commit column identifies what was tested, not what is currently checked
+out forever. When code changes, retain historical rows and add a new row; do
+not silently carry a result forward.
 
 Automated CI cannot validate a real Hiddify/v2rayNG import on a real
 iOS/Android/MagicOS/Linux/Windows/macOS device against a real VPS — this
@@ -234,8 +281,9 @@ just "WARP worked"):
 
 ## TikTok-specific matrix
 
-Per `docs/TIKTOK_INVESTIGATION.md`: YouTube works (including native
-playback); TikTok is the one known application-specific failure. "TikTok
+Per `docs/TIKTOK_INVESTIGATION.md`, a prior tester USER-REPORTED that YouTube
+worked (including native playback) and that TikTok was the application-specific
+failure. Neither statement is DEVICE-VERIFIED. "TikTok
 doesn't work" is not one test — a cell only becomes PASS/FAIL after it
 is exercised on a real device on a real Russian network, broken down
 exactly as `docs/TIKTOK_INVESTIGATION.md` section 4 specifies (app
