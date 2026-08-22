@@ -1,13 +1,15 @@
 # TikTok investigation (2026-08-20)
 
 Baseline going in, restated from the task that opened this investigation
-(not re-derived, not re-litigated):
+(not re-derived, not re-litigated). Every bullet in this baseline is
+**USER-REPORTED**, not DEVICE-VERIFIED; the required device/client/network/
+transport/commit record was not captured:
 
 - Real Russian users connect successfully.
 - General browsing works.
 - YouTube works, including native-app video playback.
 - singbox-vpn currently outperforms Outline in real-world testing.
-- The one known application-specific failure is TikTok.
+- The reported application-specific failure is TikTok.
 - This is deliberately **not** treated as "VPN blocked in Russia" — the
   working YouTube/browsing baseline is evidence against that framing,
   not for it.
@@ -122,7 +124,7 @@ hypotheses** given the existing evidence:
 - `docs/CLIENT_PROTOCOL_BEHAVIOR.md` already documents that this
   deployment's IPv4/IPv6 posture is untested end-to-end on a real
   device for *any* application, TikTok included.
-- However: YouTube already works, including native playback, and
+- However: YouTube was USER-REPORTED working, including native playback, and
   Google's own infrastructure is heavily dual-stack — if a broken IPv6
   path on this deployment were going to break something, YouTube would
   be a more likely victim than TikTok, not less. This does not disprove
@@ -241,8 +243,8 @@ the reproduction procedure below is designed to tell them apart:
 Neither of these is proven yet. Both outrank most transport-layer
 hypotheses in prior probability precisely because TikTok's Russia
 posture is a known, long-standing, actively-maintained policy — unlike
-YouTube, which has no equivalent self-imposed restriction and has
-already been confirmed working end-to-end. **This is exactly why
+YouTube, which has no equivalent self-imposed restriction and was
+USER-REPORTED as working end-to-end. **This is exactly why
 hypothesis G is ranked first below, and why the first experiment
 proposed is a comparison test, not a config change.**
 
@@ -250,15 +252,15 @@ proposed is a comparison test, not a config change.**
 
 | Characteristic | YouTube | TikTok |
 |---|---|---|
-| DNS resolution | Unverified end-to-end on real device, but works in practice (video plays) | Unverified — no data yet |
-| IPv4 | Works (video plays) | Unverified |
-| IPv6 | Unverified, works in practice | Unverified |
-| TCP/443 (REALITY transport) | Works | Unverified whether TikTok even reaches this far |
-| UDP/443 (Hysteria2 / app QUIC) | Works (native app plays video — implies either QUIC isn't required, or it works, or the app falls back cleanly) | Unverified |
+| DNS resolution | USER-REPORTED indirectly (video reportedly played); resolver path UNVERIFIED | UNVERIFIED — no data yet |
+| IPv4 | USER-REPORTED indirectly; IP family was not recorded | UNVERIFIED |
+| IPv6 | UNVERIFIED | UNVERIFIED |
+| TCP/443 (REALITY transport) | UNVERIFIED; selected transport was not recorded | UNVERIFIED whether TikTok even reaches this far |
+| UDP/443 (Hysteria2 / app QUIC) | UNVERIFIED; playback alone cannot identify the selected transport or QUIC/fallback path | UNVERIFIED |
 | Own-service regional policy | None known — Google does not self-restrict YouTube for Russia | **TikTok self-restricts posting/live/monetization for Russia since March 2022; viewing is (reportedly) still generally served, but exit-IP/ASN reputation can independently affect VPN users** — see hypothesis G |
 | Exit-IP/ASN sensitivity | No evidence Google CDN differentiates by ASN for this deployment | Plausible per community reporting; unverified against this specific VPS |
-| Works in browser | Not directly tested per the task's framing (native app confirmed) | Unknown — task explicitly asks to test separately from the app |
-| Works in native app | **Confirmed working, including playback** | **Confirmed failing** (this is the entire premise of this investigation) |
+| Works in browser | UNVERIFIED | UNVERIFIED — test separately from the app |
+| Works in native app | **USER-REPORTED working, including playback; not DEVICE-VERIFIED** | **USER-REPORTED failing; not DEVICE-VERIFIED** (the premise of this investigation) |
 
 The single largest confirmed difference is not a protocol property at
 all — it's that **TikTok, unlike YouTube, has a known, self-imposed,
@@ -288,7 +290,7 @@ precisely — do not summarize as "TikTok doesn't work":
 4. TikTok app — profile images, comments, login — load or not?
 5. TikTok web (`www.tiktok.com` in a mobile or desktop browser) — same
    breakdown as above (feed loads? thumbnails? playback?).
-6. YouTube app (control — already known-working, confirm still true
+6. YouTube app (control — previously USER-REPORTED working; test whether true
    during the same session).
 7. YouTube web (control).
 8. General HTTPS browsing (control — a couple of ordinary sites).

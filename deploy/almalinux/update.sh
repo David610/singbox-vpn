@@ -86,6 +86,7 @@ VPN1_REPO_OVERRIDE="${VPN1_REPO:-}"
 RESOLVE_LATEST=0
 REPAIR=0
 DEV_REBUILD=0
+ALLOW_DOWNGRADE=0
 [ "${VPN1_CHANNEL:-}" = "dev" ] && DEV_REBUILD=1
 
 print_update_help() {
@@ -111,6 +112,8 @@ Flags:
                      Cargo (requires a Rust toolchain). Same as
                      VPN1_CHANNEL=dev. Never used for a normal
                      production update.
+  --allow-downgrade  permit an intentional downgrade with an explicit
+                     --version. Never applies to --latest or implicitly.
   --repo owner/repo  update from a fork (default: the repo this host
                      was originally installed from, if recorded).
   -h, --help         show this message and exit
@@ -124,6 +127,7 @@ while [ $# -gt 0 ]; do
     --latest) RESOLVE_LATEST=1; shift ;;
     --repair) REPAIR=1; shift ;;
     --dev-rebuild) DEV_REBUILD=1; shift ;;
+    --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
     --repo) VPN1_REPO_OVERRIDE="$2"; shift 2 ;;
     --repo=*) VPN1_REPO_OVERRIDE="${1#*=}"; shift ;;
     -h|--help) print_update_help; exit 0 ;;
@@ -145,6 +149,33 @@ if [ -e "$TRANSACTION_MARKER" ]; then
 $(cat "$TRANSACTION_MARKER" 2>/dev/null)
 Manual recovery: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/vpn1 after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove $TRANSACTION_MARKER and retry the update."
 fi
+
+verify_release_attestation() {
+  local artifact="$1" version="$2"
+  local first_attested="v0.1.3"
+  if ! release_version_at_least "$version" "$first_attested"; then
+    warn "HISTORICAL RELEASE: $version predates $first_attested and retains checksum-only verification; provenance is not authenticated."
+    return 0
+  fi
+  command -v gh >/dev/null 2>&1 \
+    || die "GitHub CLI ('gh') is required for stable release-attestation verification. Install gh and retry; nothing live has changed."
+  gh attestation verify "$artifact" --repo "$VPN1_REPO" --signer-workflow "$VPN1_REPO/.github/workflows/release.yml" >/dev/null \
+    || die "artifact attestation verification failed or is missing for $version/$VPN1_REPO. Nothing live has changed."
+  log "artifact attestation verified for repository $VPN1_REPO."
+}
+
+
+release_version_at_least() {
+  local version="${1#v}" threshold="${2#v}"
+  local major minor patch threshold_major threshold_minor threshold_patch
+  IFS=. read -r major minor patch <<<"$version"
+  IFS=. read -r threshold_major threshold_minor threshold_patch <<<"$threshold"
+  patch="${patch%%-*}"
+  threshold_patch="${threshold_patch%%-*}"
+  [ "$major" -gt "$threshold_major" ] \
+    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -gt "$threshold_minor" ]; } \
+    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -eq "$threshold_minor" ] && [ "$patch" -ge "$threshold_patch" ]; }
+}
 shopt -s nullglob
 for stale in /opt/.vpn1-update-staging.* /opt/.vpn1-prev-*; do
   [ -e "$stale" ] || continue
@@ -429,6 +460,34 @@ fi
 echo "$TARGET_VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$' \
   || die "TARGET_VERSION '$TARGET_VERSION' does not look like a valid release tag (expected vX.Y.Z) — refusing to use it."
 
+if [ "$ALLOW_DOWNGRADE" -eq 1 ] && { [ "$RESOLVE_LATEST" -eq 1 ] || [ "$REPAIR" -eq 1 ]; }; then
+  die "--allow-downgrade is valid only with an explicit --version target."
+fi
+version_is_older() {
+  local candidate="${1#v}" current="${2#v}" first
+  local candidate_base="${candidate%%-*}" current_base="${current%%-*}"
+  local candidate_pre="" current_pre=""
+  [ "$candidate" != "$current" ] || return 1
+  [[ "$candidate" == *-* ]] && candidate_pre="${candidate#*-}"
+  [[ "$current" == *-* ]] && current_pre="${current#*-}"
+  if [ "$candidate_base" != "$current_base" ]; then
+    first="$(printf '%s\n%s\n' "$candidate_base" "$current_base" | sort -V | head -n1)"
+    [ "$first" = "$candidate_base" ]
+    return
+  fi
+  # SemVer: a prerelease is older than the corresponding final release.
+  [ -n "$candidate_pre" ] && [ -z "$current_pre" ] && return 0
+  [ -z "$candidate_pre" ] && [ -n "$current_pre" ] && return 1
+  first="$(printf '%s\n%s\n' "$candidate_pre" "$current_pre" | sort -V | head -n1)"
+  [ "$first" = "$candidate_pre" ]
+}
+if version_is_older "$TARGET_VERSION" "$CURRENT_VERSION"; then
+  if [ "$ALLOW_DOWNGRADE" -ne 1 ]; then
+    die "refusing unintended downgrade $CURRENT_VERSION -> $TARGET_VERSION. Re-run with the explicit target and --allow-downgrade only after reviewing state-schema compatibility."
+  fi
+  warn "EXPLICIT DOWNGRADE AUTHORIZED: $CURRENT_VERSION -> $TARGET_VERSION. Rollback remains transactional, but older code may not understand newer persistent state."
+fi
+
 if [ "$TARGET_VERSION" = "$CURRENT_VERSION" ] && [ "$REPAIR" -ne 1 ]; then
   log "Already at $CURRENT_VERSION — nothing to update. Pass --repair to reconcile this release's material without changing version."
   exit 0
@@ -466,6 +525,7 @@ download_verified_source_release() {
   ( cd "$STAGING_ROOT" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) \
     || die "checksum verification failed for vpn1-src.tar.gz against $version's published SHA256SUMS. Nothing live has been changed."
   log "source archive checksum verified against release SHA256SUMS."
+  verify_release_attestation "$tarball" "$version"
 }
 
 download_verified_source_release "$TARGET_VERSION" "$STAGING_ROOT/vpn1-src.tar.gz"
@@ -475,6 +535,11 @@ STAGED_SRC_DIR="$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '
   || die "downloaded release source for $TARGET_VERSION does not look like a valid singbox-vpn source tree. Nothing live has been changed."
 [ -f "$STAGED_SRC_DIR/deploy/lib/versions.env" ] \
   || die "downloaded release source for $TARGET_VERSION is missing deploy/lib/versions.env. Nothing live has been changed."
+expected_package_version="${TARGET_VERSION#v}"
+expected_package_version="${expected_package_version%%-*}"
+source_package_version="$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$STAGED_SRC_DIR/apps/admin/Cargo.toml" 2>/dev/null | head -n1)"
+[ "$source_package_version" = "$expected_package_version" ] \
+  || die "authenticated source archive version '$source_package_version' does not match requested release '$TARGET_VERSION'. Nothing live has been changed."
 
 # ---- read the TARGET release's own pinned sing-box version — never
 # mix this release's templates/units with a different release's
@@ -502,6 +567,7 @@ stage_prebuilt_binaries() {
     || die "release binary asset $asset was found but SHA256SUMS was not — refusing to use an unverified binary. Nothing live has been changed."
   ( cd "$STAGING_ROOT" && grep -E "  ${asset}\$" BIN_SHA256SUMS | sha256sum -c - ) \
     || die "checksum verification failed for $asset against $TARGET_VERSION's published SHA256SUMS. Nothing live has been changed."
+  verify_release_attestation "$STAGING_ROOT/$asset" "$TARGET_VERSION"
   tar -xzf "$STAGING_ROOT/$asset" -C "$STAGING_ROOT"
   local extracted="$STAGING_ROOT/vpn1-${TARGET_RUST_TARGET}"
   [ -d "$extracted" ] || die "release asset $asset did not contain the expected vpn1-${TARGET_RUST_TARGET}/ directory — packaging bug, not a transient failure. Nothing live has been changed."
@@ -517,6 +583,9 @@ fi
 # ever treated as trustworthy (checkpoint-3 requirement #7.5).
 "$STAGED_BIN_DIR/vpn-admin" --help >/dev/null 2>&1 \
   || die "staged vpn-admin binary for $TARGET_VERSION does not run — refusing to install it. Nothing live has been changed."
+binary_package_version="$("$STAGED_BIN_DIR/vpn-admin" --version 2>/dev/null | awk '{print $NF}')"
+[ "$binary_package_version" = "$expected_package_version" ] \
+  || die "authenticated binary archive reports version '$binary_package_version', expected '$expected_package_version' for $TARGET_VERSION. Nothing live has been changed."
 
 # ---- STAGE: sing-box, only if the target release pins a different
 # version than what's currently installed. Same checksum-verification

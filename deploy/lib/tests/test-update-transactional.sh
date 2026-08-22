@@ -40,6 +40,68 @@ if grep -q 'Already at .*nothing to update' "$UPDATE_SH"; then
 else
   fail "update.sh does not handle the same-version case cleanly"
 fi
+
+echo
+echo "--- functional: normal updates reject downgrade; explicit rollback requires --allow-downgrade ---"
+version_fn="$(sed -n '/^version_is_older() {/,/^}/p' "$UPDATE_SH")"
+if [ -n "$version_fn" ]; then
+  eval "$version_fn"
+  version_is_older v0.1.2 v0.1.3 \
+    && ok "version ordering identifies v0.1.2 as older than v0.1.3" \
+    || fail "version ordering did not identify an older release"
+  if version_is_older v0.1.3 v0.1.2; then
+    fail "version ordering misclassified an upgrade as a downgrade"
+  else
+    ok "version ordering permits a normal upgrade"
+  fi
+  version_is_older v0.1.3-rc.1 v0.1.3 \
+    && ok "SemVer prerelease is older than its final release" \
+    || fail "prerelease/final ordering is incorrect"
+  if version_is_older v0.1.3 v0.1.3-rc.1; then
+    fail "final release was misclassified as older than its prerelease"
+  else
+    ok "final release is newer than its prerelease"
+  fi
+else
+  fail "could not extract version_is_older() from the real updater"
+fi
+
+echo
+echo "--- functional: finite attestation migration boundary preserves historical releases and fails closed for new releases ---"
+attestation_version_fn="$(sed -n '/^release_version_at_least() {/,/^}/p' "$UPDATE_SH")"
+installer_attestation_version_fn="$(sed -n '/^release_version_at_least() {/,/^}/p' "$REPO_ROOT/deploy/almalinux/install.sh")"
+if [ -n "$attestation_version_fn" ] && [ "$attestation_version_fn" = "$installer_attestation_version_fn" ]; then
+  eval "$attestation_version_fn"
+  if release_version_at_least v0.1.2 v0.1.3; then
+    fail "historical v0.1.2 was classified as attestation-required"
+  else
+    ok "historical v0.1.2 remains on its finite checksum-only migration policy"
+  fi
+  release_version_at_least v0.1.3-rc.1 v0.1.3 \
+    && ok "the first v0.1.3 release candidate requires provenance" \
+    || fail "v0.1.3 prerelease incorrectly bypasses provenance"
+  release_version_at_least v0.1.3 v0.1.3 \
+    && ok "v0.1.3 requires provenance" \
+    || fail "v0.1.3 incorrectly bypasses provenance"
+  release_version_at_least v1.0.0 v0.1.3 \
+    && ok "all later release families require provenance" \
+    || fail "a later release incorrectly bypasses provenance"
+else
+  fail "installer and updater do not share the same extractable attestation version boundary"
+fi
+if grep -q 'VPN1_ALLOW_LEGACY_CHECKSUM_ONLY' "$REPO_ROOT/install.sh" \
+    "$REPO_ROOT/deploy/almalinux/install.sh" "$UPDATE_SH"; then
+  fail "an operator-controlled permanent checksum-only override still exists"
+else
+  ok "new releases have no operator-controlled checksum-only override"
+fi
+if grep -q 'refusing unintended downgrade' "$UPDATE_SH" \
+  && grep -q -- '--allow-downgrade) ALLOW_DOWNGRADE=1' "$UPDATE_SH" \
+  && grep -q 'valid only with an explicit --version target' "$UPDATE_SH"; then
+  ok "normal downgrade fails closed and intentional rollback requires the explicit flag plus version"
+else
+  fail "explicit downgrade semantics are not fully enforced"
+fi
 same_version_line="$(grep -n 'Already at .*nothing to update' "$UPDATE_SH" | head -1 | cut -d: -f1)"
 first_backup_dir_line="$(grep -n 'install -d -m 0700 -o root -g root "\$BACKUP_DIR"' "$UPDATE_SH" | tail -1 | cut -d: -f1)"
 if [ -n "$same_version_line" ] && [ -n "$first_backup_dir_line" ] && [ "$same_version_line" -lt "$first_backup_dir_line" ]; then

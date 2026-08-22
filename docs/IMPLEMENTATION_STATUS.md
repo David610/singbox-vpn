@@ -1,9 +1,9 @@
 # Implementation Status (v1.0 baseline)
 
 Compact engineering handoff. Full boundary definition: `docs/SUPPORTED_PRODUCT.md`.
-Release-readiness evidence is recorded in this file and in
-`docs/DEVICE_ACCEPTANCE_TESTS.md`; `docs/PRODUCTION_ACCEPTANCE_REPORT.md` is a
-dated historical audit snapshot.
+The canonical current evidence ledger is `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+This file describes implementation history; `docs/PRODUCTION_ACCEPTANCE_REPORT.md`
+is a dated historical audit snapshot. Neither may upgrade ledger evidence.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
 ## Release readiness update (2026-08-19)
@@ -654,12 +654,19 @@ bash deploy/lib/fast-gate.sh
 # configured production host (the script refuses that, and refuses
 # localhost/no --host, by construction). Optional --ssh-port exercises a
 # non-default SSH port end-to-end instead of assuming 22; optional
-# --update-to-ref exercises update.sh's --dev-rebuild transactional path
+# --version is required for a production-acceptance run and exercises the
+# stable checksum-verified release bootstrap. --update-to-version exercises a
+# real release-to-release update; --update-to-ref exercises
+# update.sh's --dev-rebuild transactional path
 # (a real tagged-release A->B transition remains UNVERIFIED until it is run
 # between two valid releases on a disposable VPS).
 ./deploy/almalinux/lifecycle-acceptance.sh \
-  --host root@DISPOSABLE-HOST --i-understand-this-is-destructive \
-  [--ssh-port 2222] [--update-to-ref BRANCH]
+  --host root@DISPOSABLE-HOST --version v0.1.2 \
+  --i-understand-this-is-destructive \
+  [--ssh-port 2222] [--update-to-version v0.1.3 | --update-to-ref BRANCH]
+
+# Omitting --version intentionally exercises mutable development source and is
+# labeled DEVELOPMENT LIFECYCLE ONLY. It cannot produce production acceptance.
 
 # offline uninstall — no network access needed
 sudo /opt/vpn1/bin/vpn1-uninstall --yes

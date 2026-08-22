@@ -109,6 +109,7 @@ credentials leak. See [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
 - [Client setup](docs/clients/README.md)
 - [Device acceptance status](docs/DEVICE_ACCEPTANCE_TESTS.md)
 - [Security model](docs/SECURITY_MODEL.md)
+- [Release and supply-chain security](docs/SUPPLY_CHAIN_SECURITY.md)
 - [Recovery](docs/RECOVERY.md)
 
 ## License

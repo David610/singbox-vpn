@@ -276,6 +276,23 @@ if grep -q 'git archive --format=tar.gz --prefix=vpn1-src/ -o vpn1-src.tar.gz' "
 else
   fail "release.yml no longer builds vpn1-src.tar.gz — bootstrap install.sh's release-source checksum verification has nothing to verify against"
 fi
+
+echo
+echo "--- static: every published source/binary archive receives GitHub provenance ---"
+if [ "$(grep -c 'uses: actions/attest-build-provenance@v2' .github/workflows/release.yml)" -eq 2 ] \
+  && grep -q 'attestations: write' .github/workflows/release.yml \
+  && grep -q 'id-token: write' .github/workflows/release.yml; then
+  ok "release build attests both binary and source archives with narrowly-scoped OIDC/attestation permissions"
+else
+  fail "release workflow does not attest both archive classes with required permissions"
+fi
+if grep -q 'gh attestation verify' install.sh \
+  && grep -q 'gh attestation verify' deploy/almalinux/install.sh \
+  && grep -q 'gh attestation verify' deploy/almalinux/update.sh; then
+  ok "bootstrap, binary installer, and updater all fail through repository-bound attestation verification"
+else
+  fail "one or more stable artifact consumers omit attestation verification"
+fi
 if grep -q 'sha256sum vpn1-src.tar.gz > vpn1-src.tar.gz.sha256' "$RELEASE_YML"; then
   ok "release.yml computes vpn1-src.tar.gz.sha256, folded into the published SHA256SUMS by the publish job's existing 'cat ./*.tar.gz.sha256' step"
 else

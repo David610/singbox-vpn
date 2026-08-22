@@ -7,7 +7,8 @@ answer to "is this production-ready").
 > **Historical audit snapshot.** Results and gap statements below describe
 > the repository at the date of this audit. For the current public support
 > boundary and current implementation state, use
-> `docs/SUPPORTED_PRODUCT.md` and `docs/IMPLEMENTATION_STATUS.md`. In
+> `docs/SUPPORTED_PRODUCT.md` and `docs/IMPLEMENTATION_STATUS.md`; the only
+> canonical current evidence ledger is `docs/DEVICE_ACCEPTANCE_TESTS.md`. In
 > particular, AlmaLinux 9 x86-64 is the only supported v1.0 server target;
 > additional distro branches are not current support claims.
 
@@ -186,7 +187,9 @@ curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.s
 4. In Hiddify: Add profile → Scan QR (or paste the printed subscription
    URL) → Connect.
 5. Both VLESS+REALITY and Hysteria2 endpoints are included in the single
-   subscription; Hiddify selects between them automatically.
+   subscription. Native JSON also carries a selector/default hint and an
+   opt-in `urltest` group; whether a Hiddify version retains or follows those
+   hints is client-owned and unverified.
 
 Steps 3-5 are **not device-verified** in this pass (see above) — this is
 the documented flow based on the subscription format the code produces,

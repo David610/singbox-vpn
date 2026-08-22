@@ -23,7 +23,7 @@ scope, this file wins for v1.0 decisions.
 - Custom domain by default; an IP-derived/convenience hostname
   (sslip.io-style) is available only through explicit opt-in, never the
   silent default for a real deployment.
-- **One-command verified install** (`install.sh` -> hands off to
+- **One-command install path, CODE/CI-VERIFIED** (`install.sh` -> hands off to
   `deploy/almalinux/install.sh`) and **one-command complete offline
   uninstall** (`uninstall.sh` -> `deploy/almalinux/uninstall.sh`), which
   removes everything the installer created.
@@ -35,8 +35,10 @@ implementation intent — `deploy/lib/os.sh` recognizing an OS ID is
 necessary but never sufficient for a tier above UNSUPPORTED. Tier
 definitions:
 
-- **SUPPORTED** — the v1.0 target: exercised end-to-end (a real host
-  install, not just fixtures) and the primary CI target.
+- **SUPPORTED TARGET** — the v1.0 target and primary CI target. This names the
+  intended support boundary; it does not imply current HEAD has a complete
+  real-host acceptance record. Runtime evidence lives only in the canonical
+  ledger.
 - **CI-TESTED** — automated tests exercise the real `detect_os()` /
   `install_dependencies_*()` functions against fixtures/containers in
   CI, but no live-host install has been observed to succeed.
@@ -50,7 +52,7 @@ definitions:
 
 | Distribution | Tier | Evidence |
 |---|---|---|
-| AlmaLinux 9 x86_64 | **SUPPORTED** | Owner-reported real-VPS install + Hiddify smoke pass (2026-08-16); primary target of every install stage; `singbox-validate` CI job builds/validates the real data plane on every push. |
+| AlmaLinux 9 x86_64 | **SUPPORTED TARGET** | CI validates the configuration/data-plane path. A real-VPS install + Hiddify smoke pass was USER-REPORTED on 2026-08-16, but its commit/device/client/transport details were not recorded; a fresh install of current HEAD is UNVERIFIED. See `docs/DEVICE_ACCEPTANCE_TESTS.md`. |
 | Amazon Linux 2023 | CI-TESTED | `deploy/lib/tests/test-amazon-linux-2023.sh` exercises the real `detect_os()`/`install_dependencies_rhel()` functions (curl-minimal handling, no-EPEL certbot path) against fixtures in every CI run. No live AL2023 host has been verified. |
 | Rocky Linux 9 | RECOGNIZED / BEST-EFFORT | Identical `rhel`-family code path to AlmaLinux 9 (same package list, same EPEL/certbot and firewalld-SSH-safe logic) but no independent live-host or CI verification. |
 | Ubuntu 22.04 LTS / 24.04 LTS | RECOGNIZED / BEST-EFFORT | Dedicated `debian`-family code path (apt/ufw) exists and is covered by an L1/L2 container CI matrix (OS detection + real package-manager dependency installation — see `.github/workflows/ci.yml`'s `os-matrix` job); no live-host systemd/firewall install has been verified. |
@@ -61,7 +63,7 @@ definitions:
 | Anything else | UNSUPPORTED | No guarantee; `detect_os()` fails loudly for anything outside the `rhel`/`debian` family shapes above. |
 
 **Architecture** is a separate dimension from OS: **amd64/x86_64 is the
-only SUPPORTED architecture.** arm64 has a working `detect_arch()` and
+only SUPPORTED TARGET architecture.** arm64 has a working `detect_arch()` and
 release-build implementation path (release tooling publishes arm64
 binaries), but no live arm64 host install has been verified — treat it as
 RECOGNIZED / BEST-EFFORT, not SUPPORTED, regardless of OS tier.
