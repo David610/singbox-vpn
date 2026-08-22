@@ -430,3 +430,17 @@ that were not individually reported.
 
 These entries do not alter earlier device rows. In particular, they do not
 upgrade YouTube, TikTok, Telegram, handover, DNS, IPv6, or failover status.
+
+### 2026-08-22 — PR #13 final release-acceptance audit
+
+| Claim | Scope | Status | Evidence | Date | Commit | Environment |
+|---|---|---|---|---|---|---|
+| Attestation migration preserves historical `v0.1.2` installation while requiring provenance for `v0.1.3-rc.1` and later | Local release-policy behavior | CODE-VERIFIED | Bootstrap and updater regression tests cover the finite boundary, missing/wrong identity, modified archive, wrong package version, and checksum mismatch | 2026-08-22 | candidate derived from `441cb3d61f9834a005d5770583b897b18ff42352` | Local Ubuntu container; public GitHub unavailable; CI result not observed |
+| A public RC was produced by the new workflow and its downloaded assets independently verified | Published release pipeline | UNVERIFIED | GitHub API, releases, Actions and attestations were inaccessible; no tag was created or release claimed | — | — | Requires authenticated GitHub access and an immutable RC workflow run |
+| Public RC bootstrap on stock AlmaLinux 9 without preinstalled `gh` | Supported-host bootstrap | UNVERIFIED | No disposable AlmaLinux host or public RC was available | — | — | Requires stock AlmaLinux 9 x86-64 VPS |
+| Complete supported AlmaLinux 9 production lifecycle for a provenance-required RC | Full server lifecycle | UNVERIFIED | No disposable VPS credentials or provisioning interface was available | — | — | Requires destructive lifecycle harness against a disposable public host |
+| Compatible-device smoke test against the RC | Device interoperability | UNVERIFIED | No RC deployment or test device was available | — | — | Requires recorded client/device/network test |
+
+These results are release-policy tests, not published-release, server, device,
+Russia, YouTube, or TikTok acceptance evidence. PR #13 remains blocked until the
+public RC and supported-host gates run successfully.

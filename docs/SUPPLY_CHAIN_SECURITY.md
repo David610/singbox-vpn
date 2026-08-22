@@ -22,9 +22,14 @@ an Actions OIDC-backed statement binding the artifact digest to this repository.
 It does not protect against a malicious/compromised workflow that legitimately
 requests an attestation for malicious output.
 
-Historical releases without attestations fail closed by default. An operator
-who intentionally needs one may set `VPN1_ALLOW_LEGACY_CHECKSUM_ONLY=1`; the
-installer prints a warning that this restores the older checksum-only model.
+The migration boundary is explicit and finite: releases before `v0.1.3` retain
+the checksum-only policy under which they were published, while every
+`v0.1.3` prerelease/final release and every later version requires provenance
+and fails closed. The installer prints a conspicuous warning for a historical
+release. There is no environment variable or operator flag that can bypass
+provenance for a new release. This prevents merging the provenance-aware
+bootstrap from making an existing `v0.1.2` stable release uninstallable while
+ensuring the exception cannot silently expand to future releases.
 The development channel still requires both `VPN1_CHANNEL=dev` and
 `VPN1_ALLOW_UNVERIFIED_DEV=1` and receives no provenance claim.
 
@@ -42,8 +47,8 @@ the raw GitHub bootstrap or Actions workflow.
 | Threat | Result | Reason |
 |---|---|---|
 | A. Network corruption | PREVENTS | HTTPS, SHA-256 verification, and digest-bound provenance reject changed release bytes. |
-| B. GitHub CDN corruption | DETECTS | A CDN-served artifact must match both the checksum and repository attestation digest. Availability attacks remain possible. |
-| C. Release binary changed without checksum | DETECTS | SHA256SUMS fails; attestation verification also binds the expected artifact digest. |
+| B. GitHub CDN corruption | DETECTS for new releases; checksum detects byte corruption for historical releases | A new-release artifact must match both the checksum and repository attestation digest. Historical pre-`v0.1.3` artifacts retain their original checksum-only policy. Availability attacks remain possible. |
+| C. Release binary changed without checksum | DETECTS | SHA256SUMS fails for every release; provenance also binds the expected artifact digest at and after `v0.1.3`. |
 | D. Compromised GitHub account/repository | PARTIALLY MITIGATES | Editing release assets alone cannot mint an Actions attestation, but an attacker able to change trusted `main`, tags, workflows, or invoke privileged Actions may defeat the chain. The initial raw installer remains under this trust root. |
 | E. Compromised GitHub Actions workflow | DOES NOT ADDRESS | The workflow can build malicious bytes and legitimately attest them. Branch/ruleset and Actions-permission controls are required outside the artifact format. |
 | F. Compromised third-party dependency | PARTIALLY MITIGATES | `Cargo.lock`, `--locked`, `cargo audit`, tests, and provenance record what was built; none proves dependency source is benign. |
@@ -87,9 +92,11 @@ encryption at rest.
 
 ## Failure behavior
 
-Missing `gh`, a missing attestation, a repository-identity mismatch, a digest
-mismatch, malformed/missing SHA256SUMS, missing release assets, or an unintended
-downgrade aborts before extraction or live update mutation. Authentication does
+For `v0.1.3` and later, missing `gh`, a missing attestation, a repository-identity
+mismatch, or an attestation digest mismatch aborts before extraction or live
+update mutation. For every release, malformed/missing SHA256SUMS, missing
+assets, checksum mismatch, wrong embedded version, or an unintended downgrade
+aborts before mutation. Authentication does
 not make compromise impossible: stable installation still begins by executing
 `main/install.sh` as root and therefore trusts HTTPS, GitHub repository/account
 controls, the referenced Actions workflow and actions, GitHub's OIDC/attestation

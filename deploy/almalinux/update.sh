@@ -152,8 +152,9 @@ fi
 
 verify_release_attestation() {
   local artifact="$1" version="$2"
-  if [ "${VPN1_ALLOW_LEGACY_CHECKSUM_ONLY:-0}" = "1" ]; then
-    warn "LEGACY OVERRIDE: accepting $version with checksum-only verification; provenance is not authenticated."
+  local first_attested="v0.1.3"
+  if ! release_version_at_least "$version" "$first_attested"; then
+    warn "HISTORICAL RELEASE: $version predates $first_attested and retains checksum-only verification; provenance is not authenticated."
     return 0
   fi
   command -v gh >/dev/null 2>&1 \
@@ -161,6 +162,19 @@ verify_release_attestation() {
   gh attestation verify "$artifact" --repo "$VPN1_REPO" --signer-workflow "$VPN1_REPO/.github/workflows/release.yml" >/dev/null \
     || die "artifact attestation verification failed or is missing for $version/$VPN1_REPO. Nothing live has changed."
   log "artifact attestation verified for repository $VPN1_REPO."
+}
+
+
+release_version_at_least() {
+  local version="${1#v}" threshold="${2#v}"
+  local major minor patch threshold_major threshold_minor threshold_patch
+  IFS=. read -r major minor patch <<<"$version"
+  IFS=. read -r threshold_major threshold_minor threshold_patch <<<"$threshold"
+  patch="${patch%%-*}"
+  threshold_patch="${threshold_patch%%-*}"
+  [ "$major" -gt "$threshold_major" ] \
+    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -gt "$threshold_minor" ]; } \
+    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -eq "$threshold_minor" ] && [ "$patch" -ge "$threshold_patch" ]; }
 }
 shopt -s nullglob
 for stale in /opt/.vpn1-update-staging.* /opt/.vpn1-prev-*; do

@@ -65,6 +65,36 @@ if [ -n "$version_fn" ]; then
 else
   fail "could not extract version_is_older() from the real updater"
 fi
+
+echo
+echo "--- functional: finite attestation migration boundary preserves historical releases and fails closed for new releases ---"
+attestation_version_fn="$(sed -n '/^release_version_at_least() {/,/^}/p' "$UPDATE_SH")"
+installer_attestation_version_fn="$(sed -n '/^release_version_at_least() {/,/^}/p' "$REPO_ROOT/deploy/almalinux/install.sh")"
+if [ -n "$attestation_version_fn" ] && [ "$attestation_version_fn" = "$installer_attestation_version_fn" ]; then
+  eval "$attestation_version_fn"
+  if release_version_at_least v0.1.2 v0.1.3; then
+    fail "historical v0.1.2 was classified as attestation-required"
+  else
+    ok "historical v0.1.2 remains on its finite checksum-only migration policy"
+  fi
+  release_version_at_least v0.1.3-rc.1 v0.1.3 \
+    && ok "the first v0.1.3 release candidate requires provenance" \
+    || fail "v0.1.3 prerelease incorrectly bypasses provenance"
+  release_version_at_least v0.1.3 v0.1.3 \
+    && ok "v0.1.3 requires provenance" \
+    || fail "v0.1.3 incorrectly bypasses provenance"
+  release_version_at_least v1.0.0 v0.1.3 \
+    && ok "all later release families require provenance" \
+    || fail "a later release incorrectly bypasses provenance"
+else
+  fail "installer and updater do not share the same extractable attestation version boundary"
+fi
+if grep -q 'VPN1_ALLOW_LEGACY_CHECKSUM_ONLY' "$REPO_ROOT/install.sh" \
+    "$REPO_ROOT/deploy/almalinux/install.sh" "$UPDATE_SH"; then
+  fail "an operator-controlled permanent checksum-only override still exists"
+else
+  ok "new releases have no operator-controlled checksum-only override"
+fi
 if grep -q 'refusing unintended downgrade' "$UPDATE_SH" \
   && grep -q -- '--allow-downgrade) ALLOW_DOWNGRADE=1' "$UPDATE_SH" \
   && grep -q 'valid only with an explicit --version target' "$UPDATE_SH"; then

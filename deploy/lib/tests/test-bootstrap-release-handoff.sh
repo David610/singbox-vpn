@@ -6,12 +6,8 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BOOTSTRAP="$REPO_ROOT/install.sh"
-PACKAGE_VERSION="$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$REPO_ROOT/apps/admin/Cargo.toml" | head -n1)"
-[ -n "$PACKAGE_VERSION" ] || {
-  echo "FAIL: could not resolve admin package version" >&2
-  exit 1
-}
-FIXTURE_VERSION="v${PACKAGE_VERSION}-test.1"
+PACKAGE_VERSION="0.1.3"
+FIXTURE_VERSION="v${PACKAGE_VERSION}-rc.1"
 
 if [ ! -f /etc/os-release ]; then
   echo "bootstrap verified-release source handoff: SKIP (non-Linux host)"
@@ -57,7 +53,8 @@ set -Eeuo pipefail
 case "${GH_ATTESTATION_RESULT:-valid}" in
   valid) exit 0 ;;
   missing) echo "no attestations found" >&2; exit 1 ;;
-  wrong) echo "attestation identity did not match" >&2; exit 1 ;;
+  wrong-repository|wrong-workflow) echo "attestation identity did not match" >&2; exit 1 ;;
+  modified) echo "attestation subject digest did not match" >&2; exit 1 ;;
 esac
 FAKE_GH
 chmod 0755 "$TEST_TMP/fakebin/gh"
@@ -135,7 +132,7 @@ if grep -q 'downloaded source is missing' "$TEST_TMP/bootstrap.log"; then
   exit 1
 fi
 
-for bad_result in missing wrong; do
+for bad_result in missing wrong-repository wrong-workflow modified; do
   rm -f "$TEST_MARKER"
   rc=0
   GH_ATTESTATION_RESULT="$bad_result" PATH="$TEST_TMP/fakebin:$PATH" bash "$BOOTSTRAP" \
@@ -146,6 +143,24 @@ for bad_result in missing wrong; do
   [ ! -e "$TEST_MARKER" ] || { echo "FAIL: installer handoff ran after $bad_result attestation" >&2; exit 1; }
   grep -q 'attestation verification failed or is missing' "$TEST_TMP/bootstrap-$bad_result.log"
 done
+
+# The finite migration rule is automatic: v0.1.2 is accepted with its
+# historical checksum-only policy, even when no gh verifier is available.
+LEGACY_VERSION=v0.1.2
+printf 'version = "0.1.2"\n' > "$TEST_TMP/source/vpn1-src/apps/admin/Cargo.toml"
+tar -czf "$TEST_TMP/legacy.tar.gz" -C "$TEST_TMP/source" vpn1-src
+printf '%s  vpn1-src.tar.gz\n' "$(sha256sum "$TEST_TMP/legacy.tar.gz" | awk '{print $1}')" > "$TEST_TMP/legacy-SHA256SUMS"
+rm -f "$TEST_MARKER"
+FIXTURE_VERSION="$LEGACY_VERSION" FIXTURE_TAR="$TEST_TMP/legacy.tar.gz" \
+  FIXTURE_SUMS="$TEST_TMP/legacy-SHA256SUMS" GH_ATTESTATION_RESULT=missing \
+  PATH="$TEST_TMP/fakebin:$PATH" bash "$BOOTSTRAP" --version "$LEGACY_VERSION" \
+  --non-interactive --allow-ip-hostname --reality-handshake-server www.cloudflare.com \
+  >"$TEST_TMP/bootstrap-legacy.log" 2>&1
+[ -e "$TEST_MARKER" ] || { echo "FAIL: historical checksum-verified release did not reach installer handoff" >&2; exit 1; }
+grep -q 'HISTORICAL RELEASE' "$TEST_TMP/bootstrap-legacy.log"
+
+# Restore the new-release fixture for the remaining wrong-version check.
+printf 'version = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/vpn1-src/apps/admin/Cargo.toml"
 
 # Even a valid repository attestation is not enough if a release page is wired
 # to an archive built for a different package version.
@@ -161,5 +176,19 @@ FIXTURE_TAR="$TEST_TMP/wrong-version.tar.gz" FIXTURE_SUMS="$TEST_TMP/wrong-versi
 [ "$rc" -ne 0 ] || { echo "FAIL: wrong-version authenticated source was accepted" >&2; exit 1; }
 [ ! -e "$TEST_MARKER" ] || { echo "FAIL: wrong-version source reached installer handoff" >&2; exit 1; }
 grep -q 'does not match requested release' "$TEST_TMP/bootstrap-wrong-version.log"
+
+# A modified archive must be rejected by SHA256SUMS before provenance or
+# installer handoff can make it relevant.
+cp "$TEST_TMP/vpn1-src.tar.gz" "$TEST_TMP/modified.tar.gz"
+printf 'tamper' >> "$TEST_TMP/modified.tar.gz"
+rm -f "$TEST_MARKER"
+rc=0
+FIXTURE_TAR="$TEST_TMP/modified.tar.gz" FIXTURE_SUMS="$TEST_TMP/SHA256SUMS" \
+  PATH="$TEST_TMP/fakebin:$PATH" bash "$BOOTSTRAP" --version "$FIXTURE_VERSION" \
+  --non-interactive --allow-ip-hostname --reality-handshake-server www.cloudflare.com \
+  >"$TEST_TMP/bootstrap-checksum-mismatch.log" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "FAIL: checksum-mismatched source was accepted" >&2; exit 1; }
+[ ! -e "$TEST_MARKER" ] || { echo "FAIL: checksum-mismatched source reached installer handoff" >&2; exit 1; }
+grep -q 'checksum verification failed' "$TEST_TMP/bootstrap-checksum-mismatch.log"
 
 echo "bootstrap verified-release source handoff: PASS"
