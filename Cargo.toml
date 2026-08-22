@@ -22,6 +22,16 @@ members = [
     "services/subscription",
     "tests",
 ]
+# `cargo build` at the repository root is the production build.  Keep the
+# unsupported native/adaptive prototype available for explicit `-p` and
+# `--workspace` development without silently compiling it into the server
+# product or release path.
+default-members = [
+    "crates/common",
+    "crates/compat-config",
+    "apps/admin",
+    "services/subscription",
+]
 
 [workspace.package]
 edition = "2021"

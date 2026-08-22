@@ -122,7 +122,7 @@ For disposable VPS testing only — unverified branch source, no checksum:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh \
-  | sudo VPN1_CHANNEL=dev bash -s -- \
+  | sudo VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 bash -s -- \
     --domain vpn.example.com \
     --reality-handshake-server www.cloudflare.com
 ```

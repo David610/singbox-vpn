@@ -53,6 +53,7 @@ VPN1_REPO="${VPN1_REPO:-David610/singbox-vpn}"
 VPN1_VERSION="${VPN1_VERSION:-}"
 VPN1_REF="${VPN1_REF:-main}"
 VPN1_CHANNEL="${VPN1_CHANNEL:-stable}"
+VPN1_ALLOW_UNVERIFIED_DEV="${VPN1_ALLOW_UNVERIFIED_DEV:-0}"
 
 log() { echo "[bootstrap] $*" >&2; }
 warn() { echo "[bootstrap] WARNING: $*" >&2; }
@@ -124,12 +125,13 @@ its published SHA256SUMS before extraction (see the trust-boundary note
 at the top of this file — this is SHA-256 integrity verification, not
 cryptographic signing). If no tagged release exists yet, the default
 channel REFUSES to fall back to branch source — pin one with --version
-once available. Set VPN1_CHANNEL=dev to explicitly track '--ref'
+once available. Unverified branch installation requires BOTH
+VPN1_CHANNEL=dev and VPN1_ALLOW_UNVERIFIED_DEV=1 to explicitly track '--ref'
 (default: main) instead — intended for development/testing only, not
 production VPS installs; this downloads UNVERIFIED branch source with no
 checksum check — this is the ONLY way to install unpinned branch source.
 
-Environment overrides: VPN1_VERSION, VPN1_REPO, VPN1_REF, VPN1_CHANNEL, PUBLIC_HOST, SUBSCRIPTION_HOST, REALITY_HANDSHAKE_SERVER
+Environment overrides: VPN1_VERSION, VPN1_REPO, VPN1_REF, VPN1_CHANNEL, VPN1_ALLOW_UNVERIFIED_DEV, PUBLIC_HOST, SUBSCRIPTION_HOST, REALITY_HANDSHAKE_SERVER
 USAGE
       exit 0 ;;
     *)
@@ -242,6 +244,8 @@ resolve_version() {
     return
   fi
   if [ "$VPN1_CHANNEL" = "dev" ]; then
+    [ "$VPN1_ALLOW_UNVERIFIED_DEV" = "1" ] \
+      || die "VPN1_CHANNEL=dev downloads mutable, checksum-unverified code for root execution. Re-run with VPN1_ALLOW_UNVERIFIED_DEV=1 as a second deliberate opt-in (development/testing only)."
     log "VPN1_CHANNEL=dev — tracking '$VPN1_REF' directly (source and binaries both built from the same ref; no release-version guarantee)."
     return
   fi

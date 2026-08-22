@@ -197,7 +197,7 @@ BASELINE="$(ssh_run '
 if [ -n "$BASELINE" ]; then pass "host baseline captured"; else fail "host baseline captured"; fi
 
 section "2. clean install"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"; then
   pass "install.sh (clean)"
 else
   fail_required "install.sh (clean)"
@@ -243,7 +243,7 @@ else
 fi
 
 section "6. repair / idempotent re-run"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "install.sh (idempotent re-run) + SSH reconnect"
 else
@@ -257,7 +257,7 @@ section "7. failed/interrupted install cleanup (scratch scenario; ends with sing
 # for the bash process that actually execs install.sh, not for curl on the
 # other side of the pipe (sudo VAR=x curl | bash would silently drop it —
 # sudo scopes VAR=x to curl's own exec only, never to bash downstream).
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" ; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" ; then
   fail_required "interrupted install actually aborted" "(expected non-zero exit, got success)"
 else
   pass "interrupted install aborted as expected"
@@ -280,7 +280,7 @@ else
 fi
 
 section "8. reinstall after interrupted-install cleanup (back to a working baseline for the rest of this run)"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "install.sh (clean, post-cleanup) + SSH reconnect"
 else
@@ -577,7 +577,7 @@ section "20. SSH after uninstall (new connection, port $SSH_PORT)"
 if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH still active post-uninstall"; else fail_required "SSH still active post-uninstall"; fi
 
 section "21. reinstall from the normal one-command production path"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "reinstall after uninstall + SSH reconnect"
 else
