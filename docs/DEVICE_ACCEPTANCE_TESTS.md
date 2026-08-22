@@ -444,3 +444,16 @@ upgrade YouTube, TikTok, Telegram, handover, DNS, IPv6, or failover status.
 These results are release-policy tests, not published-release, server, device,
 Russia, YouTube, or TikTok acceptance evidence. PR #13 remains blocked until the
 public RC and supported-host gates run successfully.
+
+### 2026-08-22 — supply-chain hardening pass and production-readiness review
+
+| Claim | Scope | Status | Evidence | Date | Commit | Environment |
+|---|---|---|---|---|---|---|
+| Every third-party GitHub Actions ref is pinned to an immutable full commit SHA with the mutable ref preserved as a trailing comment | CI supply-chain integrity | CI-VERIFIED | 32/32 `uses:` pinned in ci.yml/release.yml; `test-release-archive-contract.sh`/`test-release-reproducibility.sh` updated to enforce the SHA+comment invariant; full CI green on the result (run `32598898645`) | 2026-08-22 | `58ded16` (pins introduced in `a6a9cfd`) | GitHub Actions ubuntu-latest |
+| Pinned upstream sing-box 1.13.19 carries Go-level vulnerabilities; attacker-reachable class given the shipped config is limited to pre-auth crypto/tls DoS/info-leak via the REALITY/Hysteria2 handshake paths; no fixed upstream stable exists (1.13.19 is latest stable, built with go1.24.7; fixes require go >= 1.25.8-1.25.13) | Data-plane dependency posture | CODE-VERIFIED | govulncheck v1.7.0 (DB 2026-08-21) symbol-level scan of pristine v1.13.19 source: 43 symbol-reachable findings triaged against the deployed config (masquerade type=file, no clashapi/debug/libbox/v2ray transports/ssh/tor/grpc enabled); remediation = bump `deploy/lib/versions.env` when a stable built with go >= 1.25.13 ships | 2026-08-22 | `12427f3` (pin unchanged since) | Local static/toolchain analysis; not a runtime exploit |
+| First-party client (`David610/singbox-client`, Karing-based Flutter fork) declares Android/iOS support and parser/config-generation parity with the server renderer | Client-server compatibility surface | CODE-VERIFIED (client side) / DEVICE-UNVERIFIED | Client README states real-device end-to-end validation has not been performed; client commit inspected: `b24ba8b` | 2026-08-22 | client `b24ba8b` | Source inspection only |
+| Fresh AlmaLinux 9 install of current HEAD (post-hardening) | Full deployment lifecycle | UNVERIFIED | No disposable VPS was available or provisionable in the 2026-08-22 evening execution environment (no provider credentials accessible; local virtualization disabled, so container simulation unavailable); `deploy/almalinux/lifecycle-acceptance.sh` remains ready and unrun against a real host | — | `58ded16` | None; supersedes nothing, upgrades nothing |
+| Production-readiness decisions for <=10 trusted users, public unattended deployment, and Russian-network reliability | Overall verdicts | NO-GO / NO-GO / UNVERIFIED | Derived strictly from the rows above per the evidence rules of this ledger; private-owner use rated CONDITIONAL GO pending one dated harness run | 2026-08-22 | `58ded16` | Decision record |
+
+These entries do not alter earlier device/Russia rows. No SERVER-VERIFIED or
+DEVICE-VERIFIED status was created by this pass.
