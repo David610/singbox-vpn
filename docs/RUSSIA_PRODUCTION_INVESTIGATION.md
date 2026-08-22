@@ -560,3 +560,194 @@ alternative) are NOT implemented in this session. This is gated on real
 Russian testing of the Xray-core A/B path (above) also failing — only
 then does the evidence justify the cost of a new transport. This is a
 documented next step, not a decision made now.
+
+## 2026-08-22 addendum: failure-domain decision, not a transport proposal
+
+### Scope and research limitation
+
+This addendum audits commit `f90b64adc97c38b111392e67b0f75219fd6a8a82`.
+The checkout had no Git remote and the only pre-existing working-tree item was
+untracked `fuzz/Cargo.lock`. No Russian network, device, second VPS, or
+repository-settings access was available. Attempts to query the configured web
+research service and to fetch OONI, sing-box, and Project X documentation were
+rejected by the execution environment (HTTP 401 from the research service and
+HTTP 403 from the outbound proxy). Therefore this pass does **not** claim a
+fresh, comprehensive measurement of Russian filtering in 2026. Existing links
+below are a research queue, not evidence that their current contents were
+verified in this pass.
+
+That limitation is decision-relevant: there is insufficient current field or
+measurement evidence to make HTTPUpgrade, HTTP, gRPC, WebSocket, or xHTTP a
+production or experimental server transport. No transport was implemented.
+
+### Facts in the current repository
+
+* **FACT / CODE-VERIFIED:** the server renderer has exactly two compatibility
+  inbounds: VLESS+REALITY on the configured TCP port and Hysteria2 on the
+  configured UDP port, with a direct outbound. The supported installer assigns
+  both port 443. Both endpoints produced by `standard_endpoints` use one
+  `public_host`.
+* **FACT / CODE-VERIFIED:** `CompatTransport` can represent only
+  `VlessReality` and `Hysteria2`. `standard_endpoints` produces exactly one of
+  each. A second host is therefore not currently expressible through the
+  standard deployment/subscription path merely by installing another VPS.
+* **FACT / CODE-VERIFIED:** subscription delivery can use a distinct
+  `subscription_host`, but the standard installer still provisions nginx and
+  the subscription service as part of the same deployment. A distinct DNS name
+  alone is not a distinct failure domain when it resolves to the same host.
+* **FACT:** the first-party client is outside this repository's compatibility
+  domain. This repository cannot prove that it imports multiple compatibility
+  endpoints, performs cross-host failover, preserves TUN state during handover,
+  or supports a newly proposed transport.
+* **UNVERIFIED:** whether either current transport works on any named Russian
+  ISP/carrier today; whether a particular ISP fingerprints Vision/REALITY,
+  throttles long-lived sessions, blocks QUIC/UDP, enforces an allow-list, or
+  blocks the current VPS IP/subnet/ASN; and whether native YouTube or TikTok
+  works through either transport.
+
+### Failure-domain map
+
+| Observable/failure | VLESS+REALITY | Hysteria2 | Correlation and classification |
+|---|---|---|---|
+| Server public IP, subnet, provider and ASN | Same | Same | One IP/subnet/provider action can kill both — **FACT** about topology; filtering is **HYPOTHESIS** |
+| Server host, route, power and account | Same | Same | One operational failure kills both — **FACT** |
+| L4 | TCP/443 | UDP/443 (QUIC-based) | UDP-only impairment can isolate Hysteria2 — **FACT** at protocol layer; Russian incidence **UNVERIFIED** |
+| Authentication/handshake family | VLESS + REALITY, Vision by default | Hysteria2 TLS, optional Salamander | A protocol-specific classifier could isolate one — **HYPOTHESIS** without a controlled trace |
+| Subscription/control plane | Common service; commonly same host, TCP/8443 | Common service; commonly same host, TCP/8443 | Loss prevents refresh/onboarding but does not invalidate already downloaded tunnel credentials — **FACT** |
+| Exit IP/ASN and destination peering | Same | Same | YouTube/TikTok treatment or peering problems can affect both independent of ingress transport — **STRONG INFERENCE** from topology, application cause **UNVERIFIED** |
+
+Consequently, adding a third protocol on the same IP changes a wire behavior but
+leaves the largest shared outage and censorship domains intact. It may still be
+useful after a trace identifies protocol-specific interference; it is not the
+highest-information first experiment now.
+
+### Current-source research register
+
+| Source to verify | Relevant question | Status in this pass | Confidence allowed |
+|---|---|---|---|
+| [OONI Russia research](https://ooni.org/country/RU) and dated OONI reports | What was measured, on which Russian networks, and when? | Network access blocked; no result imported | None; do not make a current Russia claim |
+| [sing-box V2Ray transport documentation](https://sing-box.sagernet.org/configuration/shared/v2ray-transport/) | Current HTTP, HTTPUpgrade, WebSocket and gRPC schema/support | Fetch blocked; repository does not configure these | Candidate support remains **UNVERIFIED** here |
+| [Project X transport documentation](https://xtls.github.io/en/config/transports/) | Current xHTTP behavior and Xray-core requirements | Fetch blocked; this deployment uses sing-box | xHTTP remains **REQUIRES DIFFERENT CORE / UNVERIFIED** |
+| [sing-box VLESS documentation](https://sing-box.sagernet.org/configuration/outbound/vless/) | Current REALITY/Vision constraints | Fetch blocked; shipped fields are established by local code/tests | Current shipped shape is CODE-VERIFIED; current upstream claims are not |
+| [Hysteria 2 protocol documentation](https://v2.hysteria.network/docs/developers/Protocol/) | Observable QUIC/TLS/obfuscation properties | Fetch blocked | Protocol family is known locally; Russian behavior is UNVERIFIED |
+
+Before a transport PR, repeat this research with working access and record each
+measurement's publication date, observation dates, ISP/carrier, method, sample
+size, and limitations. Community posts may nominate an experiment but cannot
+make a candidate a default.
+
+### Candidate comparison and client classification
+
+Scores are architectural assessments, not Russian field results.
+
+| Candidate | Russia evidence in this pass | Failure-domain diversity | Complexity/performance/observability | Client classification | Decision |
+|---|---|---|---|---|---|
+| Keep VLESS+REALITY | None current; shipped and tested locally | TCP alternative to Hysteria2, but same host/IP/ASN | Lowest change; good no-censorship baseline; REALITY/Vision-specific interference remains possible | **CURRENT FIRST-PARTY CLIENT COMPATIBLE** only to the extent of the existing profile contract | Keep as control/default; no claim of Russia availability |
+| VLESS + HTTPUpgrade | None | Changes wire shape, not IP/provider | Moderate server/client config; performance and fingerprint benefit unmeasured | **STANDARD SING-BOX CONFIG BUT CLIENT CHANGE REQUIRED**, pending upstream-version verification | Do not implement |
+| VLESS + HTTP transport | None | Changes wire shape, not IP/provider | Moderate; HTTP-shaped is not automatically indistinguishable from ordinary browsing | **STANDARD SING-BOX CONFIG BUT CLIENT CHANGE REQUIRED**, pending upstream-version verification | Do not implement |
+| VLESS gRPC | None | Changes framing, not IP/provider | HTTP/2 operational surface; distinguishability/blocking and mobile benefit unmeasured | **STANDARD SING-BOX CONFIG BUT CLIENT CHANGE REQUIRED**, pending upstream-version verification | Do not implement |
+| VLESS WebSocket | None | Changes framing, not IP/provider | Widely understood but extra proxy/config overhead; no measured advantage | **STANDARD SING-BOX CONFIG BUT CLIENT CHANGE REQUIRED**, pending upstream-version verification | Do not implement |
+| xHTTP | None | Changes wire behavior, not IP/provider | Adds Xray-core and a second configuration/security lifecycle | **REQUIRES DIFFERENT CORE** | Do not implement or replace sing-box |
+| Second provider/ASN/IP, same current transport | Not yet run | Changes IP, subnet, ASN, provider, host and route | One additional small server; clearest one-variable A/B if transport/config are held constant | Existing profile syntax; **first-party multi-endpoint/failover compatibility UNVERIFIED** | **Selected experiment** |
+| Separate subscription host | No Russia field result | Diversifies refresh/onboarding only | Modest if an independently hosted TLS origin is used; a DNS alias to same VPS is insufficient | Subscription URL behavior unchanged | Useful follow-up, not data-plane resilience |
+| CDN/reverse proxy path | None, and service/contract constraints unreviewed | Can diversify ingress only when technically supported and legitimately operated | High semantic/TLS/provider-policy risk; REALITY and Hysteria2 cannot simply be assumed CDN-proxyable | Client and core changes likely | Reject without a concrete supported design |
+| Active probing/measurement only | N/A | Does not add availability | Low risk; essential to distinguish IP, UDP, handshake and client failures | No client contract change | Required alongside selected experiment |
+
+“CURRENT FIRST-PARTY CLIENT COMPATIBLE” above describes only the already shipped
+profile contract; it is not a device-verification claim. This repository cannot
+upgrade compatibility for any new or multi-endpoint behavior without the
+separate client's acceptance evidence.
+
+### Single highest-value experiment: second-provider active/standby A/B
+
+**Hypothesis:** when the primary fails on a Russian access network, an otherwise
+identical endpoint on a different provider, ASN and subnet succeeds often enough
+to show that address/provider correlation dominates a protocol-specific failure.
+
+**Control:** current server A and current VLESS+REALITY profile, pinned server
+commit/core version, one Russian device/client version, one access network and a
+bounded time window.
+
+**Treatment:** server B in the same broad geography with a different provider,
+ASN and subnet; same singbox-vpn release, transport settings and test-user UUID /
+Hysteria2 password. Use a test-only identity, not a production user's secrets.
+Keep the two subscription tokens independent because subscription authentication
+and revocation are per deployment.
+
+**Expected signal:** repeated A-fail/B-pass or A-pass/B-fail outcomes correlated
+with the endpoint, while the selected transport, client, device, application and
+network are held constant. Alternating both transports on both servers then
+separates endpoint correlation from UDP- or handshake-family correlation.
+
+**Success criterion:** on at least two materially different Russian networks
+(one fixed/Wi-Fi and one mobile), three or more timestamped repetitions show B
+restores tunnel egress and the required application/transfer checks when A fails,
+with server logs showing an attempt and public-IP proof showing the selected
+server. This justifies a small active/standby endpoint feature; it does not prove
+all-Russia availability.
+
+**Failure criterion:** both servers fail identically, or outcomes follow the
+transport/client rather than the endpoint. Stop the second-endpoint feature and
+use the captured distinction to nominate one subsequent transport or client
+experiment.
+
+No automatic failover should be tested first: manual selection makes the active
+variable observable. If the experiment succeeds, the next PR should extend the
+server-owned endpoint model/subscription representation for two explicitly
+labeled sites, define independent health display, and keep manual selection as
+the initial behavior. Credential rotation/revocation must update both servers as
+one operator transaction or explicitly report partial failure; until that is
+implemented, use a dedicated short-lived test user and remove it from both.
+For no more than ten trusted users, two independent installations and a written
+runbook are preferable to a dynamic control plane.
+
+### Control-plane separation
+
+The model already distinguishes `subscription_host` from `public_host`, so URLs
+and TLS naming can be different. Deployment work still remains to put the
+subscription reverse proxy/service (or a carefully designed publisher) on an
+independent host, issue and renew its certificate there, expose only the intended
+subscription path, transfer no server-private REALITY/TLS keys, and make token
+rotation/revocation consistent. That improves onboarding and refresh during a
+data-plane IP outage. It does **not** route tunnel traffic around a blocked
+`public_host`, revive existing connections, or provide client failover.
+
+### YouTube and TikTok remain unresolved
+
+A native-app failure can originate in the VPN ingress transport, client TUN or
+routes, application UDP/QUIC relay/fallback, DNS, IPv6, path MTU, exit ASN/CDN
+handling, account/region policy, or application-specific endpoints. A second
+provider experiment can isolate endpoint/ASN/peering correlation; it cannot by
+itself identify client routing or application behavior. A server-side probe or
+successful web playback is not native-app evidence. Until the separate
+first-party client completes dated device tests, server experiments also cannot
+exclude client defects. Both applications remain **UNVERIFIED** in the canonical
+ledger.
+
+### Exact real-device record for this experiment
+
+Use one row per attempt; never merge Wi-Fi and cellular or infer a missing cell.
+Store sensitive IPs/logs in an access-controlled evidence bundle and put only a
+redacted reference in the ledger.
+
+| UTC date/time | City/region | ISP/carrier | Wi-Fi/cellular | Device | OS | Client + version/commit | Server commit/release | VPS provider + ASN | A/B | Transport | Public IPv4 | IPv6 result | DNS result | YouTube web/native | TikTok web/native | Telegram media/calls | Idle/reconnect | Wi-Fi↔cellular | Throughput/latency | Exact failure | Evidence ref |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| UNVERIFIED |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+
+Run order: A/REALITY, B/REALITY, A/Hysteria2, B/Hysteria2, then repeat the
+sequence three times in alternating order. For every attempt manually select the
+transport/endpoint, record the pre-connect and tunneled public IP, confirm the
+matching server log timestamp, perform a controlled 10 MiB transfer, then test
+both app web/native surfaces, Telegram media/calls, ten-minute idle/reconnect,
+and handover. A handover cell is valid only when the selected client is observed
+before and after the transition; a reconnect is not silently called seamless.
+
+### Recommendation
+
+Do not ship a transport in this PR. The recommended next PR is a narrowly scoped
+**experimental two-endpoint representation and operator runbook**, but only after
+(1) current external research access is restored, (2) a disposable second
+provider/ASN is available, and (3) the first-party client team confirms how it
+will represent manual site selection without silent fallback. Default production
+behavior must remain the current single endpoint until the above controlled
+matrix produces evidence.

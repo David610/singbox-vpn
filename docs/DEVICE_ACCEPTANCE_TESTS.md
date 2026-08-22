@@ -419,3 +419,14 @@ transport, subscription refresh, credential revocation, network switching,
 DNS/IPv6 behavior, and sustained-transfer results were not recorded. The
 matrix above therefore remains unchanged rather than inferring PASS for tests
 that were not individually reported.
+
+### 2026-08-22 — Russia resilience architecture decision
+
+| Claim | Scope | Status | Evidence | Date | Commit | Environment |
+|---|---|---|---|---|---|---|
+| A second provider/ASN endpoint improves availability compared with a third transport on the current IP | Proposed controlled A/B | HYPOTHESIS | Experiment design and failure-domain analysis in `docs/RUSSIA_PRODUCTION_INVESTIGATION.md`; no endpoint was provisioned and no Russian run occurred | 2026-08-22 | `f90b64adc97c38b111392e67b0f75219fd6a8a82` | Local source inspection only; external research access unavailable |
+| VLESS+REALITY or Hysteria2 works on a current Russian fixed/mobile network | Russia data-plane availability | UNVERIFIED | No dated ISP/carrier/device/server-log/public-IP record | — | — | Requires the A/B matrix in the Russia investigation |
+| HTTPUpgrade, HTTP, gRPC, WebSocket, or xHTTP improves Russia availability | Candidate transport behavior | UNVERIFIED | No current primary measurement or controlled deployment test; no transport added | — | — | Requires current-source research and one-variable field testing |
+
+These entries do not alter earlier device rows. In particular, they do not
+upgrade YouTube, TikTok, Telegram, handover, DNS, IPv6, or failover status.
