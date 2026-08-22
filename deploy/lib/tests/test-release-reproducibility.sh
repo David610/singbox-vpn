@@ -198,7 +198,25 @@ else
 fi
 
 echo
-echo "--- functional: resolve_version() succeeds (no die) when VPN1_CHANNEL=dev is set, same no-release repo ---"
+echo "--- functional: VPN1_CHANNEL=dev alone is refused without the second unsafe-code opt-in ---"
+if (
+  set -Eeuo pipefail
+  # shellcheck disable=SC1090
+  . <(sed -n '/^log() { /p;/^warn() { /p;/^die() { /p;/^resolve_version() {/,/^}/p' "$BOOTSTRAP_SH")
+  VPN1_REPO="this-org-does-not-exist-vpn1-test/no-such-repo-xyz"
+  VPN1_VERSION=""
+  VPN1_CHANNEL="dev"
+  VPN1_ALLOW_UNVERIFIED_DEV="0"
+  VPN1_REF="main"
+  resolve_version
+) >/tmp/resolve_version_dev_single_optin_test.out 2>&1; then
+  fail "resolve_version() accepted mutable root code with only VPN1_CHANNEL=dev"
+else
+  ok "resolve_version() refuses dev channel unless VPN1_ALLOW_UNVERIFIED_DEV=1 is also set"
+fi
+
+echo
+echo "--- functional: resolve_version() succeeds when both development opt-ins are set ---"
 if (
   set -Eeuo pipefail
   # shellcheck disable=SC1090
@@ -210,14 +228,16 @@ if (
   # shellcheck disable=SC2034
   VPN1_CHANNEL="dev"
   # shellcheck disable=SC2034
+  VPN1_ALLOW_UNVERIFIED_DEV="1"
+  # shellcheck disable=SC2034
   VPN1_REF="main"
   # shellcheck disable=SC2034
   CURL_NET_FLAGS=(--connect-timeout 3 --max-time 8 --retry 0)
   resolve_version
 ) >/tmp/resolve_version_dev_test.out 2>&1; then
-  ok "resolve_version() with VPN1_CHANNEL=dev did not die for the same no-release repo"
+  ok "resolve_version() with both explicit dev opt-ins did not die for the same no-release repo"
 else
-  fail "resolve_version() with VPN1_CHANNEL=dev unexpectedly died (see /tmp/resolve_version_dev_test.out)"
+  fail "resolve_version() with both explicit dev opt-ins unexpectedly died (see /tmp/resolve_version_dev_test.out)"
 fi
 
 echo

@@ -62,7 +62,7 @@ The plain `curl | sudo bash` command selects the latest stable
 non-prerelease. If no stable release exists, it refuses to run with an error
 explaining the two options: pin an exact `--version vX.Y.Z` release, or
 explicitly opt into unpinned branch-source development mode with
-`VPN1_CHANNEL=dev` (never for a real deployment —
+`VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1` (both required; never for a real deployment —
 see the top-level README's Quickstart for the exact command). Publishing a
 tagged release is an explicit maintainer action (`git tag vX.Y.Z && git push
 origin vX.Y.Z`); the release workflow then gates, builds, verifies, and
