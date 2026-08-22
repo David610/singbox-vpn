@@ -135,6 +135,7 @@ chmod +x "$MOCKBIN/sleep"
 
 run_harness() {
   : > "$SSH_LOG"
+  rm -f "$TMPDIR_TEST/singbox_state" "$TMPDIR_TEST/mainpid_counter"
   PATH="$MOCKBIN:$PATH" "$SCRIPT" "$@"
 }
 
@@ -177,6 +178,13 @@ out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understan
   && ok "rejects a non-numeric --ssh-port" || fail "did not reject a non-numeric --ssh-port"
 
 echo
+echo "--- malformed --version is rejected before SSH ---"
+rc=0
+out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --version 'main;id' 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -qi 'immutable vX.Y.Z release tag' \
+  && ok "rejects a mutable or shell-unsafe --version" || fail "did not reject malformed --version"
+
+echo
 echo "--- full run: SSH port is not hardcoded to 22 ---"
 set +e
 run_harness --host root@disposable-test --i-understand-this-is-destructive --ssh-port 2222 >"$TMPDIR_TEST/out-2222.log" 2>&1
@@ -196,6 +204,43 @@ if grep -q -- '--ssh-port 2222' "$SSH_LOG"; then
 else
   fail "install.sh invocation did not carry --ssh-port through to the target"
 fi
+
+if grep -q 'ACCEPTANCE CLASSIFICATION: DEVELOPMENT LIFECYCLE ONLY — NOT PRODUCTION ACCEPTANCE' "$TMPDIR_TEST/out-2222.log"; then
+  ok "an unpinned branch run is explicitly classified as development-only"
+else
+  fail "an unpinned branch run could be mistaken for production acceptance"
+fi
+
+echo
+echo "--- pinned release mode uses the stable checksum-verified bootstrap contract ---"
+set +e
+run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot --version v0.1.2 --update-to-version v0.1.3 >"$TMPDIR_TEST/out-version.log" 2>&1
+set -e
+if grep -q 'VPN1_VERSION=v0.1.2' "$SSH_LOG"; then
+  ok "pinned release mode passes VPN1_VERSION to the remote installer"
+else
+  fail "pinned release mode did not pass VPN1_VERSION"
+fi
+if grep -q 'VPN1_CHANNEL=dev\|VPN1_ALLOW_UNVERIFIED_DEV=1' "$SSH_LOG"; then
+  fail "pinned release mode incorrectly used development-source opt-ins"
+else
+  ok "pinned release mode never enables mutable development source"
+fi
+if grep -q 'acceptance scope: PRODUCTION RELEASE v0.1.2' "$TMPDIR_TEST/out-version.log"; then
+  ok "pinned release mode identifies the exact production release under test"
+else
+  fail "pinned release mode did not identify its production scope"
+fi
+if grep -q 'update.sh --version v0.1.3' "$SSH_LOG" && grep -q 'update.sh --repair' "$SSH_LOG"; then
+  ok "pinned release mode exercises production update and rollback paths"
+else
+  fail "pinned release mode did not exercise production update and rollback"
+fi
+
+# Restore the custom-port run log used by the remaining ordering assertions.
+set +e
+run_harness --host root@disposable-test --i-understand-this-is-destructive --ssh-port 2222 >"$TMPDIR_TEST/out-2222.log" 2>&1
+set -e
 
 echo
 echo "--- test user is created and used for the REALITY/Hysteria2/recovery proofs ---"

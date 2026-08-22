@@ -42,6 +42,7 @@ missing device/VPS/version data stay USER-REPORTED or UNVERIFIED.
 | YouTube native playback over a Russian network | Application/device behavior | UNVERIFIED | Prior narrative reports lack device, network, client version, transport, date, and commit evidence | — | — | Required: Russian cellular and Wi-Fi runs |
 | TikTok native playback over Russian Wi-Fi or cellular | Application/device behavior | UNVERIFIED | No completed TikTok matrix entry | — | — | Required: Russian Android/iOS device runs |
 | DNS, IPv4/IPv6 leak prevention, MTU, kill switch, per-app routing, handover, or failover behavior | Client-owned runtime behavior | UNVERIFIED | Subscription intentionally does not control these fields; no complete device entry | — | — | Required per client/OS/network combination |
+| Complete supported AlmaLinux 9 production lifecycle at the current audit baseline | Install, ACME/TLS/firewall, user mutations, rollback, backup/restore, update, reboot, uninstall/reinstall, and public transport egress | UNVERIFIED | No SSH credentials, key, target hostname, provisioning API, or disposable VPS was available in the 2026-08-22 execution environment; the destructive harness was therefore not invoked against a real host | 2026-08-22 | `212f830160f2dffff932d9fa099e699a912f551a` | Local Ubuntu container only; no systemd/SELinux/firewalld/ACME simulation counted |
 
 The commit column identifies what was tested, not what is currently checked
 out forever. When code changes, retain historical rows and add a new row; do

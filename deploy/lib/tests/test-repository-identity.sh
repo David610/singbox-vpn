@@ -51,6 +51,6 @@ done < <(
 assert_contains README.md "raw.githubusercontent.com/$CANONICAL_REPO/main/install.sh"
 assert_contains install.sh "raw.githubusercontent.com/$CANONICAL_REPO/main/install.sh"
 assert_contains uninstall.sh "raw.githubusercontent.com/$CANONICAL_REPO/main/uninstall.sh"
-assert_contains deploy/almalinux/lifecycle-acceptance.sh "raw.githubusercontent.com/$CANONICAL_REPO/\$BRANCH/install.sh"
+assert_contains deploy/almalinux/lifecycle-acceptance.sh "raw.githubusercontent.com/$CANONICAL_REPO/\$BOOTSTRAP_REF/install.sh"
 
 echo "repository identity regression checks: PASS ($CANONICAL_REPO)"

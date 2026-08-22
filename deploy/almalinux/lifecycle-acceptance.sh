@@ -60,6 +60,8 @@ set -Eeuo pipefail
 HOST=""
 ACK=0
 UPDATE_TO_REF=""
+UPDATE_TO_VERSION=""
+VERSION=""
 SKIP_REBOOT=0
 SSH_PORT=22
 
@@ -80,6 +82,13 @@ Options:
                          port instead of silently assuming 22. Default: 22.
   --update-to-ref REF   after the clean install, also exercise update.sh against REF
                          (branch/tag) as a second version — skipped if not given.
+  --update-to-version VERSION
+                         exercise the checksum-verified production updater to a
+                         second immutable release and its rollback path.
+  --version VERSION      exercise the checksum-verified stable release path for VERSION
+                         (for example v0.1.2). Without this option the harness uses the
+                         explicitly unverified development branch and CANNOT produce a
+                         production-acceptance result.
   --skip-reboot          skip the reboot+health stage (e.g. host cannot be rebooted by this
                          SSH session's caller). Every other stage still runs.
   -h, --help             this help.
@@ -95,6 +104,10 @@ while [ $# -gt 0 ]; do
     --ssh-port=*) SSH_PORT="${1#*=}"; shift ;;
     --update-to-ref) UPDATE_TO_REF="$2"; shift 2 ;;
     --update-to-ref=*) UPDATE_TO_REF="${1#*=}"; shift ;;
+    --update-to-version) UPDATE_TO_VERSION="$2"; shift 2 ;;
+    --update-to-version=*) UPDATE_TO_VERSION="${1#*=}"; shift ;;
+    --version) VERSION="$2"; shift 2 ;;
+    --version=*) VERSION="${1#*=}"; shift ;;
     --skip-reboot) SKIP_REBOOT=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
@@ -108,6 +121,14 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 case "$SSH_PORT" in
   ''|*[!0-9]*) die "--ssh-port must be numeric, got '$SSH_PORT'." ;;
 esac
+if [ -n "$VERSION" ] && [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  die "--version must be an immutable vX.Y.Z release tag, got '$VERSION'."
+fi
+if [ -n "$UPDATE_TO_VERSION" ] && [[ ! "$UPDATE_TO_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  die "--update-to-version must be an immutable vX.Y.Z release tag, got '$UPDATE_TO_VERSION'."
+fi
+[ -z "$UPDATE_TO_REF" ] || [ -z "$UPDATE_TO_VERSION" ] \
+  || die "--update-to-ref and --update-to-version are mutually exclusive."
 
 host_part="${HOST#*@}"
 case "$host_part" in
@@ -127,6 +148,15 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRANCH="$(cd "$REPO_ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+if [ -n "$VERSION" ]; then
+  BOOTSTRAP_REF="main"
+  INSTALL_SOURCE_ENV="VPN1_VERSION=$VERSION"
+  ACCEPTANCE_SCOPE="PRODUCTION RELEASE $VERSION"
+else
+  BOOTSTRAP_REF="$BRANCH"
+  INSTALL_SOURCE_ENV="VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1"
+  ACCEPTANCE_SCOPE="DEVELOPMENT BRANCH $BRANCH (NOT production acceptance)"
+fi
 
 SSH_OPTS=(-p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 ssh_run() { timeout 180 ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
@@ -158,7 +188,7 @@ section() { echo; echo "=== $1 ==="; }
 
 echo "singbox-vpn destructive lifecycle acceptance gate"
 echo "target: $HOST"
-echo "source ref: $BRANCH"
+echo "acceptance scope: $ACCEPTANCE_SCOPE"
 echo "THIS WILL WIPE singbox-vpn STATE ON THE TARGET HOST. 5s to Ctrl-C..."
 sleep 5
 
@@ -197,7 +227,7 @@ BASELINE="$(ssh_run '
 if [ -n "$BASELINE" ]; then pass "host baseline captured"; else fail "host baseline captured"; fi
 
 section "2. clean install"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"; then
   pass "install.sh (clean)"
 else
   fail_required "install.sh (clean)"
@@ -243,7 +273,7 @@ else
 fi
 
 section "6. repair / idempotent re-run"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "install.sh (idempotent re-run) + SSH reconnect"
 else
@@ -257,7 +287,7 @@ section "7. failed/interrupted install cleanup (scratch scenario; ends with sing
 # for the bash process that actually execs install.sh, not for curl on the
 # other side of the pipe (sudo VAR=x curl | bash would silently drop it —
 # sudo scopes VAR=x to curl's own exec only, never to bash downstream).
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" ; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" ; then
   fail_required "interrupted install actually aborted" "(expected non-zero exit, got success)"
 else
   pass "interrupted install aborted as expected"
@@ -280,7 +310,7 @@ else
 fi
 
 section "8. reinstall after interrupted-install cleanup (back to a working baseline for the rest of this run)"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "install.sh (clean, post-cleanup) + SSH reconnect"
 else
@@ -484,7 +514,44 @@ else
   fail_required "scratch user create/rotate/disable/remove"
 fi
 
-if [ -n "$UPDATE_TO_REF" ]; then
+if [ -n "$UPDATE_TO_VERSION" ]; then
+  section "16. checksum-verified production update -> $UPDATE_TO_VERSION"
+  version_before="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+  if ssh_run "sudo /opt/vpn1/deploy/almalinux/update.sh --version $UPDATE_TO_VERSION" \
+    && ssh_reconnect 'true' 2>/dev/null; then
+    version_after="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+    if [ -n "$version_after" ] && [ "$version_before" != "$version_after" ]; then
+      pass "production update -> $UPDATE_TO_VERSION (install state changed)"
+    else
+      fail_required "production update -> $UPDATE_TO_VERSION" "(command succeeded but install state did not change)"
+    fi
+  else
+    fail_required "production update -> $UPDATE_TO_VERSION"
+  fi
+
+  section "16b. injected failed production repair -> rollback proof"
+  pre_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+  if ssh_run "sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/vpn1/deploy/almalinux/update.sh --repair" 2>/dev/null; then
+    fail_required "failed production repair aborted as expected" "(expected non-zero exit, got success)"
+  else
+    pass "failed production repair aborted as expected"
+  fi
+  if ssh_reconnect '
+       systemctl is-active --quiet sshd \
+    && systemctl is-active --quiet sing-box \
+    && systemctl is-active --quiet vpn-subscription \
+    && sudo vpn-admin doctor --protocol
+     ' 2>/dev/null; then
+    post_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+    if [ "$pre_rollback_version" = "$post_rollback_version" ]; then
+      pass "production repair rollback restored the prior working state"
+    else
+      fail_required "production repair rollback restored prior state" "(install-state.json differs)"
+    fi
+  else
+    fail_required "production repair rollback left services/protocol/SSH healthy"
+  fi
+elif [ -n "$UPDATE_TO_REF" ]; then
   # No real tagged singbox-vpn release exists yet to exercise update.sh's actual
   # production release-to-release transaction (--version/--latest) —
   # that remains a real-release UNVERIFIED item (see
@@ -577,7 +644,7 @@ section "20. SSH after uninstall (new connection, port $SSH_PORT)"
 if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH still active post-uninstall"; else fail_required "SSH still active post-uninstall"; fi
 
 section "21. reinstall from the normal one-command production path"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BRANCH/install.sh | VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "reinstall after uninstall + SSH reconnect"
 else
@@ -650,12 +717,15 @@ fi
 section "manual-only / out-of-scope gates (cannot be automated here — UNVERIFIED, not PASS)"
 mark_unverified "public/internet reachability from outside the target's network" "(no independent external controller in this harness — see checkpoint scope)"
 mark_unverified "real Hiddify iOS/Android/MagicOS import + connect + sustained traffic" "(client/device properties — out of scope for this host-lifecycle gate)"
-if [ -z "$UPDATE_TO_REF" ]; then
-  mark_unverified "real GitHub release A->B update transition" "(no --update-to-ref given, and no tagged release exists yet to test against)"
+if [ -z "$UPDATE_TO_VERSION" ]; then
+  mark_unverified "real GitHub release A->B update transition" "(no --update-to-version given)"
 fi
 mark_unverified "reboot-triggered client reconnect from a real device (Hiddify/other) after a server-side reboot" "(this harness proves the SERVER recovers on reboot — see stage 5 — and that the protocol self-test passes afterward; whether a REAL CLIENT DEVICE reconnects on its own after a server reboot needs a second physical device and is a manual release-candidate requirement, not automatable here — see docs/DEVICE_ACCEPTANCE_TESTS.md)"
 
 section "summary"
+if [ -z "$VERSION" ]; then
+  echo "ACCEPTANCE CLASSIFICATION: DEVELOPMENT LIFECYCLE ONLY — NOT PRODUCTION ACCEPTANCE"
+fi
 echo "failing stages: $failures"
 echo "unverified items: $unverified"
 if [ "$unverified" -gt 0 ]; then
