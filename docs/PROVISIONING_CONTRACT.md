@@ -34,6 +34,28 @@ what has actually been verified on a device, versus what is only a
 documented assumption. Nothing in this document is verified network
 behaviour; contract tests prove document shape and nothing more.
 
+**Verified against `singbox-client` main as of `d04a8b4`: this client
+does not currently parse `/v1/provision/{token}`.** Its subscription
+importer (`lib/app/utils/auto_conf_utils.dart`) fetches a URL and parses
+it as a raw sing-box config (`{"outbounds": [...]}`); nothing in the
+client source references `schema_version`, `capabilities`, `endpoints`,
+or any field of this contract. Handing a `/v1/provision/{token}` URL to
+this client build will not import a working profile — it will fail to
+find an `outbounds` array. Until `singbox-client` ships a parser for
+this contract, the URL that actually works with it is the **FALLBACK**
+row above: `/sub/{token}?format=singbox` (native sing-box JSON, the
+format `render.rs` also emits, and the format proven against a real
+`sing-box` binary — real REALITY/Hysteria2 handshakes — by
+`crates/compat-config/tests/reality_interop.rs` and
+`hysteria2_interop.rs` in CI). Treat every claim in this document about
+`singbox-client` consuming schema v1 as a **specification for a client
+capability that does not exist in the checked build**, not as a
+description of current behavior. The fixtures under
+`fixtures/singbox-client-contract/` remain valid and worth keeping — a
+future client parser has something correct to build against — but do
+not point a real device at a `/v1/provision/{token}` URL expecting it to
+work today.
+
 ## The API surface
 
 ```

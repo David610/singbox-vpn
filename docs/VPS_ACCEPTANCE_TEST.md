@@ -61,11 +61,19 @@ required protocol check as failure.
 sudo vpn user create --name "$TEST_USER" --json | sudo tee /root/vpn-user.json >/dev/null
 sudo chmod 600 /root/vpn-user.json
 sudo jq -r .provisioning_url /root/vpn-user.json
+# .subscription_url is the ?format=hiddify share-link URL (JSON output only
+# includes that one, per apps/admin/src/main.rs's subscription_url()); swap
+# its query string to ?format=singbox for the URL that actually imports into
+# singbox-client today — see below.
 ```
 
-Copy the URL through a private channel to the current `singbox-client`. Fetch it
-once with `curl` as well, without putting the token into shell history (paste at
-the hidden prompt):
+**`.provisioning_url` (`/v1/provision/{token}`) does not currently import
+into `singbox-client`.** As of `singbox-client` main `d04a8b4`, its
+subscription importer only parses a raw sing-box config
+(`{"outbounds": [...]}`) — it has no code for this contract's
+`schema_version`/`capabilities`/`endpoints` shape (see
+`docs/PROVISIONING_CONTRACT.md`). Still fetch and shape-check it, since
+that is real coverage this test can give beyond CI:
 
 ```bash
 read -rsp 'Provisioning URL: ' PROVISION_URL; echo
@@ -77,10 +85,16 @@ jq -e '.schema_version == 1' /root/provision.json
 grep -iE '^(cache-control: no-store|x-robots-tag: noindex)' /root/provision.headers
 ```
 
-From a real client, test VLESS+REALITY and Hysteria2 separately, then automatic
-selection. Test from both an ordinary network and the actual difficult Russian
-network. Record client version, network/provider, transport selected, DNS and
-IPv4/IPv6 observations, but no secrets or full URLs.
+For the actual on-device import, hand the client the **`?format=singbox`**
+URL instead (`.subscription_url` above, or append `?format=singbox` to the
+bare `/sub/{token}` URL) — this is the format `crates/compat-config`'s
+`reality_interop.rs`/`hysteria2_interop.rs` already prove against a real
+`sing-box` binary in CI, so a device failure here means a real gap, not an
+untested format. From a real client, test VLESS+REALITY and Hysteria2
+separately, then automatic selection. Test from both an ordinary network
+and the actual difficult Russian network. Record client version,
+network/provider, transport selected, DNS and IPv4/IPv6 observations, but
+no secrets or full URLs.
 
 ## 3. Revocation and token rotation
 
