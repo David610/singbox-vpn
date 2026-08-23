@@ -7,3 +7,6 @@
 # so committing their output would be stale and misleading, not a trust root.
 deploy/local/relay-pool.json.root_pub
 /tmp-*
+
+# Local agent worktrees / tooling state — never part of repo history
+/.claude/
