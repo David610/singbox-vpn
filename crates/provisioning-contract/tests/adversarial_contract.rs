@@ -52,10 +52,7 @@ fn a_future_schema_version_is_rejected_at_the_parse_boundary() {
     let err = ProvisioningDocument::from_json(&encoded).unwrap_err();
     assert!(matches!(
         err,
-        ContractError::UnsupportedSchemaVersion {
-            requested: 999,
-            ..
-        }
+        ContractError::UnsupportedSchemaVersion { requested: 999, .. }
     ));
 }
 
