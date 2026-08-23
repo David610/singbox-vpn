@@ -23,7 +23,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rand.workspace = true
-axum = "0.7"
+axum = "0.8"
 hex = "0.4"
 
 [dev-dependencies]
