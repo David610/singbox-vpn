@@ -27,5 +27,5 @@ provisioning-contract = { path = "../../crates/provisioning-contract" }
 anyhow = "1"
 
 [dev-dependencies]
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
