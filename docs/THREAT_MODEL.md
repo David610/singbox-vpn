@@ -140,8 +140,9 @@ This is a circumvention/privacy VPN, not an anonymity network.
 - sing-box and singbox-vpn release artifacts are checksum verified before use.
 - Third-party GitHub Actions are pinned to full commit SHAs.
 - `pull_request_target` is not used.
-- New dependency changes are subject to vulnerability review; the committed Rust
-  dependency set is scanned by `cargo audit`.
+- The committed Rust dependency set is scanned by the blocking `cargo audit`
+  job. GitHub's incremental dependency-review gate is an additional desired
+  control but requires the repository's Dependency graph feature to be enabled.
 - Release jobs grant write permissions only where publication/attestation
   requires them.
 
@@ -166,9 +167,12 @@ The repository enforces these invariants through independent layers:
 - `cargo audit`, clippy, formatting, docs and secret-logging CI gates;
 - real pinned sing-box configuration/interoperability tests;
 - CodeQL analysis for Rust and GitHub Actions;
-- dependency review on pull requests;
 - a workflow-policy regression test that rejects mutable external Action refs,
   `pull_request_target`, and unconstrained top-level workflow permissions.
+
+GitHub dependency review is not claimed as active while Dependency graph is
+disabled. Enable that repository feature before adding the official dependency
+review action as a required pull-request check.
 
 Automated tests prove code paths, not real-world censorship resistance. A real
 host/device run remains required by `docs/VPS_ACCEPTANCE_TEST.md`.
