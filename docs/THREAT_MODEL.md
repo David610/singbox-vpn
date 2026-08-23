@@ -1,143 +1,198 @@
-# THREAT_MODEL.md
+# Threat model
 
-## Assets
+This document defines the security boundary for the **supported singbox-vpn
+server product**: a small self-hosted VPN using sing-box to serve VLESS+REALITY
+and Hysteria2, with `vpn-admin` as the control plane and `subscription` as the
+client-provisioning service.
 
-- User connectivity / ability to reach the open Internet.
-- Confidentiality of tunneled traffic contents and destinations.
-- Client's local key material (session keys, cached bundles).
-- Rendezvous/control-plane signing keys.
-- Relay fleet availability and diversity (AS/geography/provider).
-- Client software integrity (no arbitrary remote code execution).
+The repository also contains older/native experimental crates. They are not part
+of the default production build and must not be used to make security or
+availability claims about the supported server.
 
-## Adversaries (ranked by capability relevant to this system)
+## Assets to protect
 
-1. **Passive traffic observer** (ISP/state-level DPI, no injection) — sees
-   packet sizes/timing/TLS or QUIC fingerprints on the wire.
-2. **Active network interferer** — resets TCP, drops UDP, forges DNS,
-   blocks IP ranges/ASNs, time-limited blocking windows.
-3. **Active endpoint prober** — connects to suspected relay IPs and sends
-   crafted/replayed traffic to distinguish them from decoy services.
-4. **Malicious or compromised relay operator** — sees relayed ciphertext
-   and connection metadata (timing, volume) for sessions it forwards.
-5. **Compromised rendezvous service** — could try to enumerate the full
-   fleet, target specific clients with bad bundles, or deny service.
-6. **Compromised telemetry/measurement endpoint** — could try to
-   re-identify users from event streams or poison scoring.
-7. **Compromised transport module / supply-chain attacker** — could try to
-   ship malicious code through the update channel (only relevant once a
-   pluggable transport runtime exists — see ADR-0003).
-8. **Sybil clients** — many fake clients reporting good/bad telemetry to
-   bias endpoint scoring or exhaust an endpoint's failure budget.
-9. **Denial-of-service actor** — floods rendezvous/ingress to exhaust
-   resources.
+Highest-value assets are:
 
-## What this system protects against
+1. REALITY private key material.
+2. TLS private keys.
+3. Per-user VLESS UUIDs and Hysteria2 passwords.
+4. Hysteria2 obfuscation password when enabled.
+5. Subscription/provisioning bearer tokens and URLs.
+6. Backup archives containing deployment or user state.
+7. The integrity of installed `vpn-admin`, `subscription`, sing-box, systemd
+   units and generated sing-box configuration.
+8. The integrity and availability of `users.json` and deployment state.
 
-- A single blocked/fingerprinted transport does not remove connectivity —
-  independent transport families are selected adaptively (§DECISION_ENGINE).
-- A single blocked/failed endpoint does not remove a transport family, and
-  does not get globally delisted from one client's report (§policy crate
-  quarantine: local-only until corroborated).
-- Full relay-fleet enumeration through one client request is not possible —
-  rendezvous issues small, signed, expiring subsets (§RENDEZVOUS_DESIGN.md).
-- Tampered or expired configuration/relay bundles are rejected client-side
-  (ed25519 signature + expiry + schema version checks, §config crate).
-- Unauthenticated probes to ingress get a response that does not trivially
-  distinguish "real relay" from "closed port" beyond what the transport's
-  own standard protocol already reveals (TLS: normal TLS alert behavior;
-  QUIC: normal QUIC version-negotiation/stateless-reset behavior). We do
-  not invent custom probing-resistance tricks — see ADR-0002.
-- Telemetry is schema-limited to coarse, non-identifying fields (see
-  `docs/TELEMETRY_DICTIONARY.md`); it cannot carry destination URLs or
-  payloads because the wire schema has no such field.
+## Trust boundaries
 
-## What this system explicitly does NOT protect against (documented, not hidden)
+### Trusted
 
-- **Full Internet shutdowns**: if no external route exists, no VPN can
-  manufacture one. The client must classify "no external route exists" as
-  a distinct state from "circumvention failed" (§FAILURE_CLASSIFICATION.md)
-  and say so in status output rather than implying it can always get
-  through.
-- **A fully global passive+active adversary that can correlate traffic
-  timing across every relay and every client** (traffic-confirmation /
-  end-to-end correlation attacks) — out of scope for a circumvention tool;
-  this is a Tor-class research problem, not something bolted on here.
-- **A malicious relay operator learning connection metadata for sessions it
-  forwards** — using a single relay hop always trusts that operator with
-  timing/volume. Two-hop (ingress≠egress, different operators) reduces but
-  does not eliminate this; it is a configurable tradeoff (ADR-0006), not a
-  guarantee.
-- **Compromise of the client host itself** (malware, OS-level surveillance)
-  is out of scope.
-- **WASM transport sandbox escape** cannot be assessed because the sandbox
-  is not implemented in this session (ADR-0003) — no pluggable third-party
-  transport code executes today, so this risk does not yet exist in the
-  running system, but it is not "solved" either.
+- the operator with root access to the VPS;
+- the VPS kernel and host platform while uncompromised;
+- a client device while uncompromised;
+- a pinned, verified singbox-vpn release produced by the repository release
+  workflow;
+- the selected upstream sing-box release after checksum verification.
 
-## Non-goals (explicitly, per spec §43)
+### Untrusted
 
-This software contains no credential theft, malware persistence, exploit
-delivery, unauthorized third-party access, botnet functionality, DDoS
-tooling, vulnerability exploitation, malicious scanning, stealth
-installation, or destructive behavior of any kind.
+- the public Internet;
+- local access networks and ISPs;
+- censorship/DPI infrastructure;
+- unauthenticated connections to public VPN ports;
+- arbitrary requests to the subscription/provisioning service;
+- malformed provisioning requests;
+- malformed or corrupted persisted state presented after an operational
+  failure;
+- pull requests and third-party GitHub Actions until their exact revisions are
+  reviewed and pinned.
 
-## Abuse cases considered
+### Bearer capability: subscription/provisioning URL
 
-- **Endpoint exhaustion attack**: an attacker deliberately fails many
-  connections to a healthy relay hoping clients globally blacklist it.
-  Mitigation: `policy` crate scoring is per-client-local first; only a
-  documented, not-yet-built cross-client aggregation step (control plane,
-  deferred) could promote local quarantine to global policy, and that step
-  requires multiple independent reporters, not one (see `policy` module
-  docs and ADR-0006 for the aggregation contract this leaves for later).
-- **Replay of a captured rendezvous response**: mitigated by bundle
-  `issued_at`/`expires_at` and short validity window enforced client-side;
-  the rendezvous server also binds bundles to a client-presented nonce it
-  is not required to trust indefinitely (see `services/rendezvous`).
-- **Relay enumeration via repeated rendezvous requests**: mitigated by
-  returning a bounded random subset per request rather than deterministic
-  paging; full-fleet-by-many-requests is a rate-limiting / operational
-  concern flagged in DEPLOYMENT.md, not fully solved by protocol alone.
-- **Sybil telemetry poisoning**: telemetry has no effect on this session's
-  implemented client behavior (no aggregation service exists yet — see
-  Phase 7 in TASKS.md), so poisoning risk against *this codebase* is
-  currently zero; documented so the future aggregation service is built
-  with Sybil resistance as a requirement from day one, not bolted on.
+A valid subscription/provisioning URL is a bearer credential. Possession of the
+raw token authorizes access to the associated client configuration. The server
+persists a hash rather than the raw token, but an operator or client that leaks
+the URL has leaked a credential.
 
-## Adversarial self-review (§54 of the spec)
+Rotating only the subscription token revokes that URL. It does **not** revoke an
+already imported VLESS UUID or Hysteria2 password; transport credentials have
+separate rotation commands. The CLI/tests must state that blast radius
+accurately.
 
-Performed against the implementation as it stands at the end of this
-session; see the "Security self-review" appendix at the bottom of this
-document (added by the final review pass) for concrete findings and fixes
-applied.
+## Attacker capabilities considered
 
-### Security self-review (final pass)
+The supported design assumes an attacker may:
 
-- **As a DPI engineer**: the two transports use standard TLS 1.3 and
-  standard QUIC libraries (rustls, quinn) rather than a custom wire format,
-  so there is no bespoke framing pattern to fingerprint beyond what
-  fingerprinting TLS/QUIC in general already achieves. Risk: both are
-  still "generic TLS/QUIC to a possibly-unusual host", which is a weaker
-  disguise than a browser-shaped transport (Family A in the original spec
-  would ideally mimic real HTTP traffic shape); documented as future work
-  rather than claimed as solved.
-- **As an active censor**: probing an ingress port gets ordinary TLS/QUIC
-  server behavior, not a custom banner — reduces trivial active-probe
-  signatures. The client's fallback timing is jittered (`policy` crate)
-  specifically so many clients don't all retry transport B at the same
-  fixed offset after A fails, which would itself be a network-visible
-  pattern.
-- **As a malicious relay operator**: egress sees plaintext destination
-  host:port (it must, to dial out) and plaintext bytes after that point
-  when the ultimate destination isn't itself using TLS — this is inherent
-  to being an egress relay and is documented, not hidden.
-- **As a supply-chain attacker**: there is no pluggable/downloaded
-  transport code execution path in this codebase yet (Phase 5 deferred),
-  so this attack surface does not currently exist; config bundles fetched
-  from rendezvous are signature-checked before any field is trusted.
-- **As a privacy researcher**: telemetry schema was checked field-by-field
-  against `TELEMETRY_DICTIONARY.md` to confirm no destination, payload, or
-  long-lived identifier field exists in the wire type.
-- **As an SRE**: single points of failure identified — the offline root
-  signing key (by design, rarely used); the rendezvous service (mitigated
-  by client-side emergency-bundle caching, see RENDEZVOUS_DESIGN.md).
+- scan the VPS and send arbitrary bytes to exposed TCP/UDP ports;
+- observe, delay, drop, reset, reorder or selectively block traffic between a
+  client and VPS;
+- know that the VPS hosts a VPN;
+- obtain one user's client credentials without obtaining other users' secrets;
+- send malformed HTTP requests and unsupported provisioning versions;
+- cause ordinary operational faults such as interrupted writes, restarts, DNS
+  failures, certificate-renewal failures or an update that fails validation;
+- submit a malicious or compromised dependency/action update through normal
+  development channels.
+
+## Explicit non-goals
+
+The server does **not** claim to protect against:
+
+- a fully compromised VPS root account, kernel or hypervisor;
+- a fully compromised client device;
+- a malicious VPS provider with unrestricted memory/disk introspection;
+- traffic-correlation anonymity comparable to Tor;
+- hiding the VPN server's IP address;
+- full Internet shutdowns where no external route exists;
+- indefinite resistance to future censorship changes without protocol/client
+  updates;
+- compromise of upstream sing-box before the verified release artifact is
+  produced.
+
+This is a circumvention/privacy VPN, not an anonymity network.
+
+## Release-blocking security invariants
+
+### Secret isolation
+
+- Raw subscription tokens are not persisted in `users.json`.
+- Server-private REALITY/TLS key material never appears in client provisioning
+  documents.
+- Secret-bearing files retain restrictive owner/group permissions after create,
+  update, migration, backup and restore.
+- Diagnostics and normal logs do not print credential material.
+
+### Fail-closed state handling
+
+- Corrupted or future-version state is rejected rather than interpreted as an
+  empty/default configuration.
+- User-state writes are atomic: a failure before the final rename must leave the
+  previous live state intact.
+- Generated sing-box configuration is validated before production activation.
+- Restore/update failure must leave either the previous known-good state or an
+  explicit failed/stopped state; it must not silently claim success.
+
+### Credential lifecycle
+
+- Disabling/removing a user revokes both supported transports.
+- Rotating one transport credential changes only that transport unless the
+  operator explicitly requests full credential rotation.
+- Subscription-token rotation does not falsely claim to revoke already imported
+  VLESS/Hysteria2 transport credentials.
+- A mutation is not reported as live success until the affected runtime state
+  has been reloaded/verified.
+
+### Provisioning contract
+
+- The server emits only server-owned connection facts: host/port, supported
+  transport, and the credential material needed to authenticate.
+- Client-owned DNS/TUN/MTU/IP-family/lifecycle policy is structurally excluded
+  from the first-party provisioning contract.
+- Unknown/unsupported schema versions fail explicitly rather than being silently
+  reinterpreted.
+- Client-facing serialization must not contain private keys, filesystem paths or
+  certificate-verification opt-outs.
+
+### Supply-chain integrity
+
+- Production installs use published releases; mutable development installs
+  require a separate explicit opt-in.
+- sing-box and singbox-vpn release artifacts are checksum verified before use.
+- Third-party GitHub Actions are pinned to full commit SHAs.
+- `pull_request_target` is not used.
+- The committed Rust dependency set is scanned by the blocking `cargo audit`
+  job. GitHub's incremental dependency-review gate is an additional desired
+  control but requires the repository's Dependency graph feature to be enabled.
+- Release jobs grant write permissions only where publication/attestation
+  requires them.
+
+### Least privilege
+
+- CI workflows default to read-only repository permissions and grant write
+  scopes only to the jobs that require them.
+- Runtime services use dedicated service identities and systemd hardening rather
+  than running the data plane as unrestricted root.
+- Secret state is not made world-readable for operator convenience.
+
+## Automated evidence
+
+The repository enforces these invariants through independent layers:
+
+- Rust unit/integration tests for provisioning, credentials, persistence,
+  migration, backup/restore and user lifecycle;
+- adversarial persistence tests that reject truncated/corrupted state and force a
+  pre-rename atomic-write failure to prove the previous state survives;
+- shell regression tests under `deploy/lib/tests/` for installer/update/rollback
+  behavior;
+- `cargo audit`, clippy, formatting, docs and secret-logging CI gates;
+- real pinned sing-box configuration/interoperability tests;
+- CodeQL analysis for Rust and GitHub Actions;
+- a workflow-policy regression test that rejects mutable external Action refs,
+  `pull_request_target`, and unconstrained top-level workflow permissions.
+
+GitHub dependency review is not claimed as active while Dependency graph is
+disabled. Enable that repository feature before adding the official dependency
+review action as a required pull-request check.
+
+Automated tests prove code paths, not real-world censorship resistance. A real
+host/device run remains required by `docs/VPS_ACCEPTANCE_TEST.md`.
+
+## Repository-governance requirement
+
+CI can detect unsafe workflow configuration, but repository settings are an
+external trust control. `main` should be protected (or covered by an equivalent
+GitHub ruleset) so ordinary changes require a pull request and blocking
+CI/security checks cannot be bypassed by a direct push.
+
+A repository file cannot enforce its own branch protection; this must be enabled
+and verified in GitHub settings.
+
+## Connectivity boundary
+
+Security/recovery hardening must not be used as an excuse to retune working
+network behavior. Changes to REALITY parameters, Hysteria2 parameters, DNS, MTU,
+ports, congestion control, UDP handling or censorship-evasion modes require
+separate evidence from controlled device and in-country tests.
+
+For that reason, this threat-model/CI/state-integrity hardening deliberately
+changes **no** VPN transport parameters.
