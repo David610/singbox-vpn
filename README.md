@@ -34,7 +34,26 @@ Deploy on a VPS → scan the QR → connect with Hiddify.
 - backup and restore
 - complete offline uninstall
 
-No custom client application or web control panel is required.
+No web control panel is required.
+
+### Clients: one contract, two tiers
+
+The server owns endpoints and credentials; the client owns everything
+about the device (DNS, TUN, MTU, IP family, kill switch). That split is
+written down once, as a versioned contract, and every client-facing
+output is generated from it.
+
+| Tier | Client | Gets |
+|---|---|---|
+| **Primary** | [singbox-client](https://github.com/David610/singbox-client) — first-party, separate repo | `GET /v1/provision/{token}` — the versioned provisioning contract |
+| **Fallback** | Hiddify and other sing-box-compatible importers | `GET /sub/{token}` — share links or native sing-box JSON, unchanged |
+
+Both are rendered from the same endpoint model, so they cannot disagree
+about a user's credentials. The contract, its versioning rules, and the
+cross-repo test fixtures are in
+**[docs/PROVISIONING_CONTRACT.md](docs/PROVISIONING_CONTRACT.md)**.
+Only device-verified behaviour is claimed for the fallback tier — see
+[docs/CLIENT_COMPATIBILITY.md](docs/CLIENT_COMPATIBILITY.md).
 
 > Built for small groups of users. Release status: the supported path has
 > an owner-reported smoke pass on a real AlmaLinux 9 VPS with Hiddify on an
@@ -106,6 +125,8 @@ credentials leak. See [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
   distribution notes, troubleshooting, updating, uninstall
 - [Supported product boundary](docs/SUPPORTED_PRODUCT.md) — authoritative
   OS/scope matrix
+- [Provisioning contract](docs/PROVISIONING_CONTRACT.md) — the versioned
+  client/server contract and its schema
 - [Client setup](docs/clients/README.md)
 - [Device acceptance status](docs/DEVICE_ACCEPTANCE_TESTS.md)
 - [Security model](docs/SECURITY_MODEL.md)

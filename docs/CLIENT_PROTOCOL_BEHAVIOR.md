@@ -11,6 +11,20 @@ spec conformance alone — see `docs/CLIENT_COMPATIBILITY.md` and
 against a real client/device versus what remains a documented, honest
 assumption.
 
+## Which client, and what it is served
+
+| Tier | Client | Served |
+|---|---|---|
+| **PRIMARY, first-party** | `singbox-client` (<https://github.com/David610/singbox-client>) | The versioned provisioning contract, `GET /v1/provision/{token}` — `docs/PROVISIONING_CONTRACT.md`. |
+| **FALLBACK, third-party** | Hiddify, v2rayNG, NekoBox, raw sing-box | The legacy `GET /sub/{token}` formats (share links, native sing-box JSON). |
+
+Both tiers are rendered from the same endpoint model
+(`crates/compat-config/src/contract.rs`), so they can never disagree
+about a user's credentials. The division of responsibility in the table
+below is identical for both: the contract is deliberately narrower than
+the sing-box profile — it carries no routing or selector semantics at
+all, because those are the client's to decide.
+
 ## What singbox-vpn generates vs. what the client controls
 
 | Layer | Who controls it | singbox-vpn's role |
@@ -140,6 +154,20 @@ assumption.
   `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5a only — Vision is what
   hides a proxied TLS session's TLS-in-TLS pattern, so this profile is
   more fingerprintable and must not be used as a default.
+- **On the first-party contract**, these same two diagnostics are
+  reachable as `?diagnostic=tcp-only` / `?diagnostic=vision-off` on
+  `/v1/provision/{token}`, and are advertised in the document's separate
+  `experimental_capabilities` field (`diag-tcp-only`,
+  `diag-vision-off`). They are never listed as production
+  `capabilities`, never negotiated automatically, and never a default —
+  see `docs/PROVISIONING_CONTRACT.md`.
+- **Removed: `?format=xray`.** It changed a share-link *label* and
+  nothing else, and a label is never sent over the wire. See
+  `docs/PROVISIONING_CONTRACT.md`'s "Removed: the Xray-labelled toggle"
+  for the evidence — including this repository's own finding that
+  Hiddify selects its Xray core only through a `core=xray`/`xvless://`
+  import syntax the generated links never used. Requesting it now
+  returns HTTP 400.
 
 ## Failover / selection — honest framing
 

@@ -11,6 +11,17 @@ this file does not duplicate it; the table below is the summary. See
 IPv4/IPv6, full-tunnel, UDP/TCP, failover) that apply across every
 client, and see `docs/clients/` for per-platform walkthroughs.
 
+**Client tiers.** `singbox-client`
+(<https://github.com/David610/singbox-client>) is the PRIMARY,
+first-party client and consumes the versioned provisioning contract
+(`docs/PROVISIONING_CONTRACT.md`). Hiddify and the other importers below
+are FALLBACK, third-party consumers of the legacy `/sub/` formats. The
+tier does not change the honesty rule: no row below is "yes" on the
+strength of the contract existing. `singbox-client` has no row here at
+all yet — its own device testing lives in its repository, and this
+project claims nothing about it beyond the contract shape its CI can
+check against `fixtures/singbox-client-contract/`.
+
 | Client | VLESS+REALITY | Hysteria2 | Subscription import |
 |---|---|---|---|
 | Hiddify (iOS/Android/Linux/Windows/macOS/MagicOS) | iOS smoke connection reported; transport was not recorded, so this protocol-specific cell remains incomplete | iOS smoke connection reported; transport was not recorded, so this protocol-specific cell remains incomplete | iOS import/connect smoke pass reported; detailed refresh/revocation matrix remains incomplete |
@@ -75,6 +86,15 @@ steps — and fill in a dated entry there once run.
   #11) downloads the real pinned sing-box binary and runs `sing-box
   check` against an actual rendered server config on every push — this
   is real-binary validation, still not a real client handshake.
+- The versioned provisioning contract (`/v1/provision/{token}`) is
+  covered by schema-level tests only: document shape, validation rules,
+  capability derivation from real configuration, JSON round-trips, error
+  responses, and agreement with the published cross-repo fixtures
+  (`fixtures/singbox-client-contract/`). **These prove contract shape,
+  nothing more.** They are not evidence that any client parses it
+  correctly, that any transport connects, or that anything works on any
+  particular network — see `docs/PROVISIONING_CONTRACT.md`'s closing
+  section.
 
 ## Manual acceptance test template
 

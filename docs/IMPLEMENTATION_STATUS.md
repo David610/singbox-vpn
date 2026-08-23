@@ -19,7 +19,9 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
   byte-identical to the prior default when unused). Implemented an opt-in
   `?format=xray` subscription variant (same UUID/pbk/sid/SNI/port/
   fingerprint/flow, distinctly labeled) as an A/B path for real Russian
-  device testing against Hiddify's alternate core engine where one exists;
+  device testing against Hiddify's alternate core engine where one exists
+  — **since REMOVED**: the label is never sent over the wire and could
+  not select a client engine (see `docs/PROVISIONING_CONTRACT.md`);
   extended `vpn-investigate.sh` with a `client <IP>` command (FACT/
   INFERENCE/UNKNOWN-labeled, no secrets, nothing mutated); fixed a real
   token-extraction defect in `vpn-benchmark.sh` that silently skipped its
