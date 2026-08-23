@@ -3228,7 +3228,14 @@ fn cmd_doctor(
     if failures > 0 {
         bail!("{failures} check(s) failed");
     }
-    println!("All checks passed (see [WARN] lines above for anything unverifiable on this host).");
+    if protocol_result == ProtocolCheckResult::Passed {
+        println!("SERVER-SIDE CHECKS PASSED");
+        println!("REAL CLIENT / RUSSIAN NETWORK TEST STILL REQUIRED");
+    } else {
+        println!(
+            "All checks that ran passed, but complete server-side protocol verification was not achieved."
+        );
+    }
     Ok(())
 }
 
