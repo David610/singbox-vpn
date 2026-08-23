@@ -7,6 +7,7 @@
 //! `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` §6. Nothing here is
 //! signed into a `RelayBundle`; nothing native parses these types.
 
+pub mod contract;
 pub mod credentials;
 pub mod deployment;
 pub mod migrate;
@@ -35,6 +36,12 @@ pub enum CompatError {
     WrongTransportForEndpoint,
     #[error("user not found")]
     UserNotFound,
+    /// A generated provisioning document failed the first-party
+    /// contract's own validation — see `provisioning_contract`. This is
+    /// always a server-side bug or a corrupt/incomplete deployment
+    /// state, never something a client can cause.
+    #[error("provisioning contract violation: {0}")]
+    Contract(#[from] provisioning_contract::ContractError),
     #[error(
         "{what} schema version {found} is newer than this vpn-admin supports (max {max_supported}) — \
          refusing to load it: an older binary cannot safely assume it still understands every \

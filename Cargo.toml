@@ -12,6 +12,7 @@ members = [
     "crates/rendezvous-client",
     "crates/telemetry",
     "crates/compat-config",
+    "crates/provisioning-contract",
     "apps/client-daemon",
     "apps/cli",
     "apps/keytool",
@@ -29,6 +30,7 @@ members = [
 default-members = [
     "crates/common",
     "crates/compat-config",
+    "crates/provisioning-contract",
     "apps/admin",
     "services/subscription",
 ]

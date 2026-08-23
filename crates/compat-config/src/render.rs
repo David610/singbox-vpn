@@ -4,9 +4,20 @@
 //! against current sing-box docs — see `docs/COMPATIBILITY_VERSIONS.md`.
 //! Never renders server-private material (`RealityServerParams`,
 //! `Hysteria2ServerParams`'s TLS key path) — only `PublicParameters`.
+//!
+//! Every renderer here is a pure function of a
+//! [`provisioning_contract::Endpoint`] built by `crate::contract` — the
+//! single source of truth for endpoint/credential semantics. Renderers
+//! choose SYNTAX (share-link query string, sing-box outbound object);
+//! they never decide which UUID, flow, REALITY parameter or password an
+//! endpoint carries. Adding an output format means adding a function
+//! that consumes contract endpoints, never a second place that shapes
+//! credentials.
 
+use crate::contract::{contract_endpoint, VlessFlow};
 use crate::model::{CompatEndpoint, CompatTransport, CompatUser, PublicParameters};
 use crate::CompatError;
+use provisioning_contract as contract;
 use serde_json::json;
 
 fn percent_encode_label(label: &str) -> String {
@@ -22,38 +33,54 @@ fn percent_encode_label(label: &str) -> String {
     out
 }
 
+/// `vless://uuid@host:port?...&security=reality...#label`, rendered from
+/// a contract endpoint. The `flow` parameter is emitted only when the
+/// contract endpoint actually requests one, so this single function
+/// covers both the production profile and the `diag-vision-off`
+/// diagnostic without a second copy of the credential shaping.
+pub fn render_vless_reality_uri_from_contract(
+    endpoint: &contract::Endpoint,
+) -> Result<String, CompatError> {
+    let contract::TransportParams::VlessReality {
+        uuid,
+        flow,
+        reality,
+    } = &endpoint.params
+    else {
+        return Err(CompatError::WrongTransportForEndpoint);
+    };
+    let flow_param = flow
+        .as_ref()
+        .map(|f| format!("&flow={f}"))
+        .unwrap_or_default();
+    Ok(format!(
+        "vless://{uuid}@{host}:{port}?encryption=none&security=reality&sni={sni}&fp={fp}&pbk={pbk}&sid={sid}&type=tcp{flow_param}#{label}",
+        host = endpoint.host,
+        port = endpoint.port,
+        sni = endpoint.server_name,
+        fp = reality.fingerprint,
+        pbk = reality.public_key,
+        sid = reality.short_id,
+        label = percent_encode_label(&endpoint.tag),
+    ))
+}
+
 /// `vless://uuid@host:port?...&security=reality...#label`
 pub fn render_vless_reality_uri(
     user: &CompatUser,
     endpoint: &CompatEndpoint,
 ) -> Result<String, CompatError> {
-    let PublicParameters::Reality {
-        public_key_hex,
-        short_id,
-        fingerprint,
-    } = &endpoint.public_parameters
-    else {
-        return Err(CompatError::WrongTransportForEndpoint);
-    };
-    let sni = endpoint.server_name.as_deref().unwrap_or(&endpoint.host);
-    Ok(format!(
-        "vless://{uuid}@{host}:{port}?encryption=none&security=reality&sni={sni}&fp={fp}&pbk={pbk}&sid={sid}&type=tcp&flow=xtls-rprx-vision#{label}",
-        uuid = user.vless_uuid,
-        host = endpoint.host,
-        port = endpoint.port,
-        sni = sni,
-        fp = fingerprint,
-        pbk = public_key_hex,
-        sid = short_id,
-        label = percent_encode_label(&endpoint.label),
-    ))
+    let ep = contract_endpoint(user, endpoint, VlessFlow::Vision, None)?;
+    render_vless_reality_uri_from_contract(&ep)
 }
 
 /// Label suffix carried by every EXPERIMENTAL Vision-off artifact this
 /// module renders (share link and native-JSON outbound tag alike), so a
 /// tester can always tell which profile is actually selected in their
-/// client's UI. Follows the existing `" (Xray)"` labeling precedent: the
-/// label is never sent over the wire, it is operator/tester bookkeeping.
+/// client's UI. The label is never sent over the wire; it is
+/// operator/tester bookkeeping only, and a label alone never changes
+/// client behaviour (that is exactly why the former "(Xray)" labeling
+/// experiment was removed — see `docs/PROVISIONING_CONTRACT.md`).
 pub const VISION_OFF_LABEL_SUFFIX: &str = " (EXPERIMENTAL Vision-off)";
 
 /// EXPERIMENTAL, opt-in share link identical to `render_vless_reality_uri`
@@ -84,26 +111,9 @@ pub fn render_vless_reality_uri_vision_off(
     user: &CompatUser,
     endpoint: &CompatEndpoint,
 ) -> Result<String, CompatError> {
-    let PublicParameters::Reality {
-        public_key_hex,
-        short_id,
-        fingerprint,
-    } = &endpoint.public_parameters
-    else {
-        return Err(CompatError::WrongTransportForEndpoint);
-    };
-    let sni = endpoint.server_name.as_deref().unwrap_or(&endpoint.host);
-    Ok(format!(
-        "vless://{uuid}@{host}:{port}?encryption=none&security=reality&sni={sni}&fp={fp}&pbk={pbk}&sid={sid}&type=tcp#{label}",
-        uuid = user.vless_uuid,
-        host = endpoint.host,
-        port = endpoint.port,
-        sni = sni,
-        fp = fingerprint,
-        pbk = public_key_hex,
-        sid = short_id,
-        label = percent_encode_label(&format!("{}{VISION_OFF_LABEL_SUFFIX}", endpoint.label)),
-    ))
+    let tag = format!("{}{VISION_OFF_LABEL_SUFFIX}", endpoint.label);
+    let ep = contract_endpoint(user, endpoint, VlessFlow::VisionOff, Some(&tag))?;
+    render_vless_reality_uri_from_contract(&ep)
 }
 
 /// `?format=uri&compat=vision-off` subscription body: every VLESS+REALITY
@@ -129,28 +139,41 @@ pub fn render_vision_off_uri_list(
     Ok(lines.join("\n"))
 }
 
+/// `hysteria2://password@host:port?...#label`, rendered from a contract
+/// endpoint. `insecure=0` is emitted explicitly and unconditionally:
+/// certificate verification is never opt-out in a generated profile, and
+/// there is no code path here that can produce `insecure=1`.
+pub fn render_hysteria2_uri_from_contract(
+    endpoint: &contract::Endpoint,
+) -> Result<String, CompatError> {
+    let contract::TransportParams::Hysteria2 { password, obfs } = &endpoint.params else {
+        return Err(CompatError::WrongTransportForEndpoint);
+    };
+    let mut uri = format!(
+        "hysteria2://{password}@{host}:{port}?sni={sni}&insecure=0",
+        host = endpoint.host,
+        port = endpoint.port,
+        sni = endpoint.server_name,
+    );
+    if let Some(obfs) = obfs {
+        uri.push_str(&format!(
+            "&obfs={kind}&obfs-password={pw}",
+            kind = obfs.obfs_type,
+            pw = obfs.password
+        ));
+    }
+    uri.push('#');
+    uri.push_str(&percent_encode_label(&endpoint.tag));
+    Ok(uri)
+}
+
 /// `hysteria2://password@host:port?...#label`
 pub fn render_hysteria2_uri(
     user: &CompatUser,
     endpoint: &CompatEndpoint,
 ) -> Result<String, CompatError> {
-    let PublicParameters::Hysteria2 { obfs_password } = &endpoint.public_parameters else {
-        return Err(CompatError::WrongTransportForEndpoint);
-    };
-    let sni = endpoint.server_name.as_deref().unwrap_or(&endpoint.host);
-    let mut uri = format!(
-        "hysteria2://{password}@{host}:{port}?sni={sni}&insecure=0",
-        password = user.hysteria2_password.expose(),
-        host = endpoint.host,
-        port = endpoint.port,
-        sni = sni,
-    );
-    if let Some(pw) = obfs_password {
-        uri.push_str(&format!("&obfs=salamander&obfs-password={pw}"));
-    }
-    uri.push('#');
-    uri.push_str(&percent_encode_label(&endpoint.label));
-    Ok(uri)
+    let ep = contract_endpoint(user, endpoint, VlessFlow::default(), None)?;
+    render_hysteria2_uri_from_contract(&ep)
 }
 
 /// One share-link per enabled endpoint, `?format=uri` subscription body
@@ -163,73 +186,6 @@ pub fn render_uri_list(
     for ep in endpoints {
         let uri = match ep.transport {
             crate::model::CompatTransport::VlessReality => render_vless_reality_uri(user, ep)?,
-            crate::model::CompatTransport::Hysteria2 => render_hysteria2_uri(user, ep)?,
-        };
-        lines.push(uri);
-    }
-    Ok(lines.join("\n"))
-}
-
-/// Explicit, opt-in A/B share link for Xray-core-oriented clients
-/// (`?format=xray` — see `services/subscription/src/lib.rs`). This exists
-/// for the 2026-08-19 Russia connectivity investigation
-/// (`docs/RUSSIA_PRODUCTION_INVESTIGATION.md`): production self-tests pass
-/// (a throwaway upstream sing-box client completes REALITY locally) but
-/// real Russian clients see `REALITY: processed invalid connection`. One
-/// untested variable is the client's TLS/REALITY implementation itself —
-/// Hiddify on some platforms can bundle an Xray-core engine instead of
-/// sing-box's own core, and the two are independent REALITY
-/// implementations. This function renders the SAME UUID, public key,
-/// short_id, SNI, host, and port as `render_vless_reality_uri` — it
-/// changes NOTHING about server-side credentials or the wire format
-/// (encryption=none, security=reality, type=tcp, flow=xtls-rprx-vision,
-/// fp/pbk/sid/sni — that is already the standard `vless://` share-link
-/// syntax both sing-box-core and Xray-core clients accept). It only
-/// distinguishes the link with a separate, explicit "(Xray)" label suffix
-/// so a Russian tester can import this link specifically to exercise
-/// Hiddify's Xray-core engine, and the server operator can distinguish
-/// which core connected in `sing-box` logs / `vpn-investigate.sh client`
-/// output (endpoint label is not sent over the wire — the distinction is
-/// operational bookkeeping for the person running the A/B test, not a
-/// protocol-level difference).
-///
-/// **UNVERIFIED**: whether current Hiddify iOS/Android actually exposes a
-/// distinct `core=xray` import path, an `xvless://` URI scheme, or any
-/// other Xray-specific import syntax was NOT confirmed — this session had
-/// no web access to check current Hiddify release notes/source. Rather
-/// than invent unverified syntax, this deliberately emits the standard
-/// `vless://` share-link (which both cores already consume identically)
-/// under a distinct label, so it is safe to ship and test today. If real
-/// Russian testing later shows Hiddify needs a different URI shape to
-/// force its Xray-core engine specifically, that shape must be verified
-/// against real Hiddify source/docs before being added here — see
-/// `docs/RUSSIA_PRODUCTION_INVESTIGATION.md`.
-pub fn render_vless_reality_uri_xray_labeled(
-    user: &CompatUser,
-    endpoint: &CompatEndpoint,
-) -> Result<String, CompatError> {
-    let mut xray_endpoint = endpoint.clone();
-    xray_endpoint.label = format!("{} (Xray)", endpoint.label);
-    render_vless_reality_uri(user, &xray_endpoint)
-}
-
-/// `?format=xray` subscription body: every VLESS+REALITY endpoint rendered
-/// via `render_vless_reality_uri_xray_labeled` (same credentials, "(Xray)"
-/// label suffix); every Hysteria2 endpoint rendered unchanged via
-/// `render_hysteria2_uri` (Hysteria2's URI syntax is not sing-box/Xray-core
-/// specific, so no separate labeling is needed there). See
-/// `render_vless_reality_uri_xray_labeled`'s doc comment for the full
-/// rationale and the explicit UNVERIFIED Hiddify-syntax caveat.
-pub fn render_xray_uri_list(
-    user: &CompatUser,
-    endpoints: &[CompatEndpoint],
-) -> Result<String, CompatError> {
-    let mut lines = Vec::with_capacity(endpoints.len());
-    for ep in endpoints {
-        let uri = match ep.transport {
-            crate::model::CompatTransport::VlessReality => {
-                render_vless_reality_uri_xray_labeled(user, ep)?
-            }
             crate::model::CompatTransport::Hysteria2 => render_hysteria2_uri(user, ep)?,
         };
         lines.push(uri);
@@ -417,88 +373,103 @@ pub fn render_singbox_client_subscription_with_options(
     profile: SelectionProfile,
     compat_mode: CompatibilityMode,
 ) -> Result<serde_json::Value, CompatError> {
-    let filtered: Vec<&CompatEndpoint> = endpoints
-        .iter()
-        .filter(|ep| {
-            !(compat_mode == CompatibilityMode::TcpOnly
-                && matches!(ep.transport, CompatTransport::Hysteria2))
-        })
-        .collect();
+    // Step 1: decide WHICH endpoints, with WHICH credentials — entirely
+    // in contract terms, so this profile and the first-party JSON
+    // contract can never disagree about a user's UUID, flow, REALITY
+    // parameters or password.
+    let mut contract_endpoints = Vec::with_capacity(endpoints.len());
+    for ep in endpoints {
+        if compat_mode == CompatibilityMode::TcpOnly
+            && matches!(ep.transport, CompatTransport::Hysteria2)
+        {
+            continue;
+        }
+        let vision_off = compat_mode == CompatibilityMode::VisionOff
+            && matches!(ep.transport, CompatTransport::VlessReality);
+        // Only the VLESS+REALITY endpoint is labeled in VisionOff mode —
+        // Hysteria2 has no flow concept and is rendered unchanged there.
+        let tag = vision_off.then(|| format!("{}{VISION_OFF_LABEL_SUFFIX}", ep.label));
+        contract_endpoints.push(contract_endpoint(
+            user,
+            ep,
+            if vision_off {
+                VlessFlow::VisionOff
+            } else {
+                VlessFlow::Vision
+            },
+            tag.as_deref(),
+        )?);
+    }
 
+    // Step 2: render sing-box SYNTAX from those contract endpoints. No
+    // credential decisions happen below this line.
     let mut outbounds = Vec::new();
     let mut tags = Vec::new();
     let mut reality_tag: Option<String> = None;
     let mut hysteria2_tag: Option<String> = None;
-    for ep in filtered {
-        // Only the VLESS+REALITY endpoint is labeled in VisionOff mode —
-        // Hysteria2 has no flow concept and is rendered unchanged there.
-        let tag = if compat_mode == CompatibilityMode::VisionOff
-            && matches!(ep.transport, CompatTransport::VlessReality)
-        {
-            format!("{}{VISION_OFF_LABEL_SUFFIX}", ep.label)
-        } else {
-            ep.label.clone()
-        };
+    for ep in &contract_endpoints {
+        let tag = ep.tag.clone();
         tags.push(tag.clone());
-        if matches!(ep.transport, CompatTransport::VlessReality) && reality_tag.is_none() {
-            reality_tag = Some(tag.clone());
+        match &ep.params {
+            contract::TransportParams::VlessReality { .. } if reality_tag.is_none() => {
+                reality_tag = Some(tag.clone());
+            }
+            contract::TransportParams::Hysteria2 { .. } if hysteria2_tag.is_none() => {
+                hysteria2_tag = Some(tag.clone());
+            }
+            _ => {}
         }
-        if matches!(ep.transport, CompatTransport::Hysteria2) && hysteria2_tag.is_none() {
-            hysteria2_tag = Some(tag.clone());
-        }
-        let outbound = match &ep.public_parameters {
-            PublicParameters::Reality {
-                public_key_hex,
-                short_id,
-                fingerprint,
+        let outbound = match &ep.params {
+            contract::TransportParams::VlessReality {
+                uuid,
+                flow,
+                reality,
             } => {
                 let mut ob = json!({
                     "type": "vless",
                     "tag": tag,
                     "server": ep.host,
                     "server_port": ep.port,
-                    "uuid": user.vless_uuid,
-                    "flow": "xtls-rprx-vision",
+                    "uuid": uuid,
                     "tls": {
                         "enabled": true,
-                        "server_name": ep.server_name.clone().unwrap_or_else(|| ep.host.clone()),
-                        "utls": { "enabled": true, "fingerprint": fingerprint },
+                        "server_name": ep.server_name,
+                        "utls": { "enabled": true, "fingerprint": reality.fingerprint },
                         "reality": {
                             "enabled": true,
-                            "public_key": public_key_hex,
-                            "short_id": short_id,
+                            "public_key": reality.public_key,
+                            "short_id": reality.short_id,
                         }
                     }
                 });
+                // Absent, not `""` — an absent `flow` is sing-box's own
+                // default for a VLESS outbound, so the diag-vision-off
+                // profile differs from production by exactly one thing:
+                // Vision is not requested.
+                if let Some(flow) = flow {
+                    ob["flow"] = json!(flow);
+                }
                 if compat_mode == CompatibilityMode::TcpOnly {
                     ob["network"] = json!("tcp");
                 }
-                if compat_mode == CompatibilityMode::VisionOff {
-                    // Removed, not set to "" — an absent `flow` is
-                    // sing-box's own default for a VLESS outbound, so
-                    // this profile differs from the normal one by
-                    // exactly one thing: Vision is not requested.
-                    if let Some(obj) = ob.as_object_mut() {
-                        obj.remove("flow");
-                    }
-                }
                 ob
             }
-            PublicParameters::Hysteria2 { obfs_password } => {
+            contract::TransportParams::Hysteria2 { password, obfs } => {
                 let mut ob = json!({
                     "type": "hysteria2",
                     "tag": tag,
                     "server": ep.host,
                     "server_port": ep.port,
-                    "password": user.hysteria2_password.expose(),
+                    "password": password,
                     "tls": {
                         "enabled": true,
-                        "server_name": ep.server_name.clone().unwrap_or_else(|| ep.host.clone()),
+                        "server_name": ep.server_name,
+                        // Never opt-out: no code path here can set this true.
                         "insecure": false,
                     }
                 });
-                if let Some(pw) = obfs_password {
-                    ob["obfs"] = json!({ "type": "salamander", "password": pw });
+                if let Some(obfs) = obfs {
+                    ob["obfs"] = json!({ "type": obfs.obfs_type, "password": obfs.password });
                 }
                 ob
             }
@@ -1021,90 +992,6 @@ mod tests {
     fn label_with_spaces_is_percent_encoded() {
         let uri = render_vless_reality_uri(&user(), &reality_endpoint()).unwrap();
         assert!(uri.ends_with("Germany%20-%20Reality"));
-    }
-
-    // --- Xray-core-oriented A/B share link (?format=xray) ---
-
-    #[test]
-    fn xray_labeled_uri_has_xray_suffix_and_same_credentials_as_normal_uri() {
-        let normal = render_vless_reality_uri(&user(), &reality_endpoint()).unwrap();
-        let xray = render_vless_reality_uri_xray_labeled(&user(), &reality_endpoint()).unwrap();
-        assert_ne!(
-            normal, xray,
-            "xray-labeled URI must differ from the normal one (label only)"
-        );
-        assert!(
-            xray.starts_with("vless://11111111-1111-4111-8111-111111111111@vpn.example.com:443?"),
-            "same UUID/host/port: {xray}"
-        );
-        assert!(xray.contains("security=reality"));
-        assert!(xray.contains("encryption=none"));
-        assert!(xray.contains("type=tcp"));
-        assert!(xray.contains("sni=www.google.com"));
-        assert!(xray.contains("fp=chrome"));
-        assert!(xray.contains("pbk=abc123"));
-        assert!(xray.contains("sid=0a1b2c3d"));
-        assert!(xray.contains("flow=xtls-rprx-vision"));
-        assert!(
-            xray.ends_with("Germany%20-%20Reality%20%28Xray%29"),
-            "label must be distinctly suffixed (percent-encoded parens): {xray}"
-        );
-        assert!(!xray.to_lowercase().contains("private"));
-    }
-
-    #[test]
-    fn xray_labeled_uri_never_leaks_private_key() {
-        let xray = render_vless_reality_uri_xray_labeled(&user(), &reality_endpoint()).unwrap();
-        assert!(!xray.to_lowercase().contains("private"));
-        assert!(!xray.to_lowercase().contains("private_key"));
-    }
-
-    #[test]
-    fn xray_labeled_uri_rejects_wrong_transport() {
-        assert!(render_vless_reality_uri_xray_labeled(&user(), &hysteria_endpoint()).is_err());
-    }
-
-    #[test]
-    fn xray_uri_list_labels_only_reality_endpoints() {
-        let list =
-            render_xray_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
-        let lines: Vec<&str> = list.lines().collect();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].starts_with("vless://"));
-        assert!(
-            lines[0].contains("%28Xray%29"),
-            "REALITY line must carry the percent-encoded Xray label: {}",
-            lines[0]
-        );
-        assert!(lines[1].starts_with("hysteria2://"));
-        assert!(
-            !lines[1].contains("Xray"),
-            "Hysteria2 line must be unchanged/unlabeled: {}",
-            lines[1]
-        );
-    }
-
-    #[test]
-    fn xray_uri_list_never_leaks_private_key() {
-        let list =
-            render_xray_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
-        assert!(!list.to_lowercase().contains("private"));
-    }
-
-    #[test]
-    fn xray_uri_list_uses_exact_same_credentials_as_default_uri_list_besides_label() {
-        let normal = render_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
-        let xray =
-            render_xray_uri_list(&user(), &[reality_endpoint(), hysteria_endpoint()]).unwrap();
-        // Strip only the trailing label fragment (after '#') and compare —
-        // everything before it (uuid/host/port/query params) must be identical.
-        let strip_label = |uri: &str| uri.split('#').next().unwrap().to_string();
-        let normal_lines: Vec<String> = normal.lines().map(strip_label).collect();
-        let xray_lines: Vec<String> = xray.lines().map(strip_label).collect();
-        assert_eq!(
-            normal_lines, xray_lines,
-            "only the fragment/label may differ between the default and Xray-oriented URI lists"
-        );
     }
 
     #[test]

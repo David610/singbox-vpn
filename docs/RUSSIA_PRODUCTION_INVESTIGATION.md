@@ -1,5 +1,19 @@
 # Russia production investigation (2026-08-14)
 
+> **REMOVAL NOTICE (provisioning-contract pass).** Every reference below
+> to the `?format=xray` subscription variant, its "Xray A/B link", and
+> the B arm of the A/B/C/D test template describes a feature that has
+> been **removed**. It only appended an `(Xray)` suffix to a share-link
+> label — a display string in the client's own UI, never sent over the
+> wire — so it could not have selected a different client engine, and
+> any result attributed to it would have compared a profile against
+> itself. `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5a records the
+> in-repo evidence: Hiddify selects Xray-core only through an explicit
+> `core=xray`/`xvless://` import syntax that this project's generated
+> links never set. The text below is preserved as an investigation
+> record, not as instructions: `?format=xray` now returns HTTP 400. See
+> `docs/PROVISIONING_CONTRACT.md`.
+
 ## Scope, evidence labels, and baseline
 
 This investigation analyzed `74b63cd886dd54e8601520980de578ef55c81c2b` on branch

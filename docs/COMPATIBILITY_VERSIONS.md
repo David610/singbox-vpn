@@ -77,6 +77,17 @@ change; if one is discovered later, `CompatibilityBackend` (see
 `crates/compat-config`) is the seam for swapping data planes without
 touching user management or subscription logic (constraint from spec §53).
 
+**This is a statement about the SERVER data plane only.** This project
+makes no claim, verified or otherwise, about which core a third-party
+client runs. A short-lived `?format=xray` subscription variant that
+suggested otherwise has been removed: it only appended an `(Xray)`
+suffix to a share-link label, which is a display string in the client's
+own UI and is never sent over the wire. `docs/YOUTUBE_NATIVE_APP_
+INVESTIGATION.md` §9.5a records that Hiddify selects its Xray-core
+engine only through an explicit `core=xray`/`xvless://` import syntax
+that this project's generated links never set, so the label could not
+have selected an engine. See `docs/PROVISIONING_CONTRACT.md`.
+
 ## Configuration syntax checked (sing-box 1.13.x)
 
 - VLESS inbound: `type: "vless"`, `users[]` with `uuid` + `flow`

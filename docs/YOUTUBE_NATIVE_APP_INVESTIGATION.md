@@ -1,5 +1,14 @@
 # YouTube native-app failure vs. Safari success vs. WARP success (2026-08-20)
 
+> **REMOVAL NOTICE (provisioning-contract pass).** References below to
+> the `format=xray` A/B mechanism describe a **removed** feature; it
+> changed only a share-link label. §9.5a's own finding — that Hiddify
+> selects Xray-core solely via an explicit `core=xray`/`xvless://`
+> import syntax this project never emitted — is why. The Vision-off
+> experiment (§9.5) is unaffected and remains available, now also as
+> `?diagnostic=vision-off` on the versioned provisioning contract. See
+> `docs/PROVISIONING_CONTRACT.md`.
+
 Investigation only — no fix implemented yet. Per the task that opened
 this pass: "do not optimize until the packet path is understood," and
 "do not claim success until the native application works on a real

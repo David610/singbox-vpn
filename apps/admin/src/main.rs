@@ -1741,20 +1741,19 @@ fn subscription_url_singbox(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
-/// Opt-in Xray-core-oriented A/B share-link URL (`?format=xray`, see
-/// `compat_config::render::render_xray_uri_list`). Same UUID/pbk/sid/SNI/
-/// host/port as `subscription_url`'s `?format=hiddify` link — only the
-/// REALITY line's label carries an explicit "(Xray)" suffix. This exists
-/// for the 2026-08-19 Russia connectivity investigation
-/// (`docs/RUSSIA_PRODUCTION_INVESTIGATION.md`): it gives a tester an
-/// explicit second link to import specifically to exercise a client's
-/// Xray-core engine (where the client offers one) as a control against
-/// the default sing-box-core-oriented link, without touching that default
-/// link or the default subscription output at all.
-fn subscription_url_xray(cfg: &DeploymentConfig, token: &str) -> String {
+/// The FIRST-PARTY provisioning URL for `singbox-client`
+/// (<https://github.com/David610/singbox-client>): the versioned
+/// contract of `crates/provisioning-contract`, served by
+/// `services/subscription`'s `/v1/provision/{token}` route. The schema
+/// version is in the path, so this URL identifies the contract version a
+/// client stores — see `docs/PROVISIONING_CONTRACT.md`.
+fn provisioning_url(cfg: &DeploymentConfig, token: &str) -> String {
     format!(
-        "https://{}:{}/sub/{}?format=xray",
-        cfg.subscription_host, cfg.subscription.public_port, token
+        "https://{}:{}/v{}/provision/{}",
+        cfg.subscription_host,
+        cfg.subscription.public_port,
+        provisioning_contract::SCHEMA_VERSION,
+        token
     )
 }
 
@@ -1837,9 +1836,10 @@ fn cmd_user_create(
             "name": name,
             "enabled": true,
             "subscription_url": url,
-            // Additive field, existing keys/values above are unchanged —
-            // see subscription_url_xray's doc comment.
-            "subscription_url_xray": subscription_url_xray(cfg, &token),
+            // The first-party client's provisioning URL. Additive;
+            // every key above is unchanged — see provisioning_url.
+            "provisioning_url": provisioning_url(cfg, &token),
+            "provisioning_schema_version": provisioning_contract::SCHEMA_VERSION,
             // Additive field, existing keys/values above are unchanged —
             // EXPERIMENTAL, and inert until this user is also opted in
             // server-side; see subscription_url_vision_off's doc comment.
@@ -1873,10 +1873,11 @@ fn cmd_user_create(
     println!("  {}", subscription_url_singbox(cfg, &token));
     println!();
     println!(
-        "Optional A/B testing link (Xray-core-oriented, same credentials, distinctly labeled \
-         \"(Xray)\" — see docs/RUSSIA_PRODUCTION_INVESTIGATION.md):"
+        "singbox-client (the first-party client) uses the versioned provisioning contract \
+         instead — same credential, schema v{} (see docs/PROVISIONING_CONTRACT.md):",
+        provisioning_contract::SCHEMA_VERSION
     );
-    println!("  {}", subscription_url_xray(cfg, &token));
+    println!("  {}", provisioning_url(cfg, &token));
     println!();
     println!(
         "EXPERIMENTAL diagnostic link (XTLS Vision flow OFF, same credentials, labeled \

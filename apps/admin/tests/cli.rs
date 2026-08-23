@@ -660,10 +660,13 @@ fn user_create_json_output_carries_the_experimental_vision_off_link_additively()
     assert_eq!(parsed["enabled"], true);
     let normal = parsed["subscription_url"].as_str().unwrap();
     assert!(normal.ends_with("?format=hiddify"));
-    assert!(parsed["subscription_url_xray"]
-        .as_str()
-        .unwrap()
-        .ends_with("?format=xray"));
+    // The removed Xray-labelled A/B link must not come back.
+    assert!(parsed.get("subscription_url_xray").is_none());
+    // The first-party provisioning contract URL, same token, version in
+    // the path.
+    let provisioning = parsed["provisioning_url"].as_str().unwrap();
+    assert!(provisioning.contains("/v1/provision/"));
+    assert_eq!(parsed["provisioning_schema_version"], 1);
 
     // New, additive key: same token, only the query differs.
     let vision_off = parsed["subscription_url_vision_off"].as_str().unwrap();
@@ -679,6 +682,18 @@ fn user_create_json_output_carries_the_experimental_vision_off_link_additively()
             .to_string()
     };
     assert_eq!(token_of(normal), token_of(vision_off));
+    assert_eq!(
+        token_of(normal),
+        provisioning
+            .split("/provision/")
+            .nth(1)
+            .unwrap()
+            .split('?')
+            .next()
+            .unwrap()
+            .to_string(),
+        "the provisioning contract URL must carry the same credential, not a second one"
+    );
     assert!(parsed.get("private_key").is_none());
 }
 

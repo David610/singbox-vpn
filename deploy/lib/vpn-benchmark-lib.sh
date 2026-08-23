@@ -109,8 +109,8 @@ vpn_benchmark_discover_outbound_tag() {
 # re-appended its OWN `?format=singbox`, producing a doubled query string
 # (".../sub/AbC123token?format=hiddify?format=singbox") that
 # services/subscription's `Query<SubQuery>` extractor parses as a single
-# literal `format` value that matches none of `singbox`/`uri`/`hiddify`/
-# `xray` — a guaranteed 400, which `curl -f` then silently swallowed as
+# literal `format` value that matches none of `singbox`/`uri`/`hiddify`
+# — a guaranteed 400, which `curl -f` then silently swallowed as
 # "could not reach the local subscription backend", permanently and
 # silently SKIPPING the entire VLESS+REALITY/Hysteria2 server-side
 # protocol-overhead section on every run (see also the malformed-JSON

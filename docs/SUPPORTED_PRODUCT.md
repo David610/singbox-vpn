@@ -16,10 +16,23 @@ scope, this file wins for v1.0 decisions.
   checksum-verified at install time).
 - Primary transport: **VLESS + REALITY over TCP/443**.
 - Secondary transport: **Hysteria2 over UDP/443**, optional.
-- Clients: **Hiddify** (Android/iOS/Linux/MagicOS) and other
-  sing-box-compatible clients that are actually documented/tested under
-  `docs/clients/` (currently Hiddify iOS/Linux/MagicOS, v2rayNG Android).
-  No custom client software is required or shipped for this path.
+- Clients, in two explicit tiers:
+  - **PRIMARY, first-party: `singbox-client`**
+    (<https://github.com/David610/singbox-client>), a separate
+    repository. It consumes the versioned provisioning contract at
+    `GET /v1/provision/{token}` — see
+    `docs/PROVISIONING_CONTRACT.md`. This is the client the
+    server/client relationship is designed around.
+  - **FALLBACK, third-party: Hiddify** (Android/iOS/Linux/MagicOS) and
+    other sing-box-compatible importers documented under `docs/clients/`
+    (currently Hiddify iOS/Linux/MagicOS, v2rayNG Android). They consume
+    the legacy `GET /sub/{token}` share-link and sing-box-JSON formats,
+    which remain supported. Only device-verified behaviour is claimed
+    for them — see `docs/CLIENT_COMPATIBILITY.md` and
+    `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+
+  No custom client software is *required* for the fallback path; the
+  server does not run any client software itself for either tier.
 - Custom domain by default; an IP-derived/convenience hostname
   (sslip.io-style) is available only through explicit opt-in, never the
   silent default for a real deployment.
@@ -76,8 +89,19 @@ whenever the two differ in phrasing; they must not differ in substance.
 
 ## Explicitly out of scope for v1.0
 
-- **No custom client software.** The compatibility path never requires
-  running this repo's own Rust daemon on an end-user device.
+- **No custom client software in this repository.** The compatibility
+  path never requires running this repo's own Rust daemon on an end-user
+  device. `singbox-client` is the first-party client, but it is a
+  separate repository with its own release cycle — this repository ships
+  only the contract it consumes (`docs/PROVISIONING_CONTRACT.md`) and
+  the fixtures its CI tests against
+  (`fixtures/singbox-client-contract/`).
+- **No new VPN protocols.** Production transports are exactly
+  VLESS+REALITY and Hysteria2 (+ Salamander obfuscation where
+  configured). The provisioning contract's transport/capability
+  vocabulary is extensible so a future capability is a compatible schema
+  change, but nothing — NaiveProxy, AnyTLS, TUIC, Shadowsocks,
+  WireGuard, a second REALITY implementation — is in v1.0 scope.
 - **No v1.0 multi-node control plane / fleet manager.** One VPS only.
 - **No anonymity or global-adversary guarantee.** This is a private
   circumvention/privacy tool for a small trusted group, not a Tor-class
@@ -105,13 +129,20 @@ scope comment; crate `Cargo.toml` dependency graphs):
 
 - Binaries built: `cargo build --release -p admin -p subscription` only.
 - Crate dependency closure of the supported path: `apps/admin`,
-  `services/subscription` -> `crates/common`, `crates/compat-config`.
-  Neither depends on `transport-native`, `policy`, `failure-classifier`,
-  `network-state`, `rendezvous-client`, or `telemetry`.
+  `services/subscription` -> `crates/common`, `crates/compat-config`,
+  `crates/provisioning-contract`. None depends on `transport-native`,
+  `policy`, `failure-classifier`, `network-state`, `rendezvous-client`,
+  or `telemetry`.
 - Shell: `install.sh`, `uninstall.sh`, `deploy/almalinux/*.sh`,
   `deploy/lib/*.sh`.
 - Templates: `deploy/almalinux/templates/*.template`.
 - Tests: see `docs/IMPLEMENTATION_STATUS.md` for the exact list.
+
+`crates/provisioning-contract` is a leaf crate: pure types and
+validation for the first-party contract, with no dependency on anything
+else in this workspace. `crates/compat-config` depends on it, not the
+other way around, so the contract model cannot pick up server-side
+concerns (key files, paths, secrets) by accident.
 
 Everything else in `crates/` and `apps/` (`client-daemon`, `cli`,
 `keytool`, `transport-native`, `policy`, `failure-classifier`,
