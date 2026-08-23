@@ -19,6 +19,49 @@ fn toml_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
 
+/// `restore` (`apply_restored_file_policy` in `main.rs`) intentionally
+/// refuses to run as root without the real `vpn-subscription` system
+/// group present — it is the group that owns restored secrets in a real
+/// deployment, and silently falling back to some other group would be
+/// the wrong kind of "helpful". That is correct production behavior and
+/// this harness must not weaken it.
+///
+/// It does mean a test sandbox that happens to run as root (this crate's
+/// tests do, in some CI/sandbox configurations, unlike a normal
+/// unprivileged GitHub Actions runner) needs that one system group to
+/// exist before it can exercise the real root-only chown path at all —
+/// otherwise every `restore` invocation fails closed with "required
+/// service group \"vpn-subscription\" does not exist" for a reason that
+/// has nothing to do with what the test is actually checking.
+///
+/// This creates the group once, idempotently, only when running as root,
+/// and never removes it — the same one-time, idempotent step a real
+/// install would perform, not a per-test fixture that needs cleanup. It
+/// does not touch any other host state and does not run when unprivileged
+/// (where `apply_restored_file_policy`'s chown branch is skipped
+/// entirely, so the group is not needed).
+#[cfg(unix)]
+fn ensure_vpn_subscription_group_exists_for_root_tests() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let name = std::ffi::CString::new("vpn-subscription").unwrap();
+    let exists = unsafe { libc::getgrnam(name.as_ptr()) };
+    if !exists.is_null() {
+        return;
+    }
+    let status = std::process::Command::new("groupadd")
+        .args(["--system", "vpn-subscription"])
+        .status();
+    assert!(
+        matches!(status, Ok(s) if s.success()),
+        "test running as root could not create the 'vpn-subscription' system group needed to \
+         exercise the real restore ownership path: {status:?}"
+    );
+}
+#[cfg(not(unix))]
+fn ensure_vpn_subscription_group_exists_for_root_tests() {}
+
 fn write_deployment_toml(dir: &Path) -> std::path::PathBuf {
     let cfg_path = dir.join("deployment.toml");
     let state_dir = dir.join("state");
@@ -2056,6 +2099,7 @@ fn doctor_report_output_writes_mode_0600_file() {
 
 #[test]
 fn backup_then_restore_round_trips_users() {
+    ensure_vpn_subscription_group_exists_for_root_tests();
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_deployment_toml(dir.path());
     let state_dir = dir.path().join("state");
@@ -2105,6 +2149,7 @@ fn backup_then_restore_round_trips_users() {
 
 #[test]
 fn backup_then_restore_round_trips_hysteria2_obfuscation_password() {
+    ensure_vpn_subscription_group_exists_for_root_tests();
     // Regression test for a manifest-drift bug: backup creation included
     // reality/hysteria_obfs_password.txt (once Hysteria2 obfuscation was
     // enabled) but the archive-extraction allowlist did not, so `restore`
@@ -2297,6 +2342,7 @@ fn restore_rejects_archive_containing_a_symlink() {
 #[cfg(unix)]
 #[test]
 fn restore_of_differing_reality_key_restarts_subscription_service_too() {
+    ensure_vpn_subscription_group_exists_for_root_tests();
     let dir = tempfile::tempdir().unwrap();
     // A real sing-box binary (faked) is required here: without one,
     // `regenerate_singbox_config` skips straight to a "binary not found"
@@ -2382,6 +2428,7 @@ fn restore_of_differing_reality_key_restarts_subscription_service_too() {
 #[test]
 #[cfg(unix)]
 fn restore_never_widens_permissions_on_restored_secrets() {
+    ensure_vpn_subscription_group_exists_for_root_tests();
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_deployment_toml(dir.path());
@@ -2745,6 +2792,7 @@ fn command_mutates_state_check_does_not_block_config_validate_concurrently() {
 
 #[test]
 fn backup_then_restore_round_trips_the_current_versioned_users_envelope() {
+    ensure_vpn_subscription_group_exists_for_root_tests();
     // Regression test: cmd_restore() used to parse users/users.json with
     // a raw serde_json::from_slice::<Vec<CompatUser>>, which only ever
     // understood the legacy bare-array shape. Once save_users_atomic()
