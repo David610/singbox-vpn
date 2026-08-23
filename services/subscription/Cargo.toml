@@ -23,6 +23,7 @@ clap.workspace = true
 axum = "0.7"
 common = { path = "../../crates/common" }
 compat-config = { path = "../../crates/compat-config" }
+provisioning-contract = { path = "../../crates/provisioning-contract" }
 anyhow = "1"
 
 [dev-dependencies]

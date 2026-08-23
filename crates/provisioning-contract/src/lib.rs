@@ -127,10 +127,7 @@ pub enum ContractError {
     Empty { field: &'static str },
 
     #[error("{field} contains an invalid value: {reason}")]
-    Invalid {
-        field: &'static str,
-        reason: String,
-    },
+    Invalid { field: &'static str, reason: String },
 
     #[error(
         "endpoint {endpoint_id}: malformed VLESS client id (uuid) — expected an \
@@ -194,10 +191,7 @@ pub enum ContractError {
         "the serialized document contains the forbidden key or value {found:?} ({reason}) — \
          this contract must never carry server-private material or client-owned policy"
     )]
-    ForbiddenContent {
-        found: String,
-        reason: &'static str,
-    },
+    ForbiddenContent { found: String, reason: &'static str },
 }
 
 // ---------------------------------------------------------------------
@@ -480,7 +474,11 @@ impl ProvisioningDocument {
     /// Build a document at the current [`SCHEMA_VERSION`]. The result is
     /// NOT validated — call [`ProvisioningDocument::validate`] (or use
     /// [`ProvisioningDocument::to_json`], which validates first).
-    pub fn new(server: ServerInfo, capabilities: Vec<Capability>, endpoints: Vec<Endpoint>) -> Self {
+    pub fn new(
+        server: ServerInfo,
+        capabilities: Vec<Capability>,
+        endpoints: Vec<Endpoint>,
+    ) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             server,
@@ -544,9 +542,7 @@ impl ProvisioningDocument {
         for ep in &self.endpoints {
             ep.validate()?;
             if seen_ids.contains(&ep.id.as_str()) {
-                return Err(ContractError::DuplicateEndpointId {
-                    id: ep.id.clone(),
-                });
+                return Err(ContractError::DuplicateEndpointId { id: ep.id.clone() });
             }
             seen_ids.push(&ep.id);
 
@@ -827,7 +823,10 @@ mod tests {
                 supported: vec![1]
             })
         );
-        assert!(d.to_json().is_err(), "must not serialize an unknown version");
+        assert!(
+            d.to_json().is_err(),
+            "must not serialize an unknown version"
+        );
     }
 
     #[test]

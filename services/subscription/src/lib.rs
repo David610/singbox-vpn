@@ -15,6 +15,7 @@ use axum::routing::get;
 use axum::Router;
 use compat_config::model::CompatEndpoint;
 use compat_config::{credentials, render, CompatUser};
+use provisioning_contract as contract;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Mutex;
@@ -147,14 +148,13 @@ fn find_user_by_token(users: &[CompatUser], token: &str, now_unix: i64) -> Optio
 pub struct SubQuery {
     /// `singbox` (default): native sing-box client JSON. `uri`/`hiddify`:
     /// newline-separated `vless://`/`hysteria2://` share links, unchanged
-    /// pre-existing behavior. `xray`: an opt-in, distinctly-labeled A/B
-    /// variant of the share-link list for the 2026-08-19 Russia
-    /// connectivity investigation (`docs/RUSSIA_PRODUCTION_INVESTIGATION.md`)
-    /// — same UUID/pbk/sid/SNI/host/port/fingerprint/flow as `uri`, only
-    /// the VLESS+REALITY line's label gets an explicit "(Xray)" suffix so
-    /// a tester/operator can tell which link was imported. See
-    /// `compat_config::render::render_xray_uri_list`'s doc comment for the
-    /// full rationale and the explicit UNVERIFIED-Hiddify-syntax caveat.
+    /// pre-existing behavior.
+    ///
+    /// These are the LEGACY, pre-contract representations. They remain
+    /// supported for existing users and for third-party importers
+    /// (Hiddify and friends). The first-party client
+    /// (`singbox-client`) should use `GET /v1/provision/{token}`
+    /// instead — see `get_provision` and `docs/PROVISIONING_CONTRACT.md`.
     pub format: Option<String>,
     /// Which transport the `format=singbox` subscription's manual
     /// selector defaults to: `reliability` (default, unchanged — REALITY),
@@ -347,41 +347,6 @@ async fn get_subscription(
                 }
             }
         }
-        // Opt-in Xray-core-oriented A/B share-link variant — see
-        // `SubQuery::format`'s doc comment and
-        // `compat_config::render::render_xray_uri_list`. Same credentials
-        // as `format=uri`/`format=hiddify`, only the REALITY line's label
-        // differs, so it inherits the same TCP-only-mode restriction for
-        // the same reason.
-        "xray" => {
-            if compat_mode != render::CompatibilityMode::Normal {
-                // Deliberately not combined: `format=xray` is itself an
-                // A/B variable (which client core executes) and
-                // `compat=vision-off` is another (whether Vision is
-                // requested). Serving both at once would produce a
-                // result no single experiment could attribute — see
-                // docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §9.5.
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "compat is only supported with format=singbox (tcp-only) or \
-                     format=uri/hiddify/singbox (vision-off) — the xray share-link format is \
-                     itself an A/B variable and must not be combined with another one",
-                )
-                    .into_response();
-            }
-            match render::render_xray_uri_list(&user, &state.endpoints) {
-                Ok(body) => (
-                    StatusCode::OK,
-                    [("content-type", "text/plain; charset=utf-8")],
-                    body,
-                )
-                    .into_response(),
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to render xray uri list");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
-                }
-            }
-        }
         _ => (StatusCode::BAD_REQUEST, "unknown format").into_response(),
     }
 }
@@ -406,11 +371,167 @@ async fn no_store_headers(req: axum::extract::Request, next: axum::middleware::N
     resp
 }
 
+/// Query parameters of the versioned provisioning route.
+#[derive(serde::Deserialize)]
+pub struct ProvisionQuery {
+    /// Which contract schema version the client wants. Optional; when
+    /// absent the server serves the version this route's path declares
+    /// (`/v1/...` ⇒ `schema_version = 1`).
+    ///
+    /// When present it must name a version this server implements. A
+    /// version this server does not implement is an explicit HTTP 400
+    /// with a machine-readable body — never a silent best-effort
+    /// reinterpretation as some other version.
+    pub schema_version: Option<String>,
+}
+
+/// `GET /v1/provision/{token}` — the FIRST-PARTY provisioning contract.
+///
+/// This route, not a query parameter on `/sub/`, is the documented API
+/// surface for `singbox-client`: the version lives in the path, so it
+/// is part of the URL a client stores, and a future `schema_version = 2`
+/// gets `/v2/provision/{token}` without renegotiating anything about
+/// this one. `?schema_version=N` exists only so a client can assert the
+/// version it expects and get an explicit error instead of a surprise.
+///
+/// Authentication, rate limiting, no-store caching and the generic-404
+/// behaviour are identical to `/sub/{token}` — same bearer token, same
+/// trust boundary, same no-user-enumeration guarantees.
+async fn get_provision(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxumPath(token): AxumPath<String>,
+    Query(query): Query<ProvisionQuery>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    {
+        let mut limiter = state
+            .rate_limiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !limiter.allow(addr.ip()) {
+            tracing::warn!(
+                peer = %addr.ip(),
+                "subscription backend rate limit engaged — requests are being shed \
+                 service-wide; per-client fairness is enforced by nginx"
+            );
+            return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
+        }
+    }
+
+    // Version negotiation happens BEFORE authentication so that a client
+    // pinned to a version this server cannot serve gets a precise,
+    // actionable error rather than a generic 404 that looks like a bad
+    // token. The requested version is not a secret and reveals nothing
+    // about whether the token is valid.
+    if let Some(requested) = query.schema_version.as_deref() {
+        let parsed: Option<u32> = requested.parse().ok();
+        match parsed {
+            Some(v) if contract::is_supported_schema_version(v) => {}
+            Some(v) => return unsupported_schema_version_response(v),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [("content-type", "application/json")],
+                    serde_json::json!({
+                        "error": "invalid_schema_version",
+                        "requested": requested,
+                        "supported": contract::SUPPORTED_SCHEMA_VERSIONS,
+                        "message": "schema_version must be an integer; the server will not guess \
+                                    which version was meant",
+                    })
+                    .to_string(),
+                )
+                    .into_response()
+            }
+        }
+    }
+
+    if token.is_empty() || token.len() > 128 {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+
+    let users = match compat_config::store::load_users(&state.users_file) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load user store");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    let now = common::UnixSeconds::now().0 as i64;
+    let user = match find_user_by_token(&users, &token, now) {
+        None => return (StatusCode::NOT_FOUND, "not found").into_response(),
+        Some(u) => u,
+    };
+
+    tracing::debug!(
+        user_id = %user.id,
+        schema_version = contract::SCHEMA_VERSION,
+        "provisioning contract served"
+    );
+
+    let doc = match compat_config::contract::provisioning_document(&user, &state.endpoints) {
+        Ok(doc) => doc,
+        Err(e) => {
+            // A document that fails its own contract validation is a
+            // server-side defect or a broken deployment state. Serving a
+            // half-valid profile is worse than failing: the client would
+            // silently fail to dial with no way to tell why.
+            tracing::error!(error = %e, "refusing to serve an invalid provisioning document");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response();
+        }
+    };
+    match doc.to_json() {
+        Ok(body) => (StatusCode::OK, [("content-type", "application/json")], body).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to serialize provisioning document");
+            (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+        }
+    }
+}
+
+/// The explicit, machine-readable failure a client gets when it asks for
+/// a schema version this server does not implement. HTTP 400 with a
+/// stable `error` discriminator — never a 200 carrying some other
+/// version's document.
+fn unsupported_schema_version_response(requested: u32) -> Response {
+    let body = contract::UnsupportedSchemaVersion::new(requested);
+    (
+        StatusCode::BAD_REQUEST,
+        [("content-type", "application/json")],
+        serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string()),
+    )
+        .into_response()
+}
+
+/// Any `/v{N}/provision/{token}` for an N this server does not
+/// implement. Without this, `/v2/provision/...` would 404 and be
+/// indistinguishable from a bad token; with it, a newer client learns
+/// exactly which versions this server speaks.
+async fn get_provision_unsupported_version(
+    AxumPath((version, _token)): AxumPath<(String, String)>,
+) -> Response {
+    match version.trim_start_matches('v').parse::<u32>() {
+        Ok(v) if !contract::is_supported_schema_version(v) => {
+            unsupported_schema_version_response(v)
+        }
+        _ => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
 pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
     Router::new()
         .route(
             "/sub/:token",
             get(get_subscription).layer(axum::middleware::from_fn(no_store_headers)),
+        )
+        .route(
+            "/v1/provision/:token",
+            get(get_provision).layer(axum::middleware::from_fn(no_store_headers)),
+        )
+        .route(
+            "/:version/provision/:token",
+            get(get_provision_unsupported_version)
+                .layer(axum::middleware::from_fn(no_store_headers)),
         )
         .route("/healthz", get(health))
         .route("/internal/state-fingerprint", get(state_fingerprint))
@@ -627,91 +748,21 @@ mod tests {
         );
     }
 
-    // --- format=xray (Xray-core-oriented A/B share link) ---
-
+    /// The removed `?format=xray` placebo must be gone for good: a
+    /// request for it is a plain "unknown format" 400, not a silently
+    /// re-served normal profile. Serving something reasonable here would
+    /// hide the removal from the one person who needs to know about it —
+    /// an operator still running an A/B test that no longer exists.
     #[tokio::test]
-    async fn xray_format_returns_200_plaintext_with_reality_and_hysteria2_lines() {
+    async fn removed_xray_format_is_rejected_as_an_unknown_format() {
         let state = make_state(vec![user_with_token("goodtoken", true)]);
         let resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray").await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let s = String::from_utf8(body.to_vec()).unwrap();
-        assert!(s.contains("vless://"));
-        assert!(s.contains("hysteria2://"));
-        assert!(
-            s.contains("%28Xray%29"),
-            "REALITY line must carry the percent-encoded Xray label: {s}"
-        );
-    }
-
-    #[tokio::test]
-    async fn xray_format_contains_exact_expected_reality_fields_and_no_private_key() {
-        let state = make_state(vec![user_with_token("goodtoken", true)]);
-        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray").await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let s = String::from_utf8(body.to_vec()).unwrap();
-        let reality_line = s.lines().find(|l| l.starts_with("vless://")).unwrap();
-        assert!(reality_line
-            .starts_with("vless://11111111-1111-4111-8111-111111111111@vpn.example.com:443?"));
-        assert!(reality_line.contains("security=reality"));
-        assert!(reality_line.contains("encryption=none"));
-        assert!(reality_line.contains("type=tcp"));
-        assert!(reality_line.contains("flow=xtls-rprx-vision"));
-        assert!(reality_line.contains("sni=www.google.com"));
-        assert!(reality_line.contains("fp=chrome"));
-        assert!(reality_line.contains("pbk=pub"));
-        assert!(reality_line.contains("sid=short"));
-        assert!(!s.to_lowercase().contains("private"));
-    }
-
-    #[tokio::test]
-    async fn xray_format_uses_identical_credentials_to_uri_format_besides_label() {
-        let state = make_state(vec![user_with_token("goodtoken", true)]);
-        let uri_resp = oneshot_with_addr(state.clone(), "/sub/goodtoken?format=uri").await;
-        let xray_resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray").await;
-        assert_eq!(uri_resp.status(), StatusCode::OK);
-        assert_eq!(xray_resp.status(), StatusCode::OK);
-        let uri_body = String::from_utf8(
-            axum::body::to_bytes(uri_resp.into_body(), usize::MAX)
-                .await
-                .unwrap()
-                .to_vec(),
-        )
-        .unwrap();
-        let xray_body = String::from_utf8(
-            axum::body::to_bytes(xray_resp.into_body(), usize::MAX)
-                .await
-                .unwrap()
-                .to_vec(),
-        )
-        .unwrap();
-        let strip_label = |s: &str| -> Vec<String> {
-            s.lines()
-                .map(|l| l.split('#').next().unwrap().to_string())
-                .collect()
-        };
-        assert_eq!(
-            strip_label(&uri_body),
-            strip_label(&xray_body),
-            "only the fragment/label may differ between ?format=uri and ?format=xray"
-        );
-    }
-
-    #[tokio::test]
-    async fn compat_tcp_only_with_xray_format_is_rejected_not_silently_degraded() {
-        let state = make_state(vec![user_with_token("goodtoken", true)]);
-        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray&compat=tcp-only").await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    /// Regression: adding `format=xray` must not change what
+    /// Regression: the contract work must not change what
     /// `format=singbox` (the default) or `format=uri`/`format=hiddify`
-    /// serve — byte-for-byte identical to before this change existed.
+    /// serve — existing users' profiles keep working unchanged.
     #[tokio::test]
     async fn default_and_existing_format_outputs_are_byte_for_byte_unchanged() {
         let state = make_state(vec![user_with_token("goodtoken", true)]);
@@ -723,8 +774,7 @@ mod tests {
         let s = String::from_utf8(default_body.to_vec()).unwrap();
         // Exact shape asserted here (not just "contains vless/hysteria2")
         // so a future accidental change to the default renderer path
-        // (e.g. leaking the new xray-labeling helper into the default
-        // one) would be caught.
+        // would be caught.
         assert!(s.contains("\"outbounds\""));
         assert!(s.contains("\"type\": \"vless\""));
         assert!(s.contains("\"type\": \"hysteria2\""));
@@ -732,7 +782,11 @@ mod tests {
         assert!(s.contains("\"type\": \"selector\""));
         assert!(
             !s.contains("Xray"),
-            "default subscription must never carry the Xray A/B label"
+            "no generated profile may carry the removed Xray A/B label"
+        );
+        assert!(
+            !s.contains("schema_version"),
+            "the legacy sing-box profile must not start carrying contract fields"
         );
 
         let uri_resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri").await;
@@ -743,7 +797,7 @@ mod tests {
         let uri_s = String::from_utf8(uri_body.to_vec()).unwrap();
         assert!(
             !uri_s.contains("Xray"),
-            "?format=uri must never carry the Xray A/B label"
+            "no generated share link may carry the removed Xray A/B label"
         );
     }
 
@@ -833,15 +887,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(a, b);
-    }
-
-    /// Two independent A/B variables must not be combined in one link —
-    /// a result from it could not be attributed to either.
-    #[tokio::test]
-    async fn compat_vision_off_with_xray_format_is_rejected() {
-        let state = make_state(vec![user_with_token("goodtoken", true)]);
-        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=xray&compat=vision-off").await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     /// Regression: adding `compat=vision-off` must not change what the
@@ -1084,6 +1129,226 @@ mod tests {
             !output.contains(hysteria_password),
             "the Hysteria2 password must never appear in any log line:\n{output}"
         );
+    }
+
+    // --- /v1/provision: the versioned first-party contract ---
+
+    /// Fake-but-well-formed REALITY material, so the generated document
+    /// passes the contract's own validation. `make_state`'s `"pub"` /
+    /// `"short"` placeholders deliberately stay as they are: several
+    /// legacy-format tests assert on those exact bytes.
+    fn make_contract_state(
+        users: Vec<CompatUser>,
+        obfs: Option<&str>,
+        hysteria2: bool,
+    ) -> std::sync::Arc<AppState> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        compat_config::store::save_users_atomic(&path, &users).unwrap();
+        std::mem::forget(dir);
+        let mut endpoints = standard_endpoints(
+            "vpn.example.com",
+            443,
+            443,
+            "FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake",
+            "0a1b2c3d",
+            "www.example-decoy.com",
+            obfs,
+        );
+        if !hysteria2 {
+            endpoints.retain(|e| e.transport == compat_config::CompatTransport::VlessReality);
+        }
+        std::sync::Arc::new(AppState {
+            users_file: path,
+            endpoints,
+            rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+        })
+    }
+
+    async fn body_json(resp: Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).expect("response body is JSON")
+    }
+
+    #[tokio::test]
+    async fn v1_provision_serves_a_valid_versioned_contract() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["server"]["product"], "singbox-vpn");
+        assert_eq!(
+            v["capabilities"],
+            serde_json::json!(["vless-reality", "hysteria2"])
+        );
+        assert_eq!(v["endpoints"][0]["transport"], "vless-reality");
+        assert_eq!(v["endpoints"][0]["flow"], "xtls-rprx-vision");
+        assert_eq!(v["endpoints"][1]["transport"], "hysteria2");
+    }
+
+    #[tokio::test]
+    async fn v1_provision_capabilities_follow_real_configuration() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, false);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken").await;
+        let v = body_json(resp).await;
+        assert_eq!(v["capabilities"], serde_json::json!(["vless-reality"]));
+        assert_eq!(v["endpoints"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn v1_provision_carries_salamander_obfs_only_when_configured() {
+        let state = make_contract_state(
+            vec![user_with_token("goodtoken", true)],
+            Some("fake-obfs-password"),
+            true,
+        );
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken").await;
+        let v = body_json(resp).await;
+        assert_eq!(v["endpoints"][1]["obfs"]["type"], "salamander");
+        assert_eq!(v["endpoints"][1]["obfs"]["password"], "fake-obfs-password");
+    }
+
+    #[tokio::test]
+    async fn v1_provision_never_carries_server_private_or_client_owned_material() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken").await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap().to_lowercase();
+        for forbidden in [
+            "private_key",
+            "-----begin",
+            ".pem",
+            "/etc/",
+            "insecure",
+            "\"dns\"",
+            "\"mtu\"",
+            "\"tun\"",
+            "auto_route",
+            "kill_switch",
+        ] {
+            assert!(!s.contains(forbidden), "{forbidden} present in {s}");
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_provision_accepts_an_explicit_matching_schema_version() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken?schema_version=1").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn v1_provision_rejects_an_unsupported_schema_version_explicitly() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken?schema_version=2").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = body_json(resp).await;
+        assert_eq!(v["error"], "unsupported_schema_version");
+        assert_eq!(v["requested"], 2);
+        assert_eq!(v["supported"], serde_json::json!([1]));
+    }
+
+    #[tokio::test]
+    async fn a_non_numeric_schema_version_is_an_explicit_error_not_a_guess() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken?schema_version=one").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = body_json(resp).await;
+        assert_eq!(v["error"], "invalid_schema_version");
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_version_path_reports_which_versions_exist() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v2/provision/goodtoken").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = body_json(resp).await;
+        assert_eq!(v["error"], "unsupported_schema_version");
+        assert_eq!(v["requested"], 2);
+    }
+
+    #[tokio::test]
+    async fn v1_provision_uses_the_same_token_and_404_semantics_as_sub() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", false)], None, true);
+        let resp = oneshot_with_addr(state.clone(), "/v1/provision/goodtoken").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "a disabled user must be indistinguishable from an unknown token"
+        );
+        let resp = oneshot_with_addr(state, "/v1/provision/wrongtoken").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn v1_provision_responses_are_never_cacheable() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken").await;
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "no-store");
+        assert_eq!(
+            resp.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_provision_and_the_legacy_share_links_agree_on_credentials() {
+        // The single-source-of-truth property, checked end to end: the
+        // contract document and the legacy share-link representation are
+        // two renderings of the SAME endpoint model, so they can never
+        // disagree about a user's UUID, REALITY parameters or password.
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let contract_resp = oneshot_with_addr(state.clone(), "/v1/provision/goodtoken").await;
+        let v = body_json(contract_resp).await;
+
+        let uri_resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri").await;
+        let uri_body = axum::body::to_bytes(uri_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let uris = String::from_utf8(uri_body.to_vec()).unwrap();
+        let vless = uris.lines().find(|l| l.starts_with("vless://")).unwrap();
+
+        assert!(vless.contains(v["endpoints"][0]["uuid"].as_str().unwrap()));
+        assert!(vless.contains(&format!(
+            "pbk={}",
+            v["endpoints"][0]["reality"]["public_key"].as_str().unwrap()
+        )));
+        assert!(vless.contains(&format!(
+            "sid={}",
+            v["endpoints"][0]["reality"]["short_id"].as_str().unwrap()
+        )));
+    }
+
+    #[tokio::test]
+    async fn experimental_capabilities_are_never_production_capabilities() {
+        let mut user = user_with_token("goodtoken", true);
+        user.vision_off_experiment = true;
+        let state = make_contract_state(vec![user], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken").await;
+        let v = body_json(resp).await;
+        let caps: Vec<&str> = v["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_str().unwrap())
+            .collect();
+        assert_eq!(caps, vec!["vless-reality", "hysteria2"]);
+        let experimental: Vec<&str> = v["experimental_capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_str().unwrap())
+            .collect();
+        assert!(experimental.contains(&"diag-tcp-only"));
+        assert!(experimental.contains(&"diag-vision-off"));
+        for cap in &caps {
+            assert!(!cap.starts_with("diag-"));
+        }
     }
 }
 

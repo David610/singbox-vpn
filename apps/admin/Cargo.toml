@@ -24,6 +24,7 @@ serde_json.workspace = true
 toml.workspace = true
 common = { path = "../../crates/common" }
 compat-config = { path = "../../crates/compat-config" }
+provisioning-contract = { path = "../../crates/provisioning-contract" }
 anyhow = "1"
 qrcode = { version = "0.14", default-features = false }
 tempfile = "3"
