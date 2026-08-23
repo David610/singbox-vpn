@@ -368,6 +368,14 @@ async fn no_store_headers(req: axum::extract::Request, next: axum::middleware::N
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
+    // The bearer credential is part of the URL. Well-behaved crawlers must
+    // neither index the response nor follow credential-bearing links found in
+    // a rendered profile. This is defense in depth (the route is still
+    // authenticated and robots.txt is not an access-control mechanism).
+    headers.insert(
+        "x-robots-tag",
+        HeaderValue::from_static("noindex, nofollow, noarchive"),
+    );
     resp
 }
 
@@ -1326,6 +1334,10 @@ mod tests {
         assert_eq!(
             resp.headers().get("x-content-type-options").unwrap(),
             "nosniff"
+        );
+        assert_eq!(
+            resp.headers().get("x-robots-tag").unwrap(),
+            "noindex, nofollow, noarchive"
         );
     }
 
