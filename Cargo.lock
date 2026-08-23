@@ -1472,6 +1472,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "provisioning-contract"
+version = "0.1.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "qrcode"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
