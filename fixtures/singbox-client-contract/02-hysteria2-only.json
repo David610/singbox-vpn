@@ -1,0 +1,23 @@
+{
+  "capabilities": [
+    "hysteria2"
+  ],
+  "endpoints": [
+    {
+      "host": "vpn.example.com",
+      "id": "hysteria2-1",
+      "password": "fake-hysteria2-password-not-a-real-secret",
+      "port": 443,
+      "server_name": "vpn.example.com",
+      "tag": "Hysteria2",
+      "transport": "hysteria2"
+    }
+  ],
+  "experimental_capabilities": [],
+  "schema_version": 1,
+  "server": {
+    "minimum_client_version": "0.1.0",
+    "product": "singbox-vpn",
+    "version": "0.0.0-fixture"
+  }
+}

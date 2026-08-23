@@ -1,0 +1,31 @@
+{
+  "capabilities": [
+    "vless-reality"
+  ],
+  "endpoints": [
+    {
+      "flow": "xtls-rprx-vision",
+      "host": "vpn.example.com",
+      "id": "reality-1",
+      "port": 443,
+      "reality": {
+        "fingerprint": "chrome",
+        "public_key": "FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake",
+        "short_id": "0a1b2c3d"
+      },
+      "server_name": "www.example-decoy.com",
+      "tag": "Reality",
+      "transport": "vless-reality",
+      "uuid": "00000000-0000-4000-8000-000000000001"
+    }
+  ],
+  "experimental_capabilities": [
+    "diag-tcp-only"
+  ],
+  "schema_version": 1,
+  "server": {
+    "minimum_client_version": "0.1.0",
+    "product": "singbox-vpn",
+    "version": "0.0.0-fixture"
+  }
+}

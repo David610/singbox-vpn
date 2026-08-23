@@ -1,0 +1,8 @@
+{
+  "error": "unsupported_schema_version",
+  "message": "this server implements provisioning schema_version [1]; it cannot serve the requested version 2. Upgrade the server, or request a supported version — the server will not guess.",
+  "requested": 2,
+  "supported": [
+    1
+  ]
+}

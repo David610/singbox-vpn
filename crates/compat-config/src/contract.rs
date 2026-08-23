@@ -113,7 +113,70 @@ pub fn provisioning_document(
     user: &CompatUser,
     endpoints: &[CompatEndpoint],
 ) -> Result<contract::ProvisioningDocument, CompatError> {
-    let contract_endpoints = contract_endpoints(user, endpoints)?;
+    provisioning_document_with_mode(user, endpoints, DiagnosticMode::None)
+}
+
+/// Which diagnostic profile a provisioning document represents.
+///
+/// [`DiagnosticMode::None`] is production and the only thing a client
+/// ever gets without asking for something else by name. The other
+/// variants exist so an operator running a documented experiment can get
+/// that experiment's profile through the SAME versioned contract the
+/// production client uses, instead of a parallel undocumented format —
+/// they are never defaults, never negotiated automatically, and always
+/// reported through `experimental_capabilities`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DiagnosticMode {
+    #[default]
+    None,
+    /// `diag-tcp-only`: every UDP-carrying option removed, so the
+    /// profile cannot fall back to one — see
+    /// `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`.
+    TcpOnly,
+    /// `diag-vision-off`: the VLESS+REALITY endpoint carries no flow.
+    /// Requires `CompatUser::vision_off_experiment`; more fingerprintable
+    /// than production — see `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md`.
+    VisionOff,
+}
+
+impl DiagnosticMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "tcp-only" | "diag-tcp-only" => Some(Self::TcpOnly),
+            "vision-off" | "diag-vision-off" => Some(Self::VisionOff),
+            _ => None,
+        }
+    }
+}
+
+/// [`provisioning_document`] for a specific diagnostic profile. The
+/// production path is `DiagnosticMode::None`.
+pub fn provisioning_document_with_mode(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    mode: DiagnosticMode,
+) -> Result<contract::ProvisioningDocument, CompatError> {
+    let mut contract_endpoints = Vec::with_capacity(endpoints.len());
+    for ep in endpoints {
+        if mode == DiagnosticMode::TcpOnly
+            && matches!(ep.transport, crate::model::CompatTransport::Hysteria2)
+        {
+            continue;
+        }
+        let vision_off = mode == DiagnosticMode::VisionOff
+            && matches!(ep.transport, crate::model::CompatTransport::VlessReality);
+        contract_endpoints.push(contract_endpoint(
+            user,
+            ep,
+            if vision_off {
+                VlessFlow::VisionOff
+            } else {
+                VlessFlow::Vision
+            },
+            None,
+        )?);
+    }
 
     let mut capabilities: Vec<contract::Capability> = Vec::new();
     for ep in &contract_endpoints {
@@ -124,9 +187,9 @@ pub fn provisioning_document(
     }
 
     let mut experimental = Vec::new();
-    if contract_endpoints
+    if endpoints
         .iter()
-        .any(|ep| ep.transport() == contract::Transport::VlessReality)
+        .any(|ep| matches!(ep.transport, crate::model::CompatTransport::VlessReality))
     {
         // `diag-tcp-only` needs a VLESS+REALITY endpoint to remain
         // usable after Hysteria2 is dropped; advertising it for a

@@ -383,6 +383,12 @@ pub struct ProvisionQuery {
     /// with a machine-readable body — never a silent best-effort
     /// reinterpretation as some other version.
     pub schema_version: Option<String>,
+    /// Opt-in diagnostic profile: `tcp-only` or `vision-off`. Absent (the
+    /// only thing a production client ever sends) means the production
+    /// profile. An unrecognized value is REJECTED rather than silently
+    /// ignored — this parameter can remove transports from the profile,
+    /// so a typo must not quietly hand someone a degraded one.
+    pub diagnostic: Option<String>,
 }
 
 /// `GET /v1/provision/{token}` — the FIRST-PARTY provisioning contract.
@@ -446,6 +452,28 @@ async fn get_provision(
         }
     }
 
+    let diagnostic = match query.diagnostic.as_deref() {
+        None => compat_config::contract::DiagnosticMode::None,
+        Some(s) => match compat_config::contract::DiagnosticMode::parse(s) {
+            Some(mode) => mode,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [("content-type", "application/json")],
+                    serde_json::json!({
+                        "error": "unknown_diagnostic",
+                        "requested": s,
+                        "supported": ["tcp-only", "vision-off"],
+                        "message": "unknown diagnostic profile; omit the parameter for the \
+                                    production profile",
+                    })
+                    .to_string(),
+                )
+                    .into_response()
+            }
+        },
+    };
+
     if token.is_empty() || token.len() > 128 {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
@@ -466,10 +494,15 @@ async fn get_provision(
     tracing::debug!(
         user_id = %user.id,
         schema_version = contract::SCHEMA_VERSION,
+        diagnostic = ?query.diagnostic,
         "provisioning contract served"
     );
 
-    let doc = match compat_config::contract::provisioning_document(&user, &state.endpoints) {
+    let doc = match compat_config::contract::provisioning_document_with_mode(
+        &user,
+        &state.endpoints,
+        diagnostic,
+    ) {
         Ok(doc) => doc,
         Err(e) => {
             // A document that fails its own contract validation is a
@@ -1322,6 +1355,54 @@ mod tests {
             "sid={}",
             v["endpoints"][0]["reality"]["short_id"].as_str().unwrap()
         )));
+    }
+
+    #[tokio::test]
+    async fn diagnostic_tcp_only_removes_hysteria2_entirely() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken?diagnostic=tcp-only").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["capabilities"], serde_json::json!(["vless-reality"]));
+        assert_eq!(v["endpoints"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn diagnostic_vision_off_omits_the_flow_field() {
+        let mut user = user_with_token("goodtoken", true);
+        user.vision_off_experiment = true;
+        let state = make_contract_state(vec![user], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken?diagnostic=vision-off").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert!(
+            v["endpoints"][0].get("flow").is_none(),
+            "vision-off must omit flow entirely, never emit an empty one"
+        );
+        assert_eq!(v["endpoints"][1]["transport"], "hysteria2");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_diagnostic_is_rejected_rather_than_silently_ignored() {
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken?diagnostic=nonsense").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = body_json(resp).await;
+        assert_eq!(v["error"], "unknown_diagnostic");
+    }
+
+    #[tokio::test]
+    async fn the_production_profile_is_what_a_client_gets_without_asking_for_a_diagnostic() {
+        let mut user = user_with_token("goodtoken", true);
+        user.vision_off_experiment = true;
+        let state = make_contract_state(vec![user], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken").await;
+        let v = body_json(resp).await;
+        assert_eq!(
+            v["endpoints"][0]["flow"], "xtls-rprx-vision",
+            "an available diagnostic must never become the default profile"
+        );
+        assert_eq!(v["endpoints"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
