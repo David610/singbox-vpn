@@ -53,4 +53,4 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 bitflags = "2"
 proptest = "1"
 clap = { version = "4", features = ["derive"] }
-toml = "0.8"
+toml = "1.1"
