@@ -133,6 +133,15 @@ enumeration).
   `flow` is present only when a flow is requested; the `diag-vision-off`
   profile omits it entirely rather than sending an empty value. `obfs`
   is present only when Salamander obfuscation is configured.
+* `endpoints[].host`/`port`/credentials are **per-endpoint**, not
+  deployment-global — nothing in the schema requires every endpoint to
+  share a host. This server currently only ever emits endpoints on its
+  own host (`standard_endpoints`, one VPS — see
+  `docs/SUPPORTED_PRODUCT.md`), but the format itself already supports a
+  document describing two independently-hosted, independently-keyed
+  endpoints; see `fixtures/singbox-client-contract/09-two-independent-endpoints.json`
+  and `docs/ADR/0009-declarative-peer-endpoints.md` for what a future
+  operator-declared second endpoint would look like (not implemented).
 
 ## What the contract never contains
 

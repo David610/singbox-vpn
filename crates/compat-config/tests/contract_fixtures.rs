@@ -19,6 +19,7 @@ use compat_config::model::{CompatEndpoint, CompatTransport, CompatUser, PublicPa
 use compat_config::render::standard_endpoints;
 use compat_config::secret::SecretString;
 use provisioning_contract as contract;
+use provisioning_contract::{Capability, Endpoint, RealityParams, ServerInfo, TransportParams};
 use std::path::PathBuf;
 
 // --- deliberately fake, obviously-not-real credentials ---------------
@@ -30,6 +31,19 @@ const FAKE_HYSTERIA2_PASSWORD: &str = "fake-hysteria2-password-not-a-real-secret
 const FAKE_OBFS_PASSWORD: &str = "fake-salamander-obfs-password";
 const FAKE_HOST: &str = "vpn.example.com";
 const FAKE_SNI: &str = "www.example-decoy.com";
+
+// --- a SECOND, fully independent trusted candidate (different host,
+// different provider/ASN in a real deployment, different credentials) --
+// used only by the "two independent endpoints" fixture below. See that
+// fixture's own doc comment for why this scenario is hand-assembled from
+// `provisioning_contract` types directly rather than through
+// `compat_config::contract`/`standard_endpoints` (both of which are
+// shaped for exactly one deployment's own two transports).
+const FAKE_UUID_B: &str = "00000000-0000-4000-8000-000000000002";
+const FAKE_REALITY_PUBLIC_KEY_B: &str = "BAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEbake";
+const FAKE_SHORT_ID_B: &str = "9f8e7d6c";
+const FAKE_HOST_B: &str = "vpn2.example.net";
+const FAKE_SNI_B: &str = "www.example-decoy-two.org";
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -199,6 +213,108 @@ fn fixture_diagnostic_vision_off_matches_generated_document() {
     );
 }
 
+/// Two REALITY endpoints on two genuinely different hosts, with fully
+/// independent credentials and REALITY key material each — the shape a
+/// document would take if this deployment's operator had *also* declared
+/// a second, independently-operated VPS (different provider, different
+/// ASN in a real deployment) as a trusted candidate.
+///
+/// **This is not producible by any code path this server currently
+/// runs.** `standard_endpoints`/`provisioning_document_with_mode` are
+/// both deliberately shaped for exactly one deployment's own transports
+/// (see `standard_endpoints`'s doc comment) — this repository is
+/// single-VPS by design (`docs/SUPPORTED_PRODUCT.md`). This fixture
+/// exists to prove, at the CONTRACT level, that the schema this server
+/// already emits has no structural obstacle to describing a second,
+/// independent endpoint (`Endpoint.host`/credentials were always
+/// per-endpoint, not deployment-global) — see
+/// `docs/ADR/0009-declarative-peer-endpoints.md` for the smallest actual
+/// server feature that would let an operator declare one, which this PR
+/// deliberately does not implement.
+fn two_independent_endpoints_document() -> contract::ProvisioningDocument {
+    let endpoint_a = Endpoint {
+        id: "eu1-reality".into(),
+        tag: "Europe 1".into(),
+        host: FAKE_HOST.into(),
+        port: 443,
+        server_name: FAKE_SNI.into(),
+        params: TransportParams::VlessReality {
+            uuid: FAKE_UUID.into(),
+            flow: Some(contract::VLESS_FLOW_VISION.into()),
+            reality: RealityParams {
+                public_key: FAKE_REALITY_PUBLIC_KEY.into(),
+                short_id: FAKE_SHORT_ID.into(),
+                fingerprint: "chrome".into(),
+            },
+        },
+    };
+    let endpoint_b = Endpoint {
+        id: "eu2-reality".into(),
+        tag: "Europe 2".into(),
+        host: FAKE_HOST_B.into(),
+        port: 8443,
+        server_name: FAKE_SNI_B.into(),
+        params: TransportParams::VlessReality {
+            uuid: FAKE_UUID_B.into(),
+            flow: Some(contract::VLESS_FLOW_VISION.into()),
+            reality: RealityParams {
+                public_key: FAKE_REALITY_PUBLIC_KEY_B.into(),
+                short_id: FAKE_SHORT_ID_B.into(),
+                fingerprint: "chrome".into(),
+            },
+        },
+    };
+    contract::ProvisioningDocument::new(
+        ServerInfo::current(FIXTURE_SERVER_VERSION),
+        vec![Capability::VlessReality],
+        vec![endpoint_a, endpoint_b],
+    )
+}
+
+#[test]
+fn fixture_two_independent_endpoints_matches_generated_document() {
+    let doc = two_independent_endpoints_document();
+    doc.validate()
+        .expect("two independent endpoints is a valid document");
+    assert_matches_fixture(
+        "09-two-independent-endpoints.json",
+        &serde_json::to_value(&doc).unwrap(),
+    );
+}
+
+/// The point of the fixture above: prove no credential or key material is
+/// shared between the two endpoints, in code, not just by inspection --
+/// see the mission question "if Endpoint A is compromised, which
+/// credentials usable on Endpoint B become exposed?" The answer this test
+/// enforces: none, because nothing in the type or this construction ties
+/// them together.
+#[test]
+fn two_independent_endpoints_share_no_credential_or_key_material() {
+    let doc = two_independent_endpoints_document();
+    let (a, b) = (&doc.endpoints[0], &doc.endpoints[1]);
+    assert_ne!(a.host, b.host);
+    assert_ne!(a.port, b.port);
+    assert_ne!(a.server_name, b.server_name);
+    let (
+        TransportParams::VlessReality {
+            uuid: uuid_a,
+            reality: reality_a,
+            ..
+        },
+        TransportParams::VlessReality {
+            uuid: uuid_b,
+            reality: reality_b,
+            ..
+        },
+    ) = (&a.params, &b.params)
+    else {
+        panic!("both fixture endpoints are vless-reality");
+    };
+    assert_ne!(uuid_a, uuid_b);
+    assert_ne!(reality_a.public_key, reality_b.public_key);
+    assert_ne!(reality_a.short_id, reality_b.short_id);
+}
+
 #[test]
 fn fixture_unsupported_schema_version_error_matches_the_served_body() {
     let body = contract::UnsupportedSchemaVersion::new(2);
@@ -239,6 +355,7 @@ fn every_generated_fixture_parses_and_validates() {
         "04-hysteria2-salamander-obfs.json",
         "05-diagnostic-tcp-only.json",
         "06-diagnostic-vision-off.json",
+        "09-two-independent-endpoints.json",
     ] {
         let raw = std::fs::read_to_string(fixture_dir().join(name)).expect("fixture present");
         let doc = contract::ProvisioningDocument::from_json(&raw)
@@ -307,6 +424,7 @@ fn the_published_fixture_set_is_exactly_the_documented_one() {
             "06-diagnostic-vision-off.json",
             "07-error-unsupported-schema-version.json",
             "08-invalid-missing-short-id.json",
+            "09-two-independent-endpoints.json",
         ]
     );
 }
