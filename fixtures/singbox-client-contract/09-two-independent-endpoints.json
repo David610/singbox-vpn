@@ -1,0 +1,44 @@
+{
+  "capabilities": [
+    "vless-reality"
+  ],
+  "endpoints": [
+    {
+      "flow": "xtls-rprx-vision",
+      "host": "vpn.example.com",
+      "id": "eu1-reality",
+      "port": 443,
+      "reality": {
+        "fingerprint": "chrome",
+        "public_key": "FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake",
+        "short_id": "0a1b2c3d"
+      },
+      "server_name": "www.example-decoy.com",
+      "tag": "Europe 1",
+      "transport": "vless-reality",
+      "uuid": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "flow": "xtls-rprx-vision",
+      "host": "vpn2.example.net",
+      "id": "eu2-reality",
+      "port": 8443,
+      "reality": {
+        "fingerprint": "chrome",
+        "public_key": "BAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEbake",
+        "short_id": "9f8e7d6c"
+      },
+      "server_name": "www.example-decoy-two.org",
+      "tag": "Europe 2",
+      "transport": "vless-reality",
+      "uuid": "00000000-0000-4000-8000-000000000002"
+    }
+  ],
+  "experimental_capabilities": [],
+  "schema_version": 1,
+  "server": {
+    "minimum_client_version": "0.1.0",
+    "product": "singbox-vpn",
+    "version": "0.0.0-fixture"
+  }
+}

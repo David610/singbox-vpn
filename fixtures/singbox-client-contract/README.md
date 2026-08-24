@@ -30,6 +30,7 @@ its authoritative definition is the Rust model in
 | `06-diagnostic-vision-off.json` | The `diag-vision-off` **experimental** profile (`?diagnostic=vision-off`): the REALITY endpoint has **no `flow` field at all**. |
 | `07-error-unsupported-schema-version.json` | The HTTP 400 body a client gets when it requests a schema version this server does not implement. |
 | `08-invalid-missing-short-id.json` | A document that **must be rejected**: a `vless-reality` endpoint whose `reality.short_id` is empty. See "Expected errors" below. |
+| `09-two-independent-endpoints.json` | Two REALITY endpoints on two **different hosts**, each with its own port, REALITY key pair, and VLESS credential — the shape of a document describing two independently-operated candidates (e.g. different providers/ASNs), not just this deployment's own two transports. **Not currently produced by any running code path** (see the file's generating test, `fixture_two_independent_endpoints_matches_generated_document`, and `docs/ADR/0009-declarative-peer-endpoints.md`) — it exists to prove the contract format itself already supports this shape, ahead of any server feature that would let an operator declare a second endpoint. |
 
 `server.version` is written as `0.0.0-fixture` in every file. The real
 server sends its actual release version there; the placeholder keeps a
