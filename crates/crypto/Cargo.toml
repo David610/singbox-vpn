@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 ed25519-dalek.workspace = true
-rand.workspace = true
+getrandom.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 hex = "0.4"

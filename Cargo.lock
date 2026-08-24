@@ -540,8 +540,8 @@ name = "crypto"
 version = "0.1.2"
 dependencies = [
  "ed25519-dalek",
+ "getrandom 0.4.3",
  "hex",
- "rand 0.8.7",
  "serde",
  "thiserror 1.0.69",
 ]

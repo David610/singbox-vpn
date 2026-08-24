@@ -2,7 +2,7 @@
 //! or anywhere else in this workspace (spec principle #8).
 //!
 //! - Signing: Ed25519 via `ed25519-dalek`.
-//! - Randomness: OS CSPRNG via `rand::rngs::OsRng`.
+//! - Randomness: OS CSPRNG via `getrandom::SysRng`.
 //! - Session encryption (TLS/QUIC) is handled entirely by `rustls`/`quinn`
 //!   in `transport-native`, not here.
 
@@ -11,7 +11,7 @@ pub mod hierarchy;
 pub mod secret;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
+use getrandom::{rand_core::UnwrapErr, SysRng};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -62,7 +62,7 @@ pub struct KeyPair {
 
 impl KeyPair {
     pub fn generate() -> Self {
-        let signing_key = SigningKey::generate(&mut OsRng);
+        let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
         Self {
             signing_key: Secret::new(signing_key),
         }
