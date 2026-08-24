@@ -140,7 +140,7 @@ jobs:
           sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
 
       - name: Attest binary archive provenance
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: vpn1-${{ matrix.target }}.tar.gz
 
@@ -170,7 +170,7 @@ jobs:
           rm -rf "$tmp"
           echo "archive/installer contract OK: layout matches deploy/almalinux/install.sh's fetch_release_binaries()"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vpn1-${{ matrix.target }}
           path: |
@@ -202,11 +202,11 @@ jobs:
 
       - name: Attest source archive provenance
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: vpn1-src.tar.gz
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         with:
           name: vpn1-src
