@@ -59,9 +59,9 @@ fi
 
 echo
 echo "--- static: asset filename pattern matches between release.yml and install.sh ---"
-if grep -q 'vpn1-\${{ matrix.target }}\.tar\.gz' "$RELEASE_YML" && \
-   grep -q 'asset="vpn1-\${target}\.tar\.gz"' "$INSTALL_SH"; then
-  echo "ok: both sides use the 'vpn1-<target>.tar.gz' asset filename pattern"
+if grep -q 'singbox-vpn-\${{ matrix.target }}\.tar\.gz' "$RELEASE_YML" && \
+   grep -q 'asset="singbox-vpn-\${target}\.tar\.gz"' "$INSTALL_SH"; then
+  echo "ok: both sides use the 'singbox-vpn-<target>.tar.gz' asset filename pattern"
 else
   echo "FAIL: asset filename pattern differs between release.yml and install.sh"
   failures=$((failures + 1))
@@ -79,7 +79,7 @@ echo "--- fixture: build a real archive exactly the way release.yml's Package st
 target="x86_64-unknown-linux-gnu"
 (
   cd "$TMPDIR_TEST"
-  out="vpn1-${target}"
+  out="singbox-vpn-${target}"
   mkdir -p "$out"
   # Stand-ins for the real Cargo build artifacts — content doesn't
   # matter here, only that fetch_release_binaries()'s path/layout
@@ -115,10 +115,10 @@ run_extraction_against_fixture() {
     # catch. Mirror the real die()'s hard-exit semantics.
     die() { echo "DIE: $*" >&2; exit 1; }
     tmp="$asset_dir"
-    asset="vpn1-${target}.tar.gz"
+    asset="singbox-vpn-${target}.tar.gz"
     tar -xzf "$tmp/$asset" -C "$tmp"
-    extracted="$tmp/vpn1-${target}"
-    [ -d "$extracted" ] || die "release asset $asset did not contain the expected vpn1-${target}/ directory"
+    extracted="$tmp/singbox-vpn-${target}"
+    [ -d "$extracted" ] || die "release asset $asset did not contain the expected singbox-vpn-${target}/ directory"
     [ -x "$extracted/vpn-admin" ] || die "vpn-admin missing/not executable"
     [ -x "$extracted/subscription" ] || die "subscription missing/not executable"
     echo "extraction OK: $extracted"
@@ -143,7 +143,7 @@ mkdir -p "$BADDIR"
   chmod 0755 "wrong-dir-name/vpn-admin"
   echo x > "wrong-dir-name/subscription"
   chmod 0755 "wrong-dir-name/subscription"
-  tar -czf "vpn1-${target}.tar.gz" "wrong-dir-name"
+  tar -czf "singbox-vpn-${target}.tar.gz" "wrong-dir-name"
 )
 if run_extraction_against_fixture "$BADDIR" "$target" >/dev/null 2>&1; then
   echo "FAIL: a malformed archive (wrong top-level directory name) was incorrectly accepted"

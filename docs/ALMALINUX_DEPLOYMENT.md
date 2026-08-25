@@ -62,7 +62,7 @@ The plain `curl | sudo bash` command selects the latest stable
 non-prerelease. If no stable release exists, it refuses to run with an error
 explaining the two options: pin an exact `--version vX.Y.Z` release, or
 explicitly opt into unpinned branch-source development mode with
-`VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1` (both required; never for a real deployment —
+`SINGBOX_VPN_CHANNEL=dev SINGBOX_VPN_ALLOW_UNVERIFIED_DEV=1` (both required; never for a real deployment —
 see the top-level README's Quickstart for the exact command). Publishing a
 tagged release is an explicit maintainer action (`git tag vX.Y.Z && git push
 origin vX.Y.Z`); the release workflow then gates, builds, verifies, and
@@ -171,7 +171,7 @@ left unconfigured and the final status explicitly says `SUBSCRIPTION
 HTTPS: NOT CONFIGURED` — re-run `install.sh` once the cert exists.
 
 Renewal: the installer enables the available certbot renewal timer and installs
-`/etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh`. After a successful
+`/etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh`. After a successful
 renewal, that hook validates and refreshes the Hysteria2 certificate copy,
 reloads and verifies `sing-box`, tests the nginx configuration, and reloads
 nginx so the subscription endpoint picks up the renewed certificate.
@@ -431,11 +431,11 @@ same render→validate→apply→reload→verify→rollback-on-failure path.
 ## Updating
 
 ```bash
-sudo /opt/vpn1/deploy/almalinux/update.sh --latest
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest
 # or pin a specific release:
-sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version vX.Y.Z
 # or reconcile the currently installed release without changing versions:
-sudo /opt/vpn1/deploy/almalinux/update.sh --repair
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair
 ```
 
 Production updates download and checksum-verify the target release source and
@@ -476,7 +476,7 @@ After a committed update, return to a previously published release through the
 same verified transaction path:
 
 ```bash
-sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z  # replace with the previous release tag
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version vX.Y.Z  # replace with the previous release tag
 ```
 
 If an interrupted transaction marker remains, stop and follow the exact recovery
@@ -489,21 +489,21 @@ Primary, offline path — installed by every normal install, no network
 access required:
 
 ```bash
-sudo /opt/vpn1/bin/vpn1-uninstall --yes
+sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes
 ```
 
 `--yes` skips the interactive confirmation prompt (this is irreversible
 — it deletes live credentials/secrets — so a run without `--yes`, with a
 terminal attached, asks first). Online fallback, only needed if
-`/opt/vpn1` is missing or damaged:
+`/opt/singbox-vpn` is missing or damaged:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
 This removes **everything** singbox-vpn created by default — `/etc/vpn`
-(REALITY private key, `users.json`, TLS material), `/opt/vpn1`,
-`/var/lib/vpn1`, all singbox-vpn systemd units, the nginx vhost, the sing-box
+(REALITY private key, `users.json`, TLS material), `/opt/singbox-vpn`,
+`/var/lib/singbox-vpn`, all singbox-vpn systemd units, the nginx vhost, the sing-box
 binary (if singbox-vpn installed it), certbot's singbox-vpn renewal hook and any
 certificate lineages singbox-vpn issued, singbox-vpn's firewall rules, the Rust
 toolchain (if singbox-vpn installed it), and singbox-vpn's kernel network tuning

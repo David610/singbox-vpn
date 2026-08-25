@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checkpoint 5 fixture test for update.sh's release-source checksum
 # verification. update.sh's download_verified_source_release() hardcodes
-# its download URL to https://github.com/$VPN1_REPO/releases/... (no
+# its download URL to https://github.com/$SINGBOX_VPN_REPO/releases/... (no
 # base-URL override exists — adding one is out of scope for this
 # checkpoint, a "harness repair", not an update.sh network redesign), so
 # it cannot be called network-free against a local fixture directly.
@@ -39,7 +39,7 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 # local fixture below instead. This still exercises the REAL
 # verification logic, unmodified, not a reimplementation of it.
 BODY_FILE="$TMPDIR_TEST/verify-body.sh"
-sed -n '/^  grep -qE .\^\[0-9a-f\]{64}/,/checksum verification failed for vpn1-src/p' "$UPDATE_SH" > "$BODY_FILE"
+sed -n '/^  grep -qE .\^\[0-9a-f\]{64}/,/checksum verification failed for singbox-vpn-src/p' "$UPDATE_SH" > "$BODY_FILE"
 [ -s "$BODY_FILE" ] || fail "could not extract the checksum-verification lines from download_verified_source_release() in update.sh (function changed shape?)"
 die() { echo "DIE: $*" >&2; return 1; }
 export -f die
@@ -51,23 +51,23 @@ else
 fi
 
 # Build two distinct fixture "releases" with immutable version identifiers
-# and separate content — mirroring the real release layout (vpn1-src.tar.gz
+# and separate content — mirroring the real release layout (singbox-vpn-src.tar.gz
 # + SHA256SUMS) closely enough to exercise the same verification contract.
 build_fixture() {
   local dir="$1" content="$2"
   mkdir -p "$dir"
-  mkdir -p "$dir/vpn1-src-payload"
-  echo "$content" > "$dir/vpn1-src-payload/marker.txt"
-  ( cd "$dir" && tar -czf vpn1-src.tar.gz vpn1-src-payload )
-  ( cd "$dir" && sha256sum vpn1-src.tar.gz > SHA256SUMS )
+  mkdir -p "$dir/singbox-vpn-src-payload"
+  echo "$content" > "$dir/singbox-vpn-src-payload/marker.txt"
+  ( cd "$dir" && tar -czf singbox-vpn-src.tar.gz singbox-vpn-src-payload )
+  ( cd "$dir" && sha256sum singbox-vpn-src.tar.gz > SHA256SUMS )
 }
 
 FIXTURE_A="$TMPDIR_TEST/release-vfixtureA"
 FIXTURE_B="$TMPDIR_TEST/release-vfixtureB"
-build_fixture "$FIXTURE_A" "vpn1 fixture release A payload"
-build_fixture "$FIXTURE_B" "vpn1 fixture release B payload — different content"
+build_fixture "$FIXTURE_A" "singbox-vpn fixture release A payload"
+build_fixture "$FIXTURE_B" "singbox-vpn fixture release B payload — different content"
 
-if ! cmp -s "$FIXTURE_A/vpn1-src.tar.gz" "$FIXTURE_B/vpn1-src.tar.gz"; then
+if ! cmp -s "$FIXTURE_A/singbox-vpn-src.tar.gz" "$FIXTURE_B/singbox-vpn-src.tar.gz"; then
   ok "fixture A and fixture B have separate content (not the same archive twice)"
 else
   fail "fixture A and B archives are identical — this would not be a real A->B test"
@@ -88,7 +88,7 @@ run_verification_against_fixture() {
     # shellcheck disable=SC2034
     STAGING_ROOT="$dir"
     # shellcheck disable=SC2034
-    tarball="$dir/vpn1-src.tar.gz"
+    tarball="$dir/singbox-vpn-src.tar.gz"
     # shellcheck disable=SC2034
     sums="$dir/SHA256SUMS"
     # shellcheck disable=SC2034
@@ -114,9 +114,9 @@ echo
 echo "--- VERIFIED-TEST: real checksum-verification logic rejects a tampered archive ---"
 TAMPERED="$TMPDIR_TEST/release-tampered"
 mkdir -p "$TAMPERED"
-cp "$FIXTURE_A/vpn1-src.tar.gz" "$TAMPERED/"
+cp "$FIXTURE_A/singbox-vpn-src.tar.gz" "$TAMPERED/"
 cp "$FIXTURE_A/SHA256SUMS" "$TAMPERED/"
-echo "tampered-after-checksum" >> "$TAMPERED/vpn1-src.tar.gz"
+echo "tampered-after-checksum" >> "$TAMPERED/singbox-vpn-src.tar.gz"
 rc=0
 out="$(run_verification_against_fixture "$TAMPERED" 2>&1)" || rc=$?
 if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'checksum verification failed'; then
@@ -129,7 +129,7 @@ echo
 echo "--- VERIFIED-TEST: real checksum-verification logic rejects a malformed SHA256SUMS ---"
 MALFORMED="$TMPDIR_TEST/release-malformed"
 mkdir -p "$MALFORMED"
-cp "$FIXTURE_A/vpn1-src.tar.gz" "$MALFORMED/"
+cp "$FIXTURE_A/singbox-vpn-src.tar.gz" "$MALFORMED/"
 echo "not-a-valid-checksum-line" > "$MALFORMED/SHA256SUMS"
 rc=0
 out="$(run_verification_against_fixture "$MALFORMED" 2>&1)" || rc=$?
@@ -141,7 +141,7 @@ fi
 
 echo
 echo "--- static: update.sh has no in-process test/mock shim in its production path ---"
-if grep -qiE 'if.*\bTEST\b.*then|VPN1_TEST_MODE|VPN1_MOCK' "$UPDATE_SH"; then
+if grep -qiE 'if.*\bTEST\b.*then|SINGBOX_VPN_TEST_MODE|SINGBOX_VPN_MOCK' "$UPDATE_SH"; then
   fail "update.sh appears to contain test/mock branching in its production code path"
 else
   ok "update.sh's production download/verify path has no test-mode branching (this fixture test lives entirely outside it)"

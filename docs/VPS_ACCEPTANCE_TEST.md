@@ -140,7 +140,7 @@ Exercise the pinned update transaction (or its documented no-op behavior when
 the same version is current), then re-run doctor and the real-client checks:
 
 ```bash
-sudo /opt/vpn1/deploy/almalinux/update.sh --version "$VPN_VERSION"
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version "$VPN_VERSION"
 sudo vpn doctor --protocol --require-protocol
 ```
 

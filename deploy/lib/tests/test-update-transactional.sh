@@ -2,7 +2,7 @@
 # Checkpoint-3 regression tests for the transactional production
 # updater (deploy/almalinux/update.sh): version resolution, no-Cargo
 # production path, verify-before-mutation ordering, interrupted-
-# transaction detection, and rollback's /opt/vpn1 source-tree restore.
+# transaction detection, and rollback's /opt/singbox-vpn source-tree restore.
 #
 # Static/source-inspection only (same convention as
 # test-install-update-parity.sh / test-update-conditional-restart.sh /
@@ -89,7 +89,7 @@ if [ -n "$attestation_version_fn" ] && [ "$attestation_version_fn" = "$installer
 else
   fail "installer and updater do not share the same extractable attestation version boundary"
 fi
-if grep -q 'VPN1_ALLOW_LEGACY_CHECKSUM_ONLY' "$REPO_ROOT/install.sh" \
+if grep -q 'SINGBOX_VPN_ALLOW_LEGACY_CHECKSUM_ONLY' "$REPO_ROOT/install.sh" \
     "$REPO_ROOT/deploy/almalinux/install.sh" "$UPDATE_SH"; then
   fail "an operator-controlled permanent checksum-only override still exists"
 else
@@ -128,9 +128,9 @@ else
 fi
 
 echo
-echo "--- static: dev-rebuild is a clearly separate, explicit escape hatch (VPN1_CHANNEL=dev / --dev-rebuild) ---"
-if grep -q -- '--dev-rebuild) DEV_REBUILD=1' "$UPDATE_SH" && grep -q '"\${VPN1_CHANNEL:-}" = "dev"' "$UPDATE_SH"; then
-  ok "--dev-rebuild and VPN1_CHANNEL=dev both explicitly gate the Cargo-based rebuild path"
+echo "--- static: dev-rebuild is a clearly separate, explicit escape hatch (SINGBOX_VPN_CHANNEL=dev / --dev-rebuild) ---"
+if grep -q -- '--dev-rebuild) DEV_REBUILD=1' "$UPDATE_SH" && grep -q '"\${SINGBOX_VPN_CHANNEL:-}" = "dev"' "$UPDATE_SH"; then
+  ok "--dev-rebuild and SINGBOX_VPN_CHANNEL=dev both explicitly gate the Cargo-based rebuild path"
 else
   fail "the dev-rebuild escape hatch is not clearly gated"
 fi
@@ -147,7 +147,7 @@ if [ "$stage_die_count" -gt 0 ] && [ "$stage_unchanged_count" -ge "$((stage_die_
 else
   fail "STAGE-phase failures do not consistently confirm zero live mutation (die=$stage_die_count, confirmed=$stage_unchanged_count)"
 fi
-if grep -q 'sha256sum -c' "$UPDATE_SH" && grep -q 'checksum verification failed for vpn1-src.tar.gz' "$UPDATE_SH"; then
+if grep -q 'sha256sum -c' "$UPDATE_SH" && grep -q 'checksum verification failed for singbox-vpn-src.tar.gz' "$UPDATE_SH"; then
   ok "the target release source archive is checksum-verified before extraction"
 else
   fail "the target release source archive checksum verification is missing"
@@ -180,12 +180,12 @@ else
 fi
 
 echo
-echo "--- static: rollback restores the previous /opt/vpn1 source tree, not only binaries ---"
+echo "--- static: rollback restores the previous /opt/singbox-vpn source tree, not only binaries ---"
 rollback_body="$(sed -n '/^rollback_update() {/,/^}/p' "$UPDATE_SH")"
-if echo "$rollback_body" | grep -q 'PREV_OPT_DIR' && echo "$rollback_body" | grep -q 'mv -f "\$PREV_OPT_DIR" /opt/vpn1'; then
-  ok "rollback_update() restores the previous /opt/vpn1 source tree from PREV_OPT_DIR"
+if echo "$rollback_body" | grep -q 'PREV_OPT_DIR' && echo "$rollback_body" | grep -q 'mv -f "\$PREV_OPT_DIR" /opt/singbox-vpn'; then
+  ok "rollback_update() restores the previous /opt/singbox-vpn source tree from PREV_OPT_DIR"
 else
-  fail "rollback_update() does not restore the previous /opt/vpn1 source tree"
+  fail "rollback_update() does not restore the previous /opt/singbox-vpn source tree"
 fi
 if echo "$rollback_body" | grep -q 'BACKUP_DIR/sing-box'; then
   ok "rollback_update() restores the previous sing-box binary if it was changed"
@@ -218,7 +218,7 @@ if [ -n "$marker_check_line" ] && [ -n "$flock_line" ] && [ "$marker_check_line"
 else
   fail "the stale-transaction check does not clearly run early"
 fi
-if grep -q '/opt/.vpn1-update-staging.\*' "$UPDATE_SH" && grep -q '/opt/.vpn1-prev-\*' "$UPDATE_SH"; then
+if grep -q '/opt/.singbox-vpn-update-staging.\*' "$UPDATE_SH" && grep -q '/opt/.singbox-vpn-prev-\*' "$UPDATE_SH"; then
   ok "update.sh also detects a stale staging/rollback directory left by a killed prior run"
 else
   fail "update.sh does not detect a stale staging/rollback directory"
@@ -250,7 +250,7 @@ else
 fi
 
 echo
-echo "--- static: lifecycle-acceptance.sh's update invocation uses a real update.sh flag (not the previously-ignored VPN1_REF) ---"
+echo "--- static: lifecycle-acceptance.sh's update invocation uses a real update.sh flag (not the previously-ignored SINGBOX_VPN_REF) ---"
 LIFECYCLE_SH="$REPO_ROOT/deploy/almalinux/lifecycle-acceptance.sh"
 if grep -q 'update.sh --dev-rebuild' "$LIFECYCLE_SH"; then
   ok "lifecycle-acceptance.sh invokes update.sh with a flag update.sh actually understands"

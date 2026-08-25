@@ -80,7 +80,7 @@ run_hook() {
     STATE_DIR="$dir/state" \
     DEPLOYMENT_TOML="$dir/deployment.toml" \
     SINGBOX_BIN="$dir/sing-box" \
-    VPN1_LOCK_FILE="$dir/vpn1.lock" \
+    SINGBOX_VPN_LOCK_FILE="$dir/singbox-vpn.lock" \
     bash "$HOOK" 2>&1
 }
 

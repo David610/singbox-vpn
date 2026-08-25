@@ -21,7 +21,7 @@ die() { echo "[firewall] ERROR: $*" >&2; exit 1; }
 
 SUBSCRIPTION_PORT="${SUBSCRIPTION_PORT:-8443}"
 preflight_validate_port "$SUBSCRIPTION_PORT" "SUBSCRIPTION_PORT" || die "invalid SUBSCRIPTION_PORT."
-OWNERSHIP_STATE="/var/lib/vpn1/firewall-owned.env"
+OWNERSHIP_STATE="/var/lib/singbox-vpn/firewall-owned.env"
 owned_443_tcp=0
 owned_443_udp=0
 owned_subscription_tcp=0
@@ -55,7 +55,7 @@ ufw status 2>/dev/null | grep -Eq '^443/udp[[:space:]]+ALLOW' \
 ufw status 2>/dev/null | grep -Eq "^${SUBSCRIPTION_PORT}/tcp[[:space:]]+ALLOW" \
   || { ufw allow "${SUBSCRIPTION_PORT}/tcp" >/dev/null; owned_subscription_tcp=1; }
 
-install -d -m 0755 /var/lib/vpn1
+install -d -m 0755 /var/lib/singbox-vpn
 umask 077
 cat >"$OWNERSHIP_STATE.tmp" <<EOF
 firewall_backend=ufw

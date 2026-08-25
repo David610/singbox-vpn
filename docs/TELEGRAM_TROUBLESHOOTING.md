@@ -1,6 +1,6 @@
 # TELEGRAM_TROUBLESHOOTING.md
 
-Telegram has been reported unreliable under Russian censorship for vpn1
+Telegram has been reported unreliable under Russian censorship for singbox-vpn
 users, while YouTube and Instagram work well through the same VPN. This
 document is the client-side troubleshooting procedure for that specific
 gap. See `docs/TELEGRAM_RESILIENCE_PLAN.md` for the full investigation,
@@ -40,7 +40,7 @@ exact template to fill in.
 ## Step 1 — Disable Telegram's own internal proxy
 
 Telegram has its own SOCKS5/MTProto proxy setting, completely
-independent of vpn1/Hiddify. If it's enabled (even pointing at a
+independent of singbox-vpn/Hiddify. If it's enabled (even pointing at a
 now-dead proxy), Telegram can fail while every other app works fine
 through the VPN — and this looks identical to a VPN problem from the
 outside.
@@ -56,7 +56,7 @@ configured proxy.
 
 ## Step 2 — Test each transport separately
 
-The vpn1 subscription now starts every fresh profile on **Reality**
+The singbox-vpn subscription now starts every fresh profile on **Reality**
 deterministically (not on whichever transport won a fast Google
 connectivity test) — see `docs/TELEGRAM_RESILIENCE_PLAN.md` §A. Test
 each of the three options in Hiddify's server list on its own, not just
@@ -125,7 +125,7 @@ PMTU issue for either transport — see Step 7).
 
 If Telegram fails specifically on a network where IPv6 is present, an
 IPv6 leak (Telegram traffic going out directly over the device's native
-IPv6 route instead of through the VPN tunnel) is a plausible cause vpn1
+IPv6 route instead of through the VPN tunnel) is a plausible cause singbox-vpn
 cannot fully rule out from the server side alone — see
 `docs/TELEGRAM_RESILIENCE_PLAN.md` §E for the server's own explicit
 IPv6 policy and what `vpn doctor` can and cannot verify about it.
@@ -152,7 +152,7 @@ To check from a client:
 MTU/PMTU mismatches are a plausible cause of "connects but large
 transfers fail" symptoms (media upload/download, voice/video calls),
 especially over Hysteria2 (QUIC/UDP, more PMTU-sensitive than
-Reality's plain TCP). vpn1 does **not** apply a global MTU override —
+Reality's plain TCP). singbox-vpn does **not** apply a global MTU override —
 there is no single correct value across every ISP/mobile-network path,
 and a wrong global value would silently degrade every user, every
 transport, all the time, in exchange for possibly fixing one path for
@@ -186,7 +186,7 @@ Reality (TCP) and Hysteria2 (QUIC) fundamentally differ here: TCP PMTU
 discovery/blackhole detection is a well-understood, decades-old problem
 space with existing OS-level mitigations (MSS clamping, PMTUD); QUIC
 implements its own path-MTU discovery inside the encrypted stream, which
-server-side network middleboxes (including vpn1's own sing-box) cannot
+server-side network middleboxes (including singbox-vpn's own sing-box) cannot
 inspect or clamp at all — the only real lever is the client-side MTU
 setting described above, if the client exposes one.
 

@@ -166,17 +166,17 @@ preflight_detect_ssh_port() {
 # survive any firewall activation/reload — every caller (install.sh,
 # firewall.sh, firewall-ufw.sh) uses this, never its own copy of the
 # detect-or-fallback logic. Precedence:
-#   1. an explicit operator override, VPN1_SSH_PORT (set by install.sh's
-#      --ssh-port/VPN1_SSH_PORT from a positively-known value, or by an
+#   1. an explicit operator override, SINGBOX_VPN_SSH_PORT (set by install.sh's
+#      --ssh-port/SINGBOX_VPN_SSH_PORT from a positively-known value, or by an
 #      operator invoking firewall.sh/firewall-ufw.sh directly);
 #   2. automatic detection (preflight_detect_ssh_port).
 # Returns 1 with nothing printed if neither yields a valid port — the
 # caller must fail closed (refuse to activate/modify the firewall)
 # rather than default to 22.
 preflight_resolve_ssh_port() {
-  local override="${VPN1_SSH_PORT:-}"
+  local override="${SINGBOX_VPN_SSH_PORT:-}"
   if [ -n "$override" ]; then
-    preflight_validate_port "$override" "--ssh-port/VPN1_SSH_PORT" || return 1
+    preflight_validate_port "$override" "--ssh-port/SINGBOX_VPN_SSH_PORT" || return 1
     echo "$override"
     return 0
   fi

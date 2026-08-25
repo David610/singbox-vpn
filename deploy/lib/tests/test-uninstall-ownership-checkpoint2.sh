@@ -3,11 +3,11 @@
 # fixed-name system resource restore-vs-remove, truthful residue
 # verification (COMPLETE vs INCOMPLETE), package-name validation before
 # passing to the package manager, and legacy-uninstall flag translation
-# (bin/vpn1-uninstall-less installs from before commit 07f8b72, which
+# (bin/singbox-vpn-uninstall-less installs from before commit 07f8b72, which
 # only understood --purge-state/--purge-firewall and rejected --yes).
 #
-# Fixture-only: never touches the real host's /etc/vpn, /var/lib/vpn1,
-# /opt/vpn1, or system services/packages/firewall — every check below
+# Fixture-only: never touches the real host's /etc/vpn, /var/lib/singbox-vpn,
+# /opt/singbox-vpn, or system services/packages/firewall — every check below
 # either sources functions in isolation against a throwaway
 # OWNERSHIP_DIR, or does pure static/text analysis of the real scripts.
 set -Eeuo pipefail
@@ -29,10 +29,10 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 # restore_or_remove_fixed_path(): exercised directly against a
 # throwaway ownership dir, no real system paths touched.
 # ---------------------------------------------------------------------
-echo "--- functional: restore_or_remove_fixed_path() removes a vpn1-created fixed path (PRE_EXISTED=0) ---"
+echo "--- functional: restore_or_remove_fixed_path() removes a singbox-vpn-created fixed path (PRE_EXISTED=0) ---"
 OWNDIR="$TMPDIR_TEST/own1"
 FAKE_PATH="$TMPDIR_TEST/fake-unit-1"
-echo "vpn1 content" > "$FAKE_PATH"
+echo "singbox-vpn content" > "$FAKE_PATH"
 out="$(
   OWNERSHIP_DIR="$OWNDIR"
   # shellcheck disable=SC1090
@@ -64,13 +64,13 @@ out="$(
   restore_or_remove_fixed_path "$FAKE_PATH" TESTKEY
   [ -e "$FAKE_PATH" ] && echo "STILL_PRESENT" || echo "REMOVED"
 )"
-[ "$out" = "REMOVED" ] && ok "vpn1-created fixed path is removed (not restored)" || fail "vpn1-created fixed path was not removed: $out"
+[ "$out" = "REMOVED" ] && ok "singbox-vpn-created fixed path is removed (not restored)" || fail "singbox-vpn-created fixed path was not removed: $out"
 
 echo
 echo "--- functional: restore_or_remove_fixed_path() restores a pre-existing fixed path from its backup ---"
 OWNDIR2="$TMPDIR_TEST/own2"
 FAKE_PATH2="$TMPDIR_TEST/fake-unit-2"
-echo "vpn1-overwritten content" > "$FAKE_PATH2"
+echo "singbox-vpn-overwritten content" > "$FAKE_PATH2"
 out2="$(
   OWNERSHIP_DIR="$OWNDIR2"
   # shellcheck disable=SC1090
@@ -148,7 +148,7 @@ ETCVPN_FIXTURE="$TMPDIR_TEST/etc-vpn-fixture"
 mkdir -p "$ETCVPN_FIXTURE"
 echo "unrelated operator data" > "$ETCVPN_FIXTURE/operator-data.txt"
 mkdir -p "$ETCVPN_FIXTURE/compat"
-echo "vpn1 compat state" > "$ETCVPN_FIXTURE/compat/marker"
+echo "singbox-vpn compat state" > "$ETCVPN_FIXTURE/compat/marker"
 echo 'public_host = "x"' > "$ETCVPN_FIXTURE/deployment.toml"
 OWNDIR4="$TMPDIR_TEST/own4"
 (
@@ -175,9 +175,9 @@ else
   fail "pre-existing sentinel file under /etc/vpn was altered or removed"
 fi
 if [ ! -e "$ETCVPN_FIXTURE/deployment.toml" ] && [ ! -e "$ETCVPN_FIXTURE/compat" ]; then
-  ok "vpn1's own children (deployment.toml, compat/) were removed"
+  ok "singbox-vpn's own children (deployment.toml, compat/) were removed"
 else
-  fail "vpn1's own children were not removed"
+  fail "singbox-vpn's own children were not removed"
 fi
 if [ -d "$ETCVPN_FIXTURE" ]; then
   ok "the pre-existing /etc/vpn directory itself is never removed"
@@ -300,18 +300,18 @@ else
 fi
 
 # ---------------------------------------------------------------------
-# OPT_VPN1_PRE_EXISTED read-before-STATE_DIR_ROOT-removal ordering bug
+# OPT_SINGBOX_VPN_PRE_EXISTED read-before-STATE_DIR_ROOT-removal ordering bug
 # fix.
 # ---------------------------------------------------------------------
 echo
-echo "--- static: OPT_VPN1_PRE_EXISTED (and unit PRE_EXISTED facts) are cached BEFORE STATE_DIR_ROOT is removed ---"
+echo "--- static: OPT_SINGBOX_VPN_PRE_EXISTED (and unit PRE_EXISTED facts) are cached BEFORE STATE_DIR_ROOT is removed ---"
 tail_body="$(tail -n 120 "$UNINSTALL_SH")"
-cache_line="$(echo "$tail_body" | grep -n 'opt_vpn1_pre_existed="\$(ownership_get OPT_VPN1_PRE_EXISTED' | head -n1 | cut -d: -f1)"
+cache_line="$(echo "$tail_body" | grep -n 'opt_singbox_vpn_pre_existed="\$(ownership_get OPT_SINGBOX_VPN_PRE_EXISTED' | head -n1 | cut -d: -f1)"
 rm_line="$(echo "$tail_body" | grep -n 'rm -rf "\$STATE_DIR_ROOT"' | head -n1 | cut -d: -f1)"
 if [ -n "$cache_line" ] && [ -n "$rm_line" ] && [ "$cache_line" -lt "$rm_line" ]; then
-  ok "OPT_VPN1_PRE_EXISTED is read and cached strictly before \$STATE_DIR_ROOT is removed (a prior ordering bug always read the post-removal default here)"
+  ok "OPT_SINGBOX_VPN_PRE_EXISTED is read and cached strictly before \$STATE_DIR_ROOT is removed (a prior ordering bug always read the post-removal default here)"
 else
-  fail "OPT_VPN1_PRE_EXISTED is not clearly cached before STATE_DIR_ROOT removal (cache=$cache_line rm=$rm_line)"
+  fail "OPT_SINGBOX_VPN_PRE_EXISTED is not clearly cached before STATE_DIR_ROOT removal (cache=$cache_line rm=$rm_line)"
 fi
 
 # ---------------------------------------------------------------------
@@ -373,13 +373,13 @@ fi
 
 echo
 echo "--- static: the bootstrap uses install-state.json's exact pinned version/repo (not the mutable default) when the local copy is damaged/missing ---"
-if grep -q 'INSTALL_STATE_MANIFEST="/var/lib/vpn1/install-state.json"' "$BOOTSTRAP_UNINSTALL_SH" \
-    && grep -q 'refs/tags/\$VPN1_REF' "$BOOTSTRAP_UNINSTALL_SH"; then
+if grep -q 'INSTALL_STATE_MANIFEST="/var/lib/singbox-vpn/install-state.json"' "$BOOTSTRAP_UNINSTALL_SH" \
+    && grep -q 'refs/tags/\$SINGBOX_VPN_REF' "$BOOTSTRAP_UNINSTALL_SH"; then
   ok "bootstrap reads install-state.json and fetches the exact pinned tag when available"
 else
   fail "bootstrap does not prefer install-state.json's exact pinned version for a damaged-local-copy recovery"
 fi
-if grep -q -- '--ref) VPN1_REF="\$2"; VPN1_REF_EXPLICIT=1' "$BOOTSTRAP_UNINSTALL_SH"; then
+if grep -q -- '--ref) SINGBOX_VPN_REF="\$2"; SINGBOX_VPN_REF_EXPLICIT=1' "$BOOTSTRAP_UNINSTALL_SH"; then
   ok "an explicit operator --ref always wins over the install-state.json-derived version"
 else
   fail "explicit --ref does not override the manifest-derived version"

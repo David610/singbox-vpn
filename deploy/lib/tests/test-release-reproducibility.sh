@@ -8,7 +8,7 @@
 #   - valid/invalid sing-box checksum handling (install_singbox()).
 #   - the top-level bootstrap (install.sh) resolves an immutable release
 #     tag in the default (stable) channel, and REFUSES to fall back to
-#     mutable branch source — only VPN1_CHANNEL=dev may do that.
+#     mutable branch source — only SINGBOX_VPN_CHANNEL=dev may do that.
 #   - unsupported OS/arch is rejected before any system mutation.
 #   - unexpected sing-box archive layout is rejected before install.
 #   - the release payload carries a local, offline uninstaller.
@@ -121,8 +121,8 @@ fi
 
 echo
 echo "--- static: fetch_release_binaries() rejects an unexpected archive layout before installing anything ---"
-if grep -q 'did not contain the expected vpn1-\${target}/ directory' "$INSTALL_SH"; then
-  ok "fetch_release_binaries() checks for the expected vpn1-<target>/ directory before install -m"
+if grep -q 'did not contain the expected singbox-vpn-\${target}/ directory' "$INSTALL_SH"; then
+  ok "fetch_release_binaries() checks for the expected singbox-vpn-<target>/ directory before install -m"
 else
   fail "fetch_release_binaries() no longer validates archive layout"
 fi
@@ -164,14 +164,14 @@ else
 fi
 
 echo
-echo "--- static: VPN1_CHANNEL=dev remains the ONLY documented way to install unpinned branch source ---"
-if echo "$resolve_body" | grep -q 'VPN1_CHANNEL" = "dev"'; then
-  ok "resolve_version() still has an explicit VPN1_CHANNEL=dev opt-in path"
+echo "--- static: SINGBOX_VPN_CHANNEL=dev remains the ONLY documented way to install unpinned branch source ---"
+if echo "$resolve_body" | grep -q 'SINGBOX_VPN_CHANNEL" = "dev"'; then
+  ok "resolve_version() still has an explicit SINGBOX_VPN_CHANNEL=dev opt-in path"
 else
-  fail "VPN1_CHANNEL=dev opt-in path is missing from resolve_version()"
+  fail "SINGBOX_VPN_CHANNEL=dev opt-in path is missing from resolve_version()"
 fi
 if tr '\n' ' ' < "$BOOTSTRAP_SH" | grep -q 'this is the ONLY way to install unpinned branch source'; then
-  ok "install.sh --help documents VPN1_CHANNEL=dev as the only unpinned-install path"
+  ok "install.sh --help documents SINGBOX_VPN_CHANNEL=dev as the only unpinned-install path"
 else
   fail "install.sh --help no longer documents the dev-mode-only branch-source path"
 fi
@@ -185,34 +185,34 @@ if (
   set -Eeuo pipefail
   # shellcheck disable=SC1090
   . <(sed -n '/^log() { /p;/^warn() { /p;/^die() { /p;/^resolve_version() {/,/^}/p' "$BOOTSTRAP_SH")
-  VPN1_REPO="this-org-does-not-exist-vpn1-test/no-such-repo-xyz"
-  VPN1_VERSION=""
-  VPN1_CHANNEL="stable"
-  VPN1_REF="main"
+  SINGBOX_VPN_REPO="this-org-does-not-exist-singbox-vpn-test/no-such-repo-xyz"
+  SINGBOX_VPN_VERSION=""
+  SINGBOX_VPN_CHANNEL="stable"
+  SINGBOX_VPN_REF="main"
   CURL_NET_FLAGS=(--connect-timeout 3 --max-time 8 --retry 0)
   resolve_version
 ) >/tmp/resolve_version_test.out 2>&1; then
-  fail "resolve_version() exited 0 for a repo with no releases, default channel, no VPN1_VERSION — should have refused to fall back to branch source"
+  fail "resolve_version() exited 0 for a repo with no releases, default channel, no SINGBOX_VPN_VERSION — should have refused to fall back to branch source"
 else
-  ok "resolve_version() exited non-zero for a repo with no releases, default channel, no VPN1_VERSION (see /tmp/resolve_version_test.out)"
+  ok "resolve_version() exited non-zero for a repo with no releases, default channel, no SINGBOX_VPN_VERSION (see /tmp/resolve_version_test.out)"
 fi
 
 echo
-echo "--- functional: VPN1_CHANNEL=dev alone is refused without the second unsafe-code opt-in ---"
+echo "--- functional: SINGBOX_VPN_CHANNEL=dev alone is refused without the second unsafe-code opt-in ---"
 if (
   set -Eeuo pipefail
   # shellcheck disable=SC1090
   . <(sed -n '/^log() { /p;/^warn() { /p;/^die() { /p;/^resolve_version() {/,/^}/p' "$BOOTSTRAP_SH")
-  VPN1_REPO="this-org-does-not-exist-vpn1-test/no-such-repo-xyz"
-  VPN1_VERSION=""
-  VPN1_CHANNEL="dev"
-  VPN1_ALLOW_UNVERIFIED_DEV="0"
-  VPN1_REF="main"
+  SINGBOX_VPN_REPO="this-org-does-not-exist-singbox-vpn-test/no-such-repo-xyz"
+  SINGBOX_VPN_VERSION=""
+  SINGBOX_VPN_CHANNEL="dev"
+  SINGBOX_VPN_ALLOW_UNVERIFIED_DEV="0"
+  SINGBOX_VPN_REF="main"
   resolve_version
 ) >/tmp/resolve_version_dev_single_optin_test.out 2>&1; then
-  fail "resolve_version() accepted mutable root code with only VPN1_CHANNEL=dev"
+  fail "resolve_version() accepted mutable root code with only SINGBOX_VPN_CHANNEL=dev"
 else
-  ok "resolve_version() refuses dev channel unless VPN1_ALLOW_UNVERIFIED_DEV=1 is also set"
+  ok "resolve_version() refuses dev channel unless SINGBOX_VPN_ALLOW_UNVERIFIED_DEV=1 is also set"
 fi
 
 echo
@@ -222,15 +222,15 @@ if (
   # shellcheck disable=SC1090
   . <(sed -n '/^log() { /p;/^warn() { /p;/^die() { /p;/^resolve_version() {/,/^}/p' "$BOOTSTRAP_SH")
   # shellcheck disable=SC2034  # read by resolve_version(), sourced above from process substitution
-  VPN1_REPO="this-org-does-not-exist-vpn1-test/no-such-repo-xyz"
+  SINGBOX_VPN_REPO="this-org-does-not-exist-singbox-vpn-test/no-such-repo-xyz"
   # shellcheck disable=SC2034
-  VPN1_VERSION=""
+  SINGBOX_VPN_VERSION=""
   # shellcheck disable=SC2034
-  VPN1_CHANNEL="dev"
+  SINGBOX_VPN_CHANNEL="dev"
   # shellcheck disable=SC2034
-  VPN1_ALLOW_UNVERIFIED_DEV="1"
+  SINGBOX_VPN_ALLOW_UNVERIFIED_DEV="1"
   # shellcheck disable=SC2034
-  VPN1_REF="main"
+  SINGBOX_VPN_REF="main"
   # shellcheck disable=SC2034
   CURL_NET_FLAGS=(--connect-timeout 3 --max-time 8 --retry 0)
   resolve_version
@@ -243,16 +243,16 @@ fi
 echo
 echo "--- static: release payload carries a local, offline, root-owned uninstaller ---"
 if grep -q 'tar --exclude=target --exclude=.git' "$INSTALL_SH"; then
-  ok "persist_source_tree() copies the full source tree (uninstall.sh included, only target/.git excluded) to /opt/vpn1"
+  ok "persist_source_tree() copies the full source tree (uninstall.sh included, only target/.git excluded) to /opt/singbox-vpn"
 else
-  fail "persist_source_tree() no longer persists the source tree to /opt/vpn1"
+  fail "persist_source_tree() no longer persists the source tree to /opt/singbox-vpn"
 fi
 if [ -x "$REPO_ROOT/uninstall.sh" ] && [ -x "$REPO_ROOT/deploy/almalinux/uninstall.sh" ]; then
   ok "both uninstall.sh (bootstrap) and deploy/almalinux/uninstall.sh (real implementation) are present and executable in this source tree, so persisting the tree persists a working offline uninstaller"
 else
   fail "uninstall.sh / deploy/almalinux/uninstall.sh missing or not executable"
 fi
-if grep -q 'PERSIST_DIR="/opt/vpn1"' "$INSTALL_SH" \
+if grep -q 'PERSIST_DIR="/opt/singbox-vpn"' "$INSTALL_SH" \
     && grep -q 'chown -R root:root "\$stage"' "$INSTALL_SH" \
     && grep -q 'chmod -R go-w "\$stage"' "$INSTALL_SH"; then
   ok "persistent source is staged, then normalized root-owned and non-group/world-writable after extraction"
@@ -269,12 +269,12 @@ else
 fi
 
 echo
-echo "--- static: release.yml publishes a checksum-manifested source archive (vpn1-src.tar.gz) ---"
+echo "--- static: release.yml publishes a checksum-manifested source archive (singbox-vpn-src.tar.gz) ---"
 RELEASE_YML="$REPO_ROOT/.github/workflows/release.yml"
-if grep -q 'git archive --format=tar.gz --prefix=vpn1-src/ -o vpn1-src.tar.gz' "$RELEASE_YML"; then
-  ok "release.yml packages a deterministic vpn1-src.tar.gz via git archive"
+if grep -q 'git archive --format=tar.gz --prefix=singbox-vpn-src/ -o singbox-vpn-src.tar.gz' "$RELEASE_YML"; then
+  ok "release.yml packages a deterministic singbox-vpn-src.tar.gz via git archive"
 else
-  fail "release.yml no longer builds vpn1-src.tar.gz — bootstrap install.sh's release-source checksum verification has nothing to verify against"
+  fail "release.yml no longer builds singbox-vpn-src.tar.gz — bootstrap install.sh's release-source checksum verification has nothing to verify against"
 fi
 
 echo
@@ -295,12 +295,12 @@ if grep -q 'gh attestation verify' install.sh \
 else
   fail "one or more stable artifact consumers omit attestation verification"
 fi
-if grep -q 'sha256sum vpn1-src.tar.gz > vpn1-src.tar.gz.sha256' "$RELEASE_YML"; then
-  ok "release.yml computes vpn1-src.tar.gz.sha256, folded into the published SHA256SUMS by the publish job's existing 'cat ./*.tar.gz.sha256' step"
+if grep -q 'sha256sum singbox-vpn-src.tar.gz > singbox-vpn-src.tar.gz.sha256' "$RELEASE_YML"; then
+  ok "release.yml computes singbox-vpn-src.tar.gz.sha256, folded into the published SHA256SUMS by the publish job's existing 'cat ./*.tar.gz.sha256' step"
 else
-  fail "release.yml no longer computes a checksum for vpn1-src.tar.gz"
+  fail "release.yml no longer computes a checksum for singbox-vpn-src.tar.gz"
 fi
-if grep -q 'test -x "$tmp/vpn1-src/deploy/almalinux/install.sh"' "$RELEASE_YML"; then
+if grep -q 'test -x "$tmp/singbox-vpn-src/deploy/almalinux/install.sh"' "$RELEASE_YML"; then
   ok "release.yml extracts the source archive and verifies the bootstrap handoff executable"
 else
   fail "release.yml does not verify the source archive can hand off to deploy/almalinux/install.sh"
@@ -315,7 +315,7 @@ else
 fi
 
 echo
-echo "--- static: bootstrap install.sh verifies the release source archive checksum for a pinned VPN1_VERSION, never falls through unverified ---"
+echo "--- static: bootstrap install.sh verifies the release source archive checksum for a pinned SINGBOX_VPN_VERSION, never falls through unverified ---"
 if grep -q 'download_verified_source_release()' "$BOOTSTRAP_SH"; then
   ok "install.sh has a dedicated checksum-verifying downloader for pinned releases"
 else
@@ -324,8 +324,8 @@ fi
 for needle in \
   'could not download release source archive' \
   'SHA256SUMS checksum manifest could not be downloaded' \
-  'has no well-formed entry for vpn1-src.tar.gz' \
-  'checksum verification failed for vpn1-src.tar.gz'
+  'has no well-formed entry for singbox-vpn-src.tar.gz' \
+  'checksum verification failed for singbox-vpn-src.tar.gz'
 do
   if grep -qF "$needle" "$BOOTSTRAP_SH"; then
     ok "install.sh fails closed (die) on: $needle"
@@ -333,8 +333,8 @@ do
     fail "install.sh is missing the fail-closed guard for: $needle"
   fi
 done
-if grep -q 'download_verified_source_release "\$VPN1_VERSION" "\$tarball"' "$BOOTSTRAP_SH"; then
-  ok "download_source() routes any pinned VPN1_VERSION through the checksum-verifying downloader"
+if grep -q 'download_verified_source_release "\$SINGBOX_VPN_VERSION" "\$tarball"' "$BOOTSTRAP_SH"; then
+  ok "download_source() routes any pinned SINGBOX_VPN_VERSION through the checksum-verifying downloader"
 else
   fail "download_source() no longer routes pinned installs through checksum verification"
 fi
@@ -342,34 +342,34 @@ fi
 echo
 echo "--- functional: SHA256SUMS entry parsing/verification (same grep+sha256sum -c mechanism download_verified_source_release() uses) ---"
 TMPDIR_SRC_TEST="$(mktemp -d)"
-echo -n "fixture source archive bytes" > "$TMPDIR_SRC_TEST/vpn1-src.tar.gz"
-real_sha="$(sha256sum "$TMPDIR_SRC_TEST/vpn1-src.tar.gz" | awk '{print $1}')"
+echo -n "fixture source archive bytes" > "$TMPDIR_SRC_TEST/singbox-vpn-src.tar.gz"
+real_sha="$(sha256sum "$TMPDIR_SRC_TEST/singbox-vpn-src.tar.gz" | awk '{print $1}')"
 {
-  echo "deadbeef00000000000000000000000000000000000000000000000000000000  vpn1-x86_64-unknown-linux-gnu.tar.gz"
-  echo "$real_sha  vpn1-src.tar.gz"
+  echo "deadbeef00000000000000000000000000000000000000000000000000000000  singbox-vpn-x86_64-unknown-linux-gnu.tar.gz"
+  echo "$real_sha  singbox-vpn-src.tar.gz"
 } > "$TMPDIR_SRC_TEST/SHA256SUMS"
-if ( cd "$TMPDIR_SRC_TEST" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) >/dev/null 2>&1; then
-  ok "a correct vpn1-src.tar.gz entry in a multi-asset SHA256SUMS verifies successfully"
+if ( cd "$TMPDIR_SRC_TEST" && grep -E '  singbox-vpn-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) >/dev/null 2>&1; then
+  ok "a correct singbox-vpn-src.tar.gz entry in a multi-asset SHA256SUMS verifies successfully"
 else
-  fail "a correct vpn1-src.tar.gz entry unexpectedly failed to verify"
+  fail "a correct singbox-vpn-src.tar.gz entry unexpectedly failed to verify"
 fi
-echo -n "tampered bytes" > "$TMPDIR_SRC_TEST/vpn1-src.tar.gz"
-if ! ( cd "$TMPDIR_SRC_TEST" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) >/dev/null 2>&1; then
-  ok "a tampered/mismatched vpn1-src.tar.gz is correctly rejected"
+echo -n "tampered bytes" > "$TMPDIR_SRC_TEST/singbox-vpn-src.tar.gz"
+if ! ( cd "$TMPDIR_SRC_TEST" && grep -E '  singbox-vpn-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) >/dev/null 2>&1; then
+  ok "a tampered/mismatched singbox-vpn-src.tar.gz is correctly rejected"
 else
-  fail "a tampered vpn1-src.tar.gz unexpectedly verified"
+  fail "a tampered singbox-vpn-src.tar.gz unexpectedly verified"
 fi
 rm -f "$TMPDIR_SRC_TEST/SHA256SUMS"
 echo "not a valid checksum manifest line" > "$TMPDIR_SRC_TEST/SHA256SUMS"
-if ! grep -qE '^[0-9a-f]{64}  vpn1-src\.tar\.gz$' "$TMPDIR_SRC_TEST/SHA256SUMS"; then
-  ok "a malformed SHA256SUMS (no well-formed vpn1-src.tar.gz entry) is correctly rejected by the same pattern install.sh uses"
+if ! grep -qE '^[0-9a-f]{64}  singbox-vpn-src\.tar\.gz$' "$TMPDIR_SRC_TEST/SHA256SUMS"; then
+  ok "a malformed SHA256SUMS (no well-formed singbox-vpn-src.tar.gz entry) is correctly rejected by the same pattern install.sh uses"
 else
   fail "malformed-SHA256SUMS detection pattern unexpectedly matched"
 fi
 rm -rf "$TMPDIR_SRC_TEST"
 
 echo
-echo "--- static: VPN1_CHANNEL=dev branch-source path remains explicitly documented as unverified/dev-only, not silently equivalent to a verified install ---"
+echo "--- static: SINGBOX_VPN_CHANNEL=dev branch-source path remains explicitly documented as unverified/dev-only, not silently equivalent to a verified install ---"
 if grep -q 'UNVERIFIED singbox-vpn branch source' "$BOOTSTRAP_SH"; then
   ok "install.sh labels the branch-source download path as unverified at the point it runs, not just in --help text"
 else

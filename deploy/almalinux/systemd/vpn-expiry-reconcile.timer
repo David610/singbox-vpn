@@ -1,5 +1,5 @@
 [Unit]
-Description=Apply vpn1 user expirations to live protocol authorization
+Description=Apply singbox-vpn user expirations to live protocol authorization
 
 [Timer]
 # OnUnitActiveSec is deliberately 10min, not 1min: sing-box has no

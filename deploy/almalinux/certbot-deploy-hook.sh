@@ -2,7 +2,7 @@
 # certbot deploy-hook: keeps the Hysteria2 TLS cert/key singbox-vpn reads from
 # /etc/vpn/compat/hysteria/{cert,key}.pem in sync with certbot's renewed
 # certificate. Installed by install.sh into
-# /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh, which certbot
+# /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh, which certbot
 # runs automatically after ANY successful renewal (via `certbot renew`,
 # normally driven by the distro's certbot-renew.timer).
 #
@@ -28,7 +28,7 @@ set -euo pipefail
 : "${STATE_DIR:=/etc/vpn/compat}"
 : "${DEPLOYMENT_TOML:=/etc/vpn/deployment.toml}"
 : "${SINGBOX_BIN:=/usr/local/bin/sing-box}"
-: "${VPN1_LOCK_FILE:=/run/lock/vpn1.lock}"
+: "${SINGBOX_VPN_LOCK_FILE:=/run/lock/singbox-vpn.lock}"
 
 log() { echo "[certbot-deploy-hook] $*"; }
 warn() { echo "[certbot-deploy-hook] WARNING: $*" >&2; }
@@ -98,7 +98,7 @@ key_pub="$(openssl pkey -in "$tmp_key" -pubout -outform DER 2>/dev/null \
 # Serialize with backup/restore/key rotation and retain exact predecessors
 # until both services have accepted the new pair. The EXIT trap covers
 # validation/reload failures and INT/TERM between the two renames.
-exec 201>"$VPN1_LOCK_FILE"
+exec 201>"$SINGBOX_VPN_LOCK_FILE"
 flock -x 201
 cert_bak="$cert.renew-bak"
 key_bak="$key.renew-bak"
@@ -107,7 +107,7 @@ key_bak="$key.renew-bak"
 # this exact hook that was killed (SIGKILL, OOM, host power loss) before it
 # could clean up after itself — never a currently-active concurrent
 # transaction. Every singbox-vpn tool that mutates this state (this hook,
-# `vpn-admin`, install.sh, update.sh) takes the SAME `/run/lock/vpn1.lock`
+# `vpn-admin`, install.sh, update.sh) takes the SAME `/run/lock/singbox-vpn.lock`
 # before touching it, and we are holding that lock exclusively right now
 # (line above); a genuinely concurrent writer would still be blocked on
 # `flock`, not racing past it. This used to `die` unconditionally and

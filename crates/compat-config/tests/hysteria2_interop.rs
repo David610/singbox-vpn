@@ -186,12 +186,12 @@ fn write_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> s
 /// Shared skip policy — see `reality_interop.rs`. A missing `sing-box` or
 /// `openssl` must not block a contributor, but an early `return` is reported
 /// by Rust's harness as a PASS, so the pipeline that gates merges sets
-/// `VPN1_REQUIRE_REAL_INTEROP=1` and this turns every skip into a failure.
+/// `SINGBOX_VPN_REQUIRE_REAL_INTEROP=1` and this turns every skip into a failure.
 /// A skipped test is not a pass.
 fn skip_or_fail(reason: &str) {
-    if std::env::var("VPN1_REQUIRE_REAL_INTEROP").is_ok() {
+    if std::env::var("SINGBOX_VPN_REQUIRE_REAL_INTEROP").is_ok() {
         panic!(
-            "VPN1_REQUIRE_REAL_INTEROP is set, so this suite must really run, but: {reason}. \
+            "SINGBOX_VPN_REQUIRE_REAL_INTEROP is set, so this suite must really run, but: {reason}. \
              Refusing to report a skip as a pass."
         );
     }

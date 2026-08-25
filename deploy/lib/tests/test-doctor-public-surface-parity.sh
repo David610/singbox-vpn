@@ -33,16 +33,16 @@ done
 
 echo "--- ownership file path agreement ---"
 for f in "$FIREWALL_SH" "$FIREWALL_UFW_SH"; do
-  if grep -q '/var/lib/vpn1/firewall-owned.env' "$f"; then
-    ok "$(basename "$f") writes the ownership file at /var/lib/vpn1/firewall-owned.env"
+  if grep -q '/var/lib/singbox-vpn/firewall-owned.env' "$f"; then
+    ok "$(basename "$f") writes the ownership file at /var/lib/singbox-vpn/firewall-owned.env"
   else
-    fail "$(basename "$f") does not reference /var/lib/vpn1/firewall-owned.env"
+    fail "$(basename "$f") does not reference /var/lib/singbox-vpn/firewall-owned.env"
   fi
 done
-if grep -q '"/var/lib/vpn1/firewall-owned.env"' "$MAIN_RS"; then
+if grep -q '"/var/lib/singbox-vpn/firewall-owned.env"' "$MAIN_RS"; then
   ok "vpn-admin reads the same fixed path"
 else
-  fail "vpn-admin does not reference the same /var/lib/vpn1/firewall-owned.env path"
+  fail "vpn-admin does not reference the same /var/lib/singbox-vpn/firewall-owned.env path"
 fi
 
 echo

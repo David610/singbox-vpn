@@ -10,7 +10,7 @@
 #     cannot break them.
 #   - sing-box.service and vpn-subscription.service both carry per-unit
 #     journal rate limiting (LogRateLimitIntervalSec/LogRateLimitBurst).
-#   - no global journald policy file is touched by any vpn1 shell script.
+#   - no global journald policy file is touched by any singbox-vpn shell script.
 #
 # Static/source-inspection only — does not require a real nginx/systemd
 # host. See services/subscription/src/lib.rs's own `#[test]`s for the
@@ -75,9 +75,9 @@ else
   fail "server_tokens off is missing from the nginx template"
 fi
 if grep -q 'http {' "$NGINX_TEMPLATE"; then
-  fail "the template defines its own http{} block — server_tokens must stay scoped to the vpn1 server{} block, not become a global change"
+  fail "the template defines its own http{} block — server_tokens must stay scoped to the singbox-vpn server{} block, not become a global change"
 else
-  ok "the template has no http{} block (server_tokens applies only inside vpn1's own server{} block)"
+  ok "the template has no http{} block (server_tokens applies only inside singbox-vpn's own server{} block)"
 fi
 
 echo

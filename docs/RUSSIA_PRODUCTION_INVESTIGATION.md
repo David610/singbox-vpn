@@ -177,7 +177,7 @@ Recommendation today: **Option A while collecting evidence**. Hiddify should be
 listed as provisional, not universally recommended. REALITY may remain the
 deterministic primary only as an unverified default, Hysteria2 should remain an
 optional UDP path, and no new Shadowsocks service should be added until the
-Outline control experiment identifies a reproducible advantage. vpn1 cannot
+Outline control experiment identifies a reproducible advantage. singbox-vpn cannot
 truthfully be called Russia-ready: status is **UNVERIFIED**.
 
 ## Exact operator procedure
@@ -185,7 +185,7 @@ truthfully be called Russia-ready: status is **UNVERIFIED**.
 On the VPS, first validate the configured target without printing credentials:
 
 ```bash
-sudo /opt/vpn1/deploy/lib/vpn-investigate.sh target www.google.com 443
+sudo /opt/singbox-vpn/deploy/lib/vpn-investigate.sh target www.google.com 443
 sudo vpn-admin doctor --protocol
 sudo vpn-admin doctor --report --report-output /root/vpn-doctor.txt
 ```
@@ -206,10 +206,10 @@ At the synchronized UTC start, restrict capture to the phone's observed source
 IP (never a broad public capture):
 
 ```bash
-sudo /opt/vpn1/deploy/lib/vpn-investigate.sh capture CLIENT_PUBLIC_IP /root/run.pcap 120
+sudo /opt/singbox-vpn/deploy/lib/vpn-investigate.sh capture CLIENT_PUBLIC_IP /root/run.pcap 120
 sudo journalctl -u sing-box --since '2026-08-14 12:00:00 UTC' \
   --until '2026-08-14 12:02:30 UTC' --output short-iso > /root/run-singbox.log
-sudo /opt/vpn1/deploy/lib/vpn-investigate.sh summarize /root/run.pcap > /root/run-summary.txt
+sudo /opt/singbox-vpn/deploy/lib/vpn-investigate.sh summarize /root/run.pcap > /root/run-summary.txt
 sudo chmod 600 /root/run.pcap /root/run-singbox.log /root/run-summary.txt
 ```
 
@@ -327,11 +327,11 @@ actually active for that specific test.
 ### Aug-15 (last known-working) vs current: exact REALITY-path diff
 
 The task named a prior-repo commit hash that does not exist in this repo's
-history (a mistyped/concatenated hash across the `vpn1`→`singbox-vpn`
+history (a mistyped/concatenated hash across the `singbox-vpn`→`singbox-vpn`
 migration). The actual migration point is commit `7392990` ("Migrate
 repository to singbox-vpn", 2026-08-15), preceded by `29e1e5c` (2026-08-14,
 "Merge pull request #25 ... perform-production-hardening-pass") — the last
-`vpn1`-era commit before the rebrand. `29e1e5c..HEAD` is therefore the
+`singbox-vpn`-era commit before the rebrand. `29e1e5c..HEAD` is therefore the
 honest "Aug-15 baseline vs current" diff window.
 
 **`crates/compat-config/src/model.rs`, `deployment.rs`, `credentials.rs`:
@@ -517,9 +517,9 @@ release-to-release update — see `docs/IMPLEMENTATION_STATUS.md`
 
 ```bash
 # On the VPS, as the existing production install:
-sudo /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild   # dev/unreleased checkout
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --dev-rebuild   # dev/unreleased checkout
 # or, once a tagged release containing this branch's commit exists:
-sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version vX.Y.Z
 
 # Verify nothing regressed:
 sudo vpn-admin doctor --protocol --require-protocol

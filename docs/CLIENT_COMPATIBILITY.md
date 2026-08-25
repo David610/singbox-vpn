@@ -35,7 +35,7 @@ project's own `sing-box` interop tests
 pinned `sing-box` binary and perform actual protocol handshakes — 9
 tests, all passing as of the date `docs/COMPATIBILITY_VERSIONS.md`
 records. CI's `singbox-validate` job (`.github/workflows/ci.yml`) does
-this on every push, and `VPN1_REQUIRE_REAL_INTEROP=1` turns any skip
+this on every push, and `SINGBOX_VPN_REQUIRE_REAL_INTEROP=1` turns any skip
 into a hard failure so this can never silently degrade to schema-only
 checking again. An owner-reported iPhone/Hiddify smoke test now confirms
 that a real app can import/connect through a real AlmaLinux VPS. It did

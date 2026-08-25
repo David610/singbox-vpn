@@ -228,7 +228,7 @@ fn admin(dir: &Path, cfg_path: &Path) -> Command {
     let mut cmd = Command::cargo_bin("vpn-admin").unwrap();
     cmd.arg("--config").arg(cfg_path);
     cmd.current_dir(dir);
-    cmd.env("VPN1_ALLOW_OFFLINE_MUTATION", "1");
+    cmd.env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1");
     cmd
 }
 
@@ -348,8 +348,8 @@ fn spawn_subscription_binary(cfg_path: &Path) -> std::process::Child {
 /// both end up persisted — the state lock (apps/admin/src/lock.rs) must
 /// serialize their load-mutate-persist sequences rather than letting the
 /// second writer's `users.json` overwrite the first writer's user out of
-/// existence. Uses a dedicated `VPN1_LOCK_PATH` so this test never
-/// contends with other tests or a real host's `/run/lock/vpn1.lock`.
+/// existence. Uses a dedicated `SINGBOX_VPN_LOCK_PATH` so this test never
+/// contends with other tests or a real host's `/run/lock/singbox-vpn.lock`.
 #[test]
 fn concurrent_user_creates_do_not_lose_an_update() {
     let dir = tempfile::tempdir().unwrap();
@@ -361,8 +361,8 @@ fn concurrent_user_creates_do_not_lose_an_update() {
             .arg("--config")
             .arg(&cfg_path)
             .args(["user", "create", "--name", name])
-            .env("VPN1_LOCK_PATH", &lock_path)
-            .env("VPN1_ALLOW_OFFLINE_MUTATION", "1")
+            .env("SINGBOX_VPN_LOCK_PATH", &lock_path)
+            .env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1")
             .current_dir(dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

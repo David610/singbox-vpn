@@ -104,7 +104,7 @@ jobs:
       - name: bash -n (syntax check every shipped script)
         run: |
           set -euo pipefail
-          for f in install.sh uninstall.sh bin/vpn1-uninstall deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh; do
+          for f in install.sh uninstall.sh bin/singbox-vpn-uninstall deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
@@ -130,7 +130,7 @@ jobs:
             timeout 60 sudo apt-get update -y >/dev/null
             timeout 90 sudo apt-get install -y shellcheck >/dev/null
           fi
-          shellcheck -S warning install.sh uninstall.sh bin/vpn1-uninstall deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
+          shellcheck -S warning install.sh uninstall.sh bin/singbox-vpn-uninstall deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
       # Run the complete deterministic suite rather than maintaining a
       # second hand-written list here. The old list omitted transactional
       # update, fresh-install acceptance, schema migration, release
@@ -226,6 +226,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: bash deploy/lib/check-no-secret-logging.sh
 
+  no-legacy-identity-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash deploy/lib/check-no-legacy-identity.sh
+
   license-check:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -310,8 +317,8 @@ jobs:
           EOF
 
           BIN=./target/release/vpn-admin
-          VPN1_ALLOW_OFFLINE_MUTATION=1 "$BIN" --config "$RUNNER_TEMP/deployment.toml" init
-          VPN1_ALLOW_OFFLINE_MUTATION=1 "$BIN" --config "$RUNNER_TEMP/deployment.toml" user create --name ci-test-user
+          SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$BIN" --config "$RUNNER_TEMP/deployment.toml" init
+          SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$BIN" --config "$RUNNER_TEMP/deployment.toml" user create --name ci-test-user
           "$BIN" --config "$RUNNER_TEMP/deployment.toml" render-config
 
           echo "running real sing-box check against the generated server config:"
@@ -326,14 +333,14 @@ jobs:
       # the tests ran (it previously wasn't: the `test` job above runs the
       # same binaries with no sing-box and reports `ok` for every one of
       # them):
-      #   1. VPN1_REQUIRE_REAL_INTEROP=1 turns every in-test skip into a
+      #   1. SINGBOX_VPN_REQUIRE_REAL_INTEROP=1 turns every in-test skip into a
       #      hard panic, so a missing binary/openssl fails the job.
       #   2. The expected pass counts are asserted below, so a test that is
       #      deleted, renamed, or silently stops running fails the job too.
       - name: Real VLESS+REALITY and Hysteria2 interoperability tests (real sing-box)
         env:
           SING_BOX_BIN: /usr/local/bin/sing-box
-          VPN1_REQUIRE_REAL_INTEROP: "1"
+          SINGBOX_VPN_REQUIRE_REAL_INTEROP: "1"
         run: |
           set -euo pipefail
           cargo test --locked -p compat-config \
@@ -354,7 +361,7 @@ jobs:
             exit 1
           fi
           if grep -q "^skipping:" interop.log; then
-            echo "::error::an interop test skipped despite VPN1_REQUIRE_REAL_INTEROP=1"
+            echo "::error::an interop test skipped despite SINGBOX_VPN_REQUIRE_REAL_INTEROP=1"
             exit 1
           fi
           echo "all $total_ok real-binary interop tests executed and passed"
@@ -417,8 +424,8 @@ jobs:
           EOF
 
           CFG="$RUNNER_TEMP/protocol-selftest-deployment.toml"
-          VPN1_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" init
-          VPN1_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" user create --name ci-protocol-test
+          SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" init
+          SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" user create --name ci-protocol-test
           "$ADMIN" --config "$CFG" render-config
 
           /usr/local/bin/sing-box run -c "$STATE/sing-box/config.json" > "$RUNNER_TEMP/singbox.log" 2>&1 &

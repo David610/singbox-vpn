@@ -97,7 +97,7 @@ port_out="$(
   # shellcheck disable=SC1090
   . "$PREFLIGHT_SH"
   SSHD_CONFIG_FILE="$TMPDIR_TEST/does-not-exist"
-  unset VPN1_SSH_PORT
+  unset SINGBOX_VPN_SSH_PORT
   preflight_resolve_ssh_port
 )" || rc=$?
 if [ "$rc" -ne 0 ] && [ -z "$port_out" ]; then
@@ -107,29 +107,29 @@ else
 fi
 
 echo
-echo "--- functional: preflight_resolve_ssh_port() honours an explicit VPN1_SSH_PORT override even when detection would fail ---"
+echo "--- functional: preflight_resolve_ssh_port() honours an explicit SINGBOX_VPN_SSH_PORT override even when detection would fail ---"
 rc=0
 port_out="$(
   # shellcheck disable=SC1090
   . "$PREFLIGHT_SH"
   SSHD_CONFIG_FILE="$TMPDIR_TEST/does-not-exist"
-  VPN1_SSH_PORT="2222"
+  SINGBOX_VPN_SSH_PORT="2222"
   preflight_resolve_ssh_port
 )" || rc=$?
 if [ "$rc" -eq 0 ] && [ "$port_out" = "2222" ]; then
-  ok "preflight_resolve_ssh_port() uses the explicit VPN1_SSH_PORT override"
+  ok "preflight_resolve_ssh_port() uses the explicit SINGBOX_VPN_SSH_PORT override"
 else
   fail "preflight_resolve_ssh_port() did not honour the override (rc=$rc, got '$port_out')"
 fi
 
 echo
-echo "--- functional: preflight_resolve_ssh_port() rejects an invalid VPN1_SSH_PORT override ---"
+echo "--- functional: preflight_resolve_ssh_port() rejects an invalid SINGBOX_VPN_SSH_PORT override ---"
 for bad in "0" "70000" "notaport" "22; rm -rf /"; do
   rc=0
   port_out="$(
     # shellcheck disable=SC1090
     . "$PREFLIGHT_SH"
-    VPN1_SSH_PORT="$bad"
+    SINGBOX_VPN_SSH_PORT="$bad"
     preflight_resolve_ssh_port
   )" 2>/dev/null || rc=$?
   if [ "$rc" -ne 0 ] && [ -z "$port_out" ]; then
@@ -187,8 +187,8 @@ if echo "$preflight_body_ssh" | grep -qE '^\s*resolve_ssh_port$'; then
 else
   fail "resolve_ssh_port() does not run inside preflight_stage"
 fi
-if grep -qE -- '--ssh-port\) VPN1_SSH_PORT=' "$INSTALL_SH"; then
-  ok "--ssh-port is a real recognized CLI flag wired to VPN1_SSH_PORT"
+if grep -qE -- '--ssh-port\) SINGBOX_VPN_SSH_PORT=' "$INSTALL_SH"; then
+  ok "--ssh-port is a real recognized CLI flag wired to SINGBOX_VPN_SSH_PORT"
 else
   fail "--ssh-port flag is not wired into parse_cli_args()"
 fi
@@ -259,7 +259,7 @@ else
 fi
 
 echo
-echo "--- static: custom domain is the default; --allow-ip-hostname/VPN1_ALLOW_IP_HOSTNAME is required for a silent non-interactive IP-derived fallback ---"
+echo "--- static: custom domain is the default; --allow-ip-hostname/SINGBOX_VPN_ALLOW_IP_HOSTNAME is required for a silent non-interactive IP-derived fallback ---"
 resolve_host_body="$(sed -n '/^resolve_host_config() {/,/^}/p' "$INSTALL_SH")"
 if echo "$resolve_host_body" | grep -q 'ALLOW_IP_HOSTNAME'; then
   ok "resolve_host_config() checks ALLOW_IP_HOSTNAME before silently falling back to sslip.io"
@@ -296,7 +296,7 @@ else
 fi
 
 echo
-echo "--- functional: resolve_host_config() succeeds with --allow-ip-hostname (VPN1_ALLOW_IP_HOSTNAME=1) even non-interactively ---"
+echo "--- functional: resolve_host_config() succeeds with --allow-ip-hostname (SINGBOX_VPN_ALLOW_IP_HOSTNAME=1) even non-interactively ---"
 rc=0
 out="$( {
   # shellcheck disable=SC1090
@@ -310,7 +310,7 @@ out="$( {
   echo "PUBLIC_HOST=$PUBLIC_HOST"
 } 2>&1 )" || rc=$?
 if [ "$rc" -eq 0 ] && echo "$out" | grep -q 'PUBLIC_HOST=203-0-113-1.sslip.io'; then
-  ok "resolve_host_config() with VPN1_ALLOW_IP_HOSTNAME=1 proceeds to the sslip.io fallback and succeeds"
+  ok "resolve_host_config() with SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 proceeds to the sslip.io fallback and succeeds"
 else
   fail "resolve_host_config() with the explicit opt-in did not behave as expected (rc=$rc): $out"
 fi

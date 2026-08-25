@@ -159,7 +159,7 @@ else
 fi
 
 echo
-echo "--- static: ownership tracking (INSTALL_ATTEMPTED/OPT_VPN1_PRE_EXISTED baseline) is marked BEFORE the first persistent mutation (persist_source_tree/install_idn_support) ---"
+echo "--- static: ownership tracking (INSTALL_ATTEMPTED/OPT_SINGBOX_VPN_PRE_EXISTED baseline) is marked BEFORE the first persistent mutation (persist_source_tree/install_idn_support) ---"
 preflight_body2="$(sed -n '/^preflight_stage() {/,/^}/p' "$INSTALL_SH")"
 mark_line="$(echo "$preflight_body2" | grep -n '^\s*ownership_mark INSTALL_ATTEMPTED\s*$' | head -n1 | cut -d: -f1)"
 persist_line="$(echo "$preflight_body2" | grep -n '^\s*persist_source_tree\s*$' | head -n1 | cut -d: -f1)"

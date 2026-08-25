@@ -55,7 +55,7 @@ run_install_certbot_repo_rhel() {
     die() { echo "DIE: $*" >&2; exit 1; }
     OS_ID="$os_id"
     OS_PRETTY_NAME="fixture-$os_id"
-    OWNERSHIP_DIR="$TMPDIR_TEST/var-lib-vpn1-$os_id-$epel_present-$$"
+    OWNERSHIP_DIR="$TMPDIR_TEST/var-lib-singbox-vpn-$os_id-$epel_present-$$"
     # shellcheck disable=SC2034 # read by deploy/lib/ownership.sh on source
     OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
     # shellcheck source=/dev/null

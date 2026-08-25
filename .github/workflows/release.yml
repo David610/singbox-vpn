@@ -131,7 +131,7 @@ jobs:
       - name: Package
         run: |
           set -euo pipefail
-          out="vpn1-${{ matrix.target }}"
+          out="singbox-vpn-${{ matrix.target }}"
           mkdir -p "$out"
           cp "target/${{ matrix.target }}/release/vpn-admin" "$out/vpn-admin"
           cp "target/${{ matrix.target }}/release/subscription" "$out/subscription"
@@ -142,7 +142,7 @@ jobs:
       - name: Attest binary archive provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: vpn1-${{ matrix.target }}.tar.gz
+          subject-path: singbox-vpn-${{ matrix.target }}.tar.gz
 
       # Archive/installer contract test (docs/FINAL_PRODUCTION_AUDIT.md
       # P0-6): extract the archive we JUST built using the exact same
@@ -155,9 +155,9 @@ jobs:
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
-          tar -xzf "vpn1-${{ matrix.target }}.tar.gz" -C "$tmp"
-          extracted="$tmp/vpn1-${{ matrix.target }}"
-          test -d "$extracted" || { echo "::error::archive did not contain vpn1-${{ matrix.target }}/ — install.sh's fetch_release_binaries() expects exactly this layout"; exit 1; }
+          tar -xzf "singbox-vpn-${{ matrix.target }}.tar.gz" -C "$tmp"
+          extracted="$tmp/singbox-vpn-${{ matrix.target }}"
+          test -d "$extracted" || { echo "::error::archive did not contain singbox-vpn-${{ matrix.target }}/ — install.sh's fetch_release_binaries() expects exactly this layout"; exit 1; }
           test -x "$extracted/vpn-admin" || { echo "::error::vpn-admin missing or not executable in archive"; exit 1; }
           test -x "$extracted/subscription" || { echo "::error::subscription missing or not executable in archive"; exit 1; }
           test -f "$extracted/LICENSE" || { echo "::error::LICENSE missing from release archive"; exit 1; }
@@ -172,10 +172,10 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vpn1-${{ matrix.target }}
+          name: singbox-vpn-${{ matrix.target }}
           path: |
-            vpn1-${{ matrix.target }}.tar.gz
-            vpn1-${{ matrix.target }}.tar.gz.sha256
+            singbox-vpn-${{ matrix.target }}.tar.gz
+            singbox-vpn-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
 
       # Checksum-verified source payload (docs re: install.sh's bootstrap
@@ -185,16 +185,16 @@ jobs:
       # not itself a verified release artifact. Built once here (one
       # matrix leg only, content doesn't depend on target arch) so the
       # bootstrap has a checksum-manifested asset to verify against for
-      # any pinned VPN1_VERSION install.
+      # any pinned SINGBOX_VPN_VERSION install.
       - name: Package source archive
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           set -euo pipefail
-          git archive --format=tar.gz --prefix=vpn1-src/ -o vpn1-src.tar.gz HEAD
-          sha256sum vpn1-src.tar.gz > vpn1-src.tar.gz.sha256
+          git archive --format=tar.gz --prefix=singbox-vpn-src/ -o singbox-vpn-src.tar.gz HEAD
+          sha256sum singbox-vpn-src.tar.gz > singbox-vpn-src.tar.gz.sha256
           tmp="$(mktemp -d)"
-          tar -xzf vpn1-src.tar.gz -C "$tmp"
-          test -x "$tmp/vpn1-src/deploy/almalinux/install.sh" || {
+          tar -xzf singbox-vpn-src.tar.gz -C "$tmp"
+          test -x "$tmp/singbox-vpn-src/deploy/almalinux/install.sh" || {
             echo "::error::source archive cannot hand off to executable deploy/almalinux/install.sh"
             exit 1
           }
@@ -204,15 +204,15 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: vpn1-src.tar.gz
+          subject-path: singbox-vpn-src.tar.gz
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         with:
-          name: vpn1-src
+          name: singbox-vpn-src
           path: |
-            vpn1-src.tar.gz
-            vpn1-src.tar.gz.sha256
+            singbox-vpn-src.tar.gz
+            singbox-vpn-src.tar.gz.sha256
           if-no-files-found: error
 
   publish:
@@ -291,15 +291,15 @@ jobs:
             */deploy/almalinux/install.sh) ;;
             *) echo "unexpected handoff target: $installer" >&2; exit 1 ;;
           esac
-          [ "${VPN1_VERSION:-}" = "${RELEASE_TAG:?}" ] || {
-            echo "bootstrap handed off VPN1_VERSION='${VPN1_VERSION:-}', expected '$RELEASE_TAG'" >&2
+          [ "${SINGBOX_VPN_VERSION:-}" = "${RELEASE_TAG:?}" ] || {
+            echo "bootstrap handed off SINGBOX_VPN_VERSION='${SINGBOX_VPN_VERSION:-}', expected '$RELEASE_TAG'" >&2
             exit 1
           }
-          printf '%s\n' "$*" > "${VPN1_BOOTSTRAP_VERIFY_MARKER:?}"
+          printf '%s\n' "$*" > "${SINGBOX_VPN_BOOTSTRAP_VERIFY_MARKER:?}"
           EOF
 
           chmod +x "$testbin/id" "$testbin/bash"
-          export VPN1_BOOTSTRAP_VERIFY_MARKER="$marker"
+          export SINGBOX_VPN_BOOTSTRAP_VERIFY_MARKER="$marker"
           PATH="$testbin:$PATH" /usr/bin/bash install.sh \
             --version "$RELEASE_TAG" \
             --non-interactive \

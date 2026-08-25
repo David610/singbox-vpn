@@ -17,22 +17,22 @@ fi
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
-mkdir -p "$TEST_TMP/source/vpn1-src/deploy/almalinux" "$TEST_TMP/source/vpn1-src/apps/admin" "$TEST_TMP/fakebin"
-printf 'version = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/vpn1-src/apps/admin/Cargo.toml"
+mkdir -p "$TEST_TMP/source/singbox-vpn-src/deploy/almalinux" "$TEST_TMP/source/singbox-vpn-src/apps/admin" "$TEST_TMP/fakebin"
+printf 'version = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
 
-cat > "$TEST_TMP/source/vpn1-src/deploy/almalinux/install.sh" <<'INSTALLER'
+cat > "$TEST_TMP/source/singbox-vpn-src/deploy/almalinux/install.sh" <<'INSTALLER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[ "${VPN1_RELEASE_REPO:-}" = "David610/singbox-vpn" ]
-[ "${VPN1_VERSION:-}" = "$FIXTURE_VERSION" ]
+[ "${SINGBOX_VPN_RELEASE_REPO:-}" = "David610/singbox-vpn" ]
+[ "${SINGBOX_VPN_VERSION:-}" = "$FIXTURE_VERSION" ]
 printf '%s\n' "$*" > "$TEST_MARKER"
 INSTALLER
-chmod 0755 "$TEST_TMP/source/vpn1-src/deploy/almalinux/install.sh"
+chmod 0755 "$TEST_TMP/source/singbox-vpn-src/deploy/almalinux/install.sh"
 
-tar -czf "$TEST_TMP/vpn1-src.tar.gz" -C "$TEST_TMP/source" vpn1-src
+tar -czf "$TEST_TMP/singbox-vpn-src.tar.gz" -C "$TEST_TMP/source" singbox-vpn-src
 (
   cd "$TEST_TMP"
-  sha256sum vpn1-src.tar.gz > SHA256SUMS
+  sha256sum singbox-vpn-src.tar.gz > SHA256SUMS
 )
 
 cat > "$TEST_TMP/fakebin/id" <<'FAKE_ID'
@@ -84,7 +84,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$url" in
-  */releases/download/"$FIXTURE_VERSION"/vpn1-src.tar.gz)
+  */releases/download/"$FIXTURE_VERSION"/singbox-vpn-src.tar.gz)
     cp "$FIXTURE_TAR" "$out"
     ;;
   */releases/download/"$FIXTURE_VERSION"/SHA256SUMS)
@@ -101,7 +101,7 @@ esac
 FAKE_CURL
 chmod 0755 "$TEST_TMP/fakebin/curl"
 
-export FIXTURE_TAR="$TEST_TMP/vpn1-src.tar.gz"
+export FIXTURE_TAR="$TEST_TMP/singbox-vpn-src.tar.gz"
 export FIXTURE_SUMS="$TEST_TMP/SHA256SUMS"
 export FIXTURE_VERSION
 export TEST_MARKER="$TEST_TMP/handoff-args.txt"
@@ -147,9 +147,9 @@ done
 # The finite migration rule is automatic: v0.1.2 is accepted with its
 # historical checksum-only policy, even when no gh verifier is available.
 LEGACY_VERSION=v0.1.2
-printf 'version = "0.1.2"\n' > "$TEST_TMP/source/vpn1-src/apps/admin/Cargo.toml"
-tar -czf "$TEST_TMP/legacy.tar.gz" -C "$TEST_TMP/source" vpn1-src
-printf '%s  vpn1-src.tar.gz\n' "$(sha256sum "$TEST_TMP/legacy.tar.gz" | awk '{print $1}')" > "$TEST_TMP/legacy-SHA256SUMS"
+printf 'version = "0.1.2"\n' > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
+tar -czf "$TEST_TMP/legacy.tar.gz" -C "$TEST_TMP/source" singbox-vpn-src
+printf '%s  singbox-vpn-src.tar.gz\n' "$(sha256sum "$TEST_TMP/legacy.tar.gz" | awk '{print $1}')" > "$TEST_TMP/legacy-SHA256SUMS"
 rm -f "$TEST_MARKER"
 FIXTURE_VERSION="$LEGACY_VERSION" FIXTURE_TAR="$TEST_TMP/legacy.tar.gz" \
   FIXTURE_SUMS="$TEST_TMP/legacy-SHA256SUMS" GH_ATTESTATION_RESULT=missing \
@@ -160,13 +160,13 @@ FIXTURE_VERSION="$LEGACY_VERSION" FIXTURE_TAR="$TEST_TMP/legacy.tar.gz" \
 grep -q 'HISTORICAL RELEASE' "$TEST_TMP/bootstrap-legacy.log"
 
 # Restore the new-release fixture for the remaining wrong-version check.
-printf 'version = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/vpn1-src/apps/admin/Cargo.toml"
+printf 'version = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
 
 # Even a valid repository attestation is not enough if a release page is wired
 # to an archive built for a different package version.
-printf 'version = "9.9.9"\n' > "$TEST_TMP/source/vpn1-src/apps/admin/Cargo.toml"
-tar -czf "$TEST_TMP/wrong-version.tar.gz" -C "$TEST_TMP/source" vpn1-src
-printf '%s  vpn1-src.tar.gz\n' "$(sha256sum "$TEST_TMP/wrong-version.tar.gz" | awk '{print $1}')" > "$TEST_TMP/wrong-version-SHA256SUMS"
+printf 'version = "9.9.9"\n' > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
+tar -czf "$TEST_TMP/wrong-version.tar.gz" -C "$TEST_TMP/source" singbox-vpn-src
+printf '%s  singbox-vpn-src.tar.gz\n' "$(sha256sum "$TEST_TMP/wrong-version.tar.gz" | awk '{print $1}')" > "$TEST_TMP/wrong-version-SHA256SUMS"
 rm -f "$TEST_MARKER"
 rc=0
 FIXTURE_TAR="$TEST_TMP/wrong-version.tar.gz" FIXTURE_SUMS="$TEST_TMP/wrong-version-SHA256SUMS" \
@@ -179,7 +179,7 @@ grep -q 'does not match requested release' "$TEST_TMP/bootstrap-wrong-version.lo
 
 # A modified archive must be rejected by SHA256SUMS before provenance or
 # installer handoff can make it relevant.
-cp "$TEST_TMP/vpn1-src.tar.gz" "$TEST_TMP/modified.tar.gz"
+cp "$TEST_TMP/singbox-vpn-src.tar.gz" "$TEST_TMP/modified.tar.gz"
 printf 'tamper' >> "$TEST_TMP/modified.tar.gz"
 rm -f "$TEST_MARKER"
 rc=0

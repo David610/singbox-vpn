@@ -2,7 +2,7 @@
 # Regression tests for uninstall hardening requirements not already
 # covered by test-uninstall-idempotency.sh (idempotent no-op) or
 # test-uninstall-ownership-parity.sh (every ownership key is consumed):
-#   - the offline stable entry point (bin/vpn1-uninstall) exists, is
+#   - the offline stable entry point (bin/singbox-vpn-uninstall) exists, is
 #     root-controlled, and refuses to run as non-root / without the
 #     real uninstaller present
 #   - deploy/almalinux/uninstall.sh refuses to run from a
@@ -10,7 +10,7 @@
 #   - the irreversible-action confirmation gate (--yes / /dev/tty
 #     prompt) behaves correctly
 #   - manifest-sourced values are re-validated before destructive use
-#     (CERT_LINEAGES_CREATED_BY_VPN1 hostnames, RUSTUP_HOME_DIR path) —
+#     (CERT_LINEAGES_CREATED_BY_SINGBOX_VPN hostnames, RUSTUP_HOME_DIR path) —
 #     a corrupted manifest must never become broad rm -rf behavior
 #   - SSH firewall state is never touched by uninstall.sh, under any
 #     code path (static regression guard)
@@ -22,7 +22,7 @@ set -Eeuo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 UNINSTALL_SH="$REPO_ROOT/deploy/almalinux/uninstall.sh"
 BOOTSTRAP_UNINSTALL_SH="$REPO_ROOT/uninstall.sh"
-WRAPPER="$REPO_ROOT/bin/vpn1-uninstall"
+WRAPPER="$REPO_ROOT/bin/singbox-vpn-uninstall"
 
 failures=0
 ok() { echo "ok: $*"; }
@@ -36,34 +36,34 @@ fi
 TMPDIR_TEST="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
-echo "--- static: bin/vpn1-uninstall is the documented stable offline entry point ---"
-[ -x "$WRAPPER" ] && ok "bin/vpn1-uninstall exists and is executable" || fail "bin/vpn1-uninstall is missing or not executable"
-if grep -q '/opt/vpn1/bin/vpn1-uninstall' "$UNINSTALL_SH" 2>/dev/null || grep -q 'PRIMARY UX\|vpn1-uninstall --yes' README.md docs/ALMALINUX_DEPLOYMENT.md 2>/dev/null; then
+echo "--- static: bin/singbox-vpn-uninstall is the documented stable offline entry point ---"
+[ -x "$WRAPPER" ] && ok "bin/singbox-vpn-uninstall exists and is executable" || fail "bin/singbox-vpn-uninstall is missing or not executable"
+if grep -q '/opt/singbox-vpn/bin/singbox-vpn-uninstall' "$UNINSTALL_SH" 2>/dev/null || grep -q 'PRIMARY UX\|singbox-vpn-uninstall --yes' README.md docs/ALMALINUX_DEPLOYMENT.md 2>/dev/null; then
   ok "the stable path is referenced in --help/docs somewhere"
 fi
 
 echo
-echo "--- functional: bin/vpn1-uninstall refuses to run as non-root ---"
+echo "--- functional: bin/singbox-vpn-uninstall refuses to run as non-root ---"
 rc=0
 out="$(su -s /bin/bash nobody -c "$WRAPPER --yes" 2>&1)" || rc=$?
 if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'must run as root'; then
-  ok "bin/vpn1-uninstall refuses non-root execution"
+  ok "bin/singbox-vpn-uninstall refuses non-root execution"
 else
   echo "SKIP: could not exercise non-root path in this sandbox (su unavailable or behaves differently): rc=$rc out=$out"
 fi
 
 echo
-echo "--- functional: bin/vpn1-uninstall refuses when the real uninstaller is missing (incomplete copy) ---"
-INCOMPLETE_COPY="$TMPDIR_TEST/incomplete-vpn1"
+echo "--- functional: bin/singbox-vpn-uninstall refuses when the real uninstaller is missing (incomplete copy) ---"
+INCOMPLETE_COPY="$TMPDIR_TEST/incomplete-singbox-vpn"
 mkdir -p "$INCOMPLETE_COPY/bin"
-cp "$WRAPPER" "$INCOMPLETE_COPY/bin/vpn1-uninstall"
-chmod +x "$INCOMPLETE_COPY/bin/vpn1-uninstall"
+cp "$WRAPPER" "$INCOMPLETE_COPY/bin/singbox-vpn-uninstall"
+chmod +x "$INCOMPLETE_COPY/bin/singbox-vpn-uninstall"
 rc=0
-out="$("$INCOMPLETE_COPY/bin/vpn1-uninstall" --yes 2>&1)" || rc=$?
+out="$("$INCOMPLETE_COPY/bin/singbox-vpn-uninstall" --yes 2>&1)" || rc=$?
 if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'not found or not executable'; then
-  ok "bin/vpn1-uninstall refuses cleanly when deploy/almalinux/uninstall.sh is missing, and names the online fallback"
+  ok "bin/singbox-vpn-uninstall refuses cleanly when deploy/almalinux/uninstall.sh is missing, and names the online fallback"
 else
-  fail "bin/vpn1-uninstall did not refuse cleanly on an incomplete copy (rc=$rc): $out"
+  fail "bin/singbox-vpn-uninstall did not refuse cleanly on an incomplete copy (rc=$rc): $out"
 fi
 
 echo
@@ -173,7 +173,7 @@ fi
 echo
 echo "--- static: manifest-sourced values are re-validated before destructive use (corrupted manifest != broad rm -rf) ---"
 if grep -q 'preflight_validate_hostname "\$host"' "$UNINSTALL_SH"; then
-  ok "CERT_LINEAGES_CREATED_BY_VPN1 hostnames are re-validated before rm -rf of certificate directories"
+  ok "CERT_LINEAGES_CREATED_BY_SINGBOX_VPN hostnames are re-validated before rm -rf of certificate directories"
 else
   fail "certificate-lineage removal does not re-validate manifest-sourced hostnames"
 fi
@@ -194,10 +194,10 @@ fi
 echo
 echo "--- static: online bootstrap uninstall.sh prefers the local offline entry point before any network access ---"
 bootstrap_body="$(cat "$BOOTSTRAP_UNINSTALL_SH")"
-opt_bin_line="$(echo "$bootstrap_body" | grep -n '/opt/vpn1/bin/vpn1-uninstall' | head -n1 | cut -d: -f1)"
+opt_bin_line="$(echo "$bootstrap_body" | grep -n '/opt/singbox-vpn/bin/singbox-vpn-uninstall' | head -n1 | cut -d: -f1)"
 download_line="$(echo "$bootstrap_body" | grep -n 'codeload.github.com' | head -n1 | cut -d: -f1)"
 if [ -n "$opt_bin_line" ] && [ -n "$download_line" ] && [ "$opt_bin_line" -lt "$download_line" ]; then
-  ok "bootstrap uninstall.sh checks for the local /opt/vpn1/bin/vpn1-uninstall entry point strictly before any network download"
+  ok "bootstrap uninstall.sh checks for the local /opt/singbox-vpn/bin/singbox-vpn-uninstall entry point strictly before any network download"
 else
   fail "bootstrap uninstall.sh does not clearly prefer the local entry point before downloading"
 fi
