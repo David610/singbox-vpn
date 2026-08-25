@@ -20,44 +20,49 @@ fn toml_path(path: &Path) -> String {
 }
 
 /// `restore` (`apply_restored_file_policy` in `main.rs`) intentionally
-/// refuses to run as root without the real `vpn-subscription` system
-/// group present — it is the group that owns restored secrets in a real
-/// deployment, and silently falling back to some other group would be
-/// the wrong kind of "helpful". That is correct production behavior and
-/// this harness must not weaken it.
+/// refuses to run as root without the real `vpn-subscription` and
+/// `sing-box` system groups present — those are the groups that own
+/// restored secrets in a real deployment (`vpn-subscription` for
+/// subscription-owned files, `sing-box` for everything else under
+/// `reality/`, `hysteria/`, and `sing-box/`), and silently falling back to
+/// some other group would be the wrong kind of "helpful". That is correct
+/// production behavior and this harness must not weaken it.
 ///
 /// It does mean a test sandbox that happens to run as root (this crate's
 /// tests do, in some CI/sandbox configurations, unlike a normal
-/// unprivileged GitHub Actions runner) needs that one system group to
-/// exist before it can exercise the real root-only chown path at all —
-/// otherwise every `restore` invocation fails closed with "required
-/// service group \"vpn-subscription\" does not exist" for a reason that
-/// has nothing to do with what the test is actually checking.
+/// unprivileged GitHub Actions runner) needs both system groups to exist
+/// before it can exercise the real root-only chown path at all —
+/// otherwise every `restore` invocation touching a `sing-box`-owned file
+/// fails closed with "required service group \"sing-box\" does not exist"
+/// for a reason that has nothing to do with what the test is actually
+/// checking.
 ///
-/// This creates the group once, idempotently, only when running as root,
-/// and never removes it — the same one-time, idempotent step a real
+/// This creates both groups once, idempotently, only when running as root,
+/// and never removes them — the same one-time, idempotent step a real
 /// install would perform, not a per-test fixture that needs cleanup. It
 /// does not touch any other host state and does not run when unprivileged
 /// (where `apply_restored_file_policy`'s chown branch is skipped
-/// entirely, so the group is not needed).
+/// entirely, so neither group is needed).
 #[cfg(unix)]
 fn ensure_vpn_subscription_group_exists_for_root_tests() {
     if unsafe { libc::geteuid() } != 0 {
         return;
     }
-    let name = std::ffi::CString::new("vpn-subscription").unwrap();
-    let exists = unsafe { libc::getgrnam(name.as_ptr()) };
-    if !exists.is_null() {
-        return;
+    for group in ["vpn-subscription", "sing-box"] {
+        let name = std::ffi::CString::new(group).unwrap();
+        let exists = unsafe { libc::getgrnam(name.as_ptr()) };
+        if !exists.is_null() {
+            continue;
+        }
+        let status = std::process::Command::new("groupadd")
+            .args(["--system", group])
+            .status();
+        assert!(
+            matches!(status, Ok(s) if s.success()),
+            "test running as root could not create the {group:?} system group needed to \
+             exercise the real restore ownership path: {status:?}"
+        );
     }
-    let status = std::process::Command::new("groupadd")
-        .args(["--system", "vpn-subscription"])
-        .status();
-    assert!(
-        matches!(status, Ok(s) if s.success()),
-        "test running as root could not create the 'vpn-subscription' system group needed to \
-         exercise the real restore ownership path: {status:?}"
-    );
 }
 #[cfg(not(unix))]
 fn ensure_vpn_subscription_group_exists_for_root_tests() {}
