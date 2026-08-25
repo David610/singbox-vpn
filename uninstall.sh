@@ -118,6 +118,39 @@ elif [ -x /opt/singbox-vpn/deploy/almalinux/uninstall.sh ]; then
   run_legacy_uninstaller /opt/singbox-vpn/deploy/almalinux/uninstall.sh "${PASSTHROUGH_ARGS[@]}"
 fi
 
+# Clean-break policy: before falling back to "no local copy, download and
+# run the current uninstaller", check whether the reason /opt/singbox-vpn
+# is missing is that this host instead has a pre-clean-break (pre-rename)
+# installation. Running current uninstall logic against an unidentified
+# historical layout is exactly the mismatch this checkpoint exists to
+# avoid — refuse and point at that installation's own uninstaller instead
+# of silently reporting "nothing installed". The banned identifier is
+# built from parts, never written out literally, matching
+# deploy/lib/check-no-legacy-identity.sh.
+LEGACY_PREFIX="vpn"
+LEGACY_SUFFIX="1"
+LEGACY_NAME="${LEGACY_PREFIX}${LEGACY_SUFFIX}"
+LEGACY_OPT_DIR="/opt/${LEGACY_NAME}"
+LEGACY_STATE_DIR="/var/lib/${LEGACY_NAME}"
+LEGACY_UNINSTALLER="${LEGACY_OPT_DIR}/bin/${LEGACY_NAME}-uninstall"
+LEGACY_LEGACY_UNINSTALLER="${LEGACY_OPT_DIR}/deploy/almalinux/uninstall.sh"
+if [ -x "$LEGACY_UNINSTALLER" ] || [ -f "$LEGACY_STATE_DIR/install-state.json" ] \
+    || { [ -x "$LEGACY_LEGACY_UNINSTALLER" ] && [ -d "$LEGACY_STATE_DIR" ]; }; then
+  runnable=""
+  [ -x "$LEGACY_UNINSTALLER" ] && runnable="$LEGACY_UNINSTALLER --yes"
+  [ -z "$runnable" ] && [ -x "$LEGACY_LEGACY_UNINSTALLER" ] && runnable="$LEGACY_LEGACY_UNINSTALLER --yes"
+  echo "[bootstrap] ERROR: a pre-clean-break singbox-vpn installation was detected at $LEGACY_OPT_DIR (no current /opt/singbox-vpn install exists)." >&2
+  echo "[bootstrap] This bootstrap intentionally refuses to run current uninstall logic against a historical layout it cannot verify (clean-break rename policy)." >&2
+  if [ -n "$runnable" ]; then
+    echo "[bootstrap] Remove it with its own uninstaller instead:" >&2
+    echo "[bootstrap]     sudo $runnable" >&2
+  else
+    echo "[bootstrap] Remove it manually — look for an uninstaller under $LEGACY_OPT_DIR (e.g. $LEGACY_OPT_DIR/bin or $LEGACY_OPT_DIR/deploy)." >&2
+  fi
+  echo "[bootstrap] No changes were made to this host by this run." >&2
+  exit 1
+fi
+
 # No usable local copy — this is a damaged/incomplete /opt/singbox-vpn (or it
 # never existed). Prefer the EXACT version this host was actually
 # installed with over today's mutable main branch: install-state.json

@@ -308,3 +308,67 @@ jobs:
 
           grep -Fxq -- '--non-interactive --allow-ip-hostname --reality-handshake-server www.cloudflare.com' "$marker"
           echo "published bootstrap verified for $RELEASE_TAG"
+
+      # Issue-A regression: the step above always pins --version, so it
+      # never exercises resolve_version()'s real GitHub
+      # /releases/latest resolution — the exact boundary that let a
+      # stable release with the current source-asset naming go published
+      # while /releases/latest still resolved an OLDER, incompatible
+      # release. A release is not "successfully published" for the
+      # normal documented `curl | sudo bash` command until the DEFAULT
+      # (unpinned, stable-channel) bootstrap also accepts it — this uses
+      # the real network (no faked curl) so it genuinely proves what
+      # GitHub's API currently resolves, not just what this workflow
+      # intended to publish. Skipped for a prerelease tag, which GitHub's
+      # /releases/latest deliberately never resolves to (see the
+      # `prerelease:` input above) — the default channel resolving an
+      # OLDER stable release instead in that case is correct behavior,
+      # not a bug this step should flag.
+      - name: Verify /releases/latest resolves this published stable release
+        if: ${{ !contains(github.event.inputs.tag || github.ref_name, '-') }}
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          testbin="$(mktemp -d)"
+          marker="$(mktemp)"
+          trap 'rm -rf "$testbin" "$marker"' EXIT
+
+          cat > "$testbin/id" <<'EOF'
+          #!/bin/sh
+          if [ "${1:-}" = "-u" ]; then
+            printf '0\n'
+            exit 0
+          fi
+          exec /usr/bin/id "$@"
+          EOF
+
+          cat > "$testbin/bash" <<'EOF'
+          #!/bin/sh
+          set -eu
+          installer="${1:-}"
+          [ -n "$installer" ] || { echo "missing installer handoff path" >&2; exit 1; }
+          shift
+          [ -x "$installer" ] || { echo "handoff target is not executable: $installer" >&2; exit 1; }
+          case "$installer" in
+            */deploy/almalinux/install.sh) ;;
+            *) echo "unexpected handoff target: $installer" >&2; exit 1 ;;
+          esac
+          [ "${SINGBOX_VPN_VERSION:-}" = "${RELEASE_TAG:?}" ] || {
+            echo "default (unpinned) bootstrap resolved SINGBOX_VPN_VERSION='${SINGBOX_VPN_VERSION:-}' via /releases/latest, expected the just-published '$RELEASE_TAG' — either GitHub has not yet propagated this release as latest, or an incompatible/older release is still winning. Not proceeding: this is exactly the release-asset-contract mismatch this check exists to catch." >&2
+            exit 1
+          }
+          printf '%s\n' "$*" > "${SINGBOX_VPN_BOOTSTRAP_VERIFY_MARKER:?}"
+          EOF
+
+          chmod +x "$testbin/id" "$testbin/bash"
+          export SINGBOX_VPN_BOOTSTRAP_VERIFY_MARKER="$marker"
+          # Deliberately NO --version: this is the default stable channel,
+          # resolving /releases/latest for real over the network.
+          PATH="$testbin:$PATH" /usr/bin/bash install.sh \
+            --non-interactive \
+            --allow-ip-hostname \
+            --reality-handshake-server www.cloudflare.com
+
+          grep -Fxq -- '--non-interactive --allow-ip-hostname --reality-handshake-server www.cloudflare.com' "$marker"
+          echo "default (unpinned) stable bootstrap verified /releases/latest resolves $RELEASE_TAG"

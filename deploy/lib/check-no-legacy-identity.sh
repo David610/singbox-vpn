@@ -21,11 +21,15 @@ cd "$REPO_ROOT"
 LEGACY_PREFIX="vpn"
 LEGACY_SUFFIX="1"
 LEGACY_PATTERN="${LEGACY_PREFIX}${LEGACY_SUFFIX}"
-SELF="deploy/lib/$(basename "${BASH_SOURCE[0]}")"
 FAIL=0
 
+# No self-exclusion: this script constructs the forbidden identifier from
+# parts specifically so it never contains the literal itself, so there is
+# no legitimate reason to exempt it from the scan — doing so would let a
+# future edit accidentally paste the literal into this very guard and
+# have CI ignore it.
 echo "== checking tracked file contents for the obsolete identifier =="
-if content_hits="$(git grep -InE -i "$LEGACY_PATTERN" -- . ":!$SELF" 2>/dev/null)"; then
+if content_hits="$(git grep -InE -i "$LEGACY_PATTERN" -- . 2>/dev/null)"; then
   echo "$content_hits"
   FAIL=1
 fi

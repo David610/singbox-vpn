@@ -6,6 +6,59 @@ This file describes implementation history; `docs/PRODUCTION_ACCEPTANCE_REPORT.m
 is a dated historical audit snapshot. Neither may upgrade ledger evidence.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
+## Release-transition hardening (2026-08-25)
+
+Follow-up to the clean-break rename (`baac260`, PR #43): fixed three
+remaining release-transition defects found externally, no other scope.
+
+- **Bootstrap/latest-release mismatch (P0)**: `install.sh`'s default
+  (unpinned) stable channel already failed closed, before any host
+  mutation, when the resolved `/releases/latest` tag lacks the current
+  `singbox-vpn-src.tar.gz` asset (e.g. the still-published `v0.1.2`, which
+  predates this rename and only has the obsolete asset names) — but the
+  error message read as a possible CI/publishing failure rather than a
+  version-contract mismatch. Reworded to lead with the release-asset
+  contract explanation. Added `deploy/lib/tests/test-release-latest-
+  contract.sh`, a hermetic regression for the specific boundary existing
+  tests didn't cover: unpinned `/releases/latest` resolution (not
+  `--version`) against both a compatible and a historical-asset-naming
+  fixture. Strengthened `.github/workflows/release.yml`'s
+  `verify-published-bootstrap` job with a second, non-prerelease-only step
+  that runs the bootstrap with no `--version`, over the real network, to
+  prove `/releases/latest` actually resolves the tag just published.
+- **Pre-rename install detection (P1)**: neither `install.sh` nor
+  `uninstall.sh` recognized a genuinely pre-rename installation (the old
+  `/opt/<prefix><suffix>` layout) at all — a fresh install would proceed
+  without detecting it, and the online uninstall bootstrap would fall
+  through to "no persistent install found" and download/run the current
+  uninstaller against nothing, rather than refusing and pointing at that
+  generation's own uninstaller. Added `deploy/lib/legacy-install-detect.sh`
+  (detection only — no migration, no alias, no execution of anything on
+  the operator's behalf) and wired conservative, marker-based detection
+  into `deploy/almalinux/install.sh`'s preflight stage (before any host
+  mutation) and both top-level bootstraps (`install.sh`, `uninstall.sh`,
+  which are self-contained curl-piped scripts and so carry an inlined
+  copy of the same dynamically-constructed check). See
+  `deploy/lib/tests/test-legacy-install-detection.sh` and
+  `docs/INSTALLATION.md`'s "Existing installation from before the
+  clean-break rename".
+- **Identity guard self-exclusion (Issue C)**: `deploy/lib/check-no-
+  legacy-identity.sh` excluded its own file from the content scan even
+  though it already builds the forbidden identifier from parts (so it
+  never contains the literal). Removed the exclusion — the guard now
+  scans its own file like any other tracked file, with no allowlist.
+  Added `deploy/lib/tests/test-legacy-identity-guard.sh`, which proves
+  (in a disposable sandbox git repo, never in this repository's tracked
+  history) that the guard catches the forbidden literal both in an
+  arbitrary fixture file and when planted inside a copy of the guard
+  script itself.
+
+`bash deploy/lib/check-no-legacy-identity.sh` and `bash deploy/lib/
+fast-gate.sh` both still pass with zero legacy-identity occurrences.
+`docs/RECOVERY.md`, REALITY, Hysteria2, ports, DNS, MTU, congestion
+control, the provisioning schema, the user model, and `singbox-client`
+were not touched by this pass.
+
 ## Release readiness update (2026-08-19)
 
 - Russia connectivity regression investigation: real Russian Hiddify

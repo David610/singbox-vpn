@@ -150,6 +150,43 @@ command -v tar >/dev/null 2>&1 || die "tar is required but not found. Install ta
 
 [ -f /etc/os-release ] || die "cannot detect OS (/etc/os-release missing) — singbox-vpn requires a modern systemd Linux distribution."
 
+# ---------------------------------------------------------------------
+# Clean-break policy: refuse before any download/mutation if a
+# pre-clean-break (pre-rename) installation is still on this host. This
+# bootstrap is a standalone, self-contained script (fetched via raw curl,
+# no repo checkout available yet), so the check is inlined here rather
+# than sourced from deploy/lib/legacy-install-detect.sh — deploy/almalinux/
+# install.sh repeats the same check once the source tree is available, as
+# defense in depth for direct (non-bootstrap) invocation. The banned
+# identifier is built from parts, never written out literally, matching
+# deploy/lib/check-no-legacy-identity.sh.
+LEGACY_PREFIX="vpn"
+LEGACY_SUFFIX="1"
+LEGACY_NAME="${LEGACY_PREFIX}${LEGACY_SUFFIX}"
+LEGACY_OPT_DIR="/opt/${LEGACY_NAME}"
+LEGACY_STATE_DIR="/var/lib/${LEGACY_NAME}"
+LEGACY_UNINSTALLER="${LEGACY_OPT_DIR}/bin/${LEGACY_NAME}-uninstall"
+LEGACY_LEGACY_UNINSTALLER="${LEGACY_OPT_DIR}/deploy/almalinux/uninstall.sh"
+if [ -x "$LEGACY_UNINSTALLER" ] || [ -f "$LEGACY_STATE_DIR/install-state.json" ] \
+    || { [ -x "$LEGACY_LEGACY_UNINSTALLER" ] && [ -d "$LEGACY_STATE_DIR" ]; }; then
+  runnable=""
+  [ -x "$LEGACY_UNINSTALLER" ] && runnable="$LEGACY_UNINSTALLER --yes"
+  [ -z "$runnable" ] && [ -x "$LEGACY_LEGACY_UNINSTALLER" ] && runnable="$LEGACY_LEGACY_UNINSTALLER --yes"
+  {
+    echo "[bootstrap] ERROR: a pre-clean-break singbox-vpn installation was detected at $LEGACY_OPT_DIR."
+    echo "[bootstrap] This release intentionally does not migrate or remove a historical installation automatically (clean-break rename policy)."
+    echo "[bootstrap] First remove it using the local uninstaller that belongs to THAT installation:"
+    if [ -n "$runnable" ]; then
+      echo "[bootstrap]     sudo $runnable"
+    else
+      echo "[bootstrap]     (look for an uninstaller under $LEGACY_OPT_DIR — e.g. $LEGACY_OPT_DIR/bin or $LEGACY_OPT_DIR/deploy)"
+    fi
+    echo "[bootstrap] After it completes successfully, re-run this installer."
+    echo "[bootstrap] No changes were made to this host by this run."
+  } >&2
+  exit 1
+fi
+
 log "singbox-vpn bootstrap installer starting (repo=$SINGBOX_VPN_REPO)"
 
 # ---------------------------------------------------------------------
@@ -232,7 +269,7 @@ download_verified_source_release() {
   local sums="$TMPDIR/SHA256SUMS"
   log "downloading singbox-vpn $version release source archive + checksum manifest..."
   curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$base_url/singbox-vpn-src.tar.gz" \
-    || die "could not download release source archive 'singbox-vpn-src.tar.gz' for $version from $SINGBOX_VPN_REPO. Check that this release exists and was published by .github/workflows/release.yml (which includes this asset)."
+    || die "could not download release source archive 'singbox-vpn-src.tar.gz' for $version from $SINGBOX_VPN_REPO (checked $base_url/singbox-vpn-src.tar.gz). Most likely $version predates this bootstrap's release-asset naming contract and cannot be installed by current main — no server changes were made. Pin an explicitly compatible release with --version vX.Y.Z, or wait for/publish the next stable release that matches this contract. (Less likely: the release page/asset is genuinely missing or was not published by .github/workflows/release.yml.)"
   curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$sums" "$base_url/SHA256SUMS" \
     || die "release $version was found but its SHA256SUMS checksum manifest could not be downloaded — refusing to install an unverified source archive."
   grep -qE '^[0-9a-f]{64}  singbox-vpn-src\.tar\.gz$' "$sums" \

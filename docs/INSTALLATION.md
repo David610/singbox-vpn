@@ -114,7 +114,37 @@ curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.s
 Resolves the latest non-prerelease tag, downloads source and binaries from
 that exact version, and verifies them against the release's `SHA256SUMS`.
 If no stable release exists yet, it exits before touching the server rather
-than silently installing mutable branch source.
+than silently installing mutable branch source. If the resolved latest
+release predates the current release-asset naming contract (a historical
+release published before the clean-break rename below), the bootstrap also
+exits before touching the server — with a message explaining the mismatch —
+rather than mixing a historical release with current source. Wait for the
+next compatible stable release, or pin one explicitly with `--version`.
+
+### Existing installation from before the clean-break rename
+
+This project went through a one-time clean-break rename of its internal
+product identifier (see `docs/IMPLEMENTATION_STATUS.md`). There is no
+permanent alias, symlink, or compatibility layer for the pre-rename layout —
+by design.
+
+If a host has a pre-rename ("pre-clean-break") installation still on it,
+current `install.sh`/`uninstall.sh` will **detect it and refuse** to install
+or uninstall, rather than silently reporting nothing is installed, partially
+removing it, or migrating it automatically. Do this instead:
+
+1. Locate that installation's own persisted local uninstaller (it lives
+   under that generation's install directory, not the current
+   `/opt/singbox-vpn`) and run it to completion.
+2. Confirm it reports a complete removal.
+3. Re-run the current stable install command above.
+
+State, user profiles, and credentials created by a pre-rename installation
+are **not** automatically migrated or promised compatible with the current
+generation unless you back them up yourself first, in a format the current
+generation's `vpn-admin restore` actually supports (see `docs/RECOVERY.md`).
+Do not assume an old backup restores cleanly into the current generation
+unless you have verified it.
 
 ### Development install
 
@@ -401,6 +431,21 @@ If `vpn` is not available yet:
 systemctl status sing-box vpn-subscription
 journalctl -u sing-box -u vpn-subscription --no-pager -n 100
 ```
+
+### `install.sh` fails with "predates this bootstrap's release-asset ... contract"
+
+GitHub's `/releases/latest` currently resolves a release published before the
+current release-asset naming (see the clean-break rename note under
+[Installation](#installation) above). This is expected and intentional — the
+bootstrap refuses rather than mixing a historical release with current
+source. Nothing was changed on the server. Wait for the next compatible
+stable release, or pin one explicitly once it exists:
+`--version vX.Y.Z`.
+
+### `install.sh` or `uninstall.sh` refuses with "pre-clean-break singbox-vpn installation was detected"
+
+See [Existing installation from before the clean-break rename](#existing-installation-from-before-the-clean-break-rename)
+above — remove it with its own uninstaller first, then re-run.
 
 Fix the reported DNS, network, or firewall problem and rerun the installer
 — it detects and repairs an existing partial installation in place.

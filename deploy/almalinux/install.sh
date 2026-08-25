@@ -124,6 +124,8 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/ownership.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/legacy-install-detect.sh"
 
 # Installs $src to a FIXED, well-known destination path (a systemd unit,
 # a certbot renewal hook — anything named identically regardless of
@@ -516,6 +518,13 @@ install_idn_support() {
 preflight_stage() {
   stage 1 "preflight"
   preflight_require_root
+  # Clean-break policy check, before any host mutation (including the
+  # installer lock file): a pre-rename installation must be refused, not
+  # silently ignored or migrated. See deploy/lib/legacy-install-detect.sh.
+  if legacy_install_present; then
+    legacy_install_refuse install
+    die "refusing to install over an unremoved pre-clean-break installation."
+  fi
   acquire_installer_lock
   detect_os || die "unsupported operating system."
   log "detected OS: $OS_PRETTY_NAME (family=$OS_FAMILY, implementation_coverage=$OS_SUPPORT)"
