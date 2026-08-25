@@ -21,7 +21,7 @@ REPO_ROOT="$SRC"
 # shellcheck source=/dev/null
 . "$REPO_ROOT_ACTUAL/deploy/almalinux/install.sh"
 REPO_ROOT="$SRC"
-PERSIST_DIR="$TMP/opt/vpn1"
+PERSIST_DIR="$TMP/opt/singbox-vpn"
 persist_source_tree
 
 [ -x "$PERSIST_DIR/nested/executable.sh" ]

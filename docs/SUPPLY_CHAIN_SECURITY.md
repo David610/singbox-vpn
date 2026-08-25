@@ -8,7 +8,7 @@ not the explicitly untrusted development channel.
 The operator runs `curl .../main/install.sh | sudo bash`. HTTPS and control of
 the canonical GitHub repository authenticate that first root-executed script;
 there is no independent signature on it. The script resolves one immutable
-release tag, downloads `vpn1-src.tar.gz` and `SHA256SUMS`, checks the archive
+release tag, downloads `singbox-vpn-src.tar.gz` and `SHA256SUMS`, checks the archive
 digest, and then verifies GitHub artifact provenance with
 `gh attestation verify`, pinned to repository `David610/singbox-vpn` and signer
 workflow `.github/workflows/release.yml`. Only then does it extract and execute
@@ -30,8 +30,8 @@ release. There is no environment variable or operator flag that can bypass
 provenance for a new release. This prevents merging the provenance-aware
 bootstrap from making an existing `v0.1.2` stable release uninstallable while
 ensuring the exception cannot silently expand to future releases.
-The development channel still requires both `VPN1_CHANNEL=dev` and
-`VPN1_ALLOW_UNVERIFIED_DEV=1` and receives no provenance claim.
+The development channel still requires both `SINGBOX_VPN_CHANNEL=dev` and
+`SINGBOX_VPN_ALLOW_UNVERIFIED_DEV=1` and receives no provenance claim.
 
 GitHub artifact attestations are the primary mechanism because releases already
 build and publish entirely in GitHub Actions, the signer identity comes from

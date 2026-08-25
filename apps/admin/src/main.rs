@@ -1287,10 +1287,10 @@ fn load_hysteria_params(cfg: &DeploymentConfig) -> Hysteria2ServerParams {
 /// docs/PRODUCTION_HARDENING_PLAN.md #4/#7.
 ///
 /// Authorization mutations are fail-closed unless an offline operator
-/// explicitly sets `VPN1_ALLOW_OFFLINE_MUTATION=1`. Plain `render-config`
+/// explicitly sets `SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1`. Plain `render-config`
 /// remains usable during installation before systemd is available.
 fn offline_mutation_allowed() -> bool {
-    std::env::var("VPN1_ALLOW_OFFLINE_MUTATION").as_deref() == Ok("1")
+    std::env::var("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION").as_deref() == Ok("1")
 }
 
 fn applied_config_stamp_path(target: &std::path::Path) -> PathBuf {
@@ -1321,7 +1321,7 @@ fn commit_applied_config_stamp(target: &std::path::Path, fingerprint: &str) -> R
 /// handshake") must gate that claim on this being `true` — it is only
 /// true in production; the various early-return warning paths below
 /// are reachable in real deployments only when an operator explicitly
-/// bypasses the live-apply requirement (`VPN1_ALLOW_OFFLINE_MUTATION=1`,
+/// bypasses the live-apply requirement (`SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1`,
 /// documented as dev/offline-only), or in local/CI dev.
 fn render_and_apply_singbox_config(
     cfg: &DeploymentConfig,
@@ -1356,7 +1356,7 @@ fn render_and_apply_singbox_config(
             bail!(
                 "refusing to commit an authorization mutation: sing-box binary not found at \
                  {:?}, so the candidate config cannot be validated or loaded. For an intentional \
-                 offline/dev-only mutation set VPN1_ALLOW_OFFLINE_MUTATION=1 explicitly.",
+                 offline/dev-only mutation set SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 explicitly.",
                 cfg.singbox_binary
             );
         }
@@ -1375,7 +1375,7 @@ fn render_and_apply_singbox_config(
         bail!(
             "refusing to commit an authorization mutation: systemctl/sing-box.service is not \
              available, so vpn-admin cannot prove the running authorization state changed. \
-             For an intentional offline/dev-only mutation set VPN1_ALLOW_OFFLINE_MUTATION=1."
+             For an intentional offline/dev-only mutation set SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1."
         );
     }
 
@@ -3973,7 +3973,9 @@ fn cmd_doctor_report(cfg: &DeploymentConfig, output: Option<&std::path::Path>) -
             let _ = writeln!(out, "active zone: unavailable");
         }
     }
-    match read_firewall_ownership(std::path::Path::new("/var/lib/vpn1/firewall-owned.env")) {
+    match read_firewall_ownership(std::path::Path::new(
+        "/var/lib/singbox-vpn/firewall-owned.env",
+    )) {
         Some(map) => {
             let backend = map
                 .get("firewall_backend")
@@ -5728,7 +5730,7 @@ fn check_expected_public_surface(cfg: &DeploymentConfig, failures: &mut u32) {
 }
 
 /// Parses the firewall ownership state file `firewall.sh`/
-/// `firewall-ufw.sh` write (`/var/lib/vpn1/firewall-owned.env`) —
+/// `firewall-ufw.sh` write (`/var/lib/singbox-vpn/firewall-owned.env`) —
 /// simple `KEY=VALUE` lines. Read-only, and deliberately reads the SAME
 /// file those scripts themselves treat as authoritative rather than
 /// re-deriving ownership some other way. Pure/testable given a path.
@@ -5773,7 +5775,7 @@ fn check_firewall_zone_and_ownership() {
         ),
     }
 
-    let ownership_path = std::path::Path::new("/var/lib/vpn1/firewall-owned.env");
+    let ownership_path = std::path::Path::new("/var/lib/singbox-vpn/firewall-owned.env");
     match read_firewall_ownership(ownership_path) {
         Some(map) => {
             let backend = map
@@ -5817,7 +5819,7 @@ fn check_firewall_zone_and_ownership() {
         None => report_check(
             CheckStatus::Info,
             "L3",
-            "no firewall ownership record found at /var/lib/vpn1/firewall-owned.env \
+            "no firewall ownership record found at /var/lib/singbox-vpn/firewall-owned.env \
              (firewall.sh/firewall-ufw.sh may not have run yet, or every rule pre-existed \
              before singbox-vpn)",
         ),
@@ -6445,7 +6447,7 @@ fn tempdir_here() -> Result<tempfile::TempDir> {
 ///   * **symlink** — reading it yields whatever the target happens to be
 ///     instead of the archive's own content.
 ///   * **FIFO** — `std::fs::read` on it blocks forever with no writer, and
-///     restore holds the global `/run/lock/vpn1.lock` while it does, so
+///     restore holds the global `/run/lock/singbox-vpn.lock` while it does, so
 ///     every subsequent `vpn user …`, rotation and restore deadlocks too.
 ///     (Reproduced: the process simply never returns.)
 ///   * **character/block device** — `read` on e.g. `/dev/zero` consumes
@@ -6610,7 +6612,7 @@ fn cmd_restore(
         bail!(
             "refusing restore: both sing-box.service and vpn-subscription.service must be \
              installed and controllable so restored authorization/key state can be committed \
-             atomically. VPN1_ALLOW_OFFLINE_MUTATION=1 is only for explicit offline recovery."
+             atomically. SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 is only for explicit offline recovery."
         );
     }
 

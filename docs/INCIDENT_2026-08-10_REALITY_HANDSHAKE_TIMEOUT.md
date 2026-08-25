@@ -170,7 +170,7 @@ Beyond §2's three, this pass also found and fixed:
    `vpn-subscription`.** `enable_and_start_services` used `systemctl
    enable --now`, a no-op on an already-active unit — the same mistake
    the file already documents and works around for `nginx`
-   (`configure_nginx`), just not applied to vpn1's own two units. Fixed:
+   (`configure_nginx`), just not applied to singbox-vpn's own two units. Fixed:
    both are now explicitly `reload-or-restart`ed, hard-failing the
    install if either restart fails.
 8. **`doctor` `[FAIL]`ed on the REALITY *public* key being
@@ -322,8 +322,8 @@ pinned/checksummed binary, not yet an observed green GitHub Actions run.
 
 ```bash
 # on the VPS, as the deploy user:
-cd /opt/vpn1
-sudo vpn-admin backup --output /root/vpn1-backup-pre-update-$(date +%s).tar   # step 1: backup succeeds
+cd /opt/singbox-vpn
+sudo vpn-admin backup --output /root/singbox-vpn-backup-pre-update-$(date +%s).tar   # step 1: backup succeeds
 git fetch origin
 git checkout claude/vpn-connectivity-failure-qqwzkm   # or main once merged
 sudo ./deploy/almalinux/install.sh                    # step 2/3: update + restart onto new binaries
@@ -370,10 +370,10 @@ service).
 
 ```bash
 # 1. backup succeeds
-sudo vpn-admin backup --output /root/vpn1-backup-$(date +%s).tar
+sudo vpn-admin backup --output /root/singbox-vpn-backup-$(date +%s).tar
 
 # 2. update succeeds
-cd /opt/vpn1 && git fetch origin && git checkout <target-ref>
+cd /opt/singbox-vpn && git fetch origin && git checkout <target-ref>
 sudo ./deploy/almalinux/install.sh
 
 # 3. services restart onto the new binaries
@@ -431,7 +431,7 @@ curl -fsS "https://<subscription_host>:<port>/sub/<token>" | jq '.outbounds[] | 
 #    proof, not either step alone.
 
 # 15. restore followed by fresh subscription still works
-sudo vpn-admin restore /root/vpn1-backup-<timestamp-from-step-1>.tar
+sudo vpn-admin restore /root/singbox-vpn-backup-<timestamp-from-step-1>.tar
 sudo vpn-admin doctor --protocol          # must show [L4]/[L5-6] OK — this is exactly
                                            # what bug #2.1 made unsafe before this fix
 curl -fsS "https://<subscription_host>:<port>/sub/<token>" | jq '.outbounds[0].tls.reality.public_key'
@@ -451,11 +451,11 @@ regression:
 
 ```bash
 # sing-box config / REALITY key material:
-sudo vpn-admin restore /root/vpn1-backup-pre-update-<timestamp>.tar
+sudo vpn-admin restore /root/singbox-vpn-backup-pre-update-<timestamp>.tar
 sudo vpn-admin doctor --protocol   # confirm the restored state is coherent (this is what bug §2.1 made unsafe before this fix)
 
 # binaries, if the new install.sh run itself is the problem:
-cd /opt/vpn1 && git checkout <previous-commit-or-tag>
+cd /opt/singbox-vpn && git checkout <previous-commit-or-tag>
 sudo ./deploy/almalinux/install.sh
 ```
 

@@ -98,15 +98,17 @@ fn generate_reality_keypair(sb: &common::SingBox) -> (String, String) {
 #[test]
 fn oversized_decoy_certificate_breaks_the_tunnel_even_though_reality_auth_succeeds() {
     let Some(sb) = common::SingBox::find() else {
-        if std::env::var("VPN1_REQUIRE_REAL_INTEROP").is_ok() {
-            panic!("VPN1_REQUIRE_REAL_INTEROP is set but no sing-box binary is available");
+        if std::env::var("SINGBOX_VPN_REQUIRE_REAL_INTEROP").is_ok() {
+            panic!("SINGBOX_VPN_REQUIRE_REAL_INTEROP is set but no sing-box binary is available");
         }
         eprintln!("skipping: no sing-box binary available (set SING_BOX_BIN)");
         return;
     };
     let Some(decoy) = common::spawn_local_tls13_decoy(DecoyCertSize::OverBudget) else {
-        if std::env::var("VPN1_REQUIRE_REAL_INTEROP").is_ok() {
-            panic!("VPN1_REQUIRE_REAL_INTEROP is set but the local TLS decoy would not start");
+        if std::env::var("SINGBOX_VPN_REQUIRE_REAL_INTEROP").is_ok() {
+            panic!(
+                "SINGBOX_VPN_REQUIRE_REAL_INTEROP is set but the local TLS decoy would not start"
+            );
         }
         eprintln!("skipping: could not start the local TLS 1.3 decoy (openssl missing?)");
         return;

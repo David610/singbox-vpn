@@ -91,7 +91,7 @@ nonzero, growing count under load is the closest thing to positive
 production evidence this repo can point to a method for.
 
 **Fix shipped:** `deploy/lib/perf-tuning.sh`, sourced by
-`install.sh`/`update.sh`, writes `/etc/sysctl.d/99-vpn1-dataplane.conf`
+`install.sh`/`update.sh`, writes `/etc/sysctl.d/99-singbox-vpn-dataplane.conf`
 with `net.core.rmem_max = 16777216` / `net.core.wmem_max = 16777216`,
 idempotently. After applying, it reads back the EFFECTIVE live value via
 `sysctl -n` and reports per-value applied/not-applied status — it does
@@ -170,24 +170,24 @@ sudo deploy/lib/perf-tuning.sh rollback
 
 **VERIFIED CONFIGURATION/CODE GAP (found in review of this same PR):**
 the original version of this pass documented rollback as "delete
-`/etc/sysctl.d/99-vpn1-dataplane.conf` and run `sysctl --system`." That
+`/etc/sysctl.d/99-singbox-vpn-dataplane.conf` and run `sysctl --system`." That
 is NOT sufficient for an immediate runtime revert: `sysctl --system`
 only applies values some `/etc/sysctl.d` file explicitly lists — a
 parameter no remaining file mentions is left at whatever its CURRENT
 live value already is; it does not fall back to a kernel-compiled-in
-default by omission. Deleting vpn1's drop-in alone would leave the live
-kernel still running vpn1's 16 MiB buffer ceiling (and BBR, if it was
+default by omission. Deleting singbox-vpn's drop-in alone would leave the live
+kernel still running singbox-vpn's 16 MiB buffer ceiling (and BBR, if it was
 enabled) indefinitely, until a reboot — and possibly not even then, if
 something else's sysctl.d file happens to also set these.
 
 **Fix shipped:** `deploy/lib/perf-tuning.sh`'s `perf_capture_baseline`
-records this host's PRE-vpn1 values for `rmem_max`/`wmem_max`/
+records this host's PRE-singbox-vpn values for `rmem_max`/`wmem_max`/
 `tcp_congestion_control`/`default_qdisc` to
-`/var/lib/vpn1/perf-tuning-baseline.env` on the very first apply on a
+`/var/lib/singbox-vpn/perf-tuning-baseline.env` on the very first apply on a
 given host — exactly once, never overwritten by a later run (idempotent
 across every subsequent install.sh/update.sh run; verified by
 `deploy/lib/tests/test-perf-tuning.sh`). `perf_tuning_rollback` writes
-an explicit rollback drop-in (`/etc/sysctl.d/99-vpn1-dataplane-rollback.conf`)
+an explicit rollback drop-in (`/etc/sysctl.d/99-singbox-vpn-dataplane-rollback.conf`)
 containing those captured values and applies it immediately — a real,
 verified-effective revert, not a hope that omission works. It then reads
 back each value via `sysctl -n` and reports exactly which ones did and
@@ -200,9 +200,9 @@ sudo deploy/lib/perf-tuning.sh rollback
 ran an OLDER version of this script (before baseline capture existed)
 before upgrading to this one, the "baseline" captured on this host's
 first run under the new code is whatever the live values already were
-at that point — which may already include vpn1's own prior tuning, not
+at that point — which may already include singbox-vpn's own prior tuning, not
 this host's true original distro defaults. `perf_capture_baseline`
-detects this exact situation (vpn1's drop-in already exists but no
+detects this exact situation (singbox-vpn's drop-in already exists but no
 baseline file does) and prints an explicit warning saying so, rather
 than silently mis-recording. This is a real, inherent limit of any
 "capture on first run" scheme applied retroactively — not something a
@@ -507,7 +507,7 @@ which is precisely the "speculative" category the task said to avoid.
 If a future, unusual deployment target ships a pre-4.18 kernel, that
 host simply doesn't get GSO/GRO — sing-box/quic-go fall back to
 unbatched syscalls automatically; there is no failure mode to guard
-against, only a (kernel-version-dependent, not vpn1-dependent)
+against, only a (kernel-version-dependent, not singbox-vpn-dependent)
 throughput ceiling.
 
 ### Additional stable-1.13.18 tunings investigated — NOT changed

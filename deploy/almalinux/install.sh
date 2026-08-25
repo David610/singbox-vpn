@@ -55,8 +55,8 @@ for v in SINGBOX_VERSION SINGBOX_SHA256_AMD64 SINGBOX_SHA256_ARM64 SUPPORTED_ARC
 done
 SINGBOX_BIN="$BIN_DIR/sing-box"
 NGINX_CONF="/etc/nginx/conf.d/vpn-subscription.conf"
-VPN1_VERSION="${VPN1_VERSION:-}"
-VPN1_RELEASE_REPO="${VPN1_RELEASE_REPO:-David610/singbox-vpn}"
+SINGBOX_VPN_VERSION="${SINGBOX_VPN_VERSION:-}"
+SINGBOX_VPN_RELEASE_REPO="${SINGBOX_VPN_RELEASE_REPO:-David610/singbox-vpn}"
 
 # Independent component status, set ONLY at the point each component
 # actually confirms success (docs/FINAL_PRODUCTION_AUDIT.md P0-14) — never
@@ -100,7 +100,7 @@ die() {
   # BASHPID guard), so calling it directly here is safe even though the
   # ERR trap is still installed at this point.
   if command -v on_fatal_error >/dev/null 2>&1; then
-    on_fatal_error 1 "${BASH_LINENO[0]:-unknown}" "${FUNCNAME[1]:-main}" "${VPN1_STAGE:-initialization}"
+    on_fatal_error 1 "${BASH_LINENO[0]:-unknown}" "${FUNCNAME[1]:-main}" "${SINGBOX_VPN_STAGE:-initialization}"
   fi
   exit 1
 }
@@ -140,7 +140,7 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # (default 0644).
 install_fixed_path_with_ownership() {
   local src="$1" dest="$2" key="$3" mode="${4:-0644}"
-  local backup_dir="/var/lib/vpn1/preexisting-backups"
+  local backup_dir="/var/lib/singbox-vpn/preexisting-backups"
   local backup="$backup_dir/$key"
   if [ -e "$dest" ]; then
     ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "1"
@@ -165,12 +165,12 @@ NONINTERACTIVE="${NONINTERACTIVE:-0}"
 # Custom domain is the default (docs/SUPPORTED_PRODUCT.md): the
 # IP-derived sslip.io convenience hostname is opt-in only, never a
 # silent non-interactive default. See resolve_host_config().
-ALLOW_IP_HOSTNAME="${VPN1_ALLOW_IP_HOSTNAME:-0}"
+ALLOW_IP_HOSTNAME="${SINGBOX_VPN_ALLOW_IP_HOSTNAME:-0}"
 # Explicit operator override for the SSH port used by
 # preflight_resolve_ssh_port() (deploy/lib/preflight.sh) — required
 # whenever automatic detection is inconclusive; see resolve_ssh_port()
 # below. Left empty by default so detection runs first.
-VPN1_SSH_PORT="${VPN1_SSH_PORT:-}"
+SINGBOX_VPN_SSH_PORT="${SINGBOX_VPN_SSH_PORT:-}"
 # Set definitively inside preflight_stage once existing_install_present()
 # has actually been checked. Defaults to 0 (repair) so that IF the
 # on_fatal_error trap somehow fires before preflight_stage reaches that
@@ -194,7 +194,7 @@ Optional flags (all have environment-variable equivalents):
                                     Required in non-interactive mode — there
                                     is no safe default.
   --subscription-port PORT         same as SUBSCRIPTION_PORT (default 8443)
-  --ssh-port PORT                  same as VPN1_SSH_PORT; explicitly declares
+  --ssh-port PORT                  same as SINGBOX_VPN_SSH_PORT; explicitly declares
                                     the port sshd listens on when singbox-vpn cannot
                                     positively auto-detect it. Required
                                     whenever detection is inconclusive — singbox-vpn
@@ -207,7 +207,7 @@ Optional flags (all have environment-variable equivalents):
                                     required value (e.g. the REALITY decoy)
                                     is missing. Implied automatically when no
                                     TTY is attached.
-  --allow-ip-hostname              same as VPN1_ALLOW_IP_HOSTNAME=1. A custom
+  --allow-ip-hostname              same as SINGBOX_VPN_ALLOW_IP_HOSTNAME=1. A custom
                                     domain (--domain) is the default for a
                                     real deployment; this explicitly opts
                                     into the IP-derived sslip.io convenience
@@ -232,8 +232,8 @@ parse_cli_args() {
       --reality-handshake-server=*) REALITY_HANDSHAKE_SERVER="${1#*=}"; shift ;;
       --subscription-port) SUBSCRIPTION_PORT="$2"; shift 2 ;;
       --subscription-port=*) SUBSCRIPTION_PORT="${1#*=}"; shift ;;
-      --ssh-port) VPN1_SSH_PORT="$2"; shift 2 ;;
-      --ssh-port=*) VPN1_SSH_PORT="${1#*=}"; shift ;;
+      --ssh-port) SINGBOX_VPN_SSH_PORT="$2"; shift 2 ;;
+      --ssh-port=*) SINGBOX_VPN_SSH_PORT="${1#*=}"; shift ;;
       --non-interactive) NONINTERACTIVE=1; shift ;;
       --allow-ip-hostname) ALLOW_IP_HOSTNAME=1; shift ;;
       -h|--help) print_install_help; exit 0 ;;
@@ -262,7 +262,7 @@ parse_cli_args() {
 # leaving the (still mostly-working) host as-is for the operator to
 # retry or investigate.
 #
-# Set VPN1_NO_AUTO_ROLLBACK=1 to disable automatic rollback entirely
+# Set SINGBOX_VPN_NO_AUTO_ROLLBACK=1 to disable automatic rollback entirely
 # (fresh installs included) and leave the partial install in place for
 # debugging.
 # ---------------------------------------------------------------------
@@ -285,8 +285,8 @@ on_fatal_error() {
   trap - ERR
   set +e
   echo "[install] ERROR: installation failed: stage=$stage function=$function line=$line operation=stage-command exit=$exit_code (command text suppressed to protect secrets)." >&2
-  if [ "${VPN1_NO_AUTO_ROLLBACK:-0}" -eq 1 ] 2>/dev/null; then
-    echo "[install] VPN1_NO_AUTO_ROLLBACK=1 set — leaving the host as-is for inspection. Run '$REPO_ROOT/deploy/almalinux/uninstall.sh' to remove everything singbox-vpn created so far." >&2
+  if [ "${SINGBOX_VPN_NO_AUTO_ROLLBACK:-0}" -eq 1 ] 2>/dev/null; then
+    echo "[install] SINGBOX_VPN_NO_AUTO_ROLLBACK=1 set — leaving the host as-is for inspection. Run '$REPO_ROOT/deploy/almalinux/uninstall.sh' to remove everything singbox-vpn created so far." >&2
     exit "$exit_code"
   fi
   if [ "$(ownership_is_marked INSTALL_ATTEMPTED)" != "1" ]; then
@@ -321,7 +321,7 @@ on_fatal_error() {
   fi
   exit "$exit_code"
 }
-trap 'on_fatal_error $? "${LINENO:-unknown}" "${FUNCNAME[0]:-main}" "${VPN1_STAGE:-initialization}"' ERR
+trap 'on_fatal_error $? "${LINENO:-unknown}" "${FUNCNAME[0]:-main}" "${SINGBOX_VPN_STAGE:-initialization}"' ERR
 
 # ---------------------------------------------------------------------
 # [1] preflight
@@ -330,7 +330,7 @@ existing_install_present() {
   # Only the manifest proves singbox-vpn completed and owns the listeners. A
   # foreign sing-box binary or an interrupted partial install must not make
   # us skip conflict checks and overwrite another service.
-  [ -f /var/lib/vpn1/install-state.json ]
+  [ -f /var/lib/singbox-vpn/install-state.json ]
 }
 
 # Positively determine (or accept an explicit operator override for) the
@@ -341,13 +341,13 @@ existing_install_present() {
 # Fails closed (die, zero host mutation) rather than assuming 22 when
 # detection is inconclusive and no override was supplied.
 resolve_ssh_port() {
-  SSH_PORT="$(preflight_resolve_ssh_port)" || die "could not positively determine the SSH port sshd listens on (checked sshd -T, sshd_config, and live listeners — all inconclusive), and no explicit override was supplied. singbox-vpn refuses to activate or modify the host firewall without a confirmed SSH port — doing so could lock you out of this server. Re-run with --ssh-port <port> (or VPN1_SSH_PORT=<port>) set to sshd's real listening port. Nothing has been mutated on this host yet."
+  SSH_PORT="$(preflight_resolve_ssh_port)" || die "could not positively determine the SSH port sshd listens on (checked sshd -T, sshd_config, and live listeners — all inconclusive), and no explicit override was supplied. singbox-vpn refuses to activate or modify the host firewall without a confirmed SSH port — doing so could lock you out of this server. Re-run with --ssh-port <port> (or SINGBOX_VPN_SSH_PORT=<port>) set to sshd's real listening port. Nothing has been mutated on this host yet."
   export SSH_PORT
   # Propagate the already-confirmed value as the canonical override for
   # firewall.sh/firewall-ufw.sh (invoked as subprocesses later, in
   # firewall_stage) so they reuse this exact resolution instead of
   # re-running detection independently and potentially drifting from it.
-  export VPN1_SSH_PORT="$SSH_PORT"
+  export SINGBOX_VPN_SSH_PORT="$SSH_PORT"
 }
 
 # The subscription HTTPS port is operator-configurable (SUBSCRIPTION_PORT,
@@ -411,10 +411,10 @@ check_ports_free() {
 # re-run) must survive past this process. Install a persistent copy of
 # the source tree once, and repoint $REPO_ROOT at it for the rest of
 # this run. A no-op when already running from that persistent copy
-# (e.g. someone `cd /opt/vpn1 && ./deploy/almalinux/install.sh`).
-PERSIST_DIR="/opt/vpn1"
-OPT_VPN1_PRE_EXISTED=0
-[ -e "$PERSIST_DIR" ] && OPT_VPN1_PRE_EXISTED=1
+# (e.g. someone `cd /opt/singbox-vpn && ./deploy/almalinux/install.sh`).
+PERSIST_DIR="/opt/singbox-vpn"
+OPT_SINGBOX_VPN_PRE_EXISTED=0
+[ -e "$PERSIST_DIR" ] && OPT_SINGBOX_VPN_PRE_EXISTED=1
 persist_source_tree() {
   if [ "$REPO_ROOT" = "$PERSIST_DIR" ]; then
     return
@@ -465,13 +465,13 @@ acquire_installer_lock() {
   # Mutual exclusion against a concurrent install.sh/update.sh run
   # (docs/FINAL_PRODUCTION_AUDIT.md P0-4: "two concurrent administrators
   # must not lose each other's changes"). Deliberately a SEPARATE lock
-  # file from vpn-admin's own /run/lock/vpn1.lock (apps/admin/src/
+  # file from vpn-admin's own /run/lock/singbox-vpn.lock (apps/admin/src/
   # lock.rs) — this script shells out to `vpn-admin` multiple times
   # below, and each of those calls acquires that lock itself for its own
   # duration; holding the same lock around this whole script would
   # deadlock the instant it did so.
   mkdir -p /run/lock
-  exec 200>/run/lock/vpn1-installer.lock
+  exec 200>/run/lock/singbox-vpn-installer.lock
   # Bounded, and say so BEFORE blocking: an unbounded `flock` produced a
   # completely silent hang at stage 1 with no output at all. The lock fd is
   # inherited by children (dnf/cargo/certbot/curl), so an orphaned child
@@ -480,10 +480,10 @@ acquire_installer_lock() {
   if ! flock -x -w 600 200; then
     die "another install.sh/update.sh appears to be running and did not finish within 10 minutes.
 If none is running, an orphaned child process may still be holding the lock:
-  fuser -v /run/lock/vpn1-installer.lock
+  fuser -v /run/lock/singbox-vpn-installer.lock
 and kill whatever it reports before retrying."
   fi
-  log "acquired installer lock (/run/lock/vpn1-installer.lock) — no other install.sh/update.sh can run concurrently."
+  log "acquired installer lock (/run/lock/singbox-vpn-installer.lock) — no other install.sh/update.sh can run concurrently."
 }
 
 # Best-effort: enables real Unicode->punycode conversion for an IDN
@@ -507,8 +507,8 @@ install_idn_support() {
     *) return 0 ;;
   esac
   case "$OS_FAMILY" in
-    rhel) dnf install -y --setopt=install_weak_deps=False "$pkg" >/dev/null 2>&1 && ownership_list_add PKGS_INSTALLED_BY_VPN1 "$pkg" ;;
-    debian) apt-get install -y --no-install-recommends "$pkg" >/dev/null 2>&1 && ownership_list_add PKGS_INSTALLED_BY_VPN1 "$pkg" ;;
+    rhel) dnf install -y --setopt=install_weak_deps=False "$pkg" >/dev/null 2>&1 && ownership_list_add PKGS_INSTALLED_BY_SINGBOX_VPN "$pkg" ;;
+    debian) apt-get install -y --no-install-recommends "$pkg" >/dev/null 2>&1 && ownership_list_add PKGS_INSTALLED_BY_SINGBOX_VPN "$pkg" ;;
   esac
   return 0
 }
@@ -569,8 +569,8 @@ preflight_stage() {
   # manifest live at stage 17 would always see THIS run's own "pending"
   # write from start_stage instead of the prior run's real state.
   PRIOR_ACCEPTANCE_STATE="none"
-  if [ -f /var/lib/vpn1/install-state.json ]; then
-    PRIOR_ACCEPTANCE_STATE="$(grep -o '"acceptance"[[:space:]]*:[[:space:]]*"[^"]*"' /var/lib/vpn1/install-state.json | sed -E 's/.*"([^"]*)"$/\1/')"
+  if [ -f /var/lib/singbox-vpn/install-state.json ]; then
+    PRIOR_ACCEPTANCE_STATE="$(grep -o '"acceptance"[[:space:]]*:[[:space:]]*"[^"]*"' /var/lib/singbox-vpn/install-state.json | sed -E 's/.*"([^"]*)"$/\1/')"
     [ -n "$PRIOR_ACCEPTANCE_STATE" ] || PRIOR_ACCEPTANCE_STATE="none"
   fi
   # ---------------------------------------------------------------
@@ -584,7 +584,7 @@ preflight_stage() {
   # mutation stranded on disk instead of being rolled back.
   # ---------------------------------------------------------------
   ownership_mark INSTALL_ATTEMPTED
-  ownership_set_baseline_once OPT_VPN1_PRE_EXISTED "$OPT_VPN1_PRE_EXISTED"
+  ownership_set_baseline_once OPT_SINGBOX_VPN_PRE_EXISTED "$OPT_SINGBOX_VPN_PRE_EXISTED"
   persist_source_tree
   # ---------------------------------------------------------------
   # Collect and validate EVERY required operator input and fatal
@@ -614,20 +614,20 @@ preflight_stage() {
 # ---------------------------------------------------------------------
 # Records, for every package in $1 (name-per-word), whether it was
 # ALREADY installed before this run — via the ownership manifest's
-# PKGS_INSTALLED_BY_VPN1 list — so uninstall.sh can later remove exactly
+# PKGS_INSTALLED_BY_SINGBOX_VPN list — so uninstall.sh can later remove exactly
 # the packages singbox-vpn introduced and leave everything the operator already
 # had alone. Must be called with the exact package list BEFORE the
 # package manager installs anything.
 record_package_ownership_rhel() {
   local p
   for p in "$@"; do
-    rpm -q "$p" >/dev/null 2>&1 || ownership_list_add PKGS_INSTALLED_BY_VPN1 "$p"
+    rpm -q "$p" >/dev/null 2>&1 || ownership_list_add PKGS_INSTALLED_BY_SINGBOX_VPN "$p"
   done
 }
 record_package_ownership_debian() {
   local p
   for p in "$@"; do
-    dpkg -s "$p" >/dev/null 2>&1 || ownership_list_add PKGS_INSTALLED_BY_VPN1 "$p"
+    dpkg -s "$p" >/dev/null 2>&1 || ownership_list_add PKGS_INSTALLED_BY_SINGBOX_VPN "$p"
   done
 }
 
@@ -870,7 +870,7 @@ resolve_host_config() {
     else
       # Prompt was shown and the operator explicitly chose to skip it
       # (pressed Enter) — that IS the required explicit opt-in for the
-      # IP-derived hostname; --allow-ip-hostname/VPN1_ALLOW_IP_HOSTNAME
+      # IP-derived hostname; --allow-ip-hostname/SINGBOX_VPN_ALLOW_IP_HOSTNAME
       # exists for invocations where no prompt could be shown at all.
       prompted_and_skipped=1
     fi
@@ -883,7 +883,7 @@ resolve_host_config() {
     # IP-derived sslip.io convenience hostname must never be a SILENT
     # default when no interactive prompt could ask the operator first.
     if [ "$prompted_and_skipped" -ne 1 ] && [ "$ALLOW_IP_HOSTNAME" -ne 1 ]; then
-      die "no PUBLIC_HOST/--domain given, and no interactive terminal available to ask. A custom domain is the default for a real deployment — pass --domain your.domain.com (or PUBLIC_HOST=...). To explicitly opt into the IP-derived sslip.io convenience hostname instead, pass --allow-ip-hostname (or VPN1_ALLOW_IP_HOSTNAME=1). Trade-offs: the hostname and its certificate are tied to this server's CURRENT public IP and break if that IP ever changes; it is a shared third-party domain (sslip.io) you do not control; and it is a more recognizable/fingerprintable naming pattern to a censor than a personal domain."
+      die "no PUBLIC_HOST/--domain given, and no interactive terminal available to ask. A custom domain is the default for a real deployment — pass --domain your.domain.com (or PUBLIC_HOST=...). To explicitly opt into the IP-derived sslip.io convenience hostname instead, pass --allow-ip-hostname (or SINGBOX_VPN_ALLOW_IP_HOSTNAME=1). Trade-offs: the hostname and its certificate are tied to this server's CURRENT public IP and break if that IP ever changes; it is a shared third-party domain (sslip.io) you do not control; and it is a more recognizable/fingerprintable naming pattern to a censor than a personal domain."
     fi
     log "no PUBLIC_HOST set — detecting public IP for zero-touch install..."
     PUBLIC_IP="$(preflight_detect_public_ip)" || die "could not auto-detect this server's public IP. Re-run with PUBLIC_HOST=your.domain.com (or --domain your.domain.com) set explicitly."
@@ -1019,9 +1019,9 @@ verify_release_attestation() {
   fi
   command -v gh >/dev/null 2>&1 \
     || die "GitHub CLI ('gh') is required to authenticate stable release artifacts. Re-run through the top-level install.sh bootstrap or install gh manually."
-  gh attestation verify "$artifact" --repo "$VPN1_RELEASE_REPO" --signer-workflow "$VPN1_RELEASE_REPO/.github/workflows/release.yml" >/dev/null \
-    || die "artifact attestation verification failed or is missing for $version/$VPN1_RELEASE_REPO — refusing to install stable binaries."
-  log "artifact attestation verified for repository $VPN1_RELEASE_REPO."
+  gh attestation verify "$artifact" --repo "$SINGBOX_VPN_RELEASE_REPO" --signer-workflow "$SINGBOX_VPN_RELEASE_REPO/.github/workflows/release.yml" >/dev/null \
+    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_RELEASE_REPO — refusing to install stable binaries."
+  log "artifact attestation verified for repository $SINGBOX_VPN_RELEASE_REPO."
 }
 
 
@@ -1042,17 +1042,17 @@ fetch_release_binaries() {
   target="$(rust_target_for_arch "$ARCH")" || return 1
   # The bootstrapper may intentionally download main/dev source, or fall
   # back to it when release-tag resolution is unavailable. In either case
-  # VPN1_VERSION is empty and a "latest" binary would silently mix two
+  # SINGBOX_VPN_VERSION is empty and a "latest" binary would silently mix two
   # different revisions. Prebuilt assets are allowed only for the exact,
   # immutable tag the bootstrapper resolved.
-  version="${VPN1_VERSION:-}"
+  version="${SINGBOX_VPN_VERSION:-}"
   if [ -z "$version" ]; then
     log "no exact release tag is pinned — building binaries from this downloaded source tree."
     return 1
   fi
-  base_url="https://github.com/$VPN1_RELEASE_REPO/releases/download/$version"
+  base_url="https://github.com/$SINGBOX_VPN_RELEASE_REPO/releases/download/$version"
   tmp="$(mktemp -d)"
-  local asset="vpn1-${target}.tar.gz"
+  local asset="singbox-vpn-${target}.tar.gz"
   log "checking for a prebuilt release ($asset)..."
   if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmp/$asset" "$base_url/$asset" 2>/dev/null; then
     log "no prebuilt release available (this is expected until a release is tagged) — falling back to building from source."
@@ -1067,15 +1067,15 @@ fetch_release_binaries() {
     die "release asset $asset was found but SHA256SUMS was not — refusing to install a binary with no integrity verification."
   fi
   tar -xzf "$tmp/$asset" -C "$tmp"
-  # release.yml packages binaries inside a top-level "vpn1-<target>/"
+  # release.yml packages binaries inside a top-level "singbox-vpn-<target>/"
   # directory (the conventional tarball layout — avoids extracting loose
   # files into a shared tmp dir). Keep this extraction path and the
   # workflow's packaging step in lockstep: see the "release archive
   # contract" smoke test in .github/workflows/release.yml, which extracts
   # a real built archive with this exact same relative path and fails CI
   # if they ever diverge again (docs/FINAL_PRODUCTION_AUDIT.md P0-6).
-  local extracted="$tmp/vpn1-${target}"
-  [ -d "$extracted" ] || die "release asset $asset did not contain the expected vpn1-${target}/ directory — archive layout does not match what install.sh expects. This is a packaging bug, not a transient failure; see docs/FINAL_PRODUCTION_AUDIT.md P0-6."
+  local extracted="$tmp/singbox-vpn-${target}"
+  [ -d "$extracted" ] || die "release asset $asset did not contain the expected singbox-vpn-${target}/ directory — archive layout does not match what install.sh expects. This is a packaging bug, not a transient failure; see docs/FINAL_PRODUCTION_AUDIT.md P0-6."
   local expected_package_version="${version#v}"
   expected_package_version="${expected_package_version%%-*}"
   local binary_package_version
@@ -1115,7 +1115,7 @@ install_rustup_noninteractive() {
   # uninstall can remove it later — but only when no toolchain was
   # already present (checked by build_binaries_from_source before it
   # ever calls this function).
-  ownership_mark RUSTUP_INSTALLED_BY_VPN1
+  ownership_mark RUSTUP_INSTALLED_BY_SINGBOX_VPN
   ownership_set RUSTUP_HOME_DIR "$HOME"
   # shellcheck disable=SC1091
   . "$HOME/.cargo/env"
@@ -1162,10 +1162,10 @@ check_state_schema() {
     return
   fi
   local prior_version="unknown"
-  if [ -f /var/lib/vpn1/install-state.json ]; then
-    prior_version="$(grep -o '"vpn1_version"[[:space:]]*:[[:space:]]*"[^"]*"' /var/lib/vpn1/install-state.json | sed -E 's/.*"([^"]*)"$/\1/')"
+  if [ -f /var/lib/singbox-vpn/install-state.json ]; then
+    prior_version="$(grep -o '"singbox_vpn_version"[[:space:]]*:[[:space:]]*"[^"]*"' /var/lib/singbox-vpn/install-state.json | sed -E 's/.*"([^"]*)"$/\1/')"
   fi
-  local this_version="${VPN1_VERSION:-main}"
+  local this_version="${SINGBOX_VPN_VERSION:-main}"
   if [ "$prior_version" = "$this_version" ]; then
     log "install mode: REPAIR (existing deployment already at $this_version)."
   else
@@ -1473,7 +1473,7 @@ attempt_automatic_certbot() {
   trap - INT TERM
   if [ "$rc" -eq 0 ]; then
     log "certificate issued for $host."
-    ownership_list_add CERT_LINEAGES_CREATED_BY_VPN1 "$host"
+    ownership_list_add CERT_LINEAGES_CREATED_BY_SINGBOX_VPN "$host"
     return 0
   fi
   # Local port 80 being free (checked above) is NOT the same as port 80
@@ -1668,8 +1668,8 @@ install_certbot_renewal_hook() {
   command -v certbot >/dev/null 2>&1 || return 0
   install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/certbot-deploy-hook.sh" \
-    /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh CERTBOT_HOOK 0755
-  log "installed certbot renewal deploy hook: /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh"
+    /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh CERTBOT_HOOK 0755
+  log "installed certbot renewal deploy hook: /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh"
   local renewal_unit="" candidate
   for candidate in certbot.timer certbot-renew.timer snap.certbot.renew.timer; do
     if systemctl cat "$candidate" >/dev/null 2>&1; then
@@ -1849,9 +1849,9 @@ configure_nginx() {
   # install_fixed_path_with_ownership()).
   ownership_set_baseline_once "FIXEDPATH_NGINX_CONF_PRE_EXISTED" "$nginx_had_previous"
   if [ "$nginx_had_previous" -eq 1 ] && [ "$(ownership_get "FIXEDPATH_NGINX_CONF_BACKED_UP" "0")" != "1" ]; then
-    install -d -m 0700 /var/lib/vpn1/preexisting-backups
-    cp -a "$NGINX_CONF" /var/lib/vpn1/preexisting-backups/NGINX_CONF
-    ownership_set "FIXEDPATH_NGINX_CONF_BACKUP" /var/lib/vpn1/preexisting-backups/NGINX_CONF
+    install -d -m 0700 /var/lib/singbox-vpn/preexisting-backups
+    cp -a "$NGINX_CONF" /var/lib/singbox-vpn/preexisting-backups/NGINX_CONF
+    ownership_set "FIXEDPATH_NGINX_CONF_BACKUP" /var/lib/singbox-vpn/preexisting-backups/NGINX_CONF
     ownership_mark "FIXEDPATH_NGINX_CONF_BACKED_UP"
   fi
   ownership_set_baseline_once NGINX_PRE_ENABLED "$(systemctl is-enabled --quiet nginx 2>/dev/null && echo 1 || echo 0)"
@@ -2308,11 +2308,11 @@ $fail_lines"
 # $1 = acceptance status to record: "pending" or "accepted".
 write_install_state_manifest() {
   local acceptance="${1:?write_install_state_manifest requires an acceptance status argument}"
-  local manifest_dir="/var/lib/vpn1" manifest="/var/lib/vpn1/install-state.json"
+  local manifest_dir="/var/lib/singbox-vpn" manifest="/var/lib/singbox-vpn/install-state.json"
   install -d -m 0755 "$manifest_dir"
   local singbox_version
   singbox_version="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
-  local vpn1_version="${VPN1_VERSION:-main}"
+  local singbox_vpn_version="${SINGBOX_VPN_VERSION:-main}"
   local pinned_singbox_sha256=""
   case "$ARCH" in
     amd64) pinned_singbox_sha256="$SINGBOX_SHA256_AMD64" ;;
@@ -2320,8 +2320,8 @@ write_install_state_manifest() {
   esac
   cat > "$manifest.tmp" <<EOF
 {
-  "vpn1_version": "$vpn1_version",
-  "vpn1_repo": "$VPN1_RELEASE_REPO",
+  "singbox_vpn_version": "$singbox_vpn_version",
+  "singbox_vpn_repo": "$SINGBOX_VPN_RELEASE_REPO",
   "sing_box_version": "$singbox_version",
   "sing_box_version_pinned": "$SINGBOX_VERSION",
   "sing_box_sha256_pinned": "$pinned_singbox_sha256",
@@ -2424,7 +2424,7 @@ Management
   $REPO_ROOT/deploy/almalinux/uninstall.sh
 
 Documentation:
-  https://github.com/$VPN1_RELEASE_REPO
+  https://github.com/$SINGBOX_VPN_RELEASE_REPO
 
 BANNER
 }
@@ -2432,57 +2432,57 @@ BANNER
 
 # Failure-injection testability hook (deploy/almalinux/lifecycle-acceptance.sh
 # stage 10, "failed/interrupted install cleanup"): when
-# VPN1_LIFECYCLE_GATE_ABORT_AFTER=<stage-name> is set, abort right after
+# SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=<stage-name> is set, abort right after
 # that stage completes, so the destructive lifecycle gate can
 # deterministically exercise "install died partway through, does
 # uninstall still clean up completely" without relying on a real,
 # unreproducible mid-install crash. Unset in every real install path
 # (bootstrap install.sh never sets it) — a no-op there.
 lifecycle_gate_abort_hook() {
-  [ "${VPN1_LIFECYCLE_GATE_ABORT_AFTER:-}" = "$1" ] || return 0
-  die "VPN1_LIFECYCLE_GATE_ABORT_AFTER=$1 — deliberately aborting for lifecycle-gate testing."
+  [ "${SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER:-}" = "$1" ] || return 0
+  die "SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=$1 — deliberately aborting for lifecycle-gate testing."
 }
 
 main() {
   parse_cli_args "$@"
-  VPN1_STAGE=preflight
+  SINGBOX_VPN_STAGE=preflight
   preflight_stage
-  VPN1_STAGE=packages
+  SINGBOX_VPN_STAGE=packages
   packages_stage
-  VPN1_STAGE="host-configuration"
+  SINGBOX_VPN_STAGE="host-configuration"
   host_config_stage
-  VPN1_STAGE=binaries
+  SINGBOX_VPN_STAGE=binaries
   binaries_stage
-  VPN1_STAGE="state-schema"
+  SINGBOX_VPN_STAGE="state-schema"
   check_state_schema
-  VPN1_STAGE="sing-box-install"
+  SINGBOX_VPN_STAGE="sing-box-install"
   singbox_install_stage
   lifecycle_gate_abort_hook install_singbox
-  VPN1_STAGE=systemd
+  SINGBOX_VPN_STAGE=systemd
   systemd_stage
-  VPN1_STAGE="users-groups"
+  SINGBOX_VPN_STAGE="users-groups"
   users_groups_stage
-  VPN1_STAGE=directories
+  SINGBOX_VPN_STAGE=directories
   directories_stage
-  VPN1_STAGE=certificates
+  SINGBOX_VPN_STAGE=certificates
   certificates_stage
-  VPN1_STAGE="reality-keys"
+  SINGBOX_VPN_STAGE="reality-keys"
   reality_keys_stage
-  VPN1_STAGE="server-config"
+  SINGBOX_VPN_STAGE="server-config"
   server_config_stage
-  VPN1_STAGE=nginx
+  SINGBOX_VPN_STAGE=nginx
   nginx_stage
-  VPN1_STAGE="performance-tuning"
+  SINGBOX_VPN_STAGE="performance-tuning"
   perf_tuning_stage
-  VPN1_STAGE=firewall
+  SINGBOX_VPN_STAGE=firewall
   firewall_stage
-  VPN1_STAGE=selinux
+  SINGBOX_VPN_STAGE=selinux
   selinux_stage
-  VPN1_STAGE="service-start"
+  SINGBOX_VPN_STAGE="service-start"
   start_stage
-  VPN1_STAGE=acceptance
+  SINGBOX_VPN_STAGE=acceptance
   acceptance_stage
-  VPN1_STAGE=status
+  SINGBOX_VPN_STAGE=status
   print_status
 }
 

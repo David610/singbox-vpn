@@ -43,7 +43,7 @@ still be reachable.
    device import (`docs/DEVICE_ACCEPTANCE_TESTS.md`) proves an end user
    can actually get online through it.
 7. **Revoke/retire the old VPS.** If it's still reachable, run
-   `sudo /opt/vpn1/bin/vpn1-uninstall --yes` on it and terminate the
+   `sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes` on it and terminate the
    instance with the provider. If it's not reachable (seized, provider
    already killed it, etc), there's nothing more to do on that box —
    its secrets are already burned by step 4, since the new VPS never
@@ -68,6 +68,6 @@ This procedure has not been executed end-to-end against a real second
 VPS in this session — see `docs/IMPLEMENTATION_STATUS.md` for what is
 verified versus documented-but-untested. The individual pieces it
 depends on (installer idempotency/fresh-install correctness, `user
-create --qr`, `user links`, `vpn1-uninstall`) each have their own
+create --qr`, `user links`, `singbox-vpn-uninstall`) each have their own
 targeted tests; the full 7-step sequence as a single rehearsed
 disaster-recovery drill is UNVERIFIED.

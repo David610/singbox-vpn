@@ -1,4 +1,4 @@
-# Production Acceptance Report — vpn1 Hiddify-compatible deployment
+# Production Acceptance Report — singbox-vpn Hiddify-compatible deployment
 
 Date: 2026-08-09. Companion to `docs/FINAL_PRODUCTION_AUDIT.md` (per-issue
 detail lives there; this document is the pass/fail summary and the honest
@@ -82,7 +82,7 @@ CI too).
   `store.rs` (users.json) and `server.rs` (sing-box config.json), and by
   the new REALITY key-rotation code path.
 - New `apps/admin/src/lock.rs`: `flock`-based system-wide state lock
-  (`/run/lock/vpn1.lock` in production), acquired for the full duration
+  (`/run/lock/singbox-vpn.lock` in production), acquired for the full duration
   of every state-mutating `vpn-admin` command.
 - New shared `vpn-compat` system group + setgid directories in
   `install.sh`'s ownership matrix, replacing the previous single-group-
@@ -93,7 +93,7 @@ CI too).
   reload `sing-box` → restart `vpn-subscription` → verify both → commit,
   with full rollback (and an explicit "rollback also failed" hard-error
   path) on any failure.
-- Separate installer-level lock (`/run/lock/vpn1-installer.lock`) from
+- Separate installer-level lock (`/run/lock/singbox-vpn-installer.lock`) from
   `vpn-admin`'s own state lock, specifically to avoid a self-deadlock
   when `install.sh`/`update.sh` shell out to `vpn-admin`.
 
@@ -165,7 +165,7 @@ Resolves the latest stable tagged release if one exists (source + binaries
 from the same tag, never mixed). If no release has been tagged yet, the
 default (stable) channel refuses to run rather than falling back to `main`
 — see `docs/IMPLEMENTATION_STATUS.md` and the top-level README for the
-current no-release-yet behavior and the explicit `VPN1_CHANNEL=dev`
+current no-release-yet behavior and the explicit `SINGBOX_VPN_CHANNEL=dev`
 development-only escape hatch. This paragraph described an earlier,
 now-superseded behavior; corrected to match the current fail-closed
 bootstrap. Version-pinned form:
@@ -177,7 +177,7 @@ curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.s
 ## Exact user onboarding flow for Hiddify (as implemented now)
 
 1. Run the one-command installer above on a fresh supported VPS.
-2. The installer prints a "vpn1 installation complete" summary with each
+2. The installer prints a "singbox-vpn installation complete" summary with each
    component's independently-confirmed status, followed directly by the
    default user's subscription URL and a terminal QR code (rendered by
    `vpn-admin` itself via the `qrcode` crate — no `qrencode` package

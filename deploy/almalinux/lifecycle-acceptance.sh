@@ -38,7 +38,7 @@
 #      the machine it's invoked from.
 #   3. Refuses when --host matches this repo's own configured
 #      production PUBLIC_HOST (checked against /etc/vpn/deployment.toml
-#      if present LOCALLY, and against $VPN1_PRODUCTION_HOST if set) —
+#      if present LOCALLY, and against $SINGBOX_VPN_PRODUCTION_HOST if set) —
 #      a copy/paste of your real VPN's hostname must not silently wipe
 #      it.
 #   4. Every stage is a real SSH command against the real target; no
@@ -142,19 +142,19 @@ if [ -f /etc/vpn/deployment.toml ]; then
     die "refusing to target '$HOST' — it matches THIS machine's own configured production public_host in /etc/vpn/deployment.toml. Use a disposable host, not your real VPN."
   fi
 fi
-if [ -n "${VPN1_PRODUCTION_HOST:-}" ] && [ "$host_part" = "$VPN1_PRODUCTION_HOST" ]; then
-  die "refusing to target '$HOST' — it matches VPN1_PRODUCTION_HOST. Use a disposable host."
+if [ -n "${SINGBOX_VPN_PRODUCTION_HOST:-}" ] && [ "$host_part" = "$SINGBOX_VPN_PRODUCTION_HOST" ]; then
+  die "refusing to target '$HOST' — it matches SINGBOX_VPN_PRODUCTION_HOST. Use a disposable host."
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRANCH="$(cd "$REPO_ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 if [ -n "$VERSION" ]; then
   BOOTSTRAP_REF="main"
-  INSTALL_SOURCE_ENV="VPN1_VERSION=$VERSION"
+  INSTALL_SOURCE_ENV="SINGBOX_VPN_VERSION=$VERSION"
   ACCEPTANCE_SCOPE="PRODUCTION RELEASE $VERSION"
 else
   BOOTSTRAP_REF="$BRANCH"
-  INSTALL_SOURCE_ENV="VPN1_REF=$BRANCH VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1"
+  INSTALL_SOURCE_ENV="SINGBOX_VPN_REF=$BRANCH SINGBOX_VPN_CHANNEL=dev SINGBOX_VPN_ALLOW_UNVERIFIED_DEV=1"
   ACCEPTANCE_SCOPE="DEVELOPMENT BRANCH $BRANCH (NOT production acceptance)"
 fi
 
@@ -214,20 +214,20 @@ section "1b. host baseline (sanitized, no secrets)"
 # uninstall (section 13/18) — file/dir existence, unit/package/user
 # presence, not content, so nothing sensitive is captured.
 BASELINE="$(ssh_run '
-  echo "opt_singbox-vpn=$([ -e /opt/vpn1 ] && echo 1 || echo 0)"
+  echo "opt_singbox-vpn=$([ -e /opt/singbox-vpn ] && echo 1 || echo 0)"
   echo "etc_vpn=$([ -e /etc/vpn ] && echo 1 || echo 0)"
-  echo "var_lib_singbox-vpn=$([ -e /var/lib/vpn1 ] && echo 1 || echo 0)"
+  echo "var_lib_singbox-vpn=$([ -e /var/lib/singbox-vpn ] && echo 1 || echo 0)"
   echo "user_singbox=$(id sing-box >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
   echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
-  echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn1.conf ] && echo 1 || echo 0)"
-  echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh ] && echo 1 || echo 0)"
+  echo "nginx_conf=$([ -e /etc/nginx/conf.d/singbox-vpn.conf ] && echo 1 || echo 0)"
+  echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh ] && echo 1 || echo 0)"
 ' 2>/dev/null || true)"
 if [ -n "$BASELINE" ]; then pass "host baseline captured"; else fail "host baseline captured"; fi
 
 section "2. clean install"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"; then
   pass "install.sh (clean)"
 else
   fail_required "install.sh (clean)"
@@ -237,7 +237,7 @@ section "3. SSH after install (new connection, port $SSH_PORT)"
 if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH still active post-install"; else fail_required "SSH still active post-install"; fi
 
 section "4. acceptance-test.sh"
-if ssh_run 'sudo /opt/vpn1/deploy/almalinux/acceptance-test.sh' 2>/dev/null; then
+if ssh_run 'sudo /opt/singbox-vpn/deploy/almalinux/acceptance-test.sh' 2>/dev/null; then
   pass "acceptance-test.sh"
 else
   fail "acceptance-test.sh" "(see remote output above)"
@@ -253,15 +253,15 @@ if [ "$SKIP_REBOOT" -eq 0 ]; then
     sleep 10
   done
   if [ "$reboot_ok" -eq 1 ] && ssh_run '
-       sudo /opt/vpn1/deploy/almalinux/health-check.sh \
+       sudo /opt/singbox-vpn/deploy/almalinux/health-check.sh \
     && systemctl is-active --quiet sing-box \
     && systemctl is-active --quiet vpn-subscription \
     && systemctl is-active --quiet nginx \
-    && systemctl list-timers --all 2>/dev/null | grep -q vpn1 \
+    && systemctl list-timers --all 2>/dev/null | grep -q singbox-vpn \
     && systemctl is-active --quiet vpn-expiry-reconcile.timer \
     && systemctl is-active --quiet vpn-service-watchdog.timer \
     && ss -ltn 2>/dev/null | grep -q ":443 " \
-    && sudo test -s /var/lib/vpn1/install-state.json \
+    && sudo test -s /var/lib/singbox-vpn/install-state.json \
     && sudo vpn-admin doctor --protocol
      ' 2>/dev/null; then
     pass "reboot + independent post-reboot verification (sshd/sing-box/subscription/nginx/timers incl. watchdog/listener/install-state/protocol)"
@@ -273,7 +273,7 @@ else
 fi
 
 section "6. repair / idempotent re-run"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "install.sh (idempotent re-run) + SSH reconnect"
 else
@@ -281,13 +281,13 @@ else
 fi
 
 section "7. failed/interrupted install cleanup (scratch scenario; ends with singbox-vpn fully removed)"
-# Failure-injection hook: install.sh honors VPN1_LIFECYCLE_GATE_ABORT_AFTER
+# Failure-injection hook: install.sh honors SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER
 # (a stage-name substring) to deliberately die mid-install, purely for this
 # gate — see install.sh's own comment at the check. The env var MUST be set
 # for the bash process that actually execs install.sh, not for curl on the
 # other side of the pipe (sudo VAR=x curl | bash would silently drop it —
 # sudo scopes VAR=x to curl's own exec only, never to bash downstream).
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" ; then
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" ; then
   fail_required "interrupted install actually aborted" "(expected non-zero exit, got success)"
 else
   pass "interrupted install aborted as expected"
@@ -295,13 +295,13 @@ fi
 # Prove the abort hook actually fired mid-install (not e.g. a network/SSH
 # failure that would also produce a non-zero exit): install.sh must have
 # started (left partial state) but never reached acceptance.
-if ssh_run '[ -e /opt/vpn1 ] || [ -e /etc/vpn ]' 2>/dev/null; then
+if ssh_run '[ -e /opt/singbox-vpn ] || [ -e /etc/vpn ]' 2>/dev/null; then
   pass "abort hook fired mid-install (partial state present, not a pre-flight failure)"
 else
   fail_required "abort hook fired mid-install" "(no partial state found — the abort may not have reached the installer process at all)"
 fi
-if ssh_run 'sudo /opt/vpn1/bin/vpn1-uninstall --yes' 2>/dev/null \
-  && ssh_run '[ ! -e /etc/vpn ] && [ ! -e /opt/vpn1 ] && [ ! -e /var/lib/vpn1 ] \
+if ssh_run 'sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes' 2>/dev/null \
+  && ssh_run '[ ! -e /etc/vpn ] && [ ! -e /opt/singbox-vpn ] && [ ! -e /var/lib/singbox-vpn ] \
       && ! systemctl list-unit-files 2>/dev/null | grep -q "^sing-box\.service\|^vpn-subscription\.service" \
       && ! id sing-box >/dev/null 2>&1 && ! id vpn-subscription >/dev/null 2>&1' 2>/dev/null; then
   pass "cleanup after interrupted install (offline singbox-vpn-uninstall)"
@@ -310,7 +310,7 @@ else
 fi
 
 section "8. reinstall after interrupted-install cleanup (back to a working baseline for the rest of this run)"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "install.sh (clean, post-cleanup) + SSH reconnect"
 else
@@ -356,7 +356,7 @@ section "12. Hysteria2 real handshake+transfer proof (deploy/lib/vpn-benchmark.s
 # Hysteria2 listener through a throwaway benchmark user (created and
 # deleted by the tool itself) and transfers real bytes through it. A
 # small download size keeps this bounded on a disposable VPS's uplink.
-if HY_OUT="$(ssh_run "sudo /opt/vpn1/deploy/lib/vpn-benchmark.sh --runs 1 --download-url 'https://speed.cloudflare.com/__down?bytes=2000000'" 2>&1)"; then
+if HY_OUT="$(ssh_run "sudo /opt/singbox-vpn/deploy/lib/vpn-benchmark.sh --runs 1 --download-url 'https://speed.cloudflare.com/__down?bytes=2000000'" 2>&1)"; then
   hy_rc=0
 else
   hy_rc=$?
@@ -516,10 +516,10 @@ fi
 
 if [ -n "$UPDATE_TO_VERSION" ]; then
   section "16. checksum-verified production update -> $UPDATE_TO_VERSION"
-  version_before="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
-  if ssh_run "sudo /opt/vpn1/deploy/almalinux/update.sh --version $UPDATE_TO_VERSION" \
+  version_before="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
+  if ssh_run "sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version $UPDATE_TO_VERSION" \
     && ssh_reconnect 'true' 2>/dev/null; then
-    version_after="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+    version_after="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
     if [ -n "$version_after" ] && [ "$version_before" != "$version_after" ]; then
       pass "production update -> $UPDATE_TO_VERSION (install state changed)"
     else
@@ -530,8 +530,8 @@ if [ -n "$UPDATE_TO_VERSION" ]; then
   fi
 
   section "16b. injected failed production repair -> rollback proof"
-  pre_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
-  if ssh_run "sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/vpn1/deploy/almalinux/update.sh --repair" 2>/dev/null; then
+  pre_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
+  if ssh_run "sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/singbox-vpn/deploy/almalinux/update.sh --repair" 2>/dev/null; then
     fail_required "failed production repair aborted as expected" "(expected non-zero exit, got success)"
   else
     pass "failed production repair aborted as expected"
@@ -542,7 +542,7 @@ if [ -n "$UPDATE_TO_VERSION" ]; then
     && systemctl is-active --quiet vpn-subscription \
     && sudo vpn-admin doctor --protocol
      ' 2>/dev/null; then
-    post_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+    post_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
     if [ "$pre_rollback_version" = "$post_rollback_version" ]; then
       pass "production repair rollback restored the prior working state"
     else
@@ -557,21 +557,21 @@ elif [ -n "$UPDATE_TO_REF" ]; then
   # that remains a real-release UNVERIFIED item (see
   # docs/IMPLEMENTATION_STATUS.md). Until one is published, this
   # exercises the explicit --dev-rebuild escape hatch instead: check out
-  # $UPDATE_TO_REF's source over /opt/vpn1, then rebuild/redeploy it via
+  # $UPDATE_TO_REF's source over /opt/singbox-vpn, then rebuild/redeploy it via
   # update.sh --dev-rebuild (the same transactional
   # backup/switch/verify/rollback machinery the production path uses,
   # minus release-artifact resolution). update.sh no longer reads
-  # VPN1_REF at all — passing it as an env var (the previous, silently
+  # SINGBOX_VPN_REF at all — passing it as an env var (the previous, silently
   # ignored invocation) never actually changed anything.
   section "16. safe update path -> $UPDATE_TO_REF (--dev-rebuild; this is VERIFIED-TEST for the transactional updater machinery only — a real GitHub release A->B transition remains UNVERIFIED until a tagged release exists, see docs/IMPLEMENTATION_STATUS.md)"
-  version_before="$(ssh_run 'sudo /opt/vpn1/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+  version_before="$(ssh_run 'sudo /opt/singbox-vpn/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
   if ssh_run "curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/singbox-vpn-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$UPDATE_TO_REF \
       && rm -rf /tmp/singbox-vpn-update-ref && mkdir -p /tmp/singbox-vpn-update-ref \
       && tar -xzf /tmp/singbox-vpn-update-ref.tar.gz -C /tmp/singbox-vpn-update-ref --strip-components=1 \
-      && sudo rsync -a --delete --exclude target --exclude .git /tmp/singbox-vpn-update-ref/ /opt/vpn1/ \
-      && sudo /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild" \
+      && sudo rsync -a --delete --exclude target --exclude .git /tmp/singbox-vpn-update-ref/ /opt/singbox-vpn/ \
+      && sudo /opt/singbox-vpn/deploy/almalinux/update.sh --dev-rebuild" \
     && ssh_reconnect 'true' 2>/dev/null; then
-    version_after="$(ssh_run 'sudo /opt/vpn1/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+    version_after="$(ssh_run 'sudo /opt/singbox-vpn/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
     if [ -n "$version_after" ] && [ "$version_before" != "$version_after" ]; then
       pass "update.sh --dev-rebuild -> $UPDATE_TO_REF (binary/state actually changed, not just exit 0)"
     else
@@ -581,9 +581,9 @@ elif [ -n "$UPDATE_TO_REF" ]; then
     fail "update.sh --dev-rebuild -> $UPDATE_TO_REF"
   fi
 
-  section "16b. injected failed update -> rollback proof (failure injected after SWITCH begins, via update.sh's VPN1_LIFECYCLE_GATE_ABORT_AFTER hook)"
-  pre_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
-  if ssh_run "sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/vpn1/deploy/almalinux/update.sh --dev-rebuild" 2>/dev/null; then
+  section "16b. injected failed update -> rollback proof (failure injected after SWITCH begins, via update.sh's SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER hook)"
+  pre_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
+  if ssh_run "sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/singbox-vpn/deploy/almalinux/update.sh --dev-rebuild" 2>/dev/null; then
     fail_required "failed update aborted as expected" "(expected non-zero exit, got success)"
   else
     pass "failed update aborted as expected"
@@ -594,7 +594,7 @@ elif [ -n "$UPDATE_TO_REF" ]; then
     && systemctl is-active --quiet vpn-subscription \
     && sudo vpn-admin doctor --protocol
      ' 2>/dev/null; then
-    post_rollback_version="$(ssh_run 'sudo cat /var/lib/vpn1/install-state.json 2>/dev/null' 2>/dev/null || true)"
+    post_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
     if [ "$pre_rollback_version" = "$post_rollback_version" ]; then
       pass "rollback restored the previous working release (prior binary/schema/units/config/services/protocol/SSH)"
     else
@@ -609,7 +609,7 @@ else
 fi
 
 section "17. create vpn backup"
-BACKUP_PATH="/root/vpn1-lifecycle-backup.tar"
+BACKUP_PATH="/root/singbox-vpn-lifecycle-backup.tar"
 PRE_BACKUP_USERLIST="$(ssh_run 'sudo vpn-admin user list' 2>/dev/null || true)"
 if ssh_run "sudo vpn-admin backup --output $BACKUP_PATH" 2>/dev/null \
   && ssh_run "sudo test -s $BACKUP_PATH" 2>/dev/null; then
@@ -633,7 +633,7 @@ section "19. uninstall completely (offline singbox-vpn-uninstall)"
 # primary guarantee either way). $BACKUP_PATH lives under /root, which
 # singbox-vpn-uninstall never touches, so the backup survives this step.
 ssh_run 'sudo iptables -I OUTPUT -d github.com -j REJECT 2>/dev/null; sudo iptables -I OUTPUT -d raw.githubusercontent.com -j REJECT 2>/dev/null' >/dev/null 2>&1 || true
-if ssh_run 'sudo /opt/vpn1/bin/vpn1-uninstall --yes'; then
+if ssh_run 'sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes'; then
   pass "singbox-vpn-uninstall --yes (offline, local binary only)"
 else
   fail_required "singbox-vpn-uninstall --yes (offline, local binary only)"
@@ -644,7 +644,7 @@ section "20. SSH after uninstall (new connection, port $SSH_PORT)"
 if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH still active post-uninstall"; else fail_required "SSH still active post-uninstall"; fi
 
 section "21. reinstall from the normal one-command production path"
-if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com VPN1_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
+if ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS" \
   && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "reinstall after uninstall + SSH reconnect"
 else
@@ -685,7 +685,7 @@ fi
 
 section "25. final uninstall (offline singbox-vpn-uninstall)"
 ssh_run "sudo rm -f $BACKUP_PATH" >/dev/null 2>&1 || true
-if ssh_run 'sudo /opt/vpn1/bin/vpn1-uninstall --yes'; then
+if ssh_run 'sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes'; then
   pass "final singbox-vpn-uninstall --yes (offline, local binary only)"
 else
   fail_required "final singbox-vpn-uninstall --yes (offline, local binary only)"
@@ -696,17 +696,17 @@ if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH 
 
 section "27. final uninstall residue audit (vs. host baseline from stage 1b) — no singbox-vpn-owned services/binaries/state/firewall rules/sysctl or other residue"
 RESIDUE="$(ssh_run '
-  echo "opt_singbox-vpn=$([ -e /opt/vpn1 ] && echo 1 || echo 0)"
+  echo "opt_singbox-vpn=$([ -e /opt/singbox-vpn ] && echo 1 || echo 0)"
   echo "etc_vpn=$([ -e /etc/vpn ] && echo 1 || echo 0)"
-  echo "var_lib_singbox-vpn=$([ -e /var/lib/vpn1 ] && echo 1 || echo 0)"
+  echo "var_lib_singbox-vpn=$([ -e /var/lib/singbox-vpn ] && echo 1 || echo 0)"
   echo "user_singbox=$(id sing-box >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
   echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
-  echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn1.conf ] && echo 1 || echo 0)"
-  echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh ] && echo 1 || echo 0)"
+  echo "nginx_conf=$([ -e /etc/nginx/conf.d/singbox-vpn.conf ] && echo 1 || echo 0)"
+  echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh ] && echo 1 || echo 0)"
   echo "listeners=$(ss -ltnp 2>/dev/null | grep -Ec "sing-box|vpn-subscription")"
-  echo "locks=$(ls /run/lock/vpn1* 2>/dev/null | wc -l)"
+  echo "locks=$(ls /run/lock/singbox-vpn* 2>/dev/null | wc -l)"
 ' 2>/dev/null || true)"
 if [ "$RESIDUE" = "$BASELINE" ]; then
   pass "no singbox-vpn residue vs. pre-install host baseline"

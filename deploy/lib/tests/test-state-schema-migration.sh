@@ -12,7 +12,7 @@
 # in the right place, and does it react correctly to each exit code.
 #
 # shellcheck disable=SC2034
-# (BIN_DIR/DEPLOYMENT_TOML/IS_FRESH_INSTALL/VPN1_VERSION are read by
+# (BIN_DIR/DEPLOYMENT_TOML/IS_FRESH_INSTALL/SINGBOX_VPN_VERSION are read by
 # check_state_schema() after `source "$INSTALL_SH"` — shellcheck cannot
 # see that dynamic use.)
 set -Eeuo pipefail
@@ -62,7 +62,7 @@ echo
 echo "--- static: update.sh also validates/migrates state and dies closed on an unsupported schema ---"
 # Checks the PRODUCTION update path (checkpoint 3) — the one this
 # checkpoint's transactional release-to-release updater actually
-# introduced. The separate --dev-rebuild/VPN1_CHANNEL=dev escape hatch
+# introduced. The separate --dev-rebuild/SINGBOX_VPN_CHANNEL=dev escape hatch
 # has its own equivalent block (an intentional near-verbatim copy of the
 # pre-checkpoint-3 flow) and is not re-checked here.
 update_body="$(sed -n '/^log "install mode: UPDATE/,/^log "rendering current authoritative/p' "$UPDATE_SH")"
@@ -142,7 +142,7 @@ rc_noop=1
   BIN_DIR="$FAKE_BIN"
   DEPLOYMENT_TOML="$TMPDIR_TEST/does-not-exist.toml"
   IS_FRESH_INSTALL=0
-  VPN1_VERSION="v1.2.3"
+  SINGBOX_VPN_VERSION="v1.2.3"
   check_state_schema
 ) && rc_noop=0
 if [ "$rc_noop" -eq 0 ]; then
@@ -162,7 +162,7 @@ rc2=0
   BIN_DIR="$FAKE_BIN"
   DEPLOYMENT_TOML="$TMPDIR_TEST/deployment.toml"
   IS_FRESH_INSTALL=0
-  VPN1_VERSION="v1.2.3"
+  SINGBOX_VPN_VERSION="v1.2.3"
   export FAKE_VALIDATE_EXIT=2
   check_state_schema
   echo "reached end without dying"
@@ -180,7 +180,7 @@ rc3=0
   BIN_DIR="$FAKE_BIN"
   DEPLOYMENT_TOML="$TMPDIR_TEST/deployment.toml"
   IS_FRESH_INSTALL=0
-  VPN1_VERSION="v1.2.3"
+  SINGBOX_VPN_VERSION="v1.2.3"
   export FAKE_VALIDATE_EXIT=3
   check_state_schema
 ) >/tmp/check_state_schema_invalid_test.out 2>&1 || rc3=$?
@@ -198,7 +198,7 @@ rc4=0
   BIN_DIR="$FAKE_BIN"
   DEPLOYMENT_TOML="$TMPDIR_TEST/deployment.toml"
   IS_FRESH_INSTALL=0
-  VPN1_VERSION="v1.2.3"
+  SINGBOX_VPN_VERSION="v1.2.3"
   export FAKE_VALIDATE_EXIT=2
   export FAKE_MIGRATE_EXIT=1
   check_state_schema

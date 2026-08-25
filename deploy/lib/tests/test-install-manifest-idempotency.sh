@@ -6,7 +6,7 @@
 # then failed the separate acceptance test left NO manifest on disk, so
 # existing_install_present() (the only thing a re-run checks) reported
 # "fresh install" instead of "repair" — re-triggering port-conflict
-# checks against ports vpn1 itself already legitimately owns.
+# checks against ports singbox-vpn itself already legitimately owns.
 #
 # This test `source`s the REAL deploy/almalinux/install.sh (guarded so
 # that sourcing does not invoke main() — see the BASH_SOURCE[0]==$0
@@ -80,8 +80,8 @@ echo
 echo "--- functional: existing_install_present()/write_install_state_manifest() [real functions, sourced from install.sh] against a throwaway dir ---"
 TMPDIR_TEST="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
-FAKE_STATE_DIR="$TMPDIR_TEST/var-lib-vpn1"
-REAL_STATE_PATH_PREFIX="/var/lib/vpn1"
+FAKE_STATE_DIR="$TMPDIR_TEST/var-lib-singbox-vpn"
+REAL_STATE_PATH_PREFIX="/var/lib/singbox-vpn"
 
 run_manifest_flow() {
   (
@@ -97,10 +97,10 @@ run_manifest_flow() {
     source "$INSTALL_SH"
 
     # existing_install_present()/write_install_state_manifest() hardcode
-    # /var/lib/vpn1/install-state.json with no override variable. Rather
+    # /var/lib/singbox-vpn/install-state.json with no override variable. Rather
     # than duplicating their logic, redefine them using their OWN real
     # bodies (extracted from the actually-sourced functions via `declare
-    # -f`) with only the literal /var/lib/vpn1 path string substituted
+    # -f`) with only the literal /var/lib/singbox-vpn path string substituted
     # for a throwaway directory — every line of actual logic is exactly
     # what was just sourced from install.sh, untouched.
     if ! declare -f write_install_state_manifest >/dev/null || ! declare -f existing_install_present >/dev/null; then

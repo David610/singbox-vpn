@@ -24,7 +24,7 @@
 #
 # REVERSIBLE WITHOUT A REBOOT: on the very first apply on a given host,
 # perf_capture_baseline() records this host's pre-singbox-vpn sysctl values to
-# /var/lib/vpn1/perf-tuning-baseline.env — exactly once, never
+# /var/lib/singbox-vpn/perf-tuning-baseline.env — exactly once, never
 # overwritten by a later run (the whole point is "what this host had
 # before singbox-vpn touched it", not "what singbox-vpn last set"). Simply deleting
 # singbox-vpn's own /etc/sysctl.d drop-in and re-running `sysctl --system` is
@@ -42,9 +42,9 @@
 # this file makes at a throwaway temp directory instead of real system
 # paths — production callers (install.sh/update.sh) never set these,
 # so they always get the real paths below.
-: "${PERF_SYSCTL_DROPIN:=/etc/sysctl.d/99-vpn1-dataplane.conf}"
-: "${PERF_ROLLBACK_DROPIN:=/etc/sysctl.d/99-vpn1-dataplane-rollback.conf}"
-: "${PERF_STATE_DIR:=/var/lib/vpn1}"
+: "${PERF_SYSCTL_DROPIN:=/etc/sysctl.d/99-singbox-vpn-dataplane.conf}"
+: "${PERF_ROLLBACK_DROPIN:=/etc/sysctl.d/99-singbox-vpn-dataplane-rollback.conf}"
+: "${PERF_STATE_DIR:=/var/lib/singbox-vpn}"
 : "${PERF_BASELINE_FILE:=$PERF_STATE_DIR/perf-tuning-baseline.env}"
 
 # UDP core buffer ceilings, bytes. 16 MiB — see file header.
@@ -214,8 +214,8 @@ perf_tuning_apply() {
     chmod 0644 "$PERF_SYSCTL_DROPIN"
     log "wrote $PERF_SYSCTL_DROPIN"
   fi
-  if ! perf_apply_sysctl_system >/tmp/vpn1-sysctl-system.out 2>&1; then
-    warn "sysctl --system reported errors — see /tmp/vpn1-sysctl-system.out. Continuing; this does not block installation."
+  if ! perf_apply_sysctl_system >/tmp/singbox-vpn-sysctl-system.out 2>&1; then
+    warn "sysctl --system reported errors — see /tmp/singbox-vpn-sysctl-system.out. Continuing; this does not block installation."
   fi
 
   local wanted_cc=""
@@ -296,8 +296,8 @@ perf_tuning_rollback() {
   mv -f "$PERF_ROLLBACK_DROPIN.tmp" "$PERF_ROLLBACK_DROPIN"
   chmod 0644 "$PERF_ROLLBACK_DROPIN"
 
-  if ! perf_apply_sysctl_system >/tmp/vpn1-sysctl-rollback.out 2>&1; then
-    warn "sysctl --system reported errors during rollback — see /tmp/vpn1-sysctl-rollback.out"
+  if ! perf_apply_sysctl_system >/tmp/singbox-vpn-sysctl-rollback.out 2>&1; then
+    warn "sysctl --system reported errors during rollback — see /tmp/singbox-vpn-sysctl-rollback.out"
   fi
 
   local failed=0

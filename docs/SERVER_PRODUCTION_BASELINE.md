@@ -106,7 +106,7 @@ The subscription certificate provides no REALITY camouflage benefit.
   `docs/SUPPLY_CHAIN_SECURITY.md`.
 * **KNOWN ISSUE:** `curl | sudo bash` initially trusts HTTPS and GitHub account
   security. Mutable dev source now requires the two explicit opt-ins
-  `VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1`.
+  `SINGBOX_VPN_CHANNEL=dev SINGBOX_VPN_ALLOW_UNVERIFIED_DEV=1`.
 * **NOT VERIFIED:** no disposable VPS or dated Russia real-device run was
   available for this phase. The canonical current evidence ledger is
   `docs/DEVICE_ACCEPTANCE_TESTS.md`; server probes are server facts, never

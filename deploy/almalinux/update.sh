@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Transactional PRODUCTION release-to-release updater.
 #
-#   sudo /opt/vpn1/deploy/almalinux/update.sh --version v1.1.0
-#   sudo /opt/vpn1/deploy/almalinux/update.sh --latest
-#   sudo /opt/vpn1/deploy/almalinux/update.sh --repair
+#   sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version v1.1.0
+#   sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest
+#   sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair
 #
 # A working singbox-vpn release either updates COMPLETELY to the requested
 # target release, or returns to the previous working release with
@@ -19,7 +19,7 @@
 # check passes. Any failure after PREPARE begins triggers rollback_update(),
 # which restores every category of file this script can change:
 # binaries, systemd units, helper scripts, the sing-box binary (if the
-# target release pins a different version), the persistent /opt/vpn1
+# target release pins a different version), the persistent /opt/singbox-vpn
 # source tree, and rendered config — never the authoritative
 # users.json/REALITY material, which is re-rendered with the restored
 # (old) tooling instead of being rewound.
@@ -28,16 +28,16 @@
 # own material and reconciles the host to it (fixes local drift/
 # corruption) — it never resolves or switches to a different version.
 #
-# --dev-rebuild (or VPN1_CHANNEL=dev) is the explicit, clearly-separate
+# --dev-rebuild (or SINGBOX_VPN_CHANNEL=dev) is the explicit, clearly-separate
 # escape hatch that rebuilds from whatever source is currently checked
-# out at /opt/vpn1 via Cargo — development/testing only, never implied
+# out at /opt/singbox-vpn via Cargo — development/testing only, never implied
 # by a normal production update.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_DIR="/usr/local/bin"
 SYSTEMD_DIR="/etc/systemd/system"
-STATE_DIR_ROOT="/var/lib/vpn1"
+STATE_DIR_ROOT="/var/lib/singbox-vpn"
 DEPLOYMENT_TOML="/etc/vpn/deployment.toml"
 BACKUP_ROOT="/etc/vpn/backups"
 BACKUP_DIR="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)-$$"
@@ -58,13 +58,13 @@ die() { echo "[update] ERROR: $*" >&2; exit 1; }
 
 # Deterministic failure injection for the destructive lifecycle-acceptance
 # gate ONLY (deploy/almalinux/lifecycle-acceptance.sh). Mirrors install.sh's
-# lifecycle_gate_abort_hook(): if VPN1_LIFECYCLE_GATE_ABORT_AFTER matches the
+# lifecycle_gate_abort_hook(): if SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER matches the
 # stage name given, die immediately so rollback_update() (already trap-armed
 # via on_exit at this point) fires and can be independently verified. A
 # no-op unless the env var is explicitly set.
 lifecycle_gate_abort_hook() {
-  [ "${VPN1_LIFECYCLE_GATE_ABORT_AFTER:-}" = "$1" ] || return 0
-  die "VPN1_LIFECYCLE_GATE_ABORT_AFTER=$1 — deliberately aborting for lifecycle-gate testing."
+  [ "${SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER:-}" = "$1" ] || return 0
+  die "SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=$1 — deliberately aborting for lifecycle-gate testing."
 }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
@@ -81,21 +81,21 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # ---------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------
-TARGET_VERSION="${VPN1_VERSION:-}"
-VPN1_REPO_OVERRIDE="${VPN1_REPO:-}"
+TARGET_VERSION="${SINGBOX_VPN_VERSION:-}"
+SINGBOX_VPN_REPO_OVERRIDE="${SINGBOX_VPN_REPO:-}"
 RESOLVE_LATEST=0
 REPAIR=0
 DEV_REBUILD=0
 ALLOW_DOWNGRADE=0
-[ "${VPN1_CHANNEL:-}" = "dev" ] && DEV_REBUILD=1
+[ "${SINGBOX_VPN_CHANNEL:-}" = "dev" ] && DEV_REBUILD=1
 
 print_update_help() {
   cat <<'USAGE'
 singbox-vpn production updater (deploy/almalinux/update.sh).
 
-  sudo /opt/vpn1/deploy/almalinux/update.sh --version v1.1.0
-  sudo /opt/vpn1/deploy/almalinux/update.sh --latest
-  sudo /opt/vpn1/deploy/almalinux/update.sh --repair
+  sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version v1.1.0
+  sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest
+  sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair
 
 Flags:
   --version vX.Y.Z   update to this exact tagged release (production;
@@ -110,7 +110,7 @@ Flags:
   --dev-rebuild      development/testing only: rebuild from whatever
                      source is currently checked out at this path via
                      Cargo (requires a Rust toolchain). Same as
-                     VPN1_CHANNEL=dev. Never used for a normal
+                     SINGBOX_VPN_CHANNEL=dev. Never used for a normal
                      production update.
   --allow-downgrade  permit an intentional downgrade with an explicit
                      --version. Never applies to --latest or implicitly.
@@ -128,8 +128,8 @@ while [ $# -gt 0 ]; do
     --repair) REPAIR=1; shift ;;
     --dev-rebuild) DEV_REBUILD=1; shift ;;
     --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
-    --repo) VPN1_REPO_OVERRIDE="$2"; shift 2 ;;
-    --repo=*) VPN1_REPO_OVERRIDE="${1#*=}"; shift ;;
+    --repo) SINGBOX_VPN_REPO_OVERRIDE="$2"; shift 2 ;;
+    --repo=*) SINGBOX_VPN_REPO_OVERRIDE="${1#*=}"; shift ;;
     -h|--help) print_update_help; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
@@ -147,7 +147,7 @@ done
 if [ -e "$TRANSACTION_MARKER" ]; then
   die "an update transaction did not finish cleanly and left $TRANSACTION_MARKER in place — refusing to start a new update on top of unknown state.
 $(cat "$TRANSACTION_MARKER" 2>/dev/null)
-Manual recovery: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/vpn1 after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove $TRANSACTION_MARKER and retry the update."
+Manual recovery: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/singbox-vpn after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove $TRANSACTION_MARKER and retry the update."
 fi
 
 verify_release_attestation() {
@@ -159,9 +159,9 @@ verify_release_attestation() {
   fi
   command -v gh >/dev/null 2>&1 \
     || die "GitHub CLI ('gh') is required for stable release-attestation verification. Install gh and retry; nothing live has changed."
-  gh attestation verify "$artifact" --repo "$VPN1_REPO" --signer-workflow "$VPN1_REPO/.github/workflows/release.yml" >/dev/null \
-    || die "artifact attestation verification failed or is missing for $version/$VPN1_REPO. Nothing live has changed."
-  log "artifact attestation verified for repository $VPN1_REPO."
+  gh attestation verify "$artifact" --repo "$SINGBOX_VPN_REPO" --signer-workflow "$SINGBOX_VPN_REPO/.github/workflows/release.yml" >/dev/null \
+    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_REPO. Nothing live has changed."
+  log "artifact attestation verified for repository $SINGBOX_VPN_REPO."
 }
 
 
@@ -177,7 +177,7 @@ release_version_at_least() {
     || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -eq "$threshold_minor" ] && [ "$patch" -ge "$threshold_patch" ]; }
 }
 shopt -s nullglob
-for stale in /opt/.vpn1-update-staging.* /opt/.vpn1-prev-*; do
+for stale in /opt/.singbox-vpn-update-staging.* /opt/.singbox-vpn-prev-*; do
   [ -e "$stale" ] || continue
   die "a stale update-staging/rollback directory exists at $stale from a previous run that did not clean up — refusing to start a new update until it is reviewed and removed manually (it may contain the last known-working release; do not delete it without checking first)."
 done
@@ -185,7 +185,7 @@ shopt -u nullglob
 
 # Serialize against a concurrent install.sh/update.sh run — same lock
 # install.sh uses, extended here rather than inventing a second one.
-exec 200>/run/lock/vpn1-installer.lock
+exec 200>/run/lock/singbox-vpn-installer.lock
 flock -x 200
 
 # ---------------------------------------------------------------------
@@ -201,15 +201,15 @@ CURRENT_REPO=""
 CURRENT_SINGBOX_PINNED=""
 CURRENT_ARCH=""
 if [ -f "$INSTALL_STATE_MANIFEST" ]; then
-  CURRENT_VERSION="$(manifest_field vpn1_version)"
-  CURRENT_REPO="$(manifest_field vpn1_repo)"
+  CURRENT_VERSION="$(manifest_field singbox_vpn_version)"
+  CURRENT_REPO="$(manifest_field singbox_vpn_repo)"
   CURRENT_SINGBOX_PINNED="$(manifest_field sing_box_version_pinned)"
   CURRENT_ARCH="$(manifest_field arch)"
 fi
-VPN1_REPO="${VPN1_REPO_OVERRIDE:-${CURRENT_REPO:-David610/singbox-vpn}}"
+SINGBOX_VPN_REPO="${SINGBOX_VPN_REPO_OVERRIDE:-${CURRENT_REPO:-David610/singbox-vpn}}"
 ARCH="${CURRENT_ARCH:-$(detect_arch)}" || die "unsupported CPU architecture: $(uname -m)."
 
-# A pre-checkpoint-3 install, or one made with VPN1_CHANNEL=dev, may
+# A pre-checkpoint-3 install, or one made with SINGBOX_VPN_CHANNEL=dev, may
 # have no pinned version recorded at all ("main", or empty). Neither a
 # production --version/--latest update NOR --repair can resolve or
 # re-fetch a release that was never actually tagged — fall through to
@@ -219,10 +219,10 @@ if [ -z "$CURRENT_VERSION" ] || [ "$CURRENT_VERSION" = "main" ]; then
   if [ "$DEV_REBUILD" -eq 1 ]; then
     : # proceed to dev-rebuild below
   elif [ "$REPAIR" -eq 1 ]; then
-    warn "no pinned release version is recorded for this install (vpn1_version='${CURRENT_VERSION:-<none>}') — --repair cannot re-fetch a release that was never tagged. Falling back to a --dev-rebuild-equivalent local reconcile."
+    warn "no pinned release version is recorded for this install (singbox_vpn_version='${CURRENT_VERSION:-<none>}') — --repair cannot re-fetch a release that was never tagged. Falling back to a --dev-rebuild-equivalent local reconcile."
     DEV_REBUILD=1
   else
-    die "no pinned release version is recorded for this install (vpn1_version='${CURRENT_VERSION:-<none>}') — this host was installed with VPN1_CHANNEL=dev or predates version tracking. A production --version/--latest update needs a known starting release. Use --dev-rebuild to rebuild from the currently checked-out source instead, or reinstall with a pinned --version first."
+    die "no pinned release version is recorded for this install (singbox_vpn_version='${CURRENT_VERSION:-<none>}') — this host was installed with SINGBOX_VPN_CHANNEL=dev or predates version tracking. A production --version/--latest update needs a known starting release. Use --dev-rebuild to rebuild from the currently checked-out source instead, or reinstall with a pinned --version first."
   fi
 fi
 
@@ -236,7 +236,7 @@ fi
 # updates, which is exactly what --dev-rebuild now scopes it to.
 # =======================================================================
 if [ "$DEV_REBUILD" -eq 1 ]; then
-  log "DEV-REBUILD mode (VPN1_CHANNEL=dev / --dev-rebuild): rebuilding from the source currently at $REPO_ROOT via Cargo. This is NOT the production update path — see --help."
+  log "DEV-REBUILD mode (SINGBOX_VPN_CHANNEL=dev / --dev-rebuild): rebuilding from the source currently at $REPO_ROOT via Cargo. This is NOT the production update path — see --help."
   if [ -f "$HOME/.cargo/env" ]; then
     # shellcheck disable=SC1091
     . "$HOME/.cargo/env"
@@ -276,7 +276,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   install -m 0644 "$REPO_ROOT/deploy/lib/vpn-benchmark-lib.sh" "$BIN_DIR/vpn-benchmark-lib.sh.update-new"
   install -m 0755 "$REPO_ROOT/deploy/almalinux/service-watchdog.sh" "$BIN_DIR/vpn-service-watchdog.update-new"
 
-  exec 201>/run/lock/vpn1.lock
+  exec 201>/run/lock/singbox-vpn.lock
   flock -x 201
   [ -f /etc/vpn/compat/sing-box/config.json ] \
     && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
@@ -313,7 +313,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
       rm -f "$BIN_DIR/$f.update-new"
     done
 
-    if ! VPN1_LOCK_PATH="$BACKUP_DIR/rollback-inner.lock" \
+    if ! SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/rollback-inner.lock" \
         "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config; then
       warn "rollback render failed; restoring the config snapshot taken while the state lock was held"
       if [ -f "$BACKUP_DIR/config.json" ]; then
@@ -385,7 +385,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   esac
 
   log "rendering current authoritative users/REALITY state with new tooling..."
-  VPN1_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
+  SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
     "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
 
   log "restarting services..."
@@ -444,11 +444,11 @@ if [ "$REPAIR" -eq 1 ]; then
   log "REPAIR mode: reconciling the currently-installed release $TARGET_VERSION (re-fetching and re-verifying its own release material; never switching version)."
 elif [ "$RESOLVE_LATEST" -eq 1 ]; then
   [ -z "$TARGET_VERSION" ] || die "--latest and --version are mutually exclusive."
-  log "resolving latest stable release tag for $VPN1_REPO..."
+  log "resolving latest stable release tag for $SINGBOX_VPN_REPO..."
   latest_tag="$(curl -fsSL "${CURL_NET_FLAGS[@]}" \
-      "https://api.github.com/repos/$VPN1_REPO/releases/latest" 2>/dev/null \
+      "https://api.github.com/repos/$SINGBOX_VPN_REPO/releases/latest" 2>/dev/null \
       | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name" *: *"([^"]*)".*/\1/')" || true
-  [ -n "$latest_tag" ] || die "could not resolve the latest stable release for $VPN1_REPO (no tagged release found, or the GitHub API request failed)."
+  [ -n "$latest_tag" ] || die "could not resolve the latest stable release for $SINGBOX_VPN_REPO (no tagged release found, or the GitHub API request failed)."
   TARGET_VERSION="$latest_tag"
   log "resolved latest stable release: $TARGET_VERSION"
 elif [ -n "$TARGET_VERSION" ]; then
@@ -493,7 +493,7 @@ if [ "$TARGET_VERSION" = "$CURRENT_VERSION" ] && [ "$REPAIR" -ne 1 ]; then
   exit 0
 fi
 
-log "current release: ${CURRENT_VERSION:-<unknown>} ($CURRENT_REPO) -> target release: $TARGET_VERSION ($VPN1_REPO)"
+log "current release: ${CURRENT_VERSION:-<unknown>} ($CURRENT_REPO) -> target release: $TARGET_VERSION ($SINGBOX_VPN_REPO)"
 
 # ---- STAGE: download + verify the target release's source archive ----
 # Reuses the exact same trust model as install.sh's bootstrap
@@ -501,9 +501,9 @@ log "current release: ${CURRENT_VERSION:-<unknown>} ($CURRENT_REPO) -> target re
 # checksum-verified against a SHA256SUMS manifest published by
 # .github/workflows/release.yml for that exact tag before anything is
 # extracted, let alone executed. Staged on the SAME filesystem as
-# /opt/vpn1 (under /opt) so the eventual SWITCH is an atomic rename, not
+# /opt/singbox-vpn (under /opt) so the eventual SWITCH is an atomic rename, not
 # a cross-filesystem copy.
-STAGING_ROOT="$(mktemp -d /opt/.vpn1-update-staging.XXXXXX)" || die "mktemp failed"
+STAGING_ROOT="$(mktemp -d /opt/.singbox-vpn-update-staging.XXXXXX)" || die "mktemp failed"
 STAGE_OK=0
 cleanup_staging() {
   [ "$STAGE_OK" -eq 1 ] && return
@@ -513,23 +513,23 @@ trap cleanup_staging EXIT
 
 download_verified_source_release() {
   local version="$1" tarball="$2"
-  local base_url="https://github.com/$VPN1_REPO/releases/download/$version"
+  local base_url="https://github.com/$SINGBOX_VPN_REPO/releases/download/$version"
   local sums="$STAGING_ROOT/SHA256SUMS"
   log "downloading singbox-vpn $version release source archive + checksum manifest..."
-  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$base_url/vpn1-src.tar.gz" \
-    || die "could not download release source archive 'vpn1-src.tar.gz' for $version from $VPN1_REPO. Nothing live has been changed."
+  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$base_url/singbox-vpn-src.tar.gz" \
+    || die "could not download release source archive 'singbox-vpn-src.tar.gz' for $version from $SINGBOX_VPN_REPO. Nothing live has been changed."
   curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$sums" "$base_url/SHA256SUMS" \
     || die "release $version was found but its SHA256SUMS checksum manifest could not be downloaded — refusing to use an unverified source archive. Nothing live has been changed."
-  grep -qE '^[0-9a-f]{64}  vpn1-src\.tar\.gz$' "$sums" \
-    || die "SHA256SUMS for $version has no well-formed entry for vpn1-src.tar.gz — refusing to use an unverified source archive. Nothing live has been changed."
-  ( cd "$STAGING_ROOT" && grep -E '  vpn1-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) \
-    || die "checksum verification failed for vpn1-src.tar.gz against $version's published SHA256SUMS. Nothing live has been changed."
+  grep -qE '^[0-9a-f]{64}  singbox-vpn-src\.tar\.gz$' "$sums" \
+    || die "SHA256SUMS for $version has no well-formed entry for singbox-vpn-src.tar.gz — refusing to use an unverified source archive. Nothing live has been changed."
+  ( cd "$STAGING_ROOT" && grep -E '  singbox-vpn-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) \
+    || die "checksum verification failed for singbox-vpn-src.tar.gz against $version's published SHA256SUMS. Nothing live has been changed."
   log "source archive checksum verified against release SHA256SUMS."
   verify_release_attestation "$tarball" "$version"
 }
 
-download_verified_source_release "$TARGET_VERSION" "$STAGING_ROOT/vpn1-src.tar.gz"
-tar -xzf "$STAGING_ROOT/vpn1-src.tar.gz" -C "$STAGING_ROOT" || die "failed to extract downloaded source archive. Nothing live has been changed."
+download_verified_source_release "$TARGET_VERSION" "$STAGING_ROOT/singbox-vpn-src.tar.gz"
+tar -xzf "$STAGING_ROOT/singbox-vpn-src.tar.gz" -C "$STAGING_ROOT" || die "failed to extract downloaded source archive. Nothing live has been changed."
 STAGED_SRC_DIR="$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '*.tar.gz' | head -n1)"
 [ -n "$STAGED_SRC_DIR" ] && [ -x "$STAGED_SRC_DIR/deploy/almalinux/install.sh" ] \
   || die "downloaded release source for $TARGET_VERSION does not look like a valid singbox-vpn source tree. Nothing live has been changed."
@@ -557,8 +557,8 @@ TARGET_RUST_TARGET="$(rust_target_for_arch "$ARCH")" || die "unsupported archite
 STAGED_BIN_DIR="$STAGING_ROOT/bin"
 install -d -m 0700 "$STAGED_BIN_DIR"
 stage_prebuilt_binaries() {
-  local base_url="https://github.com/$VPN1_REPO/releases/download/$TARGET_VERSION"
-  local asset="vpn1-${TARGET_RUST_TARGET}.tar.gz"
+  local base_url="https://github.com/$SINGBOX_VPN_REPO/releases/download/$TARGET_VERSION"
+  local asset="singbox-vpn-${TARGET_RUST_TARGET}.tar.gz"
   log "checking for prebuilt release binaries ($asset)..."
   if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$STAGING_ROOT/$asset" "$base_url/$asset" 2>/dev/null; then
     return 1
@@ -569,8 +569,8 @@ stage_prebuilt_binaries() {
     || die "checksum verification failed for $asset against $TARGET_VERSION's published SHA256SUMS. Nothing live has been changed."
   verify_release_attestation "$STAGING_ROOT/$asset" "$TARGET_VERSION"
   tar -xzf "$STAGING_ROOT/$asset" -C "$STAGING_ROOT"
-  local extracted="$STAGING_ROOT/vpn1-${TARGET_RUST_TARGET}"
-  [ -d "$extracted" ] || die "release asset $asset did not contain the expected vpn1-${TARGET_RUST_TARGET}/ directory — packaging bug, not a transient failure. Nothing live has been changed."
+  local extracted="$STAGING_ROOT/singbox-vpn-${TARGET_RUST_TARGET}"
+  [ -d "$extracted" ] || die "release asset $asset did not contain the expected singbox-vpn-${TARGET_RUST_TARGET}/ directory — packaging bug, not a transient failure. Nothing live has been changed."
   install -m 0755 "$extracted/vpn-admin" "$STAGED_BIN_DIR/vpn-admin"
   install -m 0755 "$extracted/subscription" "$STAGED_BIN_DIR/vpn-subscription-svc"
   log "staged prebuilt singbox-vpn $TARGET_VERSION binaries ($TARGET_RUST_TARGET) — no Rust compiler needed."
@@ -654,7 +654,7 @@ if [ -n "$STAGED_SINGBOX_BIN" ]; then
 fi
 cp -a "$INSTALL_STATE_MANIFEST" "$BACKUP_DIR/install-state.json.bak" 2>/dev/null || true
 
-PREV_OPT_DIR="/opt/.vpn1-prev-$$"
+PREV_OPT_DIR="/opt/.singbox-vpn-prev-$$"
 
 cat > "$TRANSACTION_MARKER.tmp" <<EOF
 {
@@ -672,7 +672,7 @@ mv -f "$TRANSACTION_MARKER.tmp" "$TRANSACTION_MARKER"
 # Block user mutations/key rotation/restore for the update's commit
 # window (same lock vpn-admin's own commands already use — extended
 # here, not a second locking mechanism).
-exec 201>/run/lock/vpn1.lock
+exec 201>/run/lock/singbox-vpn.lock
 flock -x 201
 [ -f /etc/vpn/compat/sing-box/config.json ] \
   && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
@@ -714,14 +714,14 @@ rollback_update() {
     [ -f "$BACKUP_DIR/sing-box.LICENSE" ] && cp -a "$BACKUP_DIR/sing-box.LICENSE" "$BIN_DIR/sing-box.LICENSE"
   fi
 
-  # Restore the previous /opt/vpn1 source tree if the SWITCH phase ever
+  # Restore the previous /opt/singbox-vpn source tree if the SWITCH phase ever
   # renamed it away — the source of truth for templates/units/scripts
   # must go back to matching the restored binaries exactly.
   if [ -d "$PREV_OPT_DIR" ]; then
-    rm -rf /opt/vpn1.rollback-failed 2>/dev/null || true
-    if [ -d /opt/vpn1 ]; then mv -f /opt/vpn1 /opt/vpn1.rollback-failed || failed=1; fi
-    mv -f "$PREV_OPT_DIR" /opt/vpn1 || failed=1
-    rm -rf /opt/vpn1.rollback-failed 2>/dev/null || true
+    rm -rf /opt/singbox-vpn.rollback-failed 2>/dev/null || true
+    if [ -d /opt/singbox-vpn ]; then mv -f /opt/singbox-vpn /opt/singbox-vpn.rollback-failed || failed=1; fi
+    mv -f "$PREV_OPT_DIR" /opt/singbox-vpn || failed=1
+    rm -rf /opt/singbox-vpn.rollback-failed 2>/dev/null || true
   fi
 
   systemctl daemon-reload || failed=1
@@ -729,7 +729,7 @@ rollback_update() {
   # Never rewind users.json or REALITY material — authoritative, may
   # have changed while staging/download ran. Render with the restored
   # (old) tooling instead.
-  if ! VPN1_LOCK_PATH="$BACKUP_DIR/rollback-inner.lock" \
+  if ! SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/rollback-inner.lock" \
       "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config; then
     warn "rollback render failed; restoring the config snapshot taken while the state lock was held"
     if [ -f "$BACKUP_DIR/config.json" ]; then
@@ -780,9 +780,9 @@ trap 'exit 143' TERM
 log "SWITCHING to $TARGET_VERSION..."
 mutation_started=1
 
-mv -f /opt/vpn1 "$PREV_OPT_DIR"
-mv -f "$STAGED_SRC_DIR" /opt/vpn1
-NEW_REPO_ROOT="/opt/vpn1"
+mv -f /opt/singbox-vpn "$PREV_OPT_DIR"
+mv -f "$STAGED_SRC_DIR" /opt/singbox-vpn
+NEW_REPO_ROOT="/opt/singbox-vpn"
 
 install -m 0755 "$STAGED_BIN_DIR/vpn-admin" "$BIN_DIR/vpn-admin.update-new"
 install -m 0755 "$STAGED_BIN_DIR/vpn-admin" "$BIN_DIR/vpn.update-new"
@@ -843,7 +843,7 @@ esac
 lifecycle_gate_abort_hook after_switch
 
 log "rendering current authoritative users/REALITY state with new tooling (credentials are never rotated by an update)..."
-VPN1_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
+SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
   "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
 
 log "restarting services..."
@@ -904,8 +904,8 @@ firewall_backend="$(echo "$prior_manifest" | grep -o '"firewall_backend"[[:space
 os_family="$(echo "$prior_manifest" | grep -o '"os_family"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')"
 cat > "$INSTALL_STATE_MANIFEST.tmp" <<EOF
 {
-  "vpn1_version": "$TARGET_VERSION",
-  "vpn1_repo": "$VPN1_REPO",
+  "singbox_vpn_version": "$TARGET_VERSION",
+  "singbox_vpn_repo": "$SINGBOX_VPN_REPO",
   "sing_box_version": "$singbox_version_reported",
   "sing_box_version_pinned": "$TARGET_SINGBOX_VERSION",
   "sing_box_sha256_pinned": "$pinned_singbox_sha256",

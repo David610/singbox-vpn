@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Stable, offline, local entry point for uninstalling singbox-vpn:
 #
-#   sudo /opt/vpn1/bin/vpn1-uninstall --yes
+#   sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes
 #
 # This is a thin wrapper: install.sh's persist_source_tree() copies this
-# entire repository (this file included) to /opt/vpn1, so this path
+# entire repository (this file included) to /opt/singbox-vpn, so this path
 # exists on every normally installed host with no network access
 # required. It execs the real implementation at
 # deploy/almalinux/uninstall.sh, relative to its own location — never a
-# hardcoded /opt/vpn1 path — so it also works when run from a manually
+# hardcoded /opt/singbox-vpn path — so it also works when run from a manually
 # placed/cloned copy of the source tree.
 #
 # The real safety checks (root-controlled-execution verification,

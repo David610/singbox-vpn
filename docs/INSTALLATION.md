@@ -122,7 +122,7 @@ For disposable VPS testing only — unverified branch source, no checksum:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh \
-  | sudo VPN1_CHANNEL=dev VPN1_ALLOW_UNVERIFIED_DEV=1 bash -s -- \
+  | sudo SINGBOX_VPN_CHANNEL=dev SINGBOX_VPN_ALLOW_UNVERIFIED_DEV=1 bash -s -- \
     --domain vpn.example.com \
     --reality-handshake-server www.cloudflare.com
 ```
@@ -182,7 +182,7 @@ The installer never enables `ufw`/`firewalld` before your real SSH port is
 known and allowed, never flushes or resets pre-existing rules, and only
 adds its own allow rules for SSH, `443/tcp`, `443/udp`, and the
 subscription port. Uninstall removes only the rules singbox-vpn itself
-added (tracked via `/var/lib/vpn1/firewall-owned.env`), and restores
+added (tracked via `/var/lib/singbox-vpn/firewall-owned.env`), and restores
 firewalld/ufw to whatever enabled/disabled state they were in before
 installation if singbox-vpn was the one that activated them.
 
@@ -219,16 +219,16 @@ sudo ufw allow 80/tcp                                                           
 sudo certbot renew --dry-run
 ```
 
-A renewal hook (`/etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh`)
+A renewal hook (`/etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh`)
 refreshes the Hysteria2 certificate copy, reloads and verifies `sing-box`,
 and reloads nginx after every successful renewal — no manual step needed.
 
 ## Updating / repairing an installation
 
 ```bash
-sudo /opt/vpn1/deploy/almalinux/update.sh --latest
-sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z
-sudo /opt/vpn1/deploy/almalinux/update.sh --repair   # reconcile without changing versions
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version vX.Y.Z
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair   # reconcile without changing versions
 ```
 
 Updates download and checksum-verify the target release before changing
@@ -272,18 +272,18 @@ limitations of an application-state backup.
 ## Uninstall
 
 ```bash
-sudo /opt/vpn1/bin/vpn1-uninstall --yes
+sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes
 ```
 
-Online fallback if `/opt/vpn1` is missing or damaged:
+Online fallback if `/opt/singbox-vpn` is missing or damaged:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh \
   | sudo bash -s -- --yes
 ```
 
-This removes everything singbox-vpn created — `/etc/vpn`, `/opt/vpn1`,
-`/var/lib/vpn1`, its systemd units, the nginx vhost, the sing-box binary (if
+This removes everything singbox-vpn created — `/etc/vpn`, `/opt/singbox-vpn`,
+`/var/lib/singbox-vpn`, its systemd units, the nginx vhost, the sing-box binary (if
 singbox-vpn installed it), its certbot renewal hook and certificates, its
 firewall rules, and its kernel network tuning. It is ownership-aware:
 anything that already existed before singbox-vpn (nginx, certbot,

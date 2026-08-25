@@ -44,7 +44,7 @@ if [ "$FIREWALLD_WAS_INACTIVE" -eq 1 ]; then
 fi
 
 ZONE="$(firewall-cmd --get-default-zone)"
-OWNERSHIP_STATE="/var/lib/vpn1/firewall-owned.env"
+OWNERSHIP_STATE="/var/lib/singbox-vpn/firewall-owned.env"
 owned_443_tcp=0
 owned_443_udp=0
 owned_subscription_tcp=0
@@ -75,7 +75,7 @@ firewall-cmd --zone="$ZONE" --permanent --query-port=443/udp >/dev/null 2>&1 \
 firewall-cmd --zone="$ZONE" --permanent --query-port="${SUBSCRIPTION_PORT}/tcp" >/dev/null 2>&1 \
   || { firewall-cmd --zone="$ZONE" --permanent --add-port="${SUBSCRIPTION_PORT}/tcp"; owned_subscription_tcp=1; }
 
-install -d -m 0755 /var/lib/vpn1
+install -d -m 0755 /var/lib/singbox-vpn
 umask 077
 cat >"$OWNERSHIP_STATE.tmp" <<EOF
 firewall_backend=firewalld

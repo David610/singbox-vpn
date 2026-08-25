@@ -22,7 +22,7 @@
 # Expects log()/warn()/die() to already be defined by the caller (same
 # convention as preflight.sh/perf-tuning.sh).
 
-: "${OWNERSHIP_DIR:=/var/lib/vpn1}"
+: "${OWNERSHIP_DIR:=/var/lib/singbox-vpn}"
 : "${OWNERSHIP_FILE:=$OWNERSHIP_DIR/ownership.env}"
 
 ownership_init() {

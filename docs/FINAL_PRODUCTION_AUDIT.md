@@ -1,4 +1,4 @@
-# Final Production Audit — vpn1 Hiddify-compatible deployment
+# Final Production Audit — singbox-vpn Hiddify-compatible deployment
 
 Date: 2026-08-09
 Scope: `install.sh`, `deploy/almalinux/*`, `deploy/lib/*`, `crates/compat-config/*`,
@@ -96,7 +96,7 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
   inside `reality/` still restricts which *file* each service can read).
   Leave `hysteria/`, `users/`, `sing-box/` single-group as before (only one
   service needs file contents there). Add `g+s` (setgid) to all
-  vpn1-managed directories so files created inside always inherit the
+  singbox-vpn-managed directories so files created inside always inherit the
   directory's group, closing part of P0-2 as well.
 - **Test:** `deploy/almalinux/acceptance-test.sh` extended with
   `sudo -u sing-box test -r ...` / `sudo -u vpn-subscription test -r ...`
@@ -179,7 +179,7 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
   another concurrent invocation.
 - **Fix:** added `acquire_state_lock()` using `flock(2)` (via the `fs2`-style
   manual `libc::flock` call, no new heavy dependency) on
-  `/run/lock/vpn1.lock`, held for the duration of the entire
+  `/run/lock/singbox-vpn.lock`, held for the duration of the entire
   load→mutate→persist→apply→reload→verify sequence in every state-changing
   command (`user create/disable/enable/remove/rotate-*`, `init --rotate`,
   `restore`).
@@ -219,9 +219,9 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
 - **Files:** `.github/workflows/release.yml` (`Package` step),
   `deploy/almalinux/install.sh` (`fetch_release_binaries`).
 - **Current behavior confirmed:** the release workflow packages
-  `vpn1-<target>/vpn-admin` and `vpn1-<target>/subscription` **inside a
+  `singbox-vpn-<target>/vpn-admin` and `singbox-vpn-<target>/subscription` **inside a
   top-level directory** in the tarball (`tar -czf "${out}.tar.gz" "$out"`
-  where `out="vpn1-${target}"`). The installer does
+  where `out="singbox-vpn-${target}"`). The installer does
   `tar -xzf "$tmp/$asset" -C "$tmp"` and then looks for `$tmp/vpn-admin`
   directly — one directory level too shallow. Because
   `fetch_release_binaries || build_binaries_from_source` swallows the
@@ -230,19 +230,19 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
   the "no compiler needed" requirement) on every install that used a real
   release, with no visible error.
 - **Fix:** changed `fetch_release_binaries` to look inside the
-  `vpn1-<target>/` subdirectory the release actually produces (kept the
+  `singbox-vpn-<target>/` subdirectory the release actually produces (kept the
   wrapper directory in the archive — it is the more conventional tarball
   layout and avoids "tar bomb" extraction into a shared tmp dir), and made
   a real, non-`set -e`-swallowed archive-layout mismatch a hard `die`
   (distinct from "no release exists yet", which still correctly falls back
   to source). Added a `release.yml` step, "Archive/installer contract
   test", that extracts the archive it JUST built using the exact same
-  relative path (`vpn1-<target>/vpn-admin` etc.) install.sh assumes, and
+  relative path (`singbox-vpn-<target>/vpn-admin` etc.) install.sh assumes, and
   runs `--version` on both binaries (native arch only; cross-compiled
   aarch64 output is checked for presence/executability but not executed on
   the x86_64 runner). This is a duplicated assumption, not a shared
   function — `install.sh` and `release.yml` each independently encode
-  `vpn1-<target>/` — so it is a regression *detector*, not a structural
+  `singbox-vpn-<target>/` — so it is a regression *detector*, not a structural
   guarantee the two can never drift again; a genuinely shared
   parsing/extraction helper would be stronger and is reasonable follow-up
   work.
@@ -257,8 +257,8 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
 
 - **Severity:** High.
 - **Status:** partially already correct. `install.sh` defaults to
-  `VPN1_REF=main` for **source**, and `deploy/almalinux/install.sh`
-  independently resolves `VPN1_VERSION:-latest` for **binaries** via GitHub
+  `SINGBOX_VPN_REF=main` for **source**, and `deploy/almalinux/install.sh`
+  independently resolves `SINGBOX_VPN_VERSION:-latest` for **binaries** via GitHub
   Releases `latest` alias — so a plain `curl | sudo bash` today pulls
   **HEAD-of-main source/templates/deploy-scripts** together with
   **whatever the latest tagged release's binaries** are, which is exactly
@@ -267,13 +267,13 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
   degrades further to "main source + built-from-main binaries" (self-
   consistent by accident, not by design).
 - **Fix:** `install.sh` now resolves a **single version** up front: if
-  `VPN1_VERSION` is unset, it queries `.../releases/latest` (GitHub API) to
+  `SINGBOX_VPN_VERSION` is unset, it queries `.../releases/latest` (GitHub API) to
   find the latest tag; if a tag exists, it downloads **source at that tag**
-  (not `main`) and passes the same tag through as `VPN1_VERSION` so
+  (not `main`) and passes the same tag through as `SINGBOX_VPN_VERSION` so
   `deploy/almalinux/install.sh` fetches **binaries for that same tag**. If
   no releases exist yet (repo has none), it falls back to `main` and prints
   a explicit warning that this is a `dev`-channel install with no version
-  guarantee — this is the documented `VPN1_CHANNEL=dev` escape hatch,
+  guarantee — this is the documented `SINGBOX_VPN_CHANNEL=dev` escape hatch,
   spelled out in `--help` and README. Recorded in the new install-state
   manifest (P1).
 - **Test:** unit-testable resolution logic extracted isn't practical in
@@ -318,10 +318,10 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
   firewalld/ufw with distro defaults (deny-by-default, no port 80 rule
   ever added by either firewall script) **before** `certificates_stage` (8)
   runs certbot's standalone HTTP-01 challenge on port 80, and **before**
-  `firewall_stage` (12) adds vpn1's permanent rules — which never include
+  `firewall_stage` (12) adds singbox-vpn's permanent rules — which never include
   port 80 in the first place.
 - **Fix:** `attempt_automatic_certbot` now temporarily opens TCP/80 (via
-  the same firewall backend, tracked as "opened by vpn1 for ACME") *before*
+  the same firewall backend, tracked as "opened by singbox-vpn for ACME") *before*
   invoking certbot, and removes that specific temporary rule immediately
   after the challenge completes (success or failure) — never touching any
   pre-existing rule it did not add itself. `firewall_stage` continues to run
@@ -361,7 +361,7 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
 - **Files:** `deploy/almalinux/install.sh` (`require_hysteria_tls`), no
   certbot renewal-hook file existed anywhere in the repo.
 - **Fix:** added `deploy/almalinux/certbot-deploy-hook.sh`, installed into
-  `/etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh` by the installer,
+  `/etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh` by the installer,
   which on every certbot renewal: copies the freshly renewed
   `fullchain.pem`/`privkey.pem` into `$STATE_DIR/hysteria/{cert,key}.pem`
   with the correct `root:sing-box 0640` ownership, runs `sing-box check`
@@ -489,7 +489,7 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
 |---|---|
 | Update flow rewrite (verified prebuilt release, staged activation, rollback) | **Deferred** — current `update.sh` still re-clones/rebuilds from source in place; a full atomic-release-directory rewrite is a large structural change out of scope for this pass given time available. Documented as the top remaining P1 blocker. |
 | Versioned install directories (`releases/vX.Y.Z`, `current` symlink) | **Deferred**, same reason — `update.sh` would need to be rewritten on top of this. |
-| Install-state manifest (`/var/lib/vpn1/install-state.json`) | **Implemented** this pass (version, source ref, sing-box version, install time, hosts, firewall backend, cert paths, ssh rule added — no secrets). Not yet consumed by `update.sh`/`uninstall.sh`/reinstall-detection (those still use file-existence heuristics) — wiring that up is part of the deferred update-flow rewrite. |
+| Install-state manifest (`/var/lib/singbox-vpn/install-state.json`) | **Implemented** this pass (version, source ref, sing-box version, install time, hosts, firewall backend, cert paths, ssh rule added — no secrets). Not yet consumed by `update.sh`/`uninstall.sh`/reinstall-detection (those still use file-existence heuristics) — wiring that up is part of the deferred update-flow rewrite. |
 | Uninstall ownership scoping | **Already correct** (verified, see item 14 in prior-agent findings) — no change needed. |
 | Backup/restore hardening (archive perms from creation, tar entry allow-list, symlink rejection) | **Partially implemented**: archive creation already uses a private staging dir + explicit `chmod 0600` after creation (not `umask` from the start — changed to `umask 077` around the whole staging+tar sequence this pass, closing the brief TOCTOU window). Tar-extraction allow-list / symlink rejection for restore: **deferred** — current restore already only copies a fixed set of known relative paths out of the extracted tree (no wildcard extraction into live directories), which blocks path traversal in practice, but does not yet explicitly reject symlink entries before extracting to the staging tempdir. Documented as remaining work. |
 | Input validation for hostnames/ports | **Implemented** this pass: `deploy/lib/preflight.sh` gained `validate_hostname`/`validate_port` used by `install.sh` before any `sed`/template substitution; rejects empty, newline-containing, or shell-metacharacter-containing values. |
@@ -550,5 +550,5 @@ Final results after all fixes in this pass (re-run at the end, LOCAL-EXEC):
   section).
 - A shared archive-extraction helper between `release.yml` and
   `install.sh` (currently two independent hardcodings of the same
-  `vpn1-<target>/` layout assumption, guarded by a CI contract test but
+  `singbox-vpn-<target>/` layout assumption, guarded by a CI contract test but
   not structurally unified).

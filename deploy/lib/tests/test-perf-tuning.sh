@@ -11,8 +11,8 @@ set -Eeuo pipefail
 TMPDIR_TEST="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
-export PERF_SYSCTL_DROPIN="$TMPDIR_TEST/99-vpn1-dataplane.conf"
-export PERF_ROLLBACK_DROPIN="$TMPDIR_TEST/99-vpn1-dataplane-rollback.conf"
+export PERF_SYSCTL_DROPIN="$TMPDIR_TEST/99-singbox-vpn-dataplane.conf"
+export PERF_ROLLBACK_DROPIN="$TMPDIR_TEST/99-singbox-vpn-dataplane-rollback.conf"
 export PERF_STATE_DIR="$TMPDIR_TEST/state"
 export PERF_BASELINE_FILE="$PERF_STATE_DIR/perf-tuning-baseline.env"
 export PERF_RMEM_MAX=16777216
@@ -106,7 +106,7 @@ first_content="$(cat "$PERF_BASELINE_FILE")"
 assert_contains "baseline captured original rmem_max" "$first_content" 'BASELINE_RMEM_MAX="212992"'
 assert_contains "baseline captured original congestion control" "$first_content" 'BASELINE_TCP_CONGESTION_CONTROL="cubic"'
 
-# Idempotency: even if the live sysctl values change (simulating vpn1
+# Idempotency: even if the live sysctl values change (simulating singbox-vpn
 # having applied its OWN tuning since baseline capture), a second call
 # must NOT overwrite the already-recorded baseline.
 perf_read_sysctl() {
@@ -205,7 +205,7 @@ assert_contains "rollback: reports rmem_max restored" "$rollback_out" "restored 
 assert_contains "rollback: rollback drop-in contains baseline default_qdisc" \
   "$(cat "$PERF_ROLLBACK_DROPIN")" "net.core.default_qdisc = pfifo_fast"
 assert_contains "rollback: reports default_qdisc restored" "$rollback_out" "net.core.default_qdisc restored to pfifo_fast"
-assert_eq "rollback: vpn1's active drop-in was removed" "0" "$( [ -f "$PERF_SYSCTL_DROPIN" ] && echo 1 || echo 0 )"
+assert_eq "rollback: singbox-vpn's active drop-in was removed" "0" "$( [ -f "$PERF_SYSCTL_DROPIN" ] && echo 1 || echo 0 )"
 
 # Restoration verification: if the effective value does NOT actually
 # match the baseline after rollback (kernel rejected it, or something

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Runs the REAL deploy/almalinux/uninstall.sh twice against a host with
-# no vpn1 installation present, and asserts both runs exit 0 and that
+# no singbox-vpn installation present, and asserts both runs exit 0 and that
 # uninstall correctly reports nothing to remove — i.e. "uninstall after
 # a successful uninstall exits successfully and reports nothing left",
 # and "uninstall on a host that was never installed is a safe no-op".
 #
 # uninstall.sh currently hardcodes real system paths (/etc/vpn,
-# /var/lib/vpn1, /opt/vpn1 — like install.sh, it has no override
+# /var/lib/singbox-vpn, /opt/singbox-vpn — like install.sh, it has no override
 # variable for a throwaway test root; see docs/FINAL_PRODUCTION_AUDIT.md
 # for the broader "make every path overridable for testing" follow-up).
 # Since it is ownership-gated and this test only proceeds when none of
-# those paths (nor vpn1's service users/groups) exist yet, running the
+# those paths (nor singbox-vpn's service users/groups) exist yet, running the
 # real script here can only ever perform no-ops — it cannot delete
 # anything real. Requires root (same as uninstall.sh itself); skips
 # itself cleanly otherwise, matching the other root-requiring checks in
@@ -30,7 +30,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 unsafe=0
-for p in /etc/vpn /var/lib/vpn1 /opt/vpn1; do
+for p in /etc/vpn /var/lib/singbox-vpn /opt/singbox-vpn; do
   [ -e "$p" ] && { echo "SKIP: $p already exists on this host — refusing to run the real uninstall.sh here (this test only runs when it can prove doing so is a guaranteed no-op)."; unsafe=1; }
 done
 for u in sing-box vpn-subscription; do
@@ -38,7 +38,7 @@ for u in sing-box vpn-subscription; do
 done
 getent group vpn-compat >/dev/null 2>&1 && { echo "SKIP: group 'vpn-compat' already exists — refusing to run the real uninstall.sh here."; unsafe=1; }
 if [ "$unsafe" -eq 1 ]; then
-  echo "SKIP: environment is not provably clean of vpn1 resources; skipping test-uninstall-idempotency.sh to avoid touching unrelated host state."
+  echo "SKIP: environment is not provably clean of singbox-vpn resources; skipping test-uninstall-idempotency.sh to avoid touching unrelated host state."
   exit 0
 fi
 
@@ -72,11 +72,11 @@ else
 fi
 
 echo
-echo "--- verifies no vpn1 paths/accounts were created as a SIDE EFFECT of running uninstall.sh itself ---"
-for p in /etc/vpn /opt/vpn1; do
+echo "--- verifies no singbox-vpn paths/accounts were created as a SIDE EFFECT of running uninstall.sh itself ---"
+for p in /etc/vpn /opt/singbox-vpn; do
   [ -e "$p" ] && fail "uninstall.sh unexpectedly created $p"
 done
-[ -e /etc/vpn ] || [ -e /opt/vpn1 ] || ok "no vpn1 paths were created by running the uninstaller"
+[ -e /etc/vpn ] || [ -e /opt/singbox-vpn ] || ok "no singbox-vpn paths were created by running the uninstaller"
 
 echo
 if [ "$failures" -gt 0 ]; then

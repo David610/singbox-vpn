@@ -32,7 +32,7 @@ SUPPORTED_CRATES=(admin subscription compat-config common)
 CARGO_PKG_ARGS=()
 for c in "${SUPPORTED_CRATES[@]}"; do CARGO_PKG_ARGS+=(-p "$c"); done
 
-SUPPORTED_SHELL_SCRIPTS=(install.sh uninstall.sh bin/vpn1-uninstall deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh)
+SUPPORTED_SHELL_SCRIPTS=(install.sh uninstall.sh bin/singbox-vpn-uninstall deploy/almalinux/*.sh deploy/lib/*.sh deploy/lib/tests/*.sh)
 
 SKIP_SINGBOX="${FAST_GATE_SKIP_SINGBOX:-0}"
 
@@ -63,6 +63,9 @@ fi
 
 step "secret-logging check"
 if bash deploy/lib/check-no-secret-logging.sh; then ok "no-secret-logging"; else fail "check-no-secret-logging.sh"; fi
+
+step "no legacy pre-rename identity check"
+if bash deploy/lib/check-no-legacy-identity.sh; then ok "no-legacy-identity"; else fail "check-no-legacy-identity.sh"; fi
 
 step "supported-crate fmt check"
 if cargo fmt "${CARGO_PKG_ARGS[@]}" -- --check; then ok "cargo fmt"; else fail "cargo fmt --check"; fi
@@ -153,8 +156,8 @@ listen_port = 9100
 EOF
         cargo build --locked -p admin >/dev/null
         ADMIN_BIN="$REPO_ROOT/target/debug/vpn-admin"
-        if VPN1_ALLOW_OFFLINE_MUTATION=1 "$ADMIN_BIN" --config "$GATE_TMP/deployment.toml" init \
-            && VPN1_ALLOW_OFFLINE_MUTATION=1 "$ADMIN_BIN" --config "$GATE_TMP/deployment.toml" user create --name fast-gate-user \
+        if SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN_BIN" --config "$GATE_TMP/deployment.toml" init \
+            && SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN_BIN" --config "$GATE_TMP/deployment.toml" user create --name fast-gate-user \
             && "$ADMIN_BIN" --config "$GATE_TMP/deployment.toml" render-config \
             && "$SINGBOX_BIN" check -c "$STATE/sing-box/config.json"; then
           ok "render-config + real sing-box check"

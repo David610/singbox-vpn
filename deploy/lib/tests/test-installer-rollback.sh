@@ -3,7 +3,7 @@
 # fresh-install rollback guarantee: on_fatal_error() (fired either by the
 # inherited ERR trap, or now directly by die() — see install.sh's die())
 # must reliably roll back a failed FRESH install exactly once, must never
-# auto-rollback a failed REPAIR, must respect VPN1_NO_AUTO_ROLLBACK=1, and
+# auto-rollback a failed REPAIR, must respect SINGBOX_VPN_NO_AUTO_ROLLBACK=1, and
 # must preserve the original failure's exit code even when rollback itself
 # fails.
 set -Eeuo pipefail
@@ -29,8 +29,8 @@ export OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
 . "$TEST_ROOT/deploy/almalinux/install.sh"
 ownership_mark INSTALL_ATTEMPTED
 IS_FRESH_INSTALL="${TEST_IS_FRESH_INSTALL:-1}"
-VPN1_NO_AUTO_ROLLBACK="${TEST_NO_AUTO_ROLLBACK:-0}"
-VPN1_STAGE=packages
+SINGBOX_VPN_NO_AUTO_ROLLBACK="${TEST_NO_AUTO_ROLLBACK:-0}"
+SINGBOX_VPN_STAGE=packages
 REPO_ROOT="$TEST_TMP/source"
 
 case "${FAIL_SHAPE:-subshell}" in
@@ -100,8 +100,8 @@ export OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
 . "$TEST_ROOT/deploy/almalinux/install.sh"
 ownership_mark INSTALL_ATTEMPTED
 IS_FRESH_INSTALL=1
-VPN1_NO_AUTO_ROLLBACK=0
-VPN1_STAGE=acceptance
+SINGBOX_VPN_NO_AUTO_ROLLBACK=0
+SINGBOX_VPN_STAGE=acceptance
 REPO_ROOT="$TEST_TMP/source"
 BIN_DIR="$TEST_TMP/bin"
 DEPLOYMENT_TOML="$TEST_TMP/deployment.toml"
@@ -151,7 +151,7 @@ for shape in subshell die; do
 done
 echo "ok: a repair-run failure (IS_FRESH_INSTALL=0) never invokes the uninstaller, for both trap-caught and die()-caught failures"
 
-echo "--- VPN1_NO_AUTO_ROLLBACK=1 -> NO rollback, debugging escape hatch preserved ---"
+echo "--- SINGBOX_VPN_NO_AUTO_ROLLBACK=1 -> NO rollback, debugging escape hatch preserved ---"
 for shape in subshell die; do
   : > "$ROLLBACK_LOG"
   export FAIL_SHAPE="$shape" TEST_IS_FRESH_INSTALL=1 TEST_NO_AUTO_ROLLBACK=1
@@ -159,9 +159,9 @@ for shape in subshell die; do
   rc=0
   bash "$TMP/trigger.sh" >"$TMP/out-noauto-$shape" 2>&1 || rc=$?
   [ ! -s "$ROLLBACK_LOG" ]
-  grep -q 'VPN1_NO_AUTO_ROLLBACK=1 set' "$TMP/out-noauto-$shape"
+  grep -q 'SINGBOX_VPN_NO_AUTO_ROLLBACK=1 set' "$TMP/out-noauto-$shape"
 done
-echo "ok: VPN1_NO_AUTO_ROLLBACK=1 disables automatic rollback for both trap-caught and die()-caught failures"
+echo "ok: SINGBOX_VPN_NO_AUTO_ROLLBACK=1 disables automatic rollback for both trap-caught and die()-caught failures"
 
 echo "--- rollback runs exactly once: the ROLLBACK_HANDLER_ACTIVE re-entrancy guard itself ---"
 # Directly pins the guard that makes "exactly once" true regardless of
@@ -179,8 +179,8 @@ export OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
 . "$TEST_ROOT/deploy/almalinux/install.sh"
 ownership_mark INSTALL_ATTEMPTED
 IS_FRESH_INSTALL=1
-VPN1_NO_AUTO_ROLLBACK=0
-VPN1_STAGE=packages
+SINGBOX_VPN_NO_AUTO_ROLLBACK=0
+SINGBOX_VPN_STAGE=packages
 REPO_ROOT="$TEST_TMP/source"
 # Simulate the handler already being mid-rollback (as it would be for
 # the real second entry a recursive/nested fatal error could cause) and

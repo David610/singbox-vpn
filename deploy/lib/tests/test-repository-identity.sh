@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regression coverage for the public repository rename. Runtime identifiers
-# such as /opt/vpn1 and VPN1_REPO intentionally remain for compatibility; only
+# such as /opt/singbox-vpn and SINGBOX_VPN_REPO intentionally remain for compatibility; only
 # their public/default repository value is asserted here.
 set -Eeuo pipefail
 
@@ -8,8 +8,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
 CANONICAL_REPO="David610/singbox-vpn"
-OLD_REPO="David610/"'vpn1'
-WRONG_REPO='singbox-vpn-''installer'
+# Built from parts (rather than written out directly) so this regression
+# test's own source never contains the obsolete pre-rename repository
+# name it guards against — see deploy/lib/check-no-legacy-identity.sh.
+OLD_REPO="David610/vpn""1"
+# Owner-qualified so this never false-positives against unrelated
+# runtime paths that legitimately contain "singbox-vpn-installer" (e.g.
+# the installer lock file) — only a mistaken repository slug matches.
+WRONG_REPO='David610/singbox-vpn-''installer'
 
 fail() {
   echo "FAIL: $*" >&2
@@ -22,16 +28,16 @@ assert_contains() {
     || fail "$file does not contain expected repository contract: $expected"
 }
 
-assert_contains install.sh 'VPN1_REPO="${VPN1_REPO:-David610/singbox-vpn}"'
-assert_contains uninstall.sh 'VPN1_REPO="${VPN1_REPO:-David610/singbox-vpn}"'
-assert_contains deploy/almalinux/install.sh 'VPN1_RELEASE_REPO="${VPN1_RELEASE_REPO:-David610/singbox-vpn}"'
-assert_contains deploy/almalinux/update.sh 'VPN1_REPO="${VPN1_REPO_OVERRIDE:-${CURRENT_REPO:-David610/singbox-vpn}}"'
+assert_contains install.sh 'SINGBOX_VPN_REPO="${SINGBOX_VPN_REPO:-David610/singbox-vpn}"'
+assert_contains uninstall.sh 'SINGBOX_VPN_REPO="${SINGBOX_VPN_REPO:-David610/singbox-vpn}"'
+assert_contains deploy/almalinux/install.sh 'SINGBOX_VPN_RELEASE_REPO="${SINGBOX_VPN_RELEASE_REPO:-David610/singbox-vpn}"'
+assert_contains deploy/almalinux/update.sh 'SINGBOX_VPN_REPO="${SINGBOX_VPN_REPO_OVERRIDE:-${CURRENT_REPO:-David610/singbox-vpn}}"'
 
 # Fork overrides are a supported bootstrap/update API and must survive a rename.
 assert_contains install.sh '--repo)'
 assert_contains uninstall.sh '--repo)'
 assert_contains deploy/almalinux/update.sh '--repo)'
-assert_contains install.sh 'VPN1_RELEASE_REPO="$VPN1_REPO"'
+assert_contains install.sh 'SINGBOX_VPN_RELEASE_REPO="$SINGBOX_VPN_REPO"'
 
 # Check source/docs/workflows without depending on a .git directory, so this
 # also works from a release source archive.

@@ -19,7 +19,7 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 log() { :; }
 warn() { :; }
 
-OWNERSHIP_DIR="$TMPDIR_TEST/var-lib-vpn1"
+OWNERSHIP_DIR="$TMPDIR_TEST/var-lib-singbox-vpn"
 OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
 # shellcheck source=/dev/null
 . "$OWNERSHIP_SH"
@@ -75,10 +75,10 @@ ownership_mark USER_SINGBOX_CREATED
 
 echo
 echo "--- ownership_list_add / ownership_list_get: de-duplicated space-separated list ---"
-ownership_list_add PKGS_INSTALLED_BY_VPN1 "nginx"
-ownership_list_add PKGS_INSTALLED_BY_VPN1 "certbot"
-ownership_list_add PKGS_INSTALLED_BY_VPN1 "nginx" # duplicate, must not appear twice
-list="$(ownership_list_get PKGS_INSTALLED_BY_VPN1)"
+ownership_list_add PKGS_INSTALLED_BY_SINGBOX_VPN "nginx"
+ownership_list_add PKGS_INSTALLED_BY_SINGBOX_VPN "certbot"
+ownership_list_add PKGS_INSTALLED_BY_SINGBOX_VPN "nginx" # duplicate, must not appear twice
+list="$(ownership_list_get PKGS_INSTALLED_BY_SINGBOX_VPN)"
 case " $list " in
   *" nginx "*) ok "list contains nginx" ;;
   *) fail "list missing nginx: '$list'" ;;
@@ -94,7 +94,7 @@ echo
 echo "--- ownership_set_baseline_once: first write wins, later calls are no-ops ---"
 ownership_set_baseline_once BASELINE_KEY "original"
 ownership_set_baseline_once BASELINE_KEY "should-be-ignored"
-[ "$(ownership_get BASELINE_KEY)" = "original" ] && ok "baseline value from the FIRST call is preserved, not overwritten by a later run" || fail "baseline was overwritten by a subsequent call — this would corrupt pre-vpn1 state tracking on a repair re-run"
+[ "$(ownership_get BASELINE_KEY)" = "original" ] && ok "baseline value from the FIRST call is preserved, not overwritten by a later run" || fail "baseline was overwritten by a subsequent call — this would corrupt pre-singbox-vpn state tracking on a repair re-run"
 
 echo
 echo "--- persistence: values survive re-sourcing (simulates a separate uninstall.sh process reading the same file) ---"
@@ -110,7 +110,7 @@ echo "--- persistence: values survive re-sourcing (simulates a separate uninstal
 
 echo
 echo "--- ownership_path_is_safe(): refuses obviously unsafe manifest-sourced paths before destructive use ---"
-for good in "/root" "/opt/vpn1" "/home/someuser/.rustup-parent"; do
+for good in "/root" "/opt/singbox-vpn" "/home/someuser/.rustup-parent"; do
   ownership_path_is_safe "$good" && ok "accepts safe absolute path '$good'" || fail "wrongly rejected safe path '$good'"
 done
 for bad in "" "/" "relative/path" "../etc" "/root/../.." "/a/../../etc"; do

@@ -3,8 +3,8 @@
 # install.sh) created or changed on this host. Default behavior removes
 # EVERYTHING singbox-vpn owns — secrets, users, REALITY/Hysteria2 material,
 # source tree, generated configs, binaries, the sing-box binary/LICENSE
-# (when singbox-vpn installed it), /opt/vpn1, /etc/vpn, singbox-vpn state under
-# /var/lib/vpn1, systemd units/timers, nginx config, the certbot
+# (when singbox-vpn installed it), /opt/singbox-vpn, /etc/vpn, singbox-vpn state under
+# /var/lib/singbox-vpn, systemd units/timers, nginx config, the certbot
 # renewal hook, singbox-vpn-created certificates, firewall rules, and any
 # packages/services/kernel tuning singbox-vpn introduced. No follow-up flags,
 # manual rm, or separate purge command are needed — this is the ONE
@@ -37,7 +37,7 @@ die() { echo "[uninstall] ERROR: $*" >&2; exit 1; }
 . "$REPO_ROOT/deploy/lib/preflight.sh"
 
 # This script (and everything it execs, e.g. vpn-admin) runs as root
-# and is normally reached via the stable /opt/vpn1/bin/vpn1-uninstall
+# and is normally reached via the stable /opt/singbox-vpn/bin/singbox-vpn-uninstall
 # entry point — refuse to trust a copy that is not itself root-controlled.
 # This is a local-tampering defense-in-depth check, not a full integrity
 # guarantee (a fully malicious replacement of this very file could
@@ -61,19 +61,19 @@ assert_root_controlled_path() {
   fi
 }
 # Only enforced for the canonical persistent-install location this check
-# exists to protect (reached via the untrusted "look for /opt/vpn1"
-# fallback in bin/vpn1-uninstall / the online bootstrap) — NOT for an
+# exists to protect (reached via the untrusted "look for /opt/singbox-vpn"
+# fallback in bin/singbox-vpn-uninstall / the online bootstrap) — NOT for an
 # operator/CI explicitly invoking this exact script from a git checkout,
 # dev clone, or test sandbox. Those are already an explicit, trusted
 # invocation with no path-discovery ambiguity to defend against, and
 # routinely are not root-owned (e.g. a CI runner checks out the repo as
 # an unprivileged user, then re-invokes this script via sudo).
-if [ "$REPO_ROOT" = "/opt/vpn1" ]; then
+if [ "$REPO_ROOT" = "/opt/singbox-vpn" ]; then
   assert_root_controlled_path "$REPO_ROOT" "singbox-vpn install directory"
   assert_root_controlled_path "${BASH_SOURCE[0]}" "this uninstaller script"
 fi
 
-STATE_DIR_ROOT="/var/lib/vpn1"
+STATE_DIR_ROOT="/var/lib/singbox-vpn"
 FIREWALL_OWNERSHIP="$STATE_DIR_ROOT/firewall-owned.env"
 
 # ---------------------------------------------------------------------
@@ -150,13 +150,13 @@ for arg in "$@"; do
 singbox-vpn uninstaller — removes EVERYTHING singbox-vpn created, completely, by
 default. No other flags are required for a full removal.
 
-  sudo /opt/vpn1/bin/vpn1-uninstall --yes
+  sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes
 
 Options:
   --yes   skip the interactive confirmation prompt (required when no
           terminal is attached, e.g. non-interactive automation).
 
-Online fallback (only if the local copy at /opt/vpn1 is missing):
+Online fallback (only if the local copy at /opt/singbox-vpn is missing):
   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/uninstall.sh | sudo bash
 USAGE
       exit 0 ;;
@@ -180,7 +180,7 @@ if [ "$ASSUME_YES" -ne 1 ]; then
       *) die "aborted — nothing was changed. Re-run with --yes to skip this prompt." ;;
     esac
   else
-    die "no terminal attached to confirm this irreversible removal, and --yes was not given. Re-run with --yes (sudo /opt/vpn1/bin/vpn1-uninstall --yes) to proceed non-interactively."
+    die "no terminal attached to confirm this irreversible removal, and --yes was not given. Re-run with --yes (sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes) to proceed non-interactively."
   fi
 fi
 
@@ -229,16 +229,16 @@ fi
 # ownership-aware helper only preserves it in the (essentially
 # theoretical) case where something else already occupied this exact
 # path before singbox-vpn ever ran.
-restore_or_remove_fixed_path /etc/letsencrypt/renewal-hooks/deploy/vpn1-hysteria.sh CERTBOT_HOOK
+restore_or_remove_fixed_path /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh CERTBOT_HOOK
 
 log "removing singbox-vpn-issued certificates..."
-CERT_LINEAGES="$(ownership_list_get CERT_LINEAGES_CREATED_BY_VPN1)"
+CERT_LINEAGES="$(ownership_list_get CERT_LINEAGES_CREATED_BY_SINGBOX_VPN)"
 if [ -n "$CERT_LINEAGES" ]; then
   for host in $CERT_LINEAGES; do
     # Re-validate before using a manifest-sourced value destructively —
     # a corrupted/hand-edited ownership.env must never turn into broad
     # rm -rf behavior (requirement: refuse obviously unsafe entries).
-    if ! preflight_validate_hostname "$host" "CERT_LINEAGES_CREATED_BY_VPN1 entry" >/dev/null 2>&1; then
+    if ! preflight_validate_hostname "$host" "CERT_LINEAGES_CREATED_BY_SINGBOX_VPN entry" >/dev/null 2>&1; then
       warn "skipping certificate-lineage removal for a manifest entry that is not a valid hostname ('$host') — leaving it untouched. This indicates a corrupted ownership record; the certificate must be checked/removed manually if it is actually singbox-vpn's."
       continue
     fi
@@ -482,7 +482,7 @@ fi
 # Rust toolchain: remove ONLY if singbox-vpn installed it (i.e. no toolchain
 # was already present before install.sh ran rustup-init).
 # ---------------------------------------------------------------------
-if [ "$(ownership_is_marked RUSTUP_INSTALLED_BY_VPN1)" = "1" ]; then
+if [ "$(ownership_is_marked RUSTUP_INSTALLED_BY_SINGBOX_VPN)" = "1" ]; then
   rustup_home="$(ownership_get RUSTUP_HOME_DIR "/root")"
   if ! ownership_path_is_safe "$rustup_home"; then
     warn "RUSTUP_HOME_DIR in the ownership record ('$rustup_home') is not a safe absolute path — skipping Rust toolchain removal. This indicates a corrupted ownership record; check/remove it manually if it is actually singbox-vpn's."
@@ -501,7 +501,7 @@ fi
 # the package manager will report that and this continues rather than
 # forcing removal.
 # ---------------------------------------------------------------------
-pkgs_owned_raw="$(ownership_list_get PKGS_INSTALLED_BY_VPN1)"
+pkgs_owned_raw="$(ownership_list_get PKGS_INSTALLED_BY_SINGBOX_VPN)"
 pkgs_owned=""
 for pkg in $pkgs_owned_raw; do
   if is_safe_pkg_name "$pkg"; then
@@ -585,15 +585,15 @@ fi
 # $STATE_DIR_ROOT) is removed a few lines down — reading any of these
 # AFTER deleting $STATE_DIR_ROOT would silently get back only
 # ownership_get's default value (the file is gone), which previously
-# made /opt/vpn1 ALWAYS look "not pre-existing" (and so always get
+# made /opt/singbox-vpn ALWAYS look "not pre-existing" (and so always get
 # deleted, even on the rare host where it genuinely pre-existed singbox-vpn —
 # e.g. an operator's own clone placed there before ever running
 # install.sh) and would make a correctly-RESTORED pre-existing fixed
 # path (systemd unit/nginx conf) look like unexplained residue instead
 # of the intended, successfully-restored end state. Cache everything
 # needed first instead.
-opt_vpn1_pre_existed="$(ownership_get OPT_VPN1_PRE_EXISTED "0")"
-declare -A vpn1_unit_keys=(
+opt_singbox_vpn_pre_existed="$(ownership_get OPT_SINGBOX_VPN_PRE_EXISTED "0")"
+declare -A singbox_vpn_unit_keys=(
   [/etc/systemd/system/sing-box.service]=SINGBOX_UNIT
   [/etc/systemd/system/vpn-subscription.service]=VPNSUB_UNIT
   [/etc/systemd/system/vpn-expiry-reconcile.service]=EXPIRY_SVC_UNIT
@@ -601,9 +601,9 @@ declare -A vpn1_unit_keys=(
   [/etc/systemd/system/vpn-service-watchdog.service]=WATCHDOG_SVC_UNIT
   [/etc/systemd/system/vpn-service-watchdog.timer]=WATCHDOG_TIMER_UNIT
 )
-declare -A vpn1_unit_pre_existed
-for unit_path in "${!vpn1_unit_keys[@]}"; do
-  vpn1_unit_pre_existed[$unit_path]="$(ownership_get "FIXEDPATH_${vpn1_unit_keys[$unit_path]}_PRE_EXISTED" "0")"
+declare -A singbox_vpn_unit_pre_existed
+for unit_path in "${!singbox_vpn_unit_keys[@]}"; do
+  singbox_vpn_unit_pre_existed[$unit_path]="$(ownership_get "FIXEDPATH_${singbox_vpn_unit_keys[$unit_path]}_PRE_EXISTED" "0")"
 done
 
 if [ -d "$STATE_DIR_ROOT" ]; then
@@ -611,19 +611,19 @@ if [ -d "$STATE_DIR_ROOT" ]; then
   rm -rf "$STATE_DIR_ROOT"
   note_removed
 fi
-rm -f /tmp/vpn1-sysctl-system.out /tmp/vpn1-sysctl-rollback.out /run/lock/vpn1-installer.lock 2>/dev/null || true
+rm -f /tmp/singbox-vpn-sysctl-system.out /tmp/singbox-vpn-sysctl-rollback.out /run/lock/singbox-vpn-installer.lock 2>/dev/null || true
 
 # The persistent source tree — remove it last, since this script itself
-# very likely lives inside it (/opt/vpn1/deploy/almalinux/uninstall.sh).
+# very likely lives inside it (/opt/singbox-vpn/deploy/almalinux/uninstall.sh).
 # bash has already read this whole file into memory before executing
 # any of it, so removing the directory out from under the running
 # process is safe; nothing below this point reads from $REPO_ROOT again.
-if [ -d /opt/vpn1 ]; then
-  if [ "$opt_vpn1_pre_existed" = "1" ]; then
-    log "/opt/vpn1 pre-existed before singbox-vpn (unexpected — leaving it in place; inspect it manually if this is unexpected)."
+if [ -d /opt/singbox-vpn ]; then
+  if [ "$opt_singbox_vpn_pre_existed" = "1" ]; then
+    log "/opt/singbox-vpn pre-existed before singbox-vpn (unexpected — leaving it in place; inspect it manually if this is unexpected)."
   else
-    log "removing /opt/vpn1 (persistent singbox-vpn source tree)..."
-    rm -rf /opt/vpn1
+    log "removing /opt/singbox-vpn (persistent singbox-vpn source tree)..."
+    rm -rf /opt/singbox-vpn
     note_removed
   fi
 fi
@@ -636,7 +636,7 @@ fi
 # NONCRITICAL_RESIDUE above) so one early problem never hides the rest
 # of the report. Only security/runtime-relevant singbox-vpn state (active
 # services, live secrets/credentials, singbox-vpn binaries, singbox-vpn-owned
-# firewall exposure, a singbox-vpn-created /opt/vpn1 that should be gone) makes
+# firewall exposure, a singbox-vpn-created /opt/singbox-vpn that should be gone) makes
 # the run print INCOMPLETE and exit nonzero; everything else already
 # collected above (a package the package manager refused to remove, an
 # ambiguous pre-existing fixed path left alone, a userdel that failed)
@@ -645,8 +645,8 @@ fi
 for unit in sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service vpn-service-watchdog.timer vpn-service-watchdog.service; do
   systemctl is-active --quiet "$unit" 2>/dev/null && CRITICAL_RESIDUE+=("$unit is still active")
 done
-for unit_path in "${!vpn1_unit_keys[@]}"; do
-  if [ -e "$unit_path" ] && [ "${vpn1_unit_pre_existed[$unit_path]}" = "0" ]; then
+for unit_path in "${!singbox_vpn_unit_keys[@]}"; do
+  if [ -e "$unit_path" ] && [ "${singbox_vpn_unit_pre_existed[$unit_path]}" = "0" ]; then
     CRITICAL_RESIDUE+=("$unit_path still present (singbox-vpn-created)")
   fi
 done
@@ -660,8 +660,8 @@ done
 [ -e /etc/vpn/compat/reality/hysteria_obfs_password.txt ] && CRITICAL_RESIDUE+=("Hysteria2 obfuscation credential still present")
 [ -d /etc/vpn/compat/users ] && [ -n "$(ls -A /etc/vpn/compat/users 2>/dev/null)" ] && CRITICAL_RESIDUE+=("/etc/vpn/compat/users still contains user credential files")
 [ -e "$FIREWALL_OWNERSHIP" ] && CRITICAL_RESIDUE+=("singbox-vpn firewall ownership record still present at $FIREWALL_OWNERSHIP")
-if [ -d /opt/vpn1 ] && [ "$opt_vpn1_pre_existed" != "1" ]; then
-  CRITICAL_RESIDUE+=("/opt/vpn1 still present (singbox-vpn-created)")
+if [ -d /opt/singbox-vpn ] && [ "$opt_singbox_vpn_pre_existed" != "1" ]; then
+  CRITICAL_RESIDUE+=("/opt/singbox-vpn still present (singbox-vpn-created)")
 fi
 
 if [ "${#CRITICAL_RESIDUE[@]}" -eq 0 ]; then

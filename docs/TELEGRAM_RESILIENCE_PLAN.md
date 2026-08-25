@@ -1,11 +1,11 @@
 # TELEGRAM_RESILIENCE_PLAN.md
 
-Investigation and implementation plan for improving vpn1's reliability
+Investigation and implementation plan for improving singbox-vpn's reliability
 against Telegram's reported unreliability under Russian censorship,
 while YouTube and Instagram work well through the same VPN.
 
 **Scope discipline, stated up front and enforced throughout this
-document**: vpn1 serves roughly ten trusted family/friend users. It is
+document**: singbox-vpn serves roughly ten trusted family/friend users. It is
 not a commercial VPN service. Every recommendation below is chosen for
 reliability, diagnosability, and simplicity over scale, breadth of
 protocol support, or novelty. Nothing here claims Telegram is "fixed"
@@ -92,15 +92,15 @@ implemented as "the fix" without evidence:
   controlled, revertible, client-side experiment procedure instead.
 - **IPv6 leakage on the client device** (Telegram routing over the
   device's native IPv6 instead of the VPN tunnel) — plausible on a
-  network where the client has real IPv6 and vpn1's AAAA/IPv6 story is
+  network where the client has real IPv6 and singbox-vpn's AAAA/IPv6 story is
   incomplete. The server-side half of this is now diagnosable (§E); the
-  client-side half is fundamentally outside vpn1's control and can only
+  client-side half is fundamentally outside singbox-vpn's control and can only
   be documented (§F).
 - **Hiddify TUN routing / per-app exclusion** on the client device — a
   Telegram-specific split-tunnel exclusion (accidental or vendor
   default) would produce exactly "YouTube/Instagram work, Telegram
   doesn't" without any server-side signal at all. Entirely outside
-  vpn1's visibility; documented in §F.
+  singbox-vpn's visibility; documented in §F.
 - **Telegram's own internal proxy setting** — same shape of failure as
   above, entirely client-side, now explicitly documented (§F, and
   featured prominently as Step 1 of the troubleshooting flow because it
@@ -127,7 +127,7 @@ cause a new transport would actually fix:
   surface, maintenance burden, and diagnostic complexity without a
   demonstrated need.
 - MTProto proxy — this is a *client-side* Telegram feature (§F Step 1
-  documents it), not something vpn1's server stack implements or should
+  documents it), not something singbox-vpn's server stack implements or should
   implement; running one would duplicate Telegram's own infrastructure
   for no benefit to VPN reliability.
 - Global MSS clamping or a global MTU override — see §J. Both would
@@ -320,7 +320,7 @@ Documented policy, enforced by the new `doctor` check (§B):
 
 What this does **not** and cannot cover: whether a specific client
 device is leaking Telegram traffic over its own native IPv6 route
-instead of the tunnel. That is a client-side property vpn1's server
+instead of the tunnel. That is a client-side property singbox-vpn's server
 cannot observe from the server. `docs/TELEGRAM_TROUBLESHOOTING.md` §6
 documents how to check for it from the client.
 
@@ -331,7 +331,7 @@ by the investigation (disable Telegram's own proxy first, test each
 transport independently, the full functionality checklist, Android
 per-app/Always-on-VPN/battery checks, iOS VPN-profile/proxy checks,
 IPv6-leak detection, controlled MTU experiments with an explicit
-rationale for why vpn1 doesn't apply a global MSS/MTU override, and
+rationale for why singbox-vpn doesn't apply a global MSS/MTU override, and
 exactly what evidence to collect — with an explicit list of what must
 never be shared).
 
@@ -383,7 +383,7 @@ Both are unverified-scope, high-blast-radius interventions:
   Hysteria2 (QUIC/UDP) at all, so it can never be "the fix" for both
   transports even in the best case.
 - QUIC (Hysteria2) does its own path-MTU discovery inside its encrypted
-  stream — a server-side network device (including vpn1's own sing-box)
+  stream — a server-side network device (including singbox-vpn's own sing-box)
   cannot inspect or clamp it. The only real lever is a client-side MTU
   override, if the client exposes one.
 - No evidence in this repository or from the reported symptoms
@@ -460,7 +460,7 @@ touching diagnostics, rendering, and documentation across a dozen files.
 
 ### What works today, with zero code changes, as an interim mitigation
 
-Run two fully independent vpn1 deployments (two separate VPSes, `sudo
+Run two fully independent singbox-vpn deployments (two separate VPSes, `sudo
 ./deploy/almalinux/install.sh` on each, unmodified). Give each of the
 ~10 users two Hiddify profiles — one subscription URL per VPS. If one
 VPS/IP/ASN gets blocked, users manually switch to the other profile.
@@ -575,7 +575,7 @@ report, a named ISP), not a generic engineering discussion. Corrections:
     sing-box ~1.13.0 — several minor versions before Gecko even landed
     in an alpha. Hiddify's iOS client cannot use Gecko regardless of
     what the server runs.
-  - vpn1's pinned production sing-box (1.13.14 / 1.13.18 on Node A)
+  - singbox-vpn's pinned production sing-box (1.13.14 / 1.13.18 on Node A)
     also predates Gecko.
   - **Conclusion unchanged from the first addendum: do not adopt
     Gecko.** Both the server side (no stable sing-box release supports

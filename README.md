@@ -107,7 +107,7 @@ sudo vpn user list                       # list users
 sudo vpn status                          # server status
 sudo vpn doctor                          # diagnostics
 sudo vpn backup                          # backup
-sudo /opt/vpn1/bin/vpn1-uninstall --yes  # complete offline uninstall
+sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes  # complete offline uninstall
 ```
 
 Full command reference, troubleshooting, updating, and credential rotation:

@@ -28,7 +28,7 @@ else
 fi
 
 # update.sh now has two structurally separate code paths — the explicit
-# --dev-rebuild/VPN1_CHANNEL=dev escape hatch, and the default
+# --dev-rebuild/SINGBOX_VPN_CHANNEL=dev escape hatch, and the default
 # production release-to-release path — each with its OWN doctor/
 # health-check/committed=1 sequence. Check each occurrence's ordering
 # against its own nearest-preceding health-check/committed line rather

@@ -190,7 +190,7 @@ run_install_dependencies_rhel() {
     warn() { :; }
     OS_ID="amzn"
     OS_PRETTY_NAME="Amazon Linux 2023"
-    OWNERSHIP_DIR="$TMPDIR_TEST/var-lib-vpn1-$curl_present-$$"
+    OWNERSHIP_DIR="$TMPDIR_TEST/var-lib-singbox-vpn-$curl_present-$$"
     # shellcheck disable=SC2034 # read by deploy/lib/ownership.sh on source
     OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
     # shellcheck source=/dev/null

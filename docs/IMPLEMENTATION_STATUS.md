@@ -118,7 +118,7 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
   `71697025cdbcaf0c7ac87fe36328d7e092a3a260` after release workflow run
   `31941781143` passed every then-existing gate and both architecture builds.
   A real default VPS bootstrap subsequently exposed a release-blocking bug:
-  `sha256sum -c` printed `vpn1-src.tar.gz: OK` to stdout while
+  `sha256sum -c` printed `singbox-vpn-src.tar.gz: OK` to stdout while
   `download_source` was inside command substitution, corrupting `SRC_DIR` with
   that status line and causing a false "deploy/almalinux/install.sh missing"
   failure. The archive itself was intact. `v0.1.0` was immediately marked as
@@ -151,16 +151,16 @@ v1.0 — see `deploy/local/run-dev-slice.sh` for its dev-only entry point.
 ## Supported file/test surface (avoid full-workspace runs when only this changed)
 
 - Installer: `install.sh` (bootstrap, checksum-verifies the release
-  source archive for any pinned `VPN1_VERSION`) -> `deploy/almalinux/
+  source archive for any pinned `SINGBOX_VPN_VERSION`) -> `deploy/almalinux/
   install.sh` (real implementation, builds `-p admin -p subscription`
   only).
 - Uninstall: `uninstall.sh` -> `deploy/almalinux/uninstall.sh` ->
-  offline entry point `bin/vpn1-uninstall` (persisted to
-  `/opt/vpn1/bin/vpn1-uninstall`).
+  offline entry point `bin/singbox-vpn-uninstall` (persisted to
+  `/opt/singbox-vpn/bin/singbox-vpn-uninstall`).
 - Update/repair/render: `deploy/almalinux/update.sh`, `render-config.sh`,
   `health-check.sh`, `acceptance-test.sh`, `certbot-deploy-hook.sh`.
 - Release: `.github/workflows/release.yml` publishes per-arch binary
-  tarballs + a checksum-manifested `vpn1-src.tar.gz` source archive +
+  tarballs + a checksum-manifested `singbox-vpn-src.tar.gz` source archive +
   combined `SHA256SUMS`, all fetched/verified by `install.sh`, then tests the
   newly published tag through the real public bootstrap path.
 - Shared shell libs: `deploy/lib/*.sh` plus `deploy/lib/versions.env`
@@ -258,8 +258,8 @@ requires explicit authorization per this checkpoint's own instructions,
 which was not given.
 
 **Working tree**: clean before and after this checkpoint's edits; all
-changes committed to `claude/vpn1-release-readiness-c538l9`. See git log
-for the exact commit.
+changes committed to that session's working branch (pre-rename name; see
+git log for the exact commit).
 
 ## Checkpoint 5 (repair/harden the destructive lifecycle acceptance harness) — completed this session
 
@@ -267,15 +267,15 @@ for the exact commit.
 PASS from it untrustworthy; all six are fixed, none by wording changes:
 
 - **Failure-injection env var reached `curl`, not the installer**: stage
-  10 used `sudo VPN1_LIFECYCLE_GATE_ABORT_AFTER=... curl | bash` — `sudo`
+  10 used `sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=... curl | bash` — `sudo`
   scoped the var to `curl`'s own exec, never to `bash` on the other side
   of the pipe. Fixed by moving the var to the `bash` side (matching the
   pattern already correct in every other stage), and added an assertion
-  that partial `/opt/vpn1`/`/etc/vpn` state exists after the "abort"
+  that partial `/opt/singbox-vpn`/`/etc/vpn` state exists after the "abort"
   (proof the hook fired mid-install, not that curl/SSH merely failed).
 - **"Offline uninstall" downloaded code from GitHub**: every uninstall
   call in the harness used `curl .../uninstall.sh | bash`. Now uses
-  `sudo /opt/vpn1/bin/vpn1-uninstall --yes` exclusively (stages 10 and
+  `sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes` exclusively (stages 10 and
   11), with a best-effort `iptables REJECT` to `github.com`/
   `raw.githubusercontent.com` around the offline-uninstall call as
   additional proof of no outbound dependency.
@@ -297,10 +297,10 @@ PASS from it untrustworthy; all six are fixed, none by wording changes:
   exclusion (Hiddify/iOS/Android/MagicOS — Checkpoint 8) is preserved
   and now explicitly reported as `UNVERIFIED` rather than just a comment.
 - **Reboot only checked `health-check.sh`**: now independently verifies
-  sshd, sing-box, vpn-subscription, nginx, a vpn1 timer, the 443
+  sshd, sing-box, vpn-subscription, nginx, a singbox-vpn timer, the 443
   listener, `install-state.json`, and `vpn-admin doctor --protocol`.
 
-New: a `VPN1_LIFECYCLE_GATE_ABORT_AFTER` hook was added to `update.sh`
+New: a `SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER` hook was added to `update.sh`
 (mirroring `install.sh`'s existing one), fired after SWITCH/migration
 begins, enabling a real failed-update-rollback stage (7b) that asserts
 sshd/sing-box/vpn-subscription/protocol/`install-state.json` are restored
@@ -416,10 +416,10 @@ still needs to be run for real.
 ## Checkpoint 3 (transactional release-to-release updater) — completed this session
 
 - **Old model (replaced)**: `deploy/almalinux/update.sh` rebuilt
-  whatever source happened to be checked out at `/opt/vpn1` via
+  whatever source happened to be checked out at `/opt/singbox-vpn` via
   `cargo build`, unconditionally required Cargo/Rust, never resolved or
   fetched a target release, never touched the sing-box binary, and
-  never wrote the install-state manifest (so `vpn1_version` went stale
+  never wrote the install-state manifest (so `singbox_vpn_version` went stale
   after every update).
 - **New model**: `deploy/almalinux/update.sh --version vX.Y.Z` (or
   `--latest` / `--repair`) is a real STAGE -> PREPARE -> SWITCH ->
@@ -432,18 +432,18 @@ still needs to be run for real.
   fails verification — never a silent fallback to a source build.
   sing-box is staged/verified and swapped too, only when the target
   release pins a different version. `--dev-rebuild` (or
-  `VPN1_CHANNEL=dev`) is the explicit, structurally separate escape
+  `SINGBOX_VPN_CHANNEL=dev`) is the explicit, structurally separate escape
   hatch that keeps the old Cargo-rebuild-from-local-source behavior for
   development/testing.
 - Source tree swap is an atomic same-filesystem rename
-  (`/opt/vpn1` <-> a staged/previous directory under `/opt`), not an
+  (`/opt/singbox-vpn` <-> a staged/previous directory under `/opt`), not an
   in-place overwrite — the previous release stays fully intact until
   SWITCH, and rollback renames it straight back.
 - `install-state.json` is only rewritten at COMMIT, strictly after
   `doctor --protocol --require-protocol` passes — a failed update never
   updates the authoritative version record.
 - Rollback restores binaries, systemd units, helper scripts, the
-  sing-box binary (if changed), and the previous `/opt/vpn1` source
+  sing-box binary (if changed), and the previous `/opt/singbox-vpn` source
   tree, then re-renders (never rewinds) `users.json`/REALITY material
   with the restored tooling, and reports exactly one of `UPDATE FAILED —
   PREVIOUS RELEASE RESTORED AND VERIFIED` or `UPDATE FAILED — ROLLBACK
@@ -452,7 +452,7 @@ still needs to be run for real.
   PREPARE (before the first live mutation) makes a subsequent
   invocation refuse with precise recovery instructions instead of
   starting a new update on top of unknown state; a stale
-  `/opt/.vpn1-update-staging.*`/`/opt/.vpn1-prev-*` directory left by a
+  `/opt/.singbox-vpn-update-staging.*`/`/opt/.singbox-vpn-prev-*` directory left by a
   killed prior run is detected the same way.
 - Same-version requests exit cleanly ("Already at vX.Y.Z...") with zero
   mutation unless `--repair` is given; `--repair` re-fetches and
@@ -464,7 +464,7 @@ still needs to be run for real.
   detected first.
 - `deploy/almalinux/lifecycle-acceptance.sh`'s `--update-to-ref` path
   fixed to actually invoke `update.sh --dev-rebuild` (the old
-  `VPN1_REF=...` env var it passed was silently ignored by update.sh —
+  `SINGBOX_VPN_REF=...` env var it passed was silently ignored by update.sh —
   a genuine tagged-release A->B lifecycle run remains a separate,
   UNVERIFIED gap pending a first real release, see below).
 - New test file `deploy/lib/tests/test-update-transactional.sh`;
@@ -498,14 +498,14 @@ still needs to be run for real.
   `sshd_config`/live-listener detection is all inconclusive — it returns
   1 with nothing printed. New canonical `preflight_resolve_ssh_port()`
   is the single implementation used by `install.sh`, `firewall.sh`, and
-  `firewall-ufw.sh`; it accepts an explicit `VPN1_SSH_PORT` override
-  (`install.sh --ssh-port PORT` / `VPN1_SSH_PORT=`), validated via
+  `firewall-ufw.sh`; it accepts an explicit `SINGBOX_VPN_SSH_PORT` override
+  (`install.sh --ssh-port PORT` / `SINGBOX_VPN_SSH_PORT=`), validated via
   `preflight_validate_port`. Inconclusive detection with no override now
   `die`s before any firewall mutation, naming the fix.
 - **Rollback ownership tracking now starts before the first mutation**:
   `ownership_mark INSTALL_ATTEMPTED` / `ownership_set_baseline_once
-  OPT_VPN1_PRE_EXISTED` used to run AFTER `persist_source_tree` (creates
-  `/opt/vpn1`) and `install_idn_support` (installs `libidn2` on RHEL) —
+  OPT_SINGBOX_VPN_PRE_EXISTED` used to run AFTER `persist_source_tree` (creates
+  `/opt/singbox-vpn`) and `install_idn_support` (installs `libidn2` on RHEL) —
   a failure inside either mutation looked like "nothing mutated yet" to
   `on_fatal_error`'s rollback trap and left it stranded. Both now run
   before those two calls in `preflight_stage`.
@@ -531,32 +531,32 @@ still needs to be run for real.
 
 - **`/etc/vpn` is no longer blindly `rm -rf`'d**: install.sh now records
   `ETC_VPN_PRE_EXISTED` before ever creating `/etc/vpn` (stage 8).
-  uninstall.sh's cleanup is now ownership-gated: `0` (vpn1 created the
+  uninstall.sh's cleanup is now ownership-gated: `0` (singbox-vpn created the
   whole tree) -> full removal; `1` (pre-existing) or unset/ambiguous
-  (pre-checkpoint-2 install, no record) -> remove only vpn1's own
+  (pre-checkpoint-2 install, no record) -> remove only singbox-vpn's own
   entries (`deployment.toml`, `compat/`), preserving everything else —
   defaulting to preservation whenever ownership can't be proven.
 - **Fixed-name system resources (systemd units, certbot renewal hook,
   nginx vhost) are now ownership-tracked**: new
   `install_fixed_path_with_ownership()` helper backs up (once) whatever
-  already occupied a fixed path before vpn1 wrote there, and records
+  already occupied a fixed path before singbox-vpn wrote there, and records
   whether it pre-existed. uninstall.sh's new `restore_or_remove_fixed_path()`
   restores the exact backup when something pre-existed, removes the
-  file when vpn1 created it, and leaves it untouched (never guesses)
+  file when singbox-vpn created it, and leaves it untouched (never guesses)
   when no ownership record exists at all.
-- **Fixed a real ordering bug**: `OPT_VPN1_PRE_EXISTED` (and the new
+- **Fixed a real ordering bug**: `OPT_SINGBOX_VPN_PRE_EXISTED` (and the new
   fixed-path `PRE_EXISTED` facts) used to be read via `ownership_get`
-  *after* `$STATE_DIR_ROOT` (`/var/lib/vpn1`, where the manifest itself
+  *after* `$STATE_DIR_ROOT` (`/var/lib/singbox-vpn`, where the manifest itself
   lives) had already been `rm -rf`'d — silently returning the
-  "not pre-existing" default every time, so `/opt/vpn1` was ALWAYS
-  treated as vpn1-created (even on the rare host where it genuinely
+  "not pre-existing" default every time, so `/opt/singbox-vpn` was ALWAYS
+  treated as singbox-vpn-created (even on the rare host where it genuinely
   pre-existed) and a correctly-restored pre-existing fixed path could
   misreport as residue. Fixed by caching every such fact before that
   removal.
 - **Truthful residue verification**: uninstall.sh now collects
-  `CRITICAL_RESIDUE` (active vpn1 services, running processes, live
-  secrets/credentials, vpn1 binaries, vpn1-owned firewall exposure
-  still open after removal was attempted, a vpn1-created `/opt/vpn1`
+  `CRITICAL_RESIDUE` (active singbox-vpn services, running processes, live
+  secrets/credentials, singbox-vpn binaries, singbox-vpn-owned firewall exposure
+  still open after removal was attempted, a singbox-vpn-created `/opt/singbox-vpn`
   still present) separately from `NONCRITICAL_RESIDUE` (a package the
   package manager refused to remove, a userdel/groupdel failure, an
   ambiguous pre-existing fixed path left alone). Cleanup never aborts
@@ -565,14 +565,14 @@ still needs to be run for real.
   empty, `UNINSTALL INCOMPLETE` (nonzero exit) otherwise. Two
   previously-fatal `die`s on a corrupted firewall-ownership record are
   now `warn` + critical-residue entries so the rest of cleanup still runs.
-- **Package names validated before the package manager**: `PKGS_INSTALLED_BY_VPN1`
+- **Package names validated before the package manager**: `PKGS_INSTALLED_BY_SINGBOX_VPN`
   entries are filtered through `is_safe_pkg_name()` before `dnf remove`/
   `apt-get remove`; anything not shaped like a real package name is
   skipped and reported as non-critical residue instead of being passed
   through.
 - **Legacy uninstall compatibility fixed**: the online bootstrap
   (`uninstall.sh`) previously forwarded `--yes` unconditionally to a
-  local `/opt/vpn1/deploy/almalinux/uninstall.sh`. The actual
+  local `/opt/singbox-vpn/deploy/almalinux/uninstall.sh`. The actual
   pre-`07f8b72` layout (real historical commit `d8a4c87`, verified via
   `git show`) never had a `--yes` flag or any confirmation prompt at
   all — it understood only `--purge-state`/`--purge-firewall` and
@@ -581,22 +581,22 @@ still needs to be run for real.
   local copy actually supports (via `grep`) and translates: drops the
   meaningless `--yes` and adds `--purge-state --purge-firewall` for
   that historical layout; forwards unchanged for the current one.
-- **Version-aware damaged-`/opt/vpn1` recovery**: when no local copy is
-  usable at all, the bootstrap now reads `/var/lib/vpn1/install-state.json`
-  for the exact installed `vpn1_repo`/`vpn1_version` and fetches that
-  immutable tag (`refs/tags/$VPN1_REF`) instead of the mutable `main`
+- **Version-aware damaged-`/opt/singbox-vpn` recovery**: when no local copy is
+  usable at all, the bootstrap now reads `/var/lib/singbox-vpn/install-state.json`
+  for the exact installed `singbox_vpn_repo`/`singbox_vpn_version` and fetches that
+  immutable tag (`refs/tags/$SINGBOX_VPN_REF`) instead of the mutable `main`
   branch, unless the operator passed an explicit `--ref` or no pinned
   version was ever recorded (dev/unreleased install).
 - New test file `deploy/lib/tests/test-uninstall-ownership-checkpoint2.sh`:
   `/etc/vpn` preservation with a sentinel file, fixed-path
   restore/remove/ambiguous-preserve, package-name validation
-  (accept/reject), the `OPT_VPN1_PRE_EXISTED` ordering fix, and legacy
+  (accept/reject), the `OPT_SINGBOX_VPN_PRE_EXISTED` ordering fix, and legacy
   flag translation exercised against the **real** historical script
   from `git show d8a4c87:deploy/almalinux/uninstall.sh` (not an
   invented approximation).
 - **UNVERIFIED** (no disposable AlmaLinux 9 host available this
   session): the canonical offline command
-  (`sudo /opt/vpn1/bin/vpn1-uninstall --yes`) has not been exercised
+  (`sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes`) has not been exercised
   against a real install with real systemd/firewalld/SELinux/dnf state,
   nor with outbound networking disabled to prove offline-completeness
   for real.
@@ -608,10 +608,10 @@ still needs to be run for real.
 3. Reproducible installs: `deploy/lib/versions.env` single-sourced; stable channel refuses unpinned branch fallback.
 4. Persistent state versioning/migration: `deployment.toml`/`users.json` schema versions + `vpn-admin config validate|migrate`.
 5. Installer hardening audit: enforced custom-domain default (`--allow-ip-hostname` required to opt out non-interactively), SSH-port fixture seam, REALITY-init idempotency test.
-6. Uninstall hardening: offline `bin/vpn1-uninstall` entry point, confirmation-gated, root-controlled-path + manifest re-validation checks, ownership mode-check bug fixed.
+6. Uninstall hardening: offline `bin/singbox-vpn-uninstall` entry point, confirmation-gated, root-controlled-path + manifest re-validation checks, ownership mode-check bug fixed.
 7. Client protocol behavior audit: real sing-box interop suite run (9/9 pass); `docs/CLIENT_PROTOCOL_BEHAVIOR.md` written; subscription-has-no-dns/inbounds and dual-stack-bind regression tests added.
 8. Censorship-resilience/recovery honesty audit: added out-of-band `vpn-admin user links`, `docs/RECOVERY.md`, structural Hysteria2-unavailable render test, honest single-VPS/IP-blocking limitations documented.
-9. PR merge-readiness pass: fixed the production bootstrap's unverified-source-download gap (`install.sh` now SHA-256-verifies a `release.yml`-published `vpn1-src.tar.gz` for any pinned version), corrected README domain-default and REALITY-decoy claims to match actual installer behavior, shrank this file.
+9. PR merge-readiness pass: fixed the production bootstrap's unverified-source-download gap (`install.sh` now SHA-256-verifies a `release.yml`-published `singbox-vpn-src.tar.gz` for any pinned version), corrected README domain-default and REALITY-decoy claims to match actual installer behavior, shrank this file.
 
 ## Blockers
 
@@ -671,12 +671,12 @@ bash deploy/lib/fast-gate.sh
 # labeled DEVELOPMENT LIFECYCLE ONLY. It cannot produce production acceptance.
 
 # offline uninstall — no network access needed
-sudo /opt/vpn1/bin/vpn1-uninstall --yes
+sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes
 
 # production update — transactional, checksum-verified, no Cargo/Rust required
-sudo /opt/vpn1/deploy/almalinux/update.sh --version vX.Y.Z
-sudo /opt/vpn1/deploy/almalinux/update.sh --latest      # resolve latest stable tag
-sudo /opt/vpn1/deploy/almalinux/update.sh --repair       # reconcile the current release, no version change
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version vX.Y.Z
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest      # resolve latest stable tag
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair       # reconcile the current release, no version change
 
 # out-of-band recovery — no subscription domain needed
 vpn-admin user links <user_id>
@@ -718,7 +718,7 @@ installer's advertised automatic rollback did not run.
   (idempotent via the existing `ROLLBACK_HANDLER_ACTIVE` guard, and
   still deferred to the root installer shell for subshell/command-
   substitution contexts via the existing `BASHPID` guard). Repair-run
-  safety, the `VPN1_NO_AUTO_ROLLBACK=1` escape hatch, and reporting a
+  safety, the `SINGBOX_VPN_NO_AUTO_ROLLBACK=1` escape hatch, and reporting a
   rollback failure alongside (never instead of) the original error were
   already correctly handled by `on_fatal_error()` and are unchanged.
   See `deploy/lib/tests/test-installer-rollback.sh` (extended this

@@ -11,7 +11,7 @@
 //! load-then-write sequence as a whole atomic).
 //!
 //! Uses a plain advisory `flock(2)` on a well-known path
-//! (`/run/lock/vpn1.lock` in production), held for the lifetime of the
+//! (`/run/lock/singbox-vpn.lock` in production), held for the lifetime of the
 //! returned guard. `flock` blocks until the lock is available rather
 //! than failing immediately — a concurrent admin invocation should wait
 //! its turn, not lose its change or race — with `flock`'s well-defined
@@ -25,14 +25,14 @@ use std::path::PathBuf;
 
 /// Overridable for tests (each test uses an isolated temp directory and
 /// must not contend with other tests' or the host's real
-/// `/run/lock/vpn1.lock`). Production installs never set this — the
+/// `/run/lock/singbox-vpn.lock`). Production installs never set this — the
 /// installer/systemd units run `vpn-admin` with a normal environment, so
 /// the default applies.
 #[cfg(unix)]
 pub fn lock_path() -> PathBuf {
-    std::env::var_os("VPN1_LOCK_PATH")
+    std::env::var_os("SINGBOX_VPN_LOCK_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/run/lock/vpn1.lock"))
+        .unwrap_or_else(|| PathBuf::from("/run/lock/singbox-vpn.lock"))
 }
 
 /// Held for as long as this value is alive; the OS releases the flock
@@ -89,7 +89,7 @@ mod tests {
     fn second_acquire_blocks_until_first_is_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let lock_path = dir.path().join("test.lock");
-        std::env::set_var("VPN1_LOCK_PATH", &lock_path);
+        std::env::set_var("SINGBOX_VPN_LOCK_PATH", &lock_path);
 
         let first = acquire_state_lock().unwrap();
 
@@ -114,6 +114,6 @@ mod tests {
         // Once released, a fresh acquire must succeed immediately.
         let second = acquire_state_lock().unwrap();
         drop(second);
-        std::env::remove_var("VPN1_LOCK_PATH");
+        std::env::remove_var("SINGBOX_VPN_LOCK_PATH");
     }
 }

@@ -237,10 +237,10 @@ branch to test first):
 
 ```bash
 # 1. Update onto this fix.
-cd /opt/vpn1
-sudo vpn-admin backup --output /root/vpn1-backup-pre-fix-$(date +%s).tar
+cd /opt/singbox-vpn
+sudo vpn-admin backup --output /root/singbox-vpn-backup-pre-fix-$(date +%s).tar
 git fetch origin
-git checkout claude/vpn1-reality-handshake-zupwdm   # or main once merged
+git checkout <this-incident's-fix-branch>   # see git log for the exact pre-rename branch name, or main once merged
 sudo ./deploy/almalinux/install.sh
 
 # 2. Re-run the self-test with the fix in place. This alone may now

@@ -1,5 +1,5 @@
 [Unit]
-Description=Reconcile expired vpn1 credentials into live sing-box authorization
+Description=Reconcile expired singbox-vpn credentials into live sing-box authorization
 After=sing-box.service
 
 [Service]

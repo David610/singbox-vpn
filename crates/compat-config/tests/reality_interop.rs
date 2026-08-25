@@ -30,7 +30,7 @@
 //! `SING_BOX_BIN=/path/to/sing-box` selects the binary explicitly; otherwise
 //! `sing-box` on `PATH` is used. When neither is available these tests skip,
 //! so a contributor without the binary is not blocked. That skip is a real
-//! hole in a *pipeline* though, so CI sets `VPN1_REQUIRE_REAL_INTEROP=1`,
+//! hole in a *pipeline* though, so CI sets `SINGBOX_VPN_REQUIRE_REAL_INTEROP=1`,
 //! which converts every skip in this file into a hard failure — a skipped
 //! test is not a pass.
 
@@ -190,11 +190,11 @@ fn write_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> s
 /// Shared skip policy. A missing `sing-box` must not block a contributor,
 /// but it must NEVER silently pass in the pipeline that gates merges: an
 /// early `return` is reported by Rust's harness as a pass, so CI sets
-/// `VPN1_REQUIRE_REAL_INTEROP=1` and this turns the skip into a failure.
+/// `SINGBOX_VPN_REQUIRE_REAL_INTEROP=1` and this turns the skip into a failure.
 fn skip_or_fail(reason: &str) {
-    if std::env::var("VPN1_REQUIRE_REAL_INTEROP").is_ok() {
+    if std::env::var("SINGBOX_VPN_REQUIRE_REAL_INTEROP").is_ok() {
         panic!(
-            "VPN1_REQUIRE_REAL_INTEROP is set, so this suite must really run, but: {reason}. \
+            "SINGBOX_VPN_REQUIRE_REAL_INTEROP is set, so this suite must really run, but: {reason}. \
              Refusing to report a skip as a pass."
         );
     }
