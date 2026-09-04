@@ -192,6 +192,53 @@ fn refuses_to_start_with_non_hex_short_id() {
 }
 
 #[test]
+fn refuses_to_start_when_hysteria_obfs_password_file_is_unreadable() {
+    // docs/FINAL_PRODUCTION_AUDIT.md F-05: an unreadable-but-PRESENT
+    // hysteria obfs password file must never be treated the same as
+    // "file absent, obfuscation disabled" — that used to collapse both
+    // cases into `None` via `.ok()`, so the service would start and
+    // silently serve subscriptions missing a credential the deployment
+    // may actually require. This must fail closed instead, end to end
+    // through the real binary.
+    if unsafe { libc_geteuid() } == 0 {
+        // Root ignores Unix permission bits, so this scenario can't be
+        // reproduced under root (this repo's own CI/test containers run
+        // as root — see deploy/lib/tests/test-certbot-renewal-recovery.sh's
+        // comment on the same constraint).
+        eprintln!("skipping: running as root, permission bits are not enforced");
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path(), free_port());
+    write_reality_material(dir.path(), VALID_PUBLIC_KEY, VALID_SHORT_ID);
+    let obfs_path = dir.path().join("state/reality/hysteria_obfs_password.txt");
+    std::fs::write(&obfs_path, "some-password").unwrap();
+    std::fs::set_permissions(&obfs_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let (code, _stdout, stderr) = run_subscription(&cfg_path, Duration::from_secs(5));
+    std::fs::set_permissions(&obfs_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        code,
+        Some(1),
+        "must exit non-zero (not start and silently degrade) when the obfs password file exists \
+         but cannot be read; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("obfuscation password file") && stderr.contains("could not be read"),
+        "error must name the actual problem:\n{stderr}"
+    );
+}
+
+unsafe fn libc_geteuid() -> u32 {
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    geteuid()
+}
+
+#[test]
 fn starts_successfully_with_valid_reality_material() {
     let dir = tempfile::tempdir().unwrap();
     let port = free_port();

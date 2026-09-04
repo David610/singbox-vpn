@@ -230,6 +230,8 @@ fi
 # theoretical) case where something else already occupied this exact
 # path before singbox-vpn ever ran.
 restore_or_remove_fixed_path /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh CERTBOT_HOOK
+restore_or_remove_fixed_path /etc/letsencrypt/renewal-hooks/pre/singbox-vpn-firewall.sh CERTBOT_PRE_HOOK
+restore_or_remove_fixed_path /etc/letsencrypt/renewal-hooks/post/singbox-vpn-firewall.sh CERTBOT_POST_HOOK
 
 log "removing singbox-vpn-issued certificates..."
 CERT_LINEAGES="$(ownership_list_get CERT_LINEAGES_CREATED_BY_SINGBOX_VPN)"

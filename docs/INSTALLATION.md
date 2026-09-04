@@ -207,15 +207,24 @@ Two independent TLS certificates are used:
 VLESS+REALITY needs **no certificate** — it dials a real site's TLS
 handshake as a disguise. Both certificates above are auto-issued via
 certbot's HTTP-01 challenge if no domain-specific certificate already
-exists. **TCP/80 must stay reachable from the public internet long-term**,
-not just during install: certbot's renewal timer re-runs the HTTP-01
-challenge roughly every 60 days. The installer only opens TCP/80
-*temporarily* during install; permanently allow it afterward if you want
-renewals to keep working automatically:
+exists, which requires TCP/80 to be reachable from the public internet
+for the few seconds each challenge takes — both at the initial install
+**and** at every renewal, since certbot's renewal timer re-runs the
+HTTP-01 challenge roughly every 60 days for the life of the deployment.
+
+The installer installs a pair of certbot pre/post renewal hooks
+(`/etc/letsencrypt/renewal-hooks/{pre,post}/singbox-vpn-firewall.sh`)
+that reopen TCP/80 at the **host** firewall (`firewalld`/`ufw`) around
+every renewal attempt and close it again afterward — no manual step or
+permanently-open port needed at the host level. If your VPS sits behind
+a separate cloud-provider security group (AWS/GCP/Azure/etc.), that
+layer is **not** managed by singbox-vpn and needs its own permanent
+inbound TCP/80 allow rule, since there's no way to know in advance
+exactly when the timer will next fire — see
+`docs/ALMALINUX_DEPLOYMENT.md` "Cloud provider firewalls / security
+groups". Confirm renewal works end to end with:
 
 ```bash
-sudo firewall-cmd --permanent --add-service=http && sudo firewall-cmd --reload   # RHEL family
-sudo ufw allow 80/tcp                                                            # Debian family
 sudo certbot renew --dry-run
 ```
 
