@@ -150,31 +150,19 @@ $(cat "$TRANSACTION_MARKER" 2>/dev/null)
 Manual recovery: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/singbox-vpn after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove $TRANSACTION_MARKER and retry the update."
 fi
 
+# See install.sh's verify_release_attestation() for why there is no
+# version-gated checksum-only fallback: gating the requirement on the
+# release's own version string let an attacker with release-publish
+# access (the exact actor attestation is meant to contain) republish an
+# old-numbered or malformed tag and skip attestation entirely. Every
+# release, historical or not, requires attestation here too.
 verify_release_attestation() {
   local artifact="$1" version="$2"
-  local first_attested="v0.1.3"
-  if ! release_version_at_least "$version" "$first_attested"; then
-    warn "HISTORICAL RELEASE: $version predates $first_attested and retains checksum-only verification; provenance is not authenticated."
-    return 0
-  fi
   command -v gh >/dev/null 2>&1 \
     || die "GitHub CLI ('gh') is required for stable release-attestation verification. Install gh and retry; nothing live has changed."
   gh attestation verify "$artifact" --repo "$SINGBOX_VPN_REPO" --signer-workflow "$SINGBOX_VPN_REPO/.github/workflows/release.yml" >/dev/null \
-    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_REPO. Nothing live has changed."
+    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_REPO. Nothing live has changed. There is no checksum-only fallback for any release, historical or otherwise."
   log "artifact attestation verified for repository $SINGBOX_VPN_REPO."
-}
-
-
-release_version_at_least() {
-  local version="${1#v}" threshold="${2#v}"
-  local major minor patch threshold_major threshold_minor threshold_patch
-  IFS=. read -r major minor patch <<<"$version"
-  IFS=. read -r threshold_major threshold_minor threshold_patch <<<"$threshold"
-  patch="${patch%%-*}"
-  threshold_patch="${threshold_patch%%-*}"
-  [ "$major" -gt "$threshold_major" ] \
-    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -gt "$threshold_minor" ]; } \
-    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -eq "$threshold_minor" ] && [ "$patch" -ge "$threshold_patch" ]; }
 }
 shopt -s nullglob
 for stale in /opt/.singbox-vpn-update-staging.* /opt/.singbox-vpn-prev-*; do
@@ -245,10 +233,13 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
     || die "cargo not found. --dev-rebuild requires a Rust toolchain. (A normal production update does not need this — use --version/--latest instead.)"
 
   log "running tests before touching installed state..."
-  ( cd "$REPO_ROOT" && cargo test --workspace -p admin -p subscription -p compat-config ) \
+  ( cd "$REPO_ROOT" && cargo test --workspace --locked -p admin -p subscription -p compat-config ) \
     || die "tests failed; installed state was not changed."
   log "building new binaries..."
-  ( cd "$REPO_ROOT" && cargo build --release -p admin -p subscription )
+  # --locked matches every CI build/test job: without it, this could
+  # silently resolve a different dependency set than the one committed
+  # Cargo.lock records and cargo audit gates in CI.
+  ( cd "$REPO_ROOT" && cargo build --release --locked -p admin -p subscription )
 
   install -d -m 0700 -o root -g root "$BACKUP_ROOT"
   install -d -m 0700 -o root -g root "$BACKUP_DIR"

@@ -67,27 +67,29 @@ else
 fi
 
 echo
-echo "--- functional: finite attestation migration boundary preserves historical releases and fails closed for new releases ---"
-attestation_version_fn="$(sed -n '/^release_version_at_least() {/,/^}/p' "$UPDATE_SH")"
-installer_attestation_version_fn="$(sed -n '/^release_version_at_least() {/,/^}/p' "$REPO_ROOT/deploy/almalinux/install.sh")"
-if [ -n "$attestation_version_fn" ] && [ "$attestation_version_fn" = "$installer_attestation_version_fn" ]; then
-  eval "$attestation_version_fn"
-  if release_version_at_least v0.1.2 v0.1.3; then
-    fail "historical v0.1.2 was classified as attestation-required"
+echo "--- functional: attestation is required for every release, with no version-gated checksum-only fallback ---"
+# A version-gated exemption ("releases below vX are checksum-only") is
+# gated on attacker-suppliable release metadata: anyone with
+# release-publish access — the actor attestation exists to contain —
+# could republish an old-numbered or malformed tag under that policy and
+# skip attestation entirely. verify_release_attestation() must therefore
+# require `gh attestation verify` unconditionally, in both install.sh's
+# deployment installer and update.sh, with no early return.
+updater_verify_fn="$(sed -n '/^verify_release_attestation() {/,/^}/p' "$UPDATE_SH")"
+installer_verify_fn="$(sed -n '/^verify_release_attestation() {/,/^}/p' "$REPO_ROOT/deploy/almalinux/install.sh")"
+if [ -n "$updater_verify_fn" ] && [ -n "$installer_verify_fn" ]; then
+  if printf '%s' "$updater_verify_fn" | grep -qE 'return 0|HISTORICAL RELEASE|release_version_at_least'; then
+    fail "update.sh's verify_release_attestation still contains a version-gated fallback"
   else
-    ok "historical v0.1.2 remains on its finite checksum-only migration policy"
+    ok "update.sh's verify_release_attestation has no version-gated fallback"
   fi
-  release_version_at_least v0.1.3-rc.1 v0.1.3 \
-    && ok "the first v0.1.3 release candidate requires provenance" \
-    || fail "v0.1.3 prerelease incorrectly bypasses provenance"
-  release_version_at_least v0.1.3 v0.1.3 \
-    && ok "v0.1.3 requires provenance" \
-    || fail "v0.1.3 incorrectly bypasses provenance"
-  release_version_at_least v1.0.0 v0.1.3 \
-    && ok "all later release families require provenance" \
-    || fail "a later release incorrectly bypasses provenance"
+  if printf '%s' "$installer_verify_fn" | grep -qE 'return 0|HISTORICAL RELEASE|release_version_at_least'; then
+    fail "install.sh's verify_release_attestation still contains a version-gated fallback"
+  else
+    ok "install.sh's verify_release_attestation has no version-gated fallback"
+  fi
 else
-  fail "installer and updater do not share the same extractable attestation version boundary"
+  fail "could not extract verify_release_attestation() from update.sh and/or the deployment installer"
 fi
 if grep -q 'SINGBOX_VPN_ALLOW_LEGACY_CHECKSUM_ONLY' "$REPO_ROOT/install.sh" \
     "$REPO_ROOT/deploy/almalinux/install.sh" "$UPDATE_SH"; then

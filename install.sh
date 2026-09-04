@@ -53,12 +53,6 @@ SINGBOX_VPN_REF="${SINGBOX_VPN_REF:-main}"
 SINGBOX_VPN_CHANNEL="${SINGBOX_VPN_CHANNEL:-stable}"
 SINGBOX_VPN_ALLOW_UNVERIFIED_DEV="${SINGBOX_VPN_ALLOW_UNVERIFIED_DEV:-0}"
 
-# v0.1.3-rc.1 is the first release family produced by the provenance-aware
-# workflow.  Earlier published releases predate attestations and retain their
-# historical checksum-only policy; this is a closed migration boundary, not an
-# operator-controlled fallback.
-SINGBOX_VPN_FIRST_ATTESTED_VERSION="v0.1.3"
-
 log() { echo "[bootstrap] $*" >&2; }
 warn() { echo "[bootstrap] WARNING: $*" >&2; }
 die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
@@ -151,6 +145,14 @@ command -v tar >/dev/null 2>&1 || die "tar is required but not found. Install ta
 [ -f /etc/os-release ] || die "cannot detect OS (/etc/os-release missing) — singbox-vpn requires a modern systemd Linux distribution."
 
 log "singbox-vpn bootstrap installer starting (repo=$SINGBOX_VPN_REPO)"
+if [ "$SINGBOX_VPN_REPO" != "David610/singbox-vpn" ]; then
+  # --repo/SINGBOX_VPN_REPO is intended fork support, but every later
+  # "artifact attestation verified" log line is only ever an assurance
+  # relative to whatever repository is named HERE — it reads as an
+  # absolute assurance if this substitution isn't obvious up front. Make
+  # it impossible to miss rather than blending into an ordinary log line.
+  warn "installing from a NON-DEFAULT repository: $SINGBOX_VPN_REPO (the canonical repository is David610/singbox-vpn). Every subsequent checksum/attestation check in this run verifies artifacts against $SINGBOX_VPN_REPO, NOT the canonical project — that repository, not David610/singbox-vpn, is who you are trusting."
+fi
 
 # ---------------------------------------------------------------------
 # secure temp workspace, always cleaned up
@@ -186,32 +188,28 @@ ensure_attestation_verifier() {
   command -v gh >/dev/null 2>&1 || die "the 'gh' package installation completed but gh is still unavailable."
 }
 
+# Every stable release, with no exception, must carry a verified GitHub
+# artifact attestation before its source is extracted or executed as root.
+# An earlier version of this function exempted any release whose *version
+# string* claimed to predate v0.1.3 from attestation entirely, falling back
+# to checksum-only verification. That exemption was gated purely on
+# attacker-suppliable release metadata (the tag name / embedded version):
+# anyone with release-publish access to the repository — precisely the
+# actor artifact attestation exists to contain — could delete and
+# republish an old-numbered tag (or push a non-numeric/malformed one that
+# fell through the comparison) with malicious content and skip attestation
+# entirely, while every other gate (SHA256SUMS, embedded-version check)
+# passed because the attacker controlled both the archive and its
+# checksum manifest. There is no way to keep a version-gated fallback that
+# closes that hole, so there no longer is one: every version, including
+# every historical pre-v0.1.3 tag, requires attestation to install through
+# this script. See docs/SUPPLY_CHAIN_SECURITY.md.
 verify_release_attestation() {
   local artifact="$1" version="$2"
-  if ! release_requires_attestation "$version"; then
-    warn "HISTORICAL RELEASE: $version predates $SINGBOX_VPN_FIRST_ATTESTED_VERSION and is verified with its original checksum-only policy. Artifact and SHA256SUMS share one GitHub trust root; this is not authenticated provenance."
-    return 0
-  fi
   ensure_attestation_verifier
   gh attestation verify "$artifact" --repo "$SINGBOX_VPN_REPO" --signer-workflow "$SINGBOX_VPN_REPO/.github/workflows/release.yml" >/dev/null \
-    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_REPO — refusing stable installation. Releases at or after $SINGBOX_VPN_FIRST_ATTESTED_VERSION have no checksum-only fallback."
+    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_REPO — refusing stable installation. There is no checksum-only fallback for any release, historical or otherwise."
   log "artifact attestation verified for repository $SINGBOX_VPN_REPO."
-}
-
-release_requires_attestation() {
-  local version="${1#v}" threshold="${SINGBOX_VPN_FIRST_ATTESTED_VERSION#v}"
-  local major minor patch threshold_major threshold_minor threshold_patch
-  IFS=. read -r major minor patch <<EOF
-$version
-EOF
-  IFS=. read -r threshold_major threshold_minor threshold_patch <<EOF
-$threshold
-EOF
-  patch="${patch%%-*}"
-  threshold_patch="${threshold_patch%%-*}"
-  [ "$major" -gt "$threshold_major" ] \
-    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -gt "$threshold_minor" ]; } \
-    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -eq "$threshold_minor" ] && [ "$patch" -ge "$threshold_patch" ]; }
 }
 
 # ---------------------------------------------------------------------

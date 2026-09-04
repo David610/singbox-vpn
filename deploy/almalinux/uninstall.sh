@@ -611,7 +611,10 @@ if [ -d "$STATE_DIR_ROOT" ]; then
   rm -rf "$STATE_DIR_ROOT"
   note_removed
 fi
-rm -f /tmp/singbox-vpn-sysctl-system.out /tmp/singbox-vpn-sysctl-rollback.out /run/lock/singbox-vpn-installer.lock 2>/dev/null || true
+# perf-tuning.sh's sysctl output logs are mktemp-created (never a fixed
+# /tmp path — see deploy/lib/perf-tuning.sh) and already self-cleaned, so
+# there is nothing named to remove here besides the installer lock.
+rm -f /run/lock/singbox-vpn-installer.lock 2>/dev/null || true
 
 # The persistent source tree — remove it last, since this script itself
 # very likely lives inside it (/opt/singbox-vpn/deploy/almalinux/uninstall.sh).

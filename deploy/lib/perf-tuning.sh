@@ -214,9 +214,16 @@ perf_tuning_apply() {
     chmod 0644 "$PERF_SYSCTL_DROPIN"
     log "wrote $PERF_SYSCTL_DROPIN"
   fi
-  if ! perf_apply_sysctl_system >/tmp/singbox-vpn-sysctl-system.out 2>&1; then
-    warn "sysctl --system reported errors — see /tmp/singbox-vpn-sysctl-system.out. Continuing; this does not block installation."
+  # mktemp, not a fixed /tmp path: this runs as root, and a fixed
+  # world-writable-directory path lets a local unprivileged user pre-place
+  # a symlink there for root's redirect to follow and overwrite.
+  local sysctl_system_out
+  sysctl_system_out="$(mktemp)"
+  if ! perf_apply_sysctl_system >"$sysctl_system_out" 2>&1; then
+    warn "sysctl --system reported errors. Continuing; this does not block installation. Output:"
+    warn "$(cat "$sysctl_system_out")"
   fi
+  rm -f "$sysctl_system_out"
 
   local wanted_cc=""
   if printf '%s' "$rendered" | grep -q '^net.ipv4.tcp_congestion_control = '; then
@@ -296,9 +303,15 @@ perf_tuning_rollback() {
   mv -f "$PERF_ROLLBACK_DROPIN.tmp" "$PERF_ROLLBACK_DROPIN"
   chmod 0644 "$PERF_ROLLBACK_DROPIN"
 
-  if ! perf_apply_sysctl_system >/tmp/singbox-vpn-sysctl-rollback.out 2>&1; then
-    warn "sysctl --system reported errors during rollback — see /tmp/singbox-vpn-sysctl-rollback.out"
+  # mktemp, not a fixed /tmp path — see the matching comment in
+  # perf_tuning_apply() above.
+  local sysctl_rollback_out
+  sysctl_rollback_out="$(mktemp)"
+  if ! perf_apply_sysctl_system >"$sysctl_rollback_out" 2>&1; then
+    warn "sysctl --system reported errors during rollback. Output:"
+    warn "$(cat "$sysctl_rollback_out")"
   fi
+  rm -f "$sysctl_rollback_out"
 
   local failed=0
   if [ -n "${BASELINE_RMEM_MAX:-}" ]; then

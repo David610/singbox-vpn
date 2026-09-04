@@ -131,6 +131,25 @@ ReadOnlyPaths=/etc/vpn/compat
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=true
 LockPersonality=true
+# Added: this is the sole internet-facing process here (raw TCP/443 +
+# UDP/443 traffic from untrusted clients), so the marginal hardening
+# cost of these four is cheap insurance against a parser/codec bug in
+# the data plane being escalated into something worse.
+#   - SystemCallFilter=@system-service: systemd's curated allowlist for
+#     ordinary daemons: covers socket/netlink/epoll/etc. (what sing-box
+#     actually needs, including the AF_NETLINK monitor above) while
+#     blocking syscall classes a network daemon has no business making
+#     (reboot, mount, kexec, raw module loading, ...).
+#   - RestrictSUIDSGID=true: this process never needs to create
+#     setuid/setgid files.
+#   - PrivateDevices=true: no device-file access is needed to terminate
+#     TLS/QUIC and proxy traffic.
+#   - ProtectProc=invisible: hides other processes' /proc/<pid> entries
+#     from this unit; it has no legitimate reason to inspect them.
+SystemCallFilter=@system-service
+RestrictSUIDSGID=true
+PrivateDevices=true
+ProtectProc=invisible
 
 [Install]
 WantedBy=multi-user.target

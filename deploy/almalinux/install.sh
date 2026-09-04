@@ -1010,31 +1010,19 @@ resolve_reality_handshake_server() {
 # ---------------------------------------------------------------------
 # [4] singbox-vpn binaries (prebuilt release, falling back to source build)
 # ---------------------------------------------------------------------
+# See install.sh's verify_release_attestation() for why there is no
+# version-gated checksum-only fallback: gating the requirement on the
+# release's own version string let an attacker with release-publish
+# access (the exact actor attestation is meant to contain) republish an
+# old-numbered or malformed tag and skip attestation entirely. Every
+# release, historical or not, requires attestation here too.
 verify_release_attestation() {
   local artifact="$1" version="$2"
-  local first_attested="v0.1.3"
-  if ! release_version_at_least "$version" "$first_attested"; then
-    warn "HISTORICAL RELEASE: $version predates $first_attested and retains checksum-only verification; provenance is not authenticated."
-    return 0
-  fi
   command -v gh >/dev/null 2>&1 \
     || die "GitHub CLI ('gh') is required to authenticate stable release artifacts. Re-run through the top-level install.sh bootstrap or install gh manually."
   gh attestation verify "$artifact" --repo "$SINGBOX_VPN_RELEASE_REPO" --signer-workflow "$SINGBOX_VPN_RELEASE_REPO/.github/workflows/release.yml" >/dev/null \
-    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_RELEASE_REPO — refusing to install stable binaries."
+    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_RELEASE_REPO — refusing to install stable binaries. There is no checksum-only fallback for any release, historical or otherwise."
   log "artifact attestation verified for repository $SINGBOX_VPN_RELEASE_REPO."
-}
-
-
-release_version_at_least() {
-  local version="${1#v}" threshold="${2#v}"
-  local major minor patch threshold_major threshold_minor threshold_patch
-  IFS=. read -r major minor patch <<<"$version"
-  IFS=. read -r threshold_major threshold_minor threshold_patch <<<"$threshold"
-  patch="${patch%%-*}"
-  threshold_patch="${threshold_patch%%-*}"
-  [ "$major" -gt "$threshold_major" ] \
-    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -gt "$threshold_minor" ]; } \
-    || { [ "$major" -eq "$threshold_major" ] && [ "$minor" -eq "$threshold_minor" ] && [ "$patch" -ge "$threshold_patch" ]; }
 }
 
 fetch_release_binaries() {
@@ -1092,25 +1080,53 @@ fetch_release_binaries() {
 
 install_rustup_noninteractive() {
   log "cargo not found; installing a Rust toolchain via rustup (no prebuilt release was available)..."
+  # `curl https://sh.rustup.rs | sh` (the officially advertised one-liner)
+  # runs an UNVERIFIED shell script as root with no checksum or signature —
+  # sh.rustup.rs itself performs no integrity check on anything it
+  # downloads. That is a real gap inside a bootstrap whose entire point is
+  # verified installation: every other download here (source archive,
+  # release binaries) is checksum- and attestation-verified before use.
+  # Sidestep the wrapper script entirely: download the rustup-init binary
+  # directly for this host's target triple, verify it against the
+  # corresponding .sha256 file the Rust project itself publishes alongside
+  # every rustup-init build on static.rust-lang.org, and only then execute
+  # it. This is the same "HTTPS + published checksum" model already used
+  # for the sing-box binary download (deploy/lib/versions.env), scoped to
+  # a host neither the singbox-vpn project nor this installer controls, so
+  # it cannot be tightened further to attestation the way singbox-vpn's own
+  # releases were.
+  local target rustup_root="https://static.rust-lang.org/rustup/dist"
+  target="$(rust_target_for_arch "$ARCH")" \
+    || die "cannot install a Rust toolchain: unsupported architecture $ARCH"
+  local tmp rustup_init sums
+  tmp="$(mktemp -d)"
+  rustup_init="$tmp/rustup-init"
+  sums="$tmp/rustup-init.sha256"
   # Same stalled-transfer protection as every other download here: a
   # connection that is established and then goes quiet is not a failed
   # transfer, so `--max-time`/`--speed-limit` are what actually bound it.
-  # This path was missed when the other call sites were fixed, and it is
-  # the one that runs whenever no prebuilt release is available — i.e. the
-  # default today.
-  local rustup_script
-  rustup_script="$(mktemp)"
-  curl --proto '=https' --tlsv1.2 -sSf "${CURL_NET_FLAGS[@]}" \
-    -o "$rustup_script" https://sh.rustup.rs
-  # The downloaded bootstrap starts additional transfers of its own. Bound
-  # the whole child, not only the first curl, so a stalled rustup-init fetch
-  # cannot hang installation indefinitely.
-  if ! timeout 900 sh "$rustup_script" -y --profile minimal \
+  curl --proto '=https' --tlsv1.2 -fsSf "${CURL_NET_FLAGS[@]}" \
+      -o "$rustup_init" "$rustup_root/$target/rustup-init" \
+    || { rm -rf "$tmp"; die "could not download rustup-init for $target from $rustup_root"; }
+  curl --proto '=https' --tlsv1.2 -fsSf "${CURL_NET_FLAGS[@]}" \
+      -o "$sums" "$rustup_root/$target/rustup-init.sha256" \
+    || { rm -rf "$tmp"; die "could not download rustup-init.sha256 for $target — refusing to run an unverified rustup-init binary."; }
+  # The published .sha256 records the checksum under the filename it was
+  # computed with ("rustup-init" or "./rustup-init"), not the local temp
+  # path — rewrite it to match rather than trusting the file's own name.
+  printf '%s  rustup-init\n' "$(awk '{print $1}' "$sums")" > "$tmp/SHA256SUMS.rustup-init"
+  ( cd "$tmp" && sha256sum -c SHA256SUMS.rustup-init >/dev/null ) \
+    || { rm -rf "$tmp"; die "checksum verification failed for rustup-init ($target) against static.rust-lang.org's published .sha256 — refusing to run an unverified binary."; }
+  chmod 0755 "$rustup_init"
+  # The downloaded binary starts additional transfers of its own (the
+  # toolchain itself). Bound the whole child, not only the first curl, so
+  # a stalled toolchain fetch cannot hang installation indefinitely.
+  if ! timeout 900 "$rustup_init" -y --profile minimal \
       --default-toolchain stable >/dev/null; then
-    rm -f "$rustup_script"
+    rm -rf "$tmp"
     die "rustup installation failed or exceeded its 15-minute hard deadline"
   fi
-  rm -f "$rustup_script"
+  rm -rf "$tmp"
   # Track that singbox-vpn (not the operator) introduced this toolchain, so
   # uninstall can remove it later — but only when no toolchain was
   # already present (checked by build_binaries_from_source before it
@@ -1138,7 +1154,10 @@ build_binaries_from_source() {
     install_rustup_noninteractive
   fi
   log "building release binaries from source (admin, subscription)..."
-  ( cd "$REPO_ROOT" && cargo build --release -p admin -p subscription )
+  # --locked matches every CI build/test job: without it, this install-time
+  # build could silently resolve a different dependency set than the one
+  # committed Cargo.lock records and cargo audit gates in CI.
+  ( cd "$REPO_ROOT" && cargo build --release --locked -p admin -p subscription )
   install -m 0755 "$REPO_ROOT/target/release/vpn-admin" "$BIN_DIR/vpn-admin"
   install -m 0755 "$REPO_ROOT/target/release/vpn" "$BIN_DIR/vpn"
   install -m 0755 "$REPO_ROOT/target/release/subscription" "$BIN_DIR/vpn-subscription-svc"

@@ -22,14 +22,21 @@ an Actions OIDC-backed statement binding the artifact digest to this repository.
 It does not protect against a malicious/compromised workflow that legitimately
 requests an attestation for malicious output.
 
-The migration boundary is explicit and finite: releases before `v0.1.3` retain
-the checksum-only policy under which they were published, while every
-`v0.1.3` prerelease/final release and every later version requires provenance
-and fails closed. The installer prints a conspicuous warning for a historical
-release. There is no environment variable or operator flag that can bypass
-provenance for a new release. This prevents merging the provenance-aware
-bootstrap from making an existing `v0.1.2` stable release uninstallable while
-ensuring the exception cannot silently expand to future releases.
+Every stable release requires provenance and fails closed, with no exception
+for historical pre-`v0.1.3` releases. An earlier version of this script
+exempted any release whose *version string* claimed to predate `v0.1.3` from
+attestation, falling back to checksum-only verification for it. That
+exemption was gated entirely on attacker-suppliable release metadata (the tag
+name / embedded package version): an attacker with release-publish access —
+the exact actor attestation exists to contain — could delete and republish an
+old-numbered or malformed tag with malicious content and skip attestation
+entirely, while SHA256SUMS still matched because the attacker controlled both
+the archive and its checksum manifest. There is no way to keep a
+version-gated fallback that closes that hole, so it was removed rather than
+tightened: `v0.1.0` through `v0.1.2` are no longer installable through
+`install.sh`/`update.sh` (their assets remain on GitHub and can still be
+downloaded and inspected manually). There is no environment variable or
+operator flag that can bypass provenance for any release.
 The development channel still requires both `SINGBOX_VPN_CHANNEL=dev` and
 `SINGBOX_VPN_ALLOW_UNVERIFIED_DEV=1` and receives no provenance claim.
 
@@ -47,8 +54,8 @@ the raw GitHub bootstrap or Actions workflow.
 | Threat | Result | Reason |
 |---|---|---|
 | A. Network corruption | PREVENTS | HTTPS, SHA-256 verification, and digest-bound provenance reject changed release bytes. |
-| B. GitHub CDN corruption | DETECTS for new releases; checksum detects byte corruption for historical releases | A new-release artifact must match both the checksum and repository attestation digest. Historical pre-`v0.1.3` artifacts retain their original checksum-only policy. Availability attacks remain possible. |
-| C. Release binary changed without checksum | DETECTS | SHA256SUMS fails for every release; provenance also binds the expected artifact digest at and after `v0.1.3`. |
+| B. GitHub CDN corruption | DETECTS | Every installable release's artifact must match both the checksum and repository attestation digest. Availability attacks remain possible. |
+| C. Release binary changed without checksum | DETECTS | SHA256SUMS fails for every release; provenance also binds the expected artifact digest for every installable release. |
 | D. Compromised GitHub account/repository | PARTIALLY MITIGATES | Editing release assets alone cannot mint an Actions attestation, but an attacker able to change trusted `main`, tags, workflows, or invoke privileged Actions may defeat the chain. The initial raw installer remains under this trust root. |
 | E. Compromised GitHub Actions workflow | DOES NOT ADDRESS | The workflow can build malicious bytes and legitimately attest them. Branch/ruleset and Actions-permission controls are required outside the artifact format. |
 | F. Compromised third-party dependency | PARTIALLY MITIGATES | `Cargo.lock`, `--locked`, `cargo audit`, tests, and provenance record what was built; none proves dependency source is benign. |
@@ -92,7 +99,7 @@ encryption at rest.
 
 ## Failure behavior
 
-For `v0.1.3` and later, missing `gh`, a missing attestation, a repository-identity
+For every release, missing `gh`, a missing attestation, a repository-identity
 mismatch, or an attestation digest mismatch aborts before extraction or live
 update mutation. For every release, malformed/missing SHA256SUMS, missing
 assets, checksum mismatch, wrong embedded version, or an unintended downgrade

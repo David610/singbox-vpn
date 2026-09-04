@@ -22,3 +22,9 @@ sha2 = "0.11"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+# Test-only: constructs OffsetDateTime fixtures for cert.rs's validity-
+# parsing tests. Already present in Cargo.lock (a transitive dependency
+# of rcgen, which uses it for the same CertificateParams::not_before/
+# not_after fields these tests set), so this adds a graph edge, not a
+# new crate or version.
+time = { version = "0.3", features = ["macros"] }
