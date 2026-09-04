@@ -262,6 +262,18 @@ EOF
 }
 
 preflight_detect_public_ip() {
+  # Disclosed, not silent: with no PUBLIC_HOST/--domain given, this asks
+  # one of these three third-party services "what IP did this request
+  # come from" so the installer can pick a default sslip.io hostname.
+  # Each one necessarily learns this VPS's address to answer that — same
+  # as any outbound connection would reveal it — but say so up front
+  # rather than let it happen as an unannounced side effect of a
+  # preflight check. Skip entirely by setting PUBLIC_HOST/--domain.
+  # Deliberately >&2, not `log` (which writes to stdout in install.sh):
+  # this function's own stdout is the detected IP, captured via command
+  # substitution by its caller — anything this function writes to stdout
+  # would corrupt that captured value.
+  echo "[install] auto-detecting this server's public IP via api.ipify.org / ifconfig.me / icanhazip.com (set PUBLIC_HOST or --domain to skip this)..." >&2
   local ip=""
   for url in "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com"; do
     # `|| true`: under `set -e`/pipefail a failed lookup (timeout,

@@ -31,6 +31,12 @@ server {
     ssl_certificate     /etc/letsencrypt/live/{{SUBSCRIPTION_HOST}}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/{{SUBSCRIPTION_HOST}}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
+    # TLS 1.3 ignores ssl_ciphers/ssl_prefer_server_ciphers entirely (it
+    # negotiates its own fixed, already-strong AEAD suite list), so these
+    # only take effect when a client falls back to TLS 1.2. Explicit
+    # AEAD-only 1.2 suites, no CBC/RC4/3DES/export-grade fallback.
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers on;
 
     # Scoped to this vhost only — does not touch the global nginx.conf
     # `server_tokens` setting (which may still be on for other vhosts on
@@ -38,6 +44,14 @@ server {
     # response header and from any error page, one less free fingerprint
     # for a scanner probing this endpoint.
     server_tokens off;
+
+    # This vhost only ever listens on {{SUBSCRIPTION_PORT}} with `ssl` —
+    # there is no plaintext :80 listener for it to redirect from, so HSTS
+    # here only instructs clients that already reached us over HTTPS to
+    # keep doing so. No includeSubDomains/preload: {{SUBSCRIPTION_HOST}}
+    # may share a parent domain with services this vhost knows nothing
+    # about.
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
     location /sub/ {
         limit_req zone=vpn_subscription burst=10 nodelay;
@@ -68,6 +82,26 @@ server {
         # backend does not read them (see
         # docs/PRODUCTION_HARDENING_PLAN.md #8) — no client-controlled
         # header can spoof identity into the Rust service.
+    }
+
+    location /v1/provision/ {
+        limit_req zone=vpn_subscription burst=10 nodelay;
+
+        # /v1/provision/<token> is the documented first-party provisioning
+        # API (README.md, docs/CLIENT_PROTOCOL_BEHAVIOR.md) — the URI is a
+        # bearer credential exactly like /sub/<token> above, so the same
+        # no-access-log / crit-only-error-log treatment applies.
+        access_log off;
+        error_log /var/log/nginx/vpn-subscription-token-safe-error.log crit;
+
+        proxy_pass http://127.0.0.1:{{SUBSCRIPTION_BACKEND_PORT}};
+        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+
+        proxy_no_cache 1;
+        proxy_cache_bypass 1;
+        add_header Cache-Control "no-store" always;
+        add_header Pragma "no-cache" always;
     }
 
     location /healthz {

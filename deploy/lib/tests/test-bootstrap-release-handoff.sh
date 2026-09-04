@@ -144,22 +144,30 @@ for bad_result in missing wrong-repository wrong-workflow modified; do
   grep -q 'attestation verification failed or is missing' "$TEST_TMP/bootstrap-$bad_result.log"
 done
 
-# The finite migration rule is automatic: v0.1.2 is accepted with its
-# historical checksum-only policy, even when no gh verifier is available.
+# There is no version-gated fallback: an old-numbered tag with no valid
+# attestation must fail closed exactly like a new one would (see
+# verify_release_attestation() in install.sh). A version-gated exemption
+# would be gated on the release's own attacker-suppliable version string,
+# letting anyone with release-publish access republish an old-numbered tag
+# with malicious content and skip attestation.
 LEGACY_VERSION=v0.1.2
 printf 'version = "0.1.2"\n' > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
 tar -czf "$TEST_TMP/legacy.tar.gz" -C "$TEST_TMP/source" singbox-vpn-src
 printf '%s  singbox-vpn-src.tar.gz\n' "$(sha256sum "$TEST_TMP/legacy.tar.gz" | awk '{print $1}')" > "$TEST_TMP/legacy-SHA256SUMS"
 rm -f "$TEST_MARKER"
+rc=0
 FIXTURE_VERSION="$LEGACY_VERSION" FIXTURE_TAR="$TEST_TMP/legacy.tar.gz" \
   FIXTURE_SUMS="$TEST_TMP/legacy-SHA256SUMS" GH_ATTESTATION_RESULT=missing \
   PATH="$TEST_TMP/fakebin:$PATH" bash "$BOOTSTRAP" --version "$LEGACY_VERSION" \
   --non-interactive --allow-ip-hostname --reality-handshake-server www.cloudflare.com \
-  >"$TEST_TMP/bootstrap-legacy.log" 2>&1
-[ -e "$TEST_MARKER" ] || { echo "FAIL: historical checksum-verified release did not reach installer handoff" >&2; exit 1; }
-grep -q 'HISTORICAL RELEASE' "$TEST_TMP/bootstrap-legacy.log"
+  >"$TEST_TMP/bootstrap-legacy.log" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || { echo "FAIL: old-numbered release with no attestation was accepted" >&2; exit 1; }
+[ ! -e "$TEST_MARKER" ] || { echo "FAIL: old-numbered release with no attestation reached installer handoff" >&2; exit 1; }
+grep -q 'attestation verification failed or is missing' "$TEST_TMP/bootstrap-legacy.log"
 
-# Restore the new-release fixture for the remaining wrong-version check.
+# Restore the new-release fixture consumed by the legacy-version case above,
+# for the remaining wrong-version check below.
+FIXTURE_VERSION="v${PACKAGE_VERSION}-rc.1"
 printf 'version = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
 
 # Even a valid repository attestation is not enough if a release page is wired
