@@ -1689,6 +1689,18 @@ install_certbot_renewal_hook() {
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/certbot-deploy-hook.sh" \
     /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh CERTBOT_HOOK 0755
   log "installed certbot renewal deploy hook: /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh"
+  # Pre/post hooks (docs/FINAL_PRODUCTION_AUDIT.md F-06): both certificate
+  # lineages use HTTP-01, so every renewal attempt needs TCP/80 reachable
+  # again, not just the initial install. Installed unconditionally on
+  # every install.sh/update.sh run (like the deploy hook above) so
+  # existing deployments pick this up on their next update, not only
+  # fresh installs.
+  install -d -m 0755 /etc/letsencrypt/renewal-hooks/pre /etc/letsencrypt/renewal-hooks/post
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/certbot-firewall-pre-hook.sh" \
+    /etc/letsencrypt/renewal-hooks/pre/singbox-vpn-firewall.sh CERTBOT_PRE_HOOK 0755
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/certbot-firewall-post-hook.sh" \
+    /etc/letsencrypt/renewal-hooks/post/singbox-vpn-firewall.sh CERTBOT_POST_HOOK 0755
+  log "installed certbot renewal firewall hooks: reopens TCP/80 automatically for each renewal attempt."
   local renewal_unit="" candidate
   for candidate in certbot.timer certbot-renew.timer snap.certbot.renew.timer; do
     if systemctl cat "$candidate" >/dev/null 2>&1; then

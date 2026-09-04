@@ -176,34 +176,35 @@ renewal, that hook validates and refreshes the Hysteria2 certificate copy,
 reloads and verifies `sing-box`, tests the nginx configuration, and reloads
 nginx so the subscription endpoint picks up the renewed certificate.
 
-**TCP/80 must stay reachable from the public internet long-term, not
-just during the initial install.** Both certificates above use the
-HTTP-01 challenge, which certbot's renewal timer re-runs automatically
-roughly every 60 days for the lifetime of this deployment — if TCP/80
-becomes unreachable from outside (a cloud-provider security group rule
-removed after the initial install, a host firewall change, etc.),
-renewal will silently start failing until someone notices the
-certificate is approaching expiry. `install.sh` only opens TCP/80
-*temporarily* during the install itself (see "Cloud provider firewalls /
-security groups" below) — it does not leave it open permanently, since
-singbox-vpn's own protocols (VLESS+REALITY, Hysteria2, the subscription HTTPS
-vhost) never use port 80. Either:
-  - permanently allow inbound TCP/80 at both the host firewall layer
-    (the installer does **not** leave its temporary issuance rule in place)
-    and, if applicable, the separate cloud-provider firewall layer (singbox-vpn
-    cannot manage that layer — see below). On AlmaLinux:
+Both certificates above use the HTTP-01 challenge, which certbot's
+renewal timer re-runs automatically roughly every 60 days for the
+lifetime of this deployment, and HTTP-01 requires TCP/80 to be reachable
+from the public internet for the few seconds each challenge takes.
+`install.sh` also installs
+`/etc/letsencrypt/renewal-hooks/{pre,post}/singbox-vpn-firewall.sh`
+(`deploy/almalinux/certbot-firewall-{pre,post}-hook.sh`), which certbot
+runs automatically around **every** renewal attempt, not just the
+initial install: the pre-hook reopens TCP/80 at the **host** firewall
+(`firewalld`/`ufw`) only if it isn't already allowed, and the post-hook
+closes exactly that rule again afterward — it never touches a rule it
+did not add itself (an operator's own permanent `--add-service=http` is
+left alone). This closes the gap where earlier versions only opened
+TCP/80 once, during install, so every renewal after the first would
+silently fail once that temporary rule was gone. `sudo certbot renew
+--dry-run` exercises this same pre/post-hook pair and is the fastest way
+to confirm renewal still works end to end.
 
-    ```bash
-    sudo firewall-cmd --permanent --add-service=http
-    sudo firewall-cmd --reload
-    sudo certbot renew --dry-run
-    ```
+This only manages the **host's own** firewall — it cannot open a
+separate cloud-provider security group (see "Cloud provider firewalls /
+security groups" below), which still needs its own **permanent** inbound
+TCP/80 allow rule if one exists, since this project has no way to know
+exactly when the timer will next attempt a renewal.
 
-- Alternatively, switch to a different ACME challenge method (e.g. DNS-01) that
-    doesn't need port 80 open at all — not implemented by this repo;
-    you would configure it directly in certbot/your ACME client and
-    point `install_certbot_renewal_hook`'s deploy hook at the resulting
-    lineage the same way.
+Alternatively, switch to a different ACME challenge method (e.g. DNS-01) that
+doesn't need port 80 open at all — not implemented by this repo;
+you would configure it directly in certbot/your ACME client and
+point `install_certbot_renewal_hook`'s deploy hook at the resulting
+lineage the same way.
 
 ### Cloud provider firewalls / security groups
 
