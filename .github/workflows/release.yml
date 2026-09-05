@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Confirm prerelease tag push
+      - name: Confirm tag push ref
         if: github.event_name == 'push'
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -59,6 +59,9 @@ jobs:
 
       - name: Confirm dispatch ref is the requested tag
         if: github.event_name == 'workflow_dispatch'
+        # Contract: github.ref_name must equal github.event.inputs.tag. The
+        # values are routed through env rather than interpolated into shell
+        # code so a tag/input can never become script text.
         env:
           REQUESTED_TAG: ${{ github.event.inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
