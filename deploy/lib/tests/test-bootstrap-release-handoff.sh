@@ -18,7 +18,12 @@ TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
 mkdir -p "$TEST_TMP/source/singbox-vpn-src/deploy/almalinux" "$TEST_TMP/source/singbox-vpn-src/apps/admin" "$TEST_TMP/fakebin"
-printf 'version = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
+# Matches the real repo's layout: apps/admin/Cargo.toml only declares
+# version.workspace = true (deploy/lib/check-workspace-version-
+# consistency.sh enforces this) — the authoritative version lives in the
+# root Cargo.toml's [workspace.package] section, which is what
+# install.sh's download_source() actually parses.
+printf '[workspace.package]\nversion = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/singbox-vpn-src/Cargo.toml"
 
 cat > "$TEST_TMP/source/singbox-vpn-src/deploy/almalinux/install.sh" <<'INSTALLER'
 #!/usr/bin/env bash
@@ -164,7 +169,7 @@ done
 # letting anyone with release-publish access republish an old-numbered tag
 # with malicious content and skip attestation.
 LEGACY_VERSION=v0.1.2
-printf 'version = "0.1.2"\n' > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
+printf '[workspace.package]\nversion = "0.1.2"\n' > "$TEST_TMP/source/singbox-vpn-src/Cargo.toml"
 tar -czf "$TEST_TMP/legacy.tar.gz" -C "$TEST_TMP/source" singbox-vpn-src
 printf '%s  singbox-vpn-src.tar.gz\n' "$(sha256sum "$TEST_TMP/legacy.tar.gz" | awk '{print $1}')" > "$TEST_TMP/legacy-SHA256SUMS"
 rm -f "$TEST_MARKER"
@@ -181,11 +186,11 @@ grep -q 'attestation verification failed or is missing' "$TEST_TMP/bootstrap-leg
 # Restore the new-release fixture consumed by the legacy-version case above,
 # for the remaining wrong-version check below.
 FIXTURE_VERSION="v${PACKAGE_VERSION}-rc.1"
-printf 'version = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
+printf '[workspace.package]\nversion = "%s"\n' "$PACKAGE_VERSION" > "$TEST_TMP/source/singbox-vpn-src/Cargo.toml"
 
 # Even a valid repository attestation is not enough if a release page is wired
 # to an archive built for a different package version.
-printf 'version = "9.9.9"\n' > "$TEST_TMP/source/singbox-vpn-src/apps/admin/Cargo.toml"
+printf '[workspace.package]\nversion = "9.9.9"\n' > "$TEST_TMP/source/singbox-vpn-src/Cargo.toml"
 tar -czf "$TEST_TMP/wrong-version.tar.gz" -C "$TEST_TMP/source" singbox-vpn-src
 printf '%s  singbox-vpn-src.tar.gz\n' "$(sha256sum "$TEST_TMP/wrong-version.tar.gz" | awk '{print $1}')" > "$TEST_TMP/wrong-version-SHA256SUMS"
 rm -f "$TEST_MARKER"
