@@ -176,15 +176,15 @@ jobs:
             exit 1
           fi
 
-          # After real-world RC acceptance, production implementation must not
-          # change silently on the path to stable. Only release metadata and
-          # evidence documentation are permitted. Any other change requires a
-          # new RC and another acceptance cycle.
+          # After real-world RC acceptance, production implementation is
+          # frozen on the path to stable. Only release-status/evidence
+          # documentation is permitted. Any other change requires a new RC
+          # and another acceptance cycle.
           disallowed=0
           while IFS= read -r path; do
             [ -n "$path" ] || continue
             case "$path" in
-              Cargo.toml|Cargo.lock|README.md|docs/DEVICE_ACCEPTANCE_TESTS.md|"docs/release-acceptance/${RELEASE_TAG}.md")
+              README.md|docs/DEVICE_ACCEPTANCE_TESTS.md|"docs/release-acceptance/${RELEASE_TAG}.md")
                 echo "allowed RC -> stable change: $path" ;;
               *)
                 echo "::error::implementation/workflow change after accepted RC requires a new RC: $path"
