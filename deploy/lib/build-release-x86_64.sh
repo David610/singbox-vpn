@@ -174,8 +174,8 @@ main() {
     set -euo pipefail
     echo '--- rustc --version ---'; rustc --version
     echo '--- cargo --version ---'; cargo --version
-    echo '--- gcc --version ---'; gcc --version | head -1
-    echo '--- ldd --version (build container glibc) ---'; ldd --version | head -1
+    echo '--- gcc --version ---'; gcc --version
+    echo '--- ldd --version (build container glibc) ---'; ldd --version
 
     $(declare -f assert_cargo_home_writable)
     assert_cargo_home_writable \"\$CARGO_HOME\"
