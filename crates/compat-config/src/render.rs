@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(selector["default"], "Germany - Hysteria2");
     }
 
-    /// docs/COMPATIBILITY_SECURITY_REVIEW.md's "As a DPI/censor" section
+    /// docs/archive/COMPATIBILITY_SECURITY_REVIEW.md's "As a DPI/censor" section
     /// names this exact scenario ("UDP blocked entirely? Hysteria2 fails;
     /// VLESS+REALITY (TCP/443) keeps working") as a documented but
     /// previously untested claim — this is the structural-level proof

@@ -70,6 +70,10 @@ Only device-verified behaviour is claimed for the fallback tier — see
 
 Full matrix and evidence: [docs/SUPPORTED_PRODUCT.md](docs/SUPPORTED_PRODUCT.md).
 
+**Explicitly not supported:** more than one VPS / a multi-node control
+plane, custom VPN protocols beyond VLESS+REALITY and Hysteria2, and
+Tor-class anonymity guarantees.
+
 ## Requirements
 
 - A supported VPS (see above), root or sudo access, public IPv4, ~1 GB RAM.
@@ -107,7 +111,9 @@ sudo vpn user list                       # list users
 sudo vpn status                          # server status
 sudo vpn doctor                          # diagnostics
 sudo vpn backup                          # backup
-sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes  # complete offline uninstall
+sudo vpn repair                          # reconcile after drift, no version change
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest  # update to the latest release
+sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes      # complete offline uninstall
 ```
 
 Full command reference, troubleshooting, updating, and credential rotation:

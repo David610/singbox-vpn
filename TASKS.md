@@ -1,5 +1,14 @@
 # TASKS.md
 
+> **HISTORICAL DOCUMENT — NOT CURRENT PRODUCT DOCUMENTATION.** This is an
+> internal, session-by-session engineering build log, kept for history.
+> Phases 0-13 describe the native adaptive-transport stack, which has
+> since been removed from `main` entirely (preserved on the
+> `archive/native-adaptive-stack-2026` branch) — see
+> `docs/SUPPORTED_PRODUCT.md` for the current product boundary. Later
+> phases describe the still-current Hiddify/VLESS-REALITY/Hysteria2
+> product.
+
 Status legend: `[ ]` not started · `[~]` in progress · `[x]` completed · `[!]` blocked/deferred (with reason)
 
 ## Phase 0 — Repo audit & architecture

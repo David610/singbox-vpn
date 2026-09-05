@@ -1,3 +1,10 @@
+> **HISTORICAL DOCUMENT — NOT CURRENT PRODUCT DOCUMENTATION.**
+> This is a point-in-time audit/report snapshot, preserved for engineering
+> history. It may describe code, findings, or product state that has since
+> changed or been superseded. For the current product boundary and status,
+> see `docs/SUPPORTED_PRODUCT.md`, `docs/IMPLEMENTATION_STATUS.md`, and
+> `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+
 # Production Acceptance Report — singbox-vpn Hiddify-compatible deployment
 
 Date: 2026-08-09. Companion to `docs/FINAL_PRODUCTION_AUDIT.md` (per-issue

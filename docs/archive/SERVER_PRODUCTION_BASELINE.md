@@ -1,3 +1,10 @@
+> **HISTORICAL DOCUMENT — NOT CURRENT PRODUCT DOCUMENTATION.**
+> This is a point-in-time audit/report snapshot, preserved for engineering
+> history. It may describe code, findings, or product state that has since
+> changed or been superseded. For the current product boundary and status,
+> see `docs/SUPPORTED_PRODUCT.md`, `docs/IMPLEMENTATION_STATUS.md`, and
+> `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+
 # Server production baseline
 
 Status as of 2026-08-22. This is the canonical evidence summary for the

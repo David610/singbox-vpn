@@ -24,7 +24,7 @@ those are marked "ALREADY FIXED" rather than re-implemented.
   findings were verified this way** — there is no VPS or phone available in
   this environment. Any claim of "fixed" below is STATIC or LOCAL-EXEC only
   unless explicitly stated otherwise. This is called out again in
-  `docs/PRODUCTION_ACCEPTANCE_REPORT.md`.
+  `docs/archive/PRODUCTION_ACCEPTANCE_REPORT.md`.
 
 Baseline before any changes in this pass:
 - `cargo fmt --all -- --check`: clean (no diff).

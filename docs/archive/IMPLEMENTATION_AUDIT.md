@@ -1,3 +1,10 @@
+> **HISTORICAL DOCUMENT — NOT CURRENT PRODUCT DOCUMENTATION.**
+> This is a point-in-time audit/report snapshot, preserved for engineering
+> history. It may describe code, findings, or product state that has since
+> changed or been superseded. For the current product boundary and status,
+> see `docs/SUPPORTED_PRODUCT.md`, `docs/IMPLEMENTATION_STATUS.md`, and
+> `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+
 # IMPLEMENTATION_AUDIT.md
 
 Audit of the repository against the "make singbox-vpn production-ready and
@@ -77,7 +84,7 @@ reading the source (not re-derived from docs alone):
   checks; `bash -n`/shellcheck-clean, not executed against a real host
   (documented, not claimed otherwise).
 - **Docs**: `docs/CLIENT_COMPATIBILITY.md`, `docs/HIDDIFY_ANDROID.md`,
-  `docs/ALMALINUX_DEPLOYMENT.md`, `docs/COMPATIBILITY_SECURITY_REVIEW.md`,
+  `docs/ALMALINUX_DEPLOYMENT.md`, `docs/archive/COMPATIBILITY_SECURITY_REVIEW.md`,
   `docs/PRODUCTION_HARDENING_PLAN.md` — all already avoid
   "production-ready"/"validated" overclaims and use explicit
   implemented-vs-verified language.
