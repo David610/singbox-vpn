@@ -290,12 +290,53 @@ if [ "$(grep -cE 'uses: actions/attest-build-provenance@[0-9a-f]{40} # v[0-9][^[
 else
   fail "release workflow does not attest both archive classes with required permissions"
 fi
-if grep -q 'gh attestation verify' install.sh \
-  && grep -q 'gh attestation verify' deploy/almalinux/install.sh \
-  && grep -q 'gh attestation verify' deploy/almalinux/update.sh; then
-  ok "bootstrap, binary installer, and updater all fail through repository-bound attestation verification"
+if grep -q 'verify-blob-attestation' install.sh \
+  && grep -q 'verify-blob-attestation' deploy/almalinux/install.sh \
+  && grep -q 'verify-blob-attestation' deploy/almalinux/update.sh; then
+  ok "bootstrap, binary installer, and updater all fail through cosign-verified attestation"
 else
   fail "one or more stable artifact consumers omit attestation verification"
+fi
+# Only the explanatory comments are allowed to mention the retired mechanism
+# by name (as `gh attestation verify`, backtick-quoted, never followed by a
+# real argument) — check for an actual invocation, not just the phrase.
+if grep -q 'gh attestation verify "' install.sh \
+  || grep -q 'gh attestation verify "' deploy/almalinux/install.sh \
+  || grep -q 'gh attestation verify "' deploy/almalinux/update.sh; then
+  fail "a stable artifact consumer still calls 'gh attestation verify', which refuses to run at all without gh auth login/GH_TOKEN (reproduced directly: even 'gh repo view' on this public repo fails unauthenticated) — a fresh install has no such credential"
+else
+  ok "no stable artifact consumer depends on 'gh attestation verify' (which cannot work unauthenticated for a real install)"
+fi
+
+echo
+echo "--- static: root install.sh's standalone cosign pin matches deploy/lib/versions.env (no drift) ---"
+# install.sh runs before any repo checkout exists (it is fetched standalone
+# via raw.githubusercontent.com), so it cannot source versions.env like the
+# other two consumers of this pin do — it carries its own literal copy of
+# COSIGN_VERSION/COSIGN_SHA256_AMD64/COSIGN_SHA256_ARM64 instead. This check
+# is what actually prevents that copy from silently drifting.
+versions_cosign_version="$(grep -E '^COSIGN_VERSION=' deploy/lib/versions.env | cut -d= -f2)"
+versions_cosign_amd64="$(grep -E '^COSIGN_SHA256_AMD64=' deploy/lib/versions.env | cut -d= -f2)"
+versions_cosign_arm64="$(grep -E '^COSIGN_SHA256_ARM64=' deploy/lib/versions.env | cut -d= -f2)"
+installer_cosign_version="$(grep -E '^COSIGN_VERSION=' install.sh | cut -d= -f2)"
+installer_cosign_amd64="$(grep -E '^COSIGN_SHA256_AMD64=' install.sh | cut -d= -f2)"
+installer_cosign_arm64="$(grep -E '^COSIGN_SHA256_ARM64=' install.sh | cut -d= -f2)"
+if [ -n "$versions_cosign_version" ] && [ "$versions_cosign_version" = "$installer_cosign_version" ] \
+    && [ -n "$versions_cosign_amd64" ] && [ "$versions_cosign_amd64" = "$installer_cosign_amd64" ] \
+    && [ -n "$versions_cosign_arm64" ] && [ "$versions_cosign_arm64" = "$installer_cosign_arm64" ]; then
+  ok "install.sh's standalone COSIGN_VERSION/COSIGN_SHA256_* match deploy/lib/versions.env"
+else
+  fail "install.sh's standalone cosign pin has drifted from deploy/lib/versions.env"
+fi
+
+echo
+echo "--- static: release.yml publishes a Sigstore attestation bundle alongside every archive ---"
+if grep -q 'singbox-vpn-\${{ matrix.target }}.tar.gz.sigstore.json' "$RELEASE_YML" \
+    && grep -q 'singbox-vpn-src.tar.gz.sigstore.json' "$RELEASE_YML" \
+    && grep -q 'dist/\*.sigstore.json' "$RELEASE_YML"; then
+  ok "release.yml publishes and releases a .sigstore.json bundle for both archive classes"
+else
+  fail "release.yml does not publish the Sigstore bundle assets that anonymous cosign verification depends on"
 fi
 if grep -q 'sha256sum singbox-vpn-src.tar.gz > singbox-vpn-src.tar.gz.sha256' "$RELEASE_YML"; then
   ok "release.yml computes singbox-vpn-src.tar.gz.sha256, folded into the published SHA256SUMS by the publish job's existing 'cat ./*.tar.gz.sha256' step"

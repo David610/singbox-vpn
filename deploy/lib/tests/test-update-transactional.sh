@@ -73,7 +73,7 @@ echo "--- functional: attestation is required for every release, with no version
 # release-publish access — the actor attestation exists to contain —
 # could republish an old-numbered or malformed tag under that policy and
 # skip attestation entirely. verify_release_attestation() must therefore
-# require `gh attestation verify` unconditionally, in both install.sh's
+# require cosign-verified attestation unconditionally, in both install.sh's
 # deployment installer and update.sh, with no early return.
 updater_verify_fn="$(sed -n '/^verify_release_attestation() {/,/^}/p' "$UPDATE_SH")"
 installer_verify_fn="$(sed -n '/^verify_release_attestation() {/,/^}/p' "$REPO_ROOT/deploy/almalinux/install.sh")"

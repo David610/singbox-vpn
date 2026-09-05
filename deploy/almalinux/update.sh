@@ -69,6 +69,19 @@ lifecycle_gate_abort_hook() {
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 
+# Single authoritative source for COSIGN_VERSION/COSIGN_SHA256_AMD64/
+# COSIGN_SHA256_ARM64 — see deploy/lib/versions.env's own header. This is
+# the currently-installed source tree's own copy, not the target
+# release's (cosign is a verification tool this script depends on, not
+# part of what it is updating to).
+VERSIONS_ENV="$REPO_ROOT/deploy/lib/versions.env"
+[ -f "$VERSIONS_ENV" ] || die "missing $VERSIONS_ENV — cannot resolve pinned cosign version/checksums."
+# shellcheck source=/dev/null
+. "$VERSIONS_ENV"
+for v in COSIGN_VERSION COSIGN_SHA256_AMD64 COSIGN_SHA256_ARM64; do
+  [ -n "${!v:-}" ] || die "$v missing from $VERSIONS_ENV."
+done
+
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/os.sh"
 # shellcheck source=/dev/null
@@ -152,19 +165,64 @@ $(cat "$TRANSACTION_MARKER" 2>/dev/null)
 Manual recovery: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/singbox-vpn after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove $TRANSACTION_MARKER and retry the update."
 fi
 
-# See install.sh's verify_release_attestation() for why there is no
-# version-gated checksum-only fallback: gating the requirement on the
-# release's own version string let an attacker with release-publish
+# See install.sh's verify_release_attestation() for the full rationale
+# (docs/SUPPLY_CHAIN_SECURITY.md): verified with cosign against the public
+# Sigstore Rekor transparency log, not `gh attestation verify` — gh
+# refuses to run at all without `gh auth login`/GH_TOKEN, even read-only
+# against a public repo, which this host has no way to provide. There is
+# also no version-gated checksum-only fallback: gating the requirement on
+# the release's own version string let an attacker with release-publish
 # access (the exact actor attestation is meant to contain) republish an
 # old-numbered or malformed tag and skip attestation entirely. Every
 # release, historical or not, requires attestation here too.
+COSIGN_BIN=""
+ensure_cosign() {
+  [ -n "$COSIGN_BIN" ] && return 0
+  if command -v cosign >/dev/null 2>&1; then
+    COSIGN_BIN="$(command -v cosign)"
+    return 0
+  fi
+  local expected_sha256
+  case "$ARCH" in
+    amd64) expected_sha256="$COSIGN_SHA256_AMD64" ;;
+    arm64) expected_sha256="$COSIGN_SHA256_ARM64" ;;
+    *) die "unsupported architecture '$ARCH' — cannot verify release attestations." ;;
+  esac
+  local tmp asset dest
+  tmp="$(mktemp -d)"
+  asset="cosign-linux-${ARCH}"
+  dest="$tmp/$asset"
+  log "downloading pinned cosign v${COSIGN_VERSION} (${ARCH}) to verify release attestations..."
+  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$dest" "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${asset}" \
+    || die "could not download cosign — required to verify release attestations. Nothing live has changed."
+  local actual_sha256
+  actual_sha256="$(sha256sum "$dest" | awk '{print $1}')"
+  [ "$actual_sha256" = "$expected_sha256" ] \
+    || die "checksum verification failed for $asset: expected $expected_sha256, got $actual_sha256 — refusing to run an unverified cosign binary. Nothing live has changed."
+  chmod +x "$dest"
+  COSIGN_BIN="$dest"
+}
+
 verify_release_attestation() {
-  local artifact="$1" version="$2"
-  command -v gh >/dev/null 2>&1 \
-    || die "GitHub CLI ('gh') is required for stable release-attestation verification. Install gh and retry; nothing live has changed."
-  gh attestation verify "$artifact" --repo "$SINGBOX_VPN_REPO" --signer-workflow "$SINGBOX_VPN_REPO/.github/workflows/release.yml" >/dev/null \
-    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_REPO. Nothing live has changed. There is no checksum-only fallback for any release, historical or otherwise."
-  log "artifact attestation verified for repository $SINGBOX_VPN_REPO."
+  local artifact="$1" version="$2" repo="$3"
+  ensure_cosign
+  local bundle
+  bundle="$(mktemp)"
+  if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$bundle" "https://github.com/$repo/releases/download/$version/$(basename "$artifact").sigstore.json"; then
+    rm -f "$bundle"
+    die "could not download the attestation bundle for $(basename "$artifact")/$version. Nothing live has changed. There is no checksum-only fallback for any release, historical or otherwise."
+  fi
+  if ! "$COSIGN_BIN" verify-blob-attestation \
+      --bundle "$bundle" \
+      --certificate-identity "https://github.com/$repo/.github/workflows/release.yml@refs/tags/$version" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      --type "https://slsa.dev/provenance/v1" \
+      "$artifact" >/dev/null; then
+    rm -f "$bundle"
+    die "artifact attestation verification failed or is missing for $version/$repo. Nothing live has changed. There is no checksum-only fallback for any release, historical or otherwise."
+  fi
+  rm -f "$bundle"
+  log "artifact attestation verified for repository $repo."
 }
 shopt -s nullglob
 for stale in /opt/.singbox-vpn-update-staging.* /opt/.singbox-vpn-prev-*; do
@@ -512,7 +570,7 @@ download_verified_source_release() {
   ( cd "$STAGING_ROOT" && grep -E '  singbox-vpn-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) \
     || die "checksum verification failed for singbox-vpn-src.tar.gz against $version's published SHA256SUMS. Nothing live has been changed."
   log "source archive checksum verified against release SHA256SUMS."
-  verify_release_attestation "$tarball" "$version"
+  verify_release_attestation "$tarball" "$version" "$SINGBOX_VPN_REPO"
 }
 
 download_verified_source_release "$TARGET_VERSION" "$STAGING_ROOT/singbox-vpn-src.tar.gz"
@@ -554,7 +612,7 @@ stage_prebuilt_binaries() {
     || die "release binary asset $asset was found but SHA256SUMS was not — refusing to use an unverified binary. Nothing live has been changed."
   ( cd "$STAGING_ROOT" && grep -E "  ${asset}\$" BIN_SHA256SUMS | sha256sum -c - ) \
     || die "checksum verification failed for $asset against $TARGET_VERSION's published SHA256SUMS. Nothing live has been changed."
-  verify_release_attestation "$STAGING_ROOT/$asset" "$TARGET_VERSION"
+  verify_release_attestation "$STAGING_ROOT/$asset" "$TARGET_VERSION" "$SINGBOX_VPN_REPO"
   tar -xzf "$STAGING_ROOT/$asset" -C "$STAGING_ROOT"
   local extracted="$STAGING_ROOT/singbox-vpn-${TARGET_RUST_TARGET}"
   [ -d "$extracted" ] || die "release asset $asset did not contain the expected singbox-vpn-${TARGET_RUST_TARGET}/ directory — packaging bug, not a transient failure. Nothing live has been changed."

@@ -45,19 +45,29 @@ fi
 FAKE_ID
 chmod 0755 "$TEST_TMP/fakebin/id"
 
-cat > "$TEST_TMP/fakebin/gh" <<'FAKE_GH'
+cat > "$TEST_TMP/fakebin/cosign" <<'FAKE_COSIGN'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[ "$1" = attestation ] && [ "$2" = verify ]
-[ "$4" = --repo ] && [ "$5" = David610/singbox-vpn ]
-case "${GH_ATTESTATION_RESULT:-valid}" in
+[ "$1" = verify-blob-attestation ]
+identity=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --certificate-identity) identity="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$identity" in
+  *David610/singbox-vpn*) ;;
+  *) echo "unexpected certificate identity: $identity" >&2; exit 1 ;;
+esac
+case "${ATTESTATION_RESULT:-valid}" in
   valid) exit 0 ;;
-  missing) echo "no attestations found" >&2; exit 1 ;;
-  wrong-repository|wrong-workflow) echo "attestation identity did not match" >&2; exit 1 ;;
+  missing) echo "no matching attestations found in the transparency log" >&2; exit 1 ;;
+  wrong-repository|wrong-workflow) echo "certificate identity did not match" >&2; exit 1 ;;
   modified) echo "attestation subject digest did not match" >&2; exit 1 ;;
 esac
-FAKE_GH
-chmod 0755 "$TEST_TMP/fakebin/gh"
+FAKE_COSIGN
+chmod 0755 "$TEST_TMP/fakebin/cosign"
 
 cat > "$TEST_TMP/fakebin/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
@@ -89,6 +99,9 @@ case "$url" in
     ;;
   */releases/download/"$FIXTURE_VERSION"/SHA256SUMS)
     cp "$FIXTURE_SUMS" "$out"
+    ;;
+  */releases/download/*/singbox-vpn-src.tar.gz.sigstore.json)
+    printf '{}' > "$out"
     ;;
   */releases/latest)
     printf '{"tag_name":"%s"}\n' "$FIXTURE_VERSION"
@@ -135,7 +148,7 @@ fi
 for bad_result in missing wrong-repository wrong-workflow modified; do
   rm -f "$TEST_MARKER"
   rc=0
-  GH_ATTESTATION_RESULT="$bad_result" PATH="$TEST_TMP/fakebin:$PATH" bash "$BOOTSTRAP" \
+  ATTESTATION_RESULT="$bad_result" PATH="$TEST_TMP/fakebin:$PATH" bash "$BOOTSTRAP" \
     --version "$FIXTURE_VERSION" --non-interactive --allow-ip-hostname \
     --reality-handshake-server www.cloudflare.com \
     >"$TEST_TMP/bootstrap-$bad_result.log" 2>&1 || rc=$?
@@ -157,7 +170,7 @@ printf '%s  singbox-vpn-src.tar.gz\n' "$(sha256sum "$TEST_TMP/legacy.tar.gz" | a
 rm -f "$TEST_MARKER"
 rc=0
 FIXTURE_VERSION="$LEGACY_VERSION" FIXTURE_TAR="$TEST_TMP/legacy.tar.gz" \
-  FIXTURE_SUMS="$TEST_TMP/legacy-SHA256SUMS" GH_ATTESTATION_RESULT=missing \
+  FIXTURE_SUMS="$TEST_TMP/legacy-SHA256SUMS" ATTESTATION_RESULT=missing \
   PATH="$TEST_TMP/fakebin:$PATH" bash "$BOOTSTRAP" --version "$LEGACY_VERSION" \
   --non-interactive --allow-ip-hostname --reality-handshake-server www.cloudflare.com \
   >"$TEST_TMP/bootstrap-legacy.log" 2>&1 || rc=$?

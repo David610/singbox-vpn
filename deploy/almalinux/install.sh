@@ -50,7 +50,7 @@ VERSIONS_ENV="$REPO_ROOT/deploy/lib/versions.env"
 [ -f "$VERSIONS_ENV" ] || { echo "[install] ERROR: missing $VERSIONS_ENV — cannot resolve pinned sing-box version/checksums." >&2; exit 1; }
 # shellcheck source=/dev/null
 . "$VERSIONS_ENV"
-for v in SINGBOX_VERSION SINGBOX_SHA256_AMD64 SINGBOX_SHA256_ARM64 SUPPORTED_ARCH; do
+for v in SINGBOX_VERSION SINGBOX_SHA256_AMD64 SINGBOX_SHA256_ARM64 SUPPORTED_ARCH COSIGN_VERSION COSIGN_SHA256_AMD64 COSIGN_SHA256_ARM64; do
   [ -n "${!v:-}" ] || { echo "[install] ERROR: $v missing from $VERSIONS_ENV." >&2; exit 1; }
 done
 SINGBOX_BIN="$BIN_DIR/sing-box"
@@ -1200,19 +1200,64 @@ resolve_reality_handshake_server() {
 # ---------------------------------------------------------------------
 # [4] singbox-vpn binaries (prebuilt release, falling back to source build)
 # ---------------------------------------------------------------------
-# See install.sh's verify_release_attestation() for why there is no
-# version-gated checksum-only fallback: gating the requirement on the
-# release's own version string let an attacker with release-publish
+# See install.sh's verify_release_attestation() for the full rationale
+# (docs/SUPPLY_CHAIN_SECURITY.md): verified with cosign against the public
+# Sigstore Rekor transparency log, not `gh attestation verify` — gh
+# refuses to run at all without `gh auth login`/GH_TOKEN, even read-only
+# against a public repo, which a fresh VPS has no way to provide. There is
+# also no version-gated checksum-only fallback: gating the requirement on
+# the release's own version string let an attacker with release-publish
 # access (the exact actor attestation is meant to contain) republish an
 # old-numbered or malformed tag and skip attestation entirely. Every
 # release, historical or not, requires attestation here too.
+COSIGN_BIN=""
+ensure_cosign() {
+  [ -n "$COSIGN_BIN" ] && return 0
+  if command -v cosign >/dev/null 2>&1; then
+    COSIGN_BIN="$(command -v cosign)"
+    return 0
+  fi
+  local expected_sha256
+  case "$ARCH" in
+    amd64) expected_sha256="$COSIGN_SHA256_AMD64" ;;
+    arm64) expected_sha256="$COSIGN_SHA256_ARM64" ;;
+    *) die "unsupported architecture '$ARCH' — cannot verify release attestations." ;;
+  esac
+  local tmp asset dest
+  tmp="$(mktemp -d)"
+  asset="cosign-linux-${ARCH}"
+  dest="$tmp/$asset"
+  log "downloading pinned cosign v${COSIGN_VERSION} (${ARCH}) to verify release attestations..."
+  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$dest" "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${asset}" \
+    || die "could not download cosign — required to verify release attestations."
+  local actual_sha256
+  actual_sha256="$(sha256sum "$dest" | awk '{print $1}')"
+  [ "$actual_sha256" = "$expected_sha256" ] \
+    || die "checksum verification failed for $asset: expected $expected_sha256, got $actual_sha256 — refusing to run an unverified cosign binary."
+  chmod +x "$dest"
+  COSIGN_BIN="$dest"
+}
+
 verify_release_attestation() {
-  local artifact="$1" version="$2"
-  command -v gh >/dev/null 2>&1 \
-    || die "GitHub CLI ('gh') is required to authenticate stable release artifacts. Re-run through the top-level install.sh bootstrap or install gh manually."
-  gh attestation verify "$artifact" --repo "$SINGBOX_VPN_RELEASE_REPO" --signer-workflow "$SINGBOX_VPN_RELEASE_REPO/.github/workflows/release.yml" >/dev/null \
-    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_RELEASE_REPO — refusing to install stable binaries. There is no checksum-only fallback for any release, historical or otherwise."
-  log "artifact attestation verified for repository $SINGBOX_VPN_RELEASE_REPO."
+  local artifact="$1" version="$2" repo="$3"
+  ensure_cosign
+  local bundle
+  bundle="$(mktemp)"
+  if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$bundle" "https://github.com/$repo/releases/download/$version/$(basename "$artifact").sigstore.json"; then
+    rm -f "$bundle"
+    die "could not download the attestation bundle for $(basename "$artifact")/$version — refusing to install stable binaries. There is no checksum-only fallback for any release, historical or otherwise."
+  fi
+  if ! "$COSIGN_BIN" verify-blob-attestation \
+      --bundle "$bundle" \
+      --certificate-identity "https://github.com/$repo/.github/workflows/release.yml@refs/tags/$version" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      --type "https://slsa.dev/provenance/v1" \
+      "$artifact" >/dev/null; then
+    rm -f "$bundle"
+    die "artifact attestation verification failed or is missing for $version/$repo — refusing to install stable binaries. There is no checksum-only fallback for any release, historical or otherwise."
+  fi
+  rm -f "$bundle"
+  log "artifact attestation verified for repository $repo."
 }
 
 fetch_release_binaries() {
@@ -1240,7 +1285,7 @@ fetch_release_binaries() {
   if curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmp/SHA256SUMS" "$base_url/SHA256SUMS" 2>/dev/null; then
     ( cd "$tmp" && sha256sum --ignore-missing -c SHA256SUMS ) || die "checksum verification failed for $asset — refusing to install unverified binaries."
     log "checksum verified against release SHA256SUMS."
-    verify_release_attestation "$tmp/$asset" "$version"
+    verify_release_attestation "$tmp/$asset" "$version" "$SINGBOX_VPN_RELEASE_REPO"
   else
     die "release asset $asset was found but SHA256SUMS was not — refusing to install a binary with no integrity verification."
   fi
