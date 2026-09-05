@@ -117,6 +117,28 @@ main() {
   [ -d "$CARGO_BIN_DIR" ] || { echo "::error::cargo bin dir not found: $CARGO_BIN_DIR (expected the Rust toolchain to already be installed, e.g. via dtolnay/rust-toolchain)" >&2; exit 1; }
   [ -d "$RUSTUP_HOME_DIR" ] || { echo "::error::rustup home not found: $RUSTUP_HOME_DIR" >&2; exit 1; }
 
+  # Pin the exact toolchain by NAME (RUSTUP_TOOLCHAIN), rather than
+  # letting rustup's proxies resolve it via WORKSPACE_DIR's
+  # rust-toolchain.toml directory override. A real GitHub Actions run
+  # showed the override path is not a pure local lookup: rustup treated
+  # a plain `rustc`/`cargo` invocation as needing to reconcile the
+  # toolchain against the override file's full declared spec (channel +
+  # components), attempted to download a missing component (clippy —
+  # this job's dtolnay/rust-toolchain step, like release.yml's build
+  # job, only requests `targets:`, not `components:`), and died with a
+  # broken-pipe (exit 141) partway through — this container has no
+  # business reaching the network for toolchain state at all. Setting
+  # RUSTUP_TOOLCHAIN explicitly is the same mechanism the host-side
+  # `rustc +1.94.1 --version --verbose` step (dtolnay/rust-toolchain's
+  # own verification, which runs and succeeds moments earlier in every
+  # log) already uses successfully: it resolves the toolchain by name
+  # directly, with no directory-override lookup and no component
+  # reconciliation. Parsed from rust-toolchain.toml itself rather than
+  # plumbed through as a separate workflow input, so there is exactly
+  # one place this repository's pinned channel is written down.
+  RUST_TOOLCHAIN_NAME="${RUST_TOOLCHAIN_NAME:-$(sed -nE 's/^channel = "([^"]+)"$/\1/p' "$WORKSPACE_DIR/rust-toolchain.toml")}"
+  [ -n "$RUST_TOOLCHAIN_NAME" ] || { echo "::error::could not determine the pinned Rust channel from $WORKSPACE_DIR/rust-toolchain.toml" >&2; exit 1; }
+
   mkdir -p "$RELEASE_CARGO_HOME"
 
   host_uid="$(id -u)"
@@ -140,6 +162,7 @@ main() {
       -v "$RELEASE_CARGO_HOME:/cargo-home" \
       -e CARGO_HOME=/cargo-home \
       -e RUSTUP_HOME=/opt/rustup \
+      -e RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN_NAME" \
       -e HOME=/cargo-home \
       -e PATH="/opt/rust-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
       "$BUILD_IMAGE_TAG" \
