@@ -105,22 +105,25 @@ whenever the two differ in phrasing; they must not differ in substance.
 - **No v1.0 multi-node control plane / fleet manager.** One VPS only.
 - **No anonymity or global-adversary guarantee.** This is a private
   circumvention/privacy tool for a small trusted group, not a Tor-class
-  anonymity system — see `docs/THREAT_MODEL.md` / `docs/PRIVACY_MODEL.md`
-  for the actual threat boundary.
-- **The native adaptive stack is a separate, unsupported-for-v1.0
-  product surface**: `apps/client-daemon`, `crates/transport-native`,
-  `crates/policy`, `crates/failure-classifier`, `crates/network-state`,
-  `crates/rendezvous-client`, `crates/telemetry`, `services/rendezvous`,
-  `services/relay-agent`. These implement a direct-tls/noise-quic
-  adaptive-transport system with its own scoring engine, driven only via
-  `deploy/local/run-dev-slice.sh` (loopback dev slice). The v1.0
-  installer (`deploy/almalinux/install.sh`) does not build, deploy, or
-  depend on any of this — see "Supported code surface" below,
-  VERIFIED-CODE.
+  anonymity system — see `docs/THREAT_MODEL.md` for the actual threat
+  boundary.
+- **The native adaptive stack has been REMOVED from `main`.** It used to
+  live at `apps/client-daemon`, `apps/cli`, `apps/keytool`,
+  `crates/{crypto,config,network-state,transport-api,failure-classifier,
+  policy,transport-native,rendezvous-client,telemetry}`,
+  `services/{rendezvous,relay-agent,test-service}`, and the top-level
+  `tests/` crate — a direct-tls/noise-quic adaptive-transport system
+  with its own scoring engine, driven only via a local dev slice. It was
+  never in the v1.0 supported dependency closure (the v1.0 installer,
+  `deploy/almalinux/install.sh`, never built, deployed, or depended on
+  any of it), so removing it changes no runtime/install behavior. Its
+  full implementation, history, and design docs (including all of
+  `docs/ADR/`) are preserved on the `archive/native-adaptive-stack-2026`
+  branch, not deleted.
 - Hiddify and other sing-box-compatible clients use **sing-box's own**
-  `urltest` transport selection, never this repo's native `policy`
-  scoring engine. The two adaptive systems are unrelated; do not describe
-  Hiddify traffic as using the native Rust adaptive engine.
+  `urltest` transport selection. The native stack's scoring engine that
+  used to exist alongside it is gone; do not describe Hiddify traffic as
+  using any Rust adaptive engine.
 
 ## Supported code surface (what the installer actually builds/deploys)
 
@@ -130,9 +133,9 @@ scope comment; crate `Cargo.toml` dependency graphs):
 - Binaries built: `cargo build --release -p admin -p subscription` only.
 - Crate dependency closure of the supported path: `apps/admin`,
   `services/subscription` -> `crates/common`, `crates/compat-config`,
-  `crates/provisioning-contract`. None depends on `transport-native`,
-  `policy`, `failure-classifier`, `network-state`, `rendezvous-client`,
-  or `telemetry`.
+  `crates/provisioning-contract`. This is now also the ENTIRE workspace
+  member list — there is no longer a separate default-members subset to
+  keep in sync with it.
 - Shell: `install.sh`, `uninstall.sh`, `deploy/almalinux/*.sh`,
   `deploy/lib/*.sh`.
 - Templates: `deploy/almalinux/templates/*.template`.
@@ -143,9 +146,3 @@ validation for the first-party contract, with no dependency on anything
 else in this workspace. `crates/compat-config` depends on it, not the
 other way around, so the contract model cannot pick up server-side
 concerns (key files, paths, secrets) by accident.
-
-Everything else in `crates/` and `apps/` (`client-daemon`, `cli`,
-`keytool`, `transport-native`, `policy`, `failure-classifier`,
-`network-state`, `rendezvous-client`, `telemetry`) and
-`services/rendezvous`, `services/relay-agent` belong to the native
-adaptive stack and are out of the v1.0 supported path.

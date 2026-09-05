@@ -1,33 +1,12 @@
 [workspace]
 resolver = "2"
+# This IS the production build -- there is no longer a separate
+# default-members subset to maintain. The unsupported native/adaptive
+# prototype (transport-native, rendezvous, relay-agent, client-daemon,
+# and everything only they depended on) was removed from main; its full
+# implementation is preserved on the `archive/native-adaptive-stack-2026`
+# branch. See docs/SUPPORTED_PRODUCT.md.
 members = [
-    "crates/common",
-    "crates/crypto",
-    "crates/config",
-    "crates/network-state",
-    "crates/transport-api",
-    "crates/failure-classifier",
-    "crates/policy",
-    "crates/transport-native",
-    "crates/rendezvous-client",
-    "crates/telemetry",
-    "crates/compat-config",
-    "crates/provisioning-contract",
-    "apps/client-daemon",
-    "apps/cli",
-    "apps/keytool",
-    "apps/admin",
-    "services/rendezvous",
-    "services/relay-agent",
-    "services/test-service",
-    "services/subscription",
-    "tests",
-]
-# `cargo build` at the repository root is the production build.  Keep the
-# unsupported native/adaptive prototype available for explicit `-p` and
-# `--workspace` development without silently compiling it into the server
-# product or release path.
-default-members = [
     "crates/common",
     "crates/compat-config",
     "crates/provisioning-contract",
@@ -36,22 +15,19 @@ default-members = [
 ]
 
 [workspace.package]
+version = "1.0.0"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
-ed25519-dalek = { version = "3", features = ["rand_core"] }
-getrandom = { version = "0.4", features = ["sys_rng"] }
-bitflags = "2"
 proptest = "1"
 clap = { version = "4", features = ["derive"] }
 toml = "1.1"

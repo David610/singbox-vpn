@@ -27,15 +27,29 @@ In scope:
   scripts)
 - `crates/compat-config`, `apps/admin`, `services/subscription` (the
   Hiddify-compatible server stack's control plane)
-- `crates/crypto`, `crates/config`, `crates/transport-native`,
-  `services/rendezvous`, `services/relay-agent` (the native experimental
-  transport stack)
 
 Out of scope:
 
 - The upstream `sing-box` binary itself (report to
   https://github.com/SagerNet/sing-box)
 - Third-party client apps (Hiddify, v2rayNG, etc.)
+
+## Repository protections
+
+The GitHub credentials available in the automated session that assembled
+the v1.0 release did not include repository-administration access (no
+branch-protection/ruleset API was reachable), so these settings could
+not be verified or configured programmatically and must not be assumed
+enabled. The repository owner should confirm/apply, under
+**Settings -> Branches** and **Settings -> Tags**:
+
+- `main`: require a pull request before merging, require the CI and
+  Security workflows to pass, disallow force pushes, disallow branch
+  deletion.
+- Tags matching `v*`: protect against deletion and mutation (a merged
+  release tag should never move or disappear).
+- Workflow file changes (`.github/workflows/**`): require review before
+  merging, same as any other change to `main`.
 
 ## What this project treats as security-relevant
 

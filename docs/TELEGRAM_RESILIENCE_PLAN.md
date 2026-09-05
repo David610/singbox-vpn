@@ -497,7 +497,7 @@ unanswered, using current primary sources. Findings, each graded:
   this claim; corrected below (2026-08-11 re-check §2026-08-11b).
 - **AWS as Node B's provider: still UNKNOWN whether the specific IP is
   reachable from Russia** — this addendum's original framing stands;
-  run `docs/AWS_REACHABILITY_TEST.md` before deploying it to real
+  run `docs/archive/AWS_REACHABILITY_TEST.md` before deploying it to real
   users.
 - **Telegram's status in Russia**: treat any specific 2026 block
   date/percentage as UNVERIFIED secondary aggregation, not a primary

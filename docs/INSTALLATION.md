@@ -127,6 +127,29 @@ curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.s
     --reality-handshake-server www.cloudflare.com
 ```
 
+### Preview without installing (`--dry-run`)
+
+Runs the same preflight checks (OS, architecture, memory, disk, SSH port,
+port conflicts on 443/tcp+udp and the subscription port, TCP/80 for ACME,
+firewall backend state, certbot presence, DNS for `--domain`, and a live
+TLS 1.3 probe of `--reality-handshake-server`) and prints a PASS/WARN/FAIL
+report. Makes no changes to the host, regardless of whether checks pass:
+
+```bash
+... | sudo bash -s -- --dry-run \
+    --domain vpn.example.com \
+    --reality-handshake-server www.cloudflare.com
+```
+
+A WARN (e.g. the firewall backend isn't active yet, or no `--domain` was
+given) does not block installation — `--dry-run` still ends with `READY TO
+INSTALL` — but is shown so nothing about what a real run would do is
+hidden. A FAIL (e.g. a required port is already in use, or `--domain`
+doesn't resolve to this host) ends with `NOT READY` and a non-zero exit
+code. Note this only ever reports on your host's own firewall; it cannot
+see or configure your cloud/VPS provider's separate network firewall (see
+[Provider firewall](#provider-firewall) above).
+
 ### Custom SSH port
 
 The installer never activates the firewall before your real SSH port is
@@ -238,6 +261,7 @@ and reloads nginx after every successful renewal — no manual step needed.
 sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest
 sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version vX.Y.Z
 sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair   # reconcile without changing versions
+sudo vpn repair                                             # same as --repair, shorter to type
 ```
 
 Updates download and checksum-verify the target release before changing

@@ -55,9 +55,10 @@ the interop test suite) before pinning.
 
 ## Why sing-box, not Xray-core, for this phase
 
-`docs/ADR/0002-transport-portfolio.md` already flagged both as plausible
-process adapters. sing-box was chosen as the initial compatibility data
-plane because:
+An earlier design pass (native adaptive stack, removed from `main` --
+see `docs/SUPPORTED_PRODUCT.md`) had already flagged both sing-box and
+Xray-core as plausible process adapters. sing-box was chosen as the
+initial compatibility data plane because:
 
 - It implements both target protocols (VLESS+REALITY and Hysteria2) in a
   single binary/process, under one config schema, one systemd unit, and

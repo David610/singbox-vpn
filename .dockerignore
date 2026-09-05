@@ -12,7 +12,6 @@ target/
 **/reality/public.key
 **/hysteria/*.key
 **/hysteria/*.pem
-deploy/local/relay-pool.json.root_pub
 /etc/vpn/**
 
 # Editor/OS noise

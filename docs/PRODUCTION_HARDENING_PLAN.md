@@ -223,7 +223,7 @@ this sandbox), `[ ]` documented only / deferred with reason.
 
 - **Issue**: `render_singbox_server_config` never sets `masquerade` on
   the `hysteria2` inbound — flagged already in
-  `docs/COMPATIBILITY_SECURITY_REVIEW.md` as a known gap.
+  `docs/archive/COMPATIBILITY_SECURITY_REVIEW.md` as a known gap.
 - **Fix**: per current sing-box 1.13.x docs
   (`https://sing-box.sagernet.org/configuration/inbound/hysteria2/#masquerade`),
   the inbound gains a static-file masquerade default:
@@ -242,7 +242,7 @@ this sandbox), `[ ]` documented only / deferred with reason.
   a substitute for REALITY-style full protocol mimicry (Hysteria2 has no
   equivalent of REALITY's live-relay disguise).
 - **Files**: `crates/compat-config/src/server.rs`,
-  `deploy/almalinux/install.sh`, `docs/COMPATIBILITY_SECURITY_REVIEW.md`.
+  `deploy/almalinux/install.sh`, `docs/archive/COMPATIBILITY_SECURITY_REVIEW.md`.
 - **Test**: unit test asserting rendered config contains
   `masquerade.type == "file"`.
 
@@ -332,7 +332,7 @@ this sandbox), `[ ]` documented only / deferred with reason.
 
 ## 15. No credential rotation for VLESS UUID / Hysteria2 password
 
-- **Issue**: only `rotate-token` existed; `docs/COMPATIBILITY_SECURITY_REVIEW.md`
+- **Issue**: only `rotate-token` existed; `docs/archive/COMPATIBILITY_SECURITY_REVIEW.md`
   already flagged this gap.
 - **Fix**: new subcommands `user rotate-vless`, `user rotate-hysteria`,
   `user rotate-credentials` (both). Each: generate → save → render →
@@ -381,7 +381,7 @@ this sandbox), `[ ]` documented only / deferred with reason.
   status, error category). No change required beyond keeping this
   invariant; added a doc comment at the one call site plus a redaction
   regression test (`grep`-based CI-friendly check job, see #19).
-- **Files**: none functionally; `docs/COMPATIBILITY_SECURITY_REVIEW.md` updated to record this as reviewed rather than unreviewed.
+- **Files**: none functionally; `docs/archive/COMPATIBILITY_SECURITY_REVIEW.md` updated to record this as reviewed rather than unreviewed.
 
 ## 19. Health checks — deeper than "port open"
 
@@ -404,7 +404,7 @@ this sandbox), `[ ]` documented only / deferred with reason.
 ## 20. Network failure-independence tests
 
 - **Status**: `[ ]` not executed this session — same constraint already
-  documented in `TASKS.md`/`docs/COMPATIBILITY_SECURITY_REVIEW.md`:
+  documented in `TASKS.md`/`docs/archive/COMPATIBILITY_SECURITY_REVIEW.md`:
   this sandbox has no `iproute2`/root network-namespace capability
   (re-verified: `which ip tc` fail). Not re-claimed as fixed. The
   acceptance-test.sh script (new) includes a clearly-marked,
@@ -504,7 +504,7 @@ this sandbox), `[ ]` documented only / deferred with reason.
 
 - **Fix**: `README.md`, `TASKS.md`,
   `docs/ALMALINUX_DEPLOYMENT.md`, `docs/CLIENT_COMPATIBILITY.md`,
-  `docs/COMPATIBILITY_SECURITY_REVIEW.md`,
+  `docs/archive/COMPATIBILITY_SECURITY_REVIEW.md`,
   `docs/COMPATIBILITY_VERSIONS.md` updated at the end of this session
   to remove/never introduce "production-ready", "Hiddify validated",
   "AlmaLinux validated", "MagicOS validated" claims — replaced with

@@ -1,6 +1,18 @@
 # Real VPS acceptance test
 
-This is the release-blocking, **manual** acceptance procedure for the supported
+Two ways to run this, same underlying gate (`deploy/almalinux/lifecycle-acceptance.sh`):
+- **Automated**: `.github/workflows/vps-acceptance.yml`, `workflow_dispatch`
+  only. You still have to provision and destroy the disposable host
+  yourself (no cloud-provisioning credentials are wired into this repo);
+  the workflow just drives the harness over SSH once you point it at one.
+- **Manual**: this document, step by step, when you want to watch each
+  stage yourself or the automated path isn't available.
+
+Neither is a substitute for the other's evidence: a `SERVER-VERIFIED`
+claim requires this to have actually been executed against a real host,
+not merely available to run.
+
+This is the release-blocking acceptance procedure for the supported
 AlmaLinux 9 x86_64 target. Run it on a new, disposable VPS. Local containers,
 mocked `systemctl`, and CI configuration checks do not count as this test.
 Never commit filled-in credentials, provisioning URLs, IP addresses, or a

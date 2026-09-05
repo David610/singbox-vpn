@@ -1,11 +1,9 @@
-//! Same redaction discipline as `crypto::Secret<T>` (see
-//! `crates/crypto/src/secret.rs`), but persistable: compatibility
-//! credentials (VLESS UUIDs, Hysteria2 passwords, REALITY private keys)
-//! must round-trip through an on-disk `users.json` / key file, which
-//! `crypto::Secret<T>` deliberately does not support. `SecretString`
-//! serializes transparently (the file itself is the protected boundary —
-//! mode 0600/0700, see `store.rs`) but never implements `Debug`/`Display`,
-//! so a stray `{:?}` in a log line cannot leak it.
+//! A persistable secret wrapper: compatibility credentials (VLESS UUIDs,
+//! Hysteria2 passwords, REALITY private keys) must round-trip through an
+//! on-disk `users.json` / key file. `SecretString` serializes
+//! transparently (the file itself is the protected boundary — mode
+//! 0600/0700, see `store.rs`) but never implements `Debug`/`Display`, so
+//! a stray `{:?}` in a log line cannot leak it.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;

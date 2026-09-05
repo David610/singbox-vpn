@@ -2,7 +2,7 @@
 
 Compact engineering handoff. Full boundary definition: `docs/SUPPORTED_PRODUCT.md`.
 The canonical current evidence ledger is `docs/DEVICE_ACCEPTANCE_TESTS.md`.
-This file describes implementation history; `docs/PRODUCTION_ACCEPTANCE_REPORT.md`
+This file describes implementation history; `docs/archive/PRODUCTION_ACCEPTANCE_REPORT.md`
 is a dated historical audit snapshot. Neither may upgrade ledger evidence.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
@@ -142,11 +142,10 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
 AlmaLinux 9 x86_64, <=10 users, one VPS, upstream sing-box, VLESS+REALITY
 TCP/443 primary, Hysteria2 UDP/443 optional, Hiddify/sing-box-compatible
-clients only, custom domain default. Native adaptive stack
-(`client-daemon`, `transport-native`, `policy`, `failure-classifier`,
-`network-state`, `rendezvous-client`, `telemetry`, `services/rendezvous`,
-`services/relay-agent`) is a separate, out-of-scope product surface for
-v1.0 — see `deploy/local/run-dev-slice.sh` for its dev-only entry point.
+clients only, custom domain default. The native adaptive stack this
+never included has been removed from `main` entirely — see
+`docs/SUPPORTED_PRODUCT.md` and the `archive/native-adaptive-stack-2026`
+branch.
 
 ## Supported file/test surface (avoid full-workspace runs when only this changed)
 
@@ -235,7 +234,7 @@ repository has never pushed a real tag). Static regression coverage
 for all three was added to
 `deploy/lib/tests/test-release-archive-contract.sh` — `VERIFIED-TEST`.
 
-`docs/PRODUCTION_ACCEPTANCE_REPORT.md` had one stale claim ("falls back
+`docs/archive/PRODUCTION_ACCEPTANCE_REPORT.md` had one stale claim ("falls back
 to `main` with an explicit warning if no release has been tagged yet")
 left over from before the no-release-fallback behavior was fixed (prior
 session, see "Completed checkpoints" #9 below) — corrected to match the

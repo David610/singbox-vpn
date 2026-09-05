@@ -11,29 +11,25 @@ cargo-fuzz = true
 # own convention): libfuzzer-sys requires nightly + ASan instrumentation
 # that the normal `cargo build --workspace` toolchain in this session does
 # not have. Run with `cargo +nightly fuzz run <target>` after
-# `cargo install cargo-fuzz` — not exercised in this session (documented
-# gap in docs/TEST_STRATEGY.md). The equivalent properties ARE exercised
-# today via proptest-based "never panics on arbitrary bytes" tests in
-# `crates/common/src/framing.rs` and `crates/config/src/lib.rs`, which run
-# under plain `cargo test` with no extra tooling.
+# `cargo install cargo-fuzz` — not exercised in this session. The
+# equivalent property IS exercised today via a proptest-based "never
+# panics on arbitrary bytes" test in `crates/common/src/framing.rs`,
+# which runs under plain `cargo test` with no extra tooling.
+#
+# The other original target here, `config_bundle` (fuzzing the removed
+# native-adaptive-stack `config` crate's signed-bundle parser), was
+# removed along with that crate -- see docs/SUPPORTED_PRODUCT.md and
+# the `archive/native-adaptive-stack-2026` branch.
 [workspace]
 
 [dependencies]
 libfuzzer-sys = "0.4"
 common = { path = "../crates/common" }
-config = { path = "../crates/config" }
 serde_json = "1"
 
 [[bin]]
 name = "framing_header"
 path = "fuzz_targets/framing_header.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "config_bundle"
-path = "fuzz_targets/config_bundle.rs"
 test = false
 doc = false
 bench = false

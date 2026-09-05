@@ -31,10 +31,10 @@ pub struct LocalHttpTarget {
 /// A minimal, dependency-free local HTTP target: accepts a connection,
 /// reads (and discards) the request, replies with a fixed 200 OK body,
 /// and closes — deterministic, no public/third-party network dependency
-/// (unlike dialing `example.com` or any other external host), matching
-/// `services/test-service`'s own "prove bytes flow end to end" contract
-/// but self-contained here so these tests don't need a cross-crate
-/// dependency or a tokio runtime just for one static response.
+/// (unlike dialing `example.com` or any other external host), proving
+/// bytes flow end to end while staying self-contained here so these
+/// tests don't need a cross-crate dependency or a tokio runtime just for
+/// one static response.
 pub fn spawn_local_http_target() -> LocalHttpTarget {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test HTTP target");
     let port = listener.local_addr().unwrap().port();

@@ -2,10 +2,9 @@
 //! (Hiddify, sing-box-compatible clients, v2rayNG) speaking VLESS+REALITY
 //! or Hysteria2, backed by an external sing-box (or future) data plane.
 //!
-//! Deliberately separate from the native trust chain (`config`,
-//! `transport-api`, `rendezvous-client`) — see
-//! `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` §6. Nothing here is
-//! signed into a `RelayBundle`; nothing native parses these types.
+//! Deliberately its own trust chain, independent of any other signing
+//! hierarchy in this workspace — see
+//! `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` §6.
 
 pub mod contract;
 pub mod credentials;

@@ -154,6 +154,20 @@ enum Commands {
         /// omitted silently. Read-only; changes nothing.
         #[arg(long)]
         performance: bool,
+        /// Print the standard L1-L6 checks as one JSON object on stdout
+        /// instead of prose: `{"healthy": bool, "checks": [{"layer",
+        /// "status", "message"}, ...], "protocol": "not_run"|"passed"|
+        /// "failed"|"inconclusive"}`. `status` is one of "ok"/"info"/
+        /// "warn"/"fail" — the same four states the prose `[OK]`/`[INFO]`/
+        /// `[WARN]`/`[FAIL]` labels report, just machine-readable. No
+        /// secrets are included (same checks, same redaction as the
+        /// prose path). Exit code is unchanged: non-zero iff any check
+        /// is "fail", same as without `--json`. Mutually exclusive with
+        /// `--report`/`--performance` (separate output formats) and
+        /// `--telegram`/`--client` (their summaries are prose-only and
+        /// would corrupt this command's JSON stdout).
+        #[arg(long)]
+        json: bool,
     },
     /// Back up the minimum state needed to rebuild this deployment
     /// (users, credential metadata, REALITY keys, Hysteria2 TLS
@@ -172,6 +186,21 @@ enum Commands {
     /// mutating command — a corrupt or incompatible backup is rejected
     /// by `sing-box check` rather than silently installed.
     Restore { archive: PathBuf },
+    /// Safely reconcile this host's binaries, systemd units, and
+    /// rendered sing-box config back to the currently-installed
+    /// release's own material — by running `update.sh --repair`, which
+    /// re-fetches and re-verifies THAT release's prebuilt, checksum-
+    /// verified binaries (never a Cargo/source build, so no Rust
+    /// toolchain is needed) through its normal transactional update
+    /// pipeline (automatic rollback on failure). Never rotates
+    /// credentials, deletes users, changes the domain/REALITY decoy, or
+    /// bumps the installed release version. Does not touch firewall/
+    /// nginx/SELinux/package state — for that broader surface, re-run
+    /// `install.sh` directly. Requires the persistent installation this
+    /// repository's own installer creates at `/opt/singbox-vpn` — if
+    /// this deployment was set up some other way, run its own
+    /// `update.sh --repair` directly instead.
+    Repair,
     /// Enable (first run) or rotate (subsequent runs) the shared Hysteria2
     /// salamander obfuscation password. Obfuscation hides the Hysteria2/
     /// QUIC handshake's protocol signature from DPI/traffic classifiers —
@@ -318,6 +347,16 @@ enum UserCommands {
 /// must hold the system-wide state lock for its entire duration
 /// (docs/FINAL_PRODUCTION_AUDIT.md P0-4). `user qr` mutates (it rotates
 /// the token, same as `rotate-token`) and is included.
+///
+/// `Repair` is also excluded, but for the opposite reason: it does not
+/// mutate state ITSELF, it shells out to `install.sh`, which in turn
+/// invokes `vpn-admin render-config`/`user create`/`doctor --protocol`
+/// as separate child processes during a normal repair run. If this
+/// process held the lock for `Repair`'s entire duration, every one of
+/// those children would block forever trying to acquire the same lock
+/// file this process is still holding — the exact deadlock
+/// `deploy/almalinux/install.sh` uses an entirely separate lock file
+/// (`/run/lock/singbox-vpn-installer.lock`, not this one) to avoid.
 fn command_mutates_state(cmd: &Commands) -> bool {
     !matches!(
         cmd,
@@ -327,6 +366,7 @@ fn command_mutates_state(cmd: &Commands) -> bool {
             | Commands::User(UserCommands::List)
             | Commands::User(UserCommands::Subscription { .. })
             | Commands::Config(ConfigCommands::Validate)
+            | Commands::Repair
     )
 }
 
@@ -359,6 +399,7 @@ fn main() -> Result<()> {
             report_output,
             client,
             performance,
+            json,
         } => cmd_doctor(
             &cfg,
             protocol,
@@ -368,9 +409,11 @@ fn main() -> Result<()> {
             report_output.as_deref(),
             client,
             performance,
+            json,
         ),
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
+        Commands::Repair => cmd_repair(),
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
         Commands::Config(ConfigCommands::Validate) => cmd_config_validate(&cfg, &cli.config),
         Commands::Config(ConfigCommands::Migrate) => cmd_config_migrate(&cfg, &cli.config),
@@ -938,6 +981,69 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
 /// starts being touched triggers a full rollback, mirroring
 /// `cmd_reality_rotate` exactly (same helpers, same guarantees) but for
 /// the single obfuscation secret instead of the REALITY keyset.
+/// Default location of the persistent installation `install.sh` itself
+/// creates on first run (`PERSIST_DIR` in deploy/almalinux/install.sh) —
+/// overridable only for this command's own tests via
+/// `SINGBOX_VPN_REPAIR_UPDATE_SH`, never a supported operator-facing
+/// override (a real deployment always has exactly one persistent
+/// installation, at this exact path).
+fn repair_update_sh_path() -> std::path::PathBuf {
+    if let Ok(over) = std::env::var("SINGBOX_VPN_REPAIR_UPDATE_SH") {
+        return std::path::PathBuf::from(over);
+    }
+    std::path::PathBuf::from("/opt/singbox-vpn/deploy/almalinux/update.sh")
+}
+
+/// `vpn repair`: run the existing, already-hardened `update.sh --repair`
+/// (docs/INSTALLATION.md "Updating / repairing an installation" already
+/// documents this exact command — this is only the ergonomic one-word
+/// entry point for it). Deliberately `update.sh --repair`, NOT
+/// `install.sh --non-interactive`: this repository's own installer
+/// selects prebuilt release binaries whenever a release is pinned, but
+/// re-running `install.sh` directly on an already-installed host (no
+/// `SINGBOX_VPN_VERSION` set) resolves no pinned tag and falls back to
+/// `cargo build --release` from source — which most production hosts
+/// cannot do at all (docs/SUPPORTED_PRODUCT.md: "normal install needs
+/// no Rust toolchain"). `update.sh --repair` re-fetches and
+/// re-verifies the CURRENTLY installed release's own prebuilt,
+/// checksum-verified binaries and never falls back to Cargo for a
+/// production repair. It also runs through update.sh's full
+/// transactional STAGE -> PREPARE -> SWITCH -> ACTIVATE -> VERIFY ->
+/// COMMIT pipeline (automatic rollback on any failure), which
+/// `install.sh`'s own repair path does not have.
+///
+/// Narrower scope than `install.sh` as a result: `--repair` reconciles
+/// binaries, systemd units, and rendered config to the pinned release —
+/// it does not touch firewall/nginx/SELinux/package state. Re-running
+/// `install.sh` covers that broader surface but needs a Rust toolchain
+/// on a from-source repair, so it is intentionally not what this
+/// command runs.
+fn cmd_repair() -> Result<()> {
+    let update_sh = repair_update_sh_path();
+    if !update_sh.exists() {
+        bail!(
+            "repair requires the persistent installation deploy/almalinux/install.sh creates \
+             on first run; {update_sh:?} does not exist. If this deployment was set up some \
+             other way, run its own update.sh --repair directly instead of `vpn repair`."
+        );
+    }
+    println!(
+        "repairing this deployment via {update_sh:?} --repair (re-fetches and re-verifies the \
+         currently-installed release's own prebuilt binaries; never changes version, domain, \
+         REALITY decoy, users, or credentials)..."
+    );
+    let status = std::process::Command::new("bash")
+        .arg(&update_sh)
+        .arg("--repair")
+        .status()
+        .with_context(|| format!("spawning {update_sh:?} for repair"))?;
+    if !status.success() {
+        bail!("repair failed ({update_sh:?} exited {status}) — see output above.");
+    }
+    println!("repair complete.");
+    Ok(())
+}
+
 fn cmd_hysteria_obfs_rotate(cfg: &DeploymentConfig) -> Result<()> {
     let obfs_path = cfg.hysteria_obfs_password_file();
     let config_target = cfg.singbox_config_file();
@@ -2575,12 +2681,54 @@ fn check_status_label(status: CheckStatus) -> &'static str {
     }
 }
 
+/// Lowercase machine-readable counterpart to `check_status_label`, for
+/// `vpn doctor --json` — same four states, just not bracket-padded
+/// prose.
+fn check_status_json(status: CheckStatus) -> &'static str {
+    match status {
+        CheckStatus::Ok => "ok",
+        CheckStatus::Info => "info",
+        CheckStatus::Warn => "warn",
+        CheckStatus::Fail => "fail",
+    }
+}
+
+thread_local! {
+    // `vpn doctor --json` support. `report_check` is the ONE function
+    // every one of `cmd_doctor`'s ~90 individual checks already funnels
+    // through (directly, or via `report_installed_file_policy`), so
+    // recording here — rather than threading an accumulator parameter
+    // through every check function — captures --json output with zero
+    // changes to any check's own logic. `None` (the default): --json was
+    // not requested, print prose as before. `Some(_)`: --json mode,
+    // suppress prose and record structured entries instead. A
+    // thread-local, not a plain global, only because it's the standard
+    // safe-without-`unsafe` way to get mutable process-wide state in
+    // Rust; `vpn-admin` is single-threaded for the entire doctor command.
+    static JSON_CHECKS: std::cell::RefCell<Option<Vec<serde_json::Value>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn report_check(status: CheckStatus, layer: &str, message: impl AsRef<str>) {
-    println!(
-        "{} [{layer:<4}] {}",
-        check_status_label(status),
-        message.as_ref()
-    );
+    let message = message.as_ref();
+    let recording = JSON_CHECKS.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        match cell.as_mut() {
+            Some(checks) => {
+                checks.push(json!({
+                    "layer": layer,
+                    "status": check_status_json(status),
+                    "message": message,
+                }));
+                true
+            }
+            None => false,
+        }
+    });
+    if recording {
+        return;
+    }
+    println!("{} [{layer:<4}] {}", check_status_label(status), message);
 }
 
 #[cfg(unix)]
@@ -2684,12 +2832,22 @@ fn cmd_doctor(
     report_output: Option<&std::path::Path>,
     client: bool,
     performance: bool,
+    json: bool,
 ) -> Result<()> {
+    if json && (report || performance || telegram || client) {
+        bail!(
+            "--json cannot be combined with --report/--performance (separate output formats) or \
+             --telegram/--client (their summaries are prose-only and would corrupt --json's stdout)"
+        );
+    }
     if report {
         return cmd_doctor_report(cfg, report_output);
     }
     if performance {
         return cmd_doctor_performance();
+    }
+    if json {
+        JSON_CHECKS.with(|cell| *cell.borrow_mut() = Some(Vec::new()));
     }
 
     let mut failures = 0u32;
@@ -3222,6 +3380,34 @@ fn cmd_doctor(
 
     if client {
         print_client_acceptance_checklist(cfg, l1_l4_failures, protocol_result);
+    }
+
+    if json {
+        // Printed to stdout BEFORE the failure bail below, same as the
+        // prose path always prints every check line before its own
+        // final bail -- a non-zero exit must still hand the caller a
+        // complete, valid JSON body, not just an error going to stderr.
+        let checks = JSON_CHECKS.with(|cell| cell.borrow_mut().take().unwrap_or_default());
+        let protocol_label = match protocol_result {
+            ProtocolCheckResult::NotRun => "not_run",
+            ProtocolCheckResult::Passed => "passed",
+            ProtocolCheckResult::Failed => "failed",
+            ProtocolCheckResult::Inconclusive => "inconclusive",
+        };
+        let output = json!({
+            "healthy": failures == 0,
+            "checks": checks,
+            "protocol": protocol_label,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .context("failed to serialize `vpn doctor --json` output")?
+        );
+        if failures > 0 {
+            bail!("{failures} check(s) failed");
+        }
+        return Ok(());
     }
 
     println!();

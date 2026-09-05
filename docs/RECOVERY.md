@@ -5,7 +5,7 @@ deployment (`docs/SUPPORTED_PRODUCT.md`), for when the current VPS's IP
 or ASN gets blocked, the VPS itself is compromised/seized, or the
 provider terminates it. This is deliberately a **manual rebuild +
 credential rotation**, not automated backup/restore or multi-node
-failover — see `docs/COMPATIBILITY_SECURITY_REVIEW.md`'s "As a censor
+failover — see `docs/archive/COMPATIBILITY_SECURITY_REVIEW.md`'s "As a censor
 blocking the VPS's IP/ASN" for why a single VPS can't design around a
 full IP block, and why v1.0 does not attempt to.
 

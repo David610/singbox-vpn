@@ -8,27 +8,27 @@
 #
 #   bash deploy/lib/fast-gate.sh
 #
-# What it does NOT do: it never touches a real VPS, never runs
-# install.sh/uninstall.sh's destructive stages, and never re-tests the
-# native adaptive stack (client-daemon, transport-native, policy,
-# failure-classifier, network-state, rendezvous-client, telemetry,
-# services/rendezvous, services/relay-agent) — that stack is out of
-# scope for v1.0 (docs/SUPPORTED_PRODUCT.md) and unaffected by this gate
-# unless SUPPORTED_CRATES below is edited to add it back.
+# What it does NOT do: it never touches a real VPS and never runs
+# install.sh/uninstall.sh's destructive stages. For the disposable-host
+# destructive lifecycle gate, see deploy/almalinux/lifecycle-acceptance.sh
+# instead — never run that against a real/production VPS.
 #
-# For the disposable-host destructive lifecycle gate, see
-# deploy/almalinux/lifecycle-acceptance.sh instead — never run that
-# against a real/production VPS.
+# The native adaptive stack this gate used to deliberately skip
+# (client-daemon, transport-native, policy, failure-classifier,
+# network-state, rendezvous-client, telemetry, services/rendezvous,
+# services/relay-agent) has been removed from `main` entirely — see
+# docs/SUPPORTED_PRODUCT.md and the archive/native-adaptive-stack-2026
+# branch. The whole workspace is now the supported surface.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-# Kept as a package list (not a single --workspace run) so this gate
-# never silently starts building/testing the native adaptive stack if a
-# crate is added to the workspace later — see docs/SUPPORTED_PRODUCT.md
-# "Supported code surface".
-SUPPORTED_CRATES=(admin subscription compat-config common)
+# Kept as an explicit package list (not a bare --workspace run) as a
+# safety net: if a new unsupported crate is ever added to the workspace
+# later, this gate must not start silently building/testing it just
+# because --workspace would pick it up automatically.
+SUPPORTED_CRATES=(admin subscription compat-config common provisioning-contract)
 CARGO_PKG_ARGS=()
 for c in "${SUPPORTED_CRATES[@]}"; do CARGO_PKG_ARGS+=(-p "$c"); done
 
@@ -66,6 +66,9 @@ if bash deploy/lib/check-no-secret-logging.sh; then ok "no-secret-logging"; else
 
 step "no legacy pre-rename identity check"
 if bash deploy/lib/check-no-legacy-identity.sh; then ok "no-legacy-identity"; else fail "check-no-legacy-identity.sh"; fi
+
+step "workspace version consistency"
+if bash deploy/lib/check-workspace-version-consistency.sh; then ok "workspace-version-consistency"; else fail "check-workspace-version-consistency.sh"; fi
 
 step "supported-crate fmt check"
 if cargo fmt "${CARGO_PKG_ARGS[@]}" -- --check; then ok "cargo fmt"; else fail "cargo fmt --check"; fi

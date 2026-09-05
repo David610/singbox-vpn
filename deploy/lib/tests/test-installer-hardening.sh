@@ -247,10 +247,15 @@ if echo "$acme_body" | grep -q 'firewall_open_port_80_temp' && echo "$acme_body"
 else
   fail "attempt_automatic_certbot() does not both open and close the temporary TCP/80 rule"
 fi
-if echo "$acme_body" | grep -q "trap 'acme_cleanup; exit 130' INT" && echo "$acme_body" | grep -q "trap 'acme_cleanup; exit 143' TERM"; then
-  ok "attempt_automatic_certbot() restores state (acme_cleanup) even if interrupted (INT/TERM)"
+if echo "$acme_body" | grep -q "trap 'acme_cleanup; on_interrupt' INT" && echo "$acme_body" | grep -q "trap 'acme_cleanup; on_terminate' TERM"; then
+  ok "attempt_automatic_certbot() restores state (acme_cleanup) AND still routes through the global rollback handler (on_interrupt/on_terminate) if interrupted (INT/TERM) -- not a bare exit that would skip rollback for a fresh install"
 else
-  fail "attempt_automatic_certbot() has no interrupt-safe cleanup trap"
+  fail "attempt_automatic_certbot() has no interrupt-safe cleanup trap, or it bypasses the global on_interrupt/on_terminate rollback handler"
+fi
+if echo "$acme_body" | grep -q 'trap - INT TERM'; then
+  fail "attempt_automatic_certbot() clears INT/TERM to no handler (trap - INT TERM) instead of restoring on_interrupt/on_terminate -- a signal after this function returns would again skip rollback"
+else
+  ok "attempt_automatic_certbot() restores the global on_interrupt/on_terminate handler on exit rather than clearing it"
 fi
 if echo "$acme_body" | grep -q 'nginx_was_stopped=1' && echo "$acme_body" | grep -q 'systemctl start nginx'; then
   ok "attempt_automatic_certbot() restarts nginx if it stopped it for the ACME challenge"

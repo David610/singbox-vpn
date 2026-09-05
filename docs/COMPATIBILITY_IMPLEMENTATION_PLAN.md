@@ -10,7 +10,11 @@
 ## 1. Current architecture
 
 A Rust workspace implementing a *native* adaptive censorship-resistant
-client/relay system (see `docs/ARCHITECTURE.md`, `PLAN.md`, `TASKS.md`):
+client/relay system (at the time this plan was written; that stack and
+its `docs/ARCHITECTURE.md`/`PLAN.md` have since been removed from
+`main` — see `docs/SUPPORTED_PRODUCT.md` and the
+`archive/native-adaptive-stack-2026` branch. `TASKS.md` remains, with
+its own historical-document notice):
 
 - `crates/{common,crypto,config}` — signed-bundle trust chain (offline
   root → release key → bundle key, ADR-0008).
@@ -205,14 +209,16 @@ docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md
 docs/CLIENT_COMPATIBILITY.md
 docs/HIDDIFY_ANDROID.md
 docs/ALMALINUX_DEPLOYMENT.md
-docs/COMPATIBILITY_SECURITY_REVIEW.md
+docs/archive/COMPATIBILITY_SECURITY_REVIEW.md
 ```
 Modified:
 ```
 Cargo.toml                (add new workspace members)
 README.md                 (document the two modes)
 TASKS.md                  (append compatibility-phase tracking)
-docs/ARCHITECTURE.md       (add compatibility stack to the diagram/text)
+docs/ARCHITECTURE.md       (add compatibility stack to the diagram/text --
+                            this doc was later removed with the native stack;
+                            see docs/SUPPORTED_PRODUCT.md)
 ```
 Not modified: anything under `crates/{transport-api,policy,
 failure-classifier,transport-native,rendezvous-client,config}`,

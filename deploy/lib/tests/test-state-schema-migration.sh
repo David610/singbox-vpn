@@ -20,6 +20,7 @@ set -Eeuo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 INSTALL_SH="$REPO_ROOT/deploy/almalinux/install.sh"
 UPDATE_SH="$REPO_ROOT/deploy/almalinux/update.sh"
+STATE_SCHEMA_SH="$REPO_ROOT/deploy/lib/state-schema.sh"
 
 failures=0
 ok() { echo "ok: $*"; }
@@ -38,48 +39,85 @@ else
 fi
 
 echo
-echo "--- static: check_state_schema() reports every required mode and fails closed ---"
+echo "--- static: shared deploy/lib/state-schema.sh does the actual validate/migrate work ---"
+# Phase 7 (deployment modularization) extracted this exact validate/
+# migrate/branch block into one shared function -- it used to be
+# triplicated near-verbatim across install.sh and update.sh's two
+# paths. Check the shared implementation directly rather than each
+# call site's now-thin wrapper.
+state_schema_body="$(cat "$STATE_SCHEMA_SH")"
+for marker in 'MIGRATION REQUIRED' 'config migrate' 'config validate'; do
+  if echo "$state_schema_body" | grep -qF "$marker"; then
+    ok "deploy/lib/state-schema.sh mentions '$marker'"
+  else
+    fail "deploy/lib/state-schema.sh does not mention '$marker'"
+  fi
+done
+
+echo
+echo "--- static: check_state_schema() reports every required mode, delegates to the shared function, and fails closed ---"
 schema_body="$(sed -n '/^check_state_schema() {/,/^}/p' "$INSTALL_SH")"
-for marker in 'FRESH' 'REPAIR' 'UPGRADE' 'MIGRATION REQUIRED' 'INVALID/unsupported'; do
+for marker in 'FRESH' 'REPAIR' 'UPGRADE'; do
   if echo "$schema_body" | grep -qF "$marker"; then
     ok "check_state_schema() reports '$marker'"
   else
     fail "check_state_schema() does not mention '$marker'"
   fi
 done
+if echo "$schema_body" | grep -q 'state_schema_validate_and_migrate'; then
+  ok "check_state_schema() delegates to the shared state_schema_validate_and_migrate()"
+else
+  fail "check_state_schema() does not call state_schema_validate_and_migrate -- has the shared extraction been bypassed?"
+fi
 if echo "$schema_body" | grep -q 'die "persistent state is INVALID'; then
   ok "check_state_schema() dies (non-zero, no further mutation) on an INVALID/unsupported schema"
 else
   fail "check_state_schema() does not fail closed on an unsupported schema"
 fi
-if echo "$schema_body" | grep -q 'config migrate'; then
-  ok "check_state_schema() invokes 'vpn-admin config migrate' for the MIGRATION_REQUIRED case"
+if echo "$schema_body" | grep -q 'die "persistent state migration failed'; then
+  ok "check_state_schema() dies on a migration failure (schema_rc=3), not just an invalid schema"
 else
-  fail "check_state_schema() does not invoke config migrate"
+  fail "check_state_schema() does not handle a migration failure (schema_rc=3) distinctly"
 fi
 
 echo
-echo "--- static: update.sh also validates/migrates state and dies closed on an unsupported schema ---"
+echo "--- static: install.sh and update.sh both source deploy/lib/state-schema.sh ---"
+for f in "$INSTALL_SH" "$UPDATE_SH"; do
+  if grep -q 'deploy/lib/state-schema\.sh' "$f"; then
+    ok "$(basename "$f") sources deploy/lib/state-schema.sh"
+  else
+    fail "$(basename "$f") does not source deploy/lib/state-schema.sh"
+  fi
+done
+
+echo
+echo "--- static: update.sh's production path also validates/migrates state and dies closed on an unsupported schema ---"
 # Checks the PRODUCTION update path (checkpoint 3) — the one this
 # checkpoint's transactional release-to-release updater actually
 # introduced. The separate --dev-rebuild/SINGBOX_VPN_CHANNEL=dev escape hatch
-# has its own equivalent block (an intentional near-verbatim copy of the
-# pre-checkpoint-3 flow) and is not re-checked here.
+# has its own equivalent block (an intentional near-verbatim copy,
+# through the same shared state_schema_validate_and_migrate()) and is
+# not re-checked here.
 update_body="$(sed -n '/^log "install mode: UPDATE/,/^log "rendering current authoritative/p' "$UPDATE_SH")"
-if echo "$update_body" | grep -q 'config validate'; then
-  ok "update.sh calls 'vpn-admin config validate' before rendering"
+if echo "$update_body" | grep -q 'state_schema_validate_and_migrate'; then
+  ok "update.sh's production path delegates to the shared state_schema_validate_and_migrate()"
 else
-  fail "update.sh does not call config validate"
-fi
-if echo "$update_body" | grep -q 'config migrate'; then
-  ok "update.sh calls 'vpn-admin config migrate' on MIGRATION_REQUIRED"
-else
-  fail "update.sh does not call config migrate"
+  fail "update.sh's production path does not call state_schema_validate_and_migrate"
 fi
 if echo "$update_body" | grep -q 'die "persistent state is INVALID'; then
   ok "update.sh dies closed on an INVALID/unsupported schema (rollback fires via the existing trap)"
 else
   fail "update.sh does not fail closed on an unsupported schema"
+fi
+if echo "$update_body" | grep -q 'die "persistent state migration failed'; then
+  ok "update.sh's production path dies on a migration failure (schema_rc=3) distinctly"
+else
+  fail "update.sh's production path does not handle a migration failure (schema_rc=3) distinctly"
+fi
+if echo "$update_body" | grep -q 'lifecycle_gate_abort_hook after_migration'; then
+  ok "update.sh's production path still fires the after_migration lifecycle-gate hook only on an actual migration (schema_rc=2)"
+else
+  fail "update.sh's production path lost its after_migration lifecycle-gate hook"
 fi
 
 # The functional checks below source the REAL install.sh (guarded
@@ -207,6 +245,32 @@ if [ "$rc4" -ne 0 ]; then
   ok "a failing 'config migrate' (unexpected internal error) also aborts (die), not silently continues"
 else
   fail "a failing config migrate did not abort"
+fi
+
+echo
+echo "--- static: update.sh rejects an incompatible schema BEFORE SWITCH, using the STAGED (not-yet-installed) target binary ---"
+switch_line="$(grep -n '^log "SWITCHING to' "$UPDATE_SH" | head -n1 | cut -d: -f1)"
+precheck_line="$(grep -n 'reject an impossible state-schema transition before ANY' "$UPDATE_SH" | head -n1 | cut -d: -f1)"
+if [ -n "$precheck_line" ] && [ -n "$switch_line" ] && [ "$precheck_line" -lt "$switch_line" ]; then
+  ok "the pre-switch schema compatibility check runs strictly before SWITCH"
+else
+  fail "the pre-switch schema compatibility check is missing, or does not run before SWITCH (precheck_line=$precheck_line switch_line=$switch_line)"
+fi
+precheck_body="$(sed -n '/reject an impossible state-schema transition before ANY/,/^fi$/p' "$UPDATE_SH")"
+if echo "$precheck_body" | grep -q '"\$STAGED_BIN_DIR/vpn-admin" --config "\$DEPLOYMENT_TOML" config validate'; then
+  ok "the pre-switch check validates against the STAGED target vpn-admin, not the currently-installed one"
+else
+  fail "the pre-switch check does not use \$STAGED_BIN_DIR/vpn-admin -- it would be validating with the OLD binary, proving nothing about the target's compatibility"
+fi
+if echo "$precheck_body" | grep -q 'Nothing live has been changed'; then
+  ok "the pre-switch check's failure message confirms zero live mutation"
+else
+  fail "the pre-switch check's failure message does not state that nothing live was changed"
+fi
+if echo "$precheck_body" | grep -qE '0 \| 2\)'; then
+  ok "the pre-switch check treats both 'current' (0) and 'migration required' (2) as compatible -- migration itself still happens post-SWITCH with the live binary"
+else
+  fail "the pre-switch check does not accept the MIGRATION_REQUIRED (2) status as compatible"
 fi
 
 if [ "$failures" -eq 0 ]; then

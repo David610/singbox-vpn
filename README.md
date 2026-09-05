@@ -70,6 +70,10 @@ Only device-verified behaviour is claimed for the fallback tier — see
 
 Full matrix and evidence: [docs/SUPPORTED_PRODUCT.md](docs/SUPPORTED_PRODUCT.md).
 
+**Explicitly not supported:** more than one VPS / a multi-node control
+plane, custom VPN protocols beyond VLESS+REALITY and Hysteria2, and
+Tor-class anonymity guarantees.
+
 ## Requirements
 
 - A supported VPS (see above), root or sudo access, public IPv4, ~1 GB RAM.
@@ -107,7 +111,9 @@ sudo vpn user list                       # list users
 sudo vpn status                          # server status
 sudo vpn doctor                          # diagnostics
 sudo vpn backup                          # backup
-sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes  # complete offline uninstall
+sudo vpn repair                          # reconcile after drift, no version change
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest  # update to the latest release
+sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes      # complete offline uninstall
 ```
 
 Full command reference, troubleshooting, updating, and credential rotation:
@@ -117,7 +123,7 @@ Full command reference, troubleshooting, updating, and credential rotation:
 
 This project does not guarantee Tor-style anonymity, protection from a
 compromised VPS, access from every country/network, or protection after
-credentials leak. See [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
+credentials leak. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Documentation
 
@@ -129,7 +135,7 @@ credentials leak. See [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
   client/server contract and its schema
 - [Client setup](docs/clients/README.md)
 - [Device acceptance status](docs/DEVICE_ACCEPTANCE_TESTS.md)
-- [Security model](docs/SECURITY_MODEL.md)
+- [Threat model](docs/THREAT_MODEL.md)
 - [Release and supply-chain security](docs/SUPPLY_CHAIN_SECURITY.md)
 - [Recovery](docs/RECOVERY.md)
 
