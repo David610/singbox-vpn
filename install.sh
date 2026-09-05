@@ -170,22 +170,58 @@ cleanup() {
 trap cleanup EXIT
 trap 'die "interrupted"' INT TERM
 
+# Pinned sigstore/cosign build used to verify GitHub artifact attestations —
+# see verify_release_attestation() below for why this replaced `gh
+# attestation verify`. This script runs before any repo checkout exists (it
+# is fetched standalone via raw.githubusercontent.com), so it cannot source
+# deploy/lib/versions.env like the other two consumers of this same pin do;
+# these three values are kept in sync with that file by
+# deploy/lib/tests/test-release-reproducibility.sh.
+COSIGN_VERSION=3.1.3
+COSIGN_SHA256_AMD64=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+COSIGN_SHA256_ARM64=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a
+
 # GitHub artifact attestations bind an artifact digest to this repository and
 # an Actions OIDC identity. This is authentication/provenance in addition to
 # SHA256SUMS integrity; it does not make a compromised release workflow safe.
-ensure_attestation_verifier() {
-  command -v gh >/dev/null 2>&1 && return 0
-  log "GitHub CLI is required to authenticate stable release artifacts; installing the distribution package..."
-  if command -v dnf >/dev/null 2>&1; then
-    dnf -y install gh >/dev/null 2>&1 \
-      || die "could not install the 'gh' package required for release-attestation verification. Install GitHub CLI from https://cli.github.com/ and retry."
-  elif command -v apt-get >/dev/null 2>&1; then
-    apt-get update -y >/dev/null 2>&1 && apt-get install -y gh >/dev/null 2>&1 \
-      || die "could not install the 'gh' package required for release-attestation verification. Install GitHub CLI from https://cli.github.com/ and retry."
-  else
-    die "GitHub CLI ('gh') is required for release-attestation verification and no supported package manager was found."
+#
+# Verified with cosign against the public Sigstore Rekor transparency log,
+# NOT `gh attestation verify`: gh refuses to run ANY command that touches
+# the GitHub API without `gh auth login`/GH_TOKEN configured first, even
+# read-only lookups against a public repository (reproduced directly: `gh
+# repo view` on this exact public repo fails identically unauthenticated).
+# A fresh VPS has no such credential, and one cannot be pre-provisioned into
+# a public installer without baking in a shared secret. GitHub's own
+# artifact-attestation service is itself built on Sigstore's public-good
+# Fulcio/Rekor instance, so cosign can verify the SAME attestation entirely
+# anonymously once it has the signed bundle bytes — which
+# .github/workflows/release.yml publishes as a plain "<asset>.sigstore.json"
+# release asset, downloaded here the same unauthenticated way as the
+# tarball/SHA256SUMS. See docs/SUPPLY_CHAIN_SECURITY.md.
+COSIGN_BIN=""
+ensure_cosign() {
+  [ -n "$COSIGN_BIN" ] && return 0
+  if command -v cosign >/dev/null 2>&1; then
+    COSIGN_BIN="$(command -v cosign)"
+    return 0
   fi
-  command -v gh >/dev/null 2>&1 || die "the 'gh' package installation completed but gh is still unavailable."
+  local cosign_arch expected_sha256
+  case "$(uname -m)" in
+    x86_64) cosign_arch=amd64; expected_sha256="$COSIGN_SHA256_AMD64" ;;
+    aarch64|arm64) cosign_arch=arm64; expected_sha256="$COSIGN_SHA256_ARM64" ;;
+    *) die "unsupported CPU architecture $(uname -m) — cannot verify release attestations." ;;
+  esac
+  local asset="cosign-linux-${cosign_arch}"
+  local dest="$TMPDIR/$asset"
+  log "downloading pinned cosign v${COSIGN_VERSION} (${cosign_arch}) to verify release attestations..."
+  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$dest" "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${asset}" \
+    || die "could not download cosign — required to verify release attestations."
+  local actual_sha256
+  actual_sha256="$(sha256sum "$dest" | awk '{print $1}')"
+  [ "$actual_sha256" = "$expected_sha256" ] \
+    || die "checksum verification failed for $asset: expected $expected_sha256, got $actual_sha256 — refusing to run an unverified cosign binary."
+  chmod +x "$dest"
+  COSIGN_BIN="$dest"
 }
 
 # Every stable release, with no exception, must carry a verified GitHub
@@ -205,11 +241,25 @@ ensure_attestation_verifier() {
 # every historical pre-v0.1.3 tag, requires attestation to install through
 # this script. See docs/SUPPLY_CHAIN_SECURITY.md.
 verify_release_attestation() {
-  local artifact="$1" version="$2"
-  ensure_attestation_verifier
-  gh attestation verify "$artifact" --repo "$SINGBOX_VPN_REPO" --signer-workflow "$SINGBOX_VPN_REPO/.github/workflows/release.yml" >/dev/null \
-    || die "artifact attestation verification failed or is missing for $version/$SINGBOX_VPN_REPO — refusing stable installation. There is no checksum-only fallback for any release, historical or otherwise."
-  log "artifact attestation verified for repository $SINGBOX_VPN_REPO."
+  local artifact="$1" version="$2" repo="$3"
+  ensure_cosign
+  local bundle
+  bundle="$(mktemp)"
+  if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$bundle" "https://github.com/$repo/releases/download/$version/$(basename "$artifact").sigstore.json"; then
+    rm -f "$bundle"
+    die "could not download the attestation bundle for $(basename "$artifact")/$version — refusing stable installation. There is no checksum-only fallback for any release, historical or otherwise."
+  fi
+  if ! "$COSIGN_BIN" verify-blob-attestation \
+      --bundle "$bundle" \
+      --certificate-identity "https://github.com/$repo/.github/workflows/release.yml@refs/tags/$version" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      --type "https://slsa.dev/provenance/v1" \
+      "$artifact" >/dev/null; then
+    rm -f "$bundle"
+    die "artifact attestation verification failed or is missing for $version/$repo — refusing stable installation. There is no checksum-only fallback for any release, historical or otherwise."
+  fi
+  rm -f "$bundle"
+  log "artifact attestation verified for repository $repo."
 }
 
 # ---------------------------------------------------------------------
@@ -242,7 +292,7 @@ download_verified_source_release() {
   ( cd "$TMPDIR" && grep -E '  singbox-vpn-src\.tar\.gz$' SHA256SUMS | sha256sum -c - ) >&2 \
     || die "checksum verification failed for singbox-vpn-src.tar.gz against $version's published SHA256SUMS — refusing to extract/execute an unverified source archive."
   log "source archive checksum verified against release SHA256SUMS."
-  verify_release_attestation "$tarball" "$version"
+  verify_release_attestation "$tarball" "$version" "$SINGBOX_VPN_REPO"
 }
 
 # ---------------------------------------------------------------------

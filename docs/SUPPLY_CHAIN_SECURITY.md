@@ -1,6 +1,6 @@
 # Release and supply-chain security
 
-Status: 2026-08-22. This document describes the supported stable release path,
+Status: 2026-09-05. This document describes the supported stable release path,
 not the explicitly untrusted development channel.
 
 ## Current trust chain
@@ -9,9 +9,22 @@ The operator runs `curl .../main/install.sh | sudo bash`. HTTPS and control of
 the canonical GitHub repository authenticate that first root-executed script;
 there is no independent signature on it. The script resolves one immutable
 release tag, downloads `singbox-vpn-src.tar.gz` and `SHA256SUMS`, checks the archive
-digest, and then verifies GitHub artifact provenance with
-`gh attestation verify`, pinned to repository `David610/singbox-vpn` and signer
-workflow `.github/workflows/release.yml`. Only then does it extract and execute
+digest, and then verifies GitHub artifact provenance with `cosign`, pinned to
+certificate identity `https://github.com/David610/singbox-vpn/.github/workflows/release.yml@refs/tags/<version>`
+and OIDC issuer `https://token.actions.githubusercontent.com`. Verification is
+against the attestation's own signed bundle — published by
+`.github/workflows/release.yml` as a plain `<asset>.sigstore.json` release
+asset, downloaded the same unauthenticated way as the tarball/SHA256SUMS —
+rather than the GitHub attestations API. `gh attestation verify` was tried
+first and rejected: it refuses to run at all without `gh auth login`/
+`GH_TOKEN` configured, even for a read-only lookup against a public
+repository (reproduced directly: `gh repo view` on this exact public repo
+also fails unauthenticated), and a freshly provisioned VPS has no such
+credential and cannot be handed one without embedding a shared secret in a
+public script. `cosign` verifies the same underlying attestation, because
+GitHub's artifact-attestation service is itself built on Sigstore's
+public-good Fulcio/Rekor instance, which is anonymously and publicly
+verifiable. Only after verification does the script extract and execute
 the release source as root. The deployment installer repeats
 checksum and attestation verification for the architecture-specific binary
 archive. Production update applies the same checks before live mutation.
@@ -43,11 +56,15 @@ The development channel still requires both `SINGBOX_VPN_CHANNEL=dev` and
 GitHub artifact attestations are the primary mechanism because releases already
 build and publish entirely in GitHub Actions, the signer identity comes from
 short-lived OIDC credentials, and verification can be restricted to this
-repository and its release workflow. This avoids maintaining a long-lived
-minisign/cosign private key or adding two parallel signing ecosystems. A
-standalone signed manifest would be reasonable if releases move off GitHub, but
-today it would add secret rotation and recovery work without removing trust in
-the raw GitHub bootstrap or Actions workflow.
+repository and its release workflow. `cosign` is used only as the anonymous
+*verifier* of that attestation, not as a second signing ecosystem: no
+long-lived cosign/minisign private key is held or rotated by this project —
+signing still happens exactly once, inside the release workflow, via
+`actions/attest-build-provenance`'s existing OIDC-issued short-lived
+certificate. A standalone signed manifest with a project-held key would be
+reasonable if releases move off GitHub, but today it would add secret
+rotation and recovery work without removing trust in the raw GitHub
+bootstrap or Actions workflow.
 
 ## Threat model
 
@@ -99,9 +116,9 @@ encryption at rest.
 
 ## Failure behavior
 
-For every release, missing `gh`, a missing attestation, a repository-identity
-mismatch, or an attestation digest mismatch aborts before extraction or live
-update mutation. For every release, malformed/missing SHA256SUMS, missing
+For every release, a missing/unverifiable `cosign` binary, a missing
+attestation bundle, a certificate-identity mismatch, or an attestation digest
+mismatch aborts before extraction or live update mutation. For every release, malformed/missing SHA256SUMS, missing
 assets, checksum mismatch, wrong embedded version, or an unintended downgrade
 aborts before mutation. Authentication does
 not make compromise impossible: stable installation still begins by executing

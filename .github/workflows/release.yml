@@ -264,9 +264,23 @@ jobs:
           sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
 
       - name: Attest binary archive provenance
+        id: attest-binary
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: singbox-vpn-${{ matrix.target }}.tar.gz
+
+      # Publish the Sigstore bundle itself as a plain release asset, downloadable
+      # over unauthenticated HTTPS exactly like the tarball/SHA256SUMS. This is
+      # what makes anonymous verification possible at install time: GitHub's
+      # attestations API requires a token even for public repos, and `gh
+      # attestation verify` refuses to run at all without `gh auth login`/
+      # GH_TOKEN — a fresh VPS has neither. cosign can verify this same
+      # attestation entirely anonymously against the public Sigstore Rekor
+      # transparency log once it has the bundle bytes in hand (see
+      # docs/SUPPLY_CHAIN_SECURITY.md and verify_release_attestation() in
+      # install.sh / deploy/almalinux/install.sh / deploy/almalinux/update.sh).
+      - name: Publish binary archive attestation bundle
+        run: cp "${{ steps.attest-binary.outputs.bundle-path }}" "singbox-vpn-${{ matrix.target }}.tar.gz.sigstore.json"
 
       - name: Archive/installer contract test
         run: |
@@ -293,6 +307,7 @@ jobs:
           path: |
             singbox-vpn-${{ matrix.target }}.tar.gz
             singbox-vpn-${{ matrix.target }}.tar.gz.sha256
+            singbox-vpn-${{ matrix.target }}.tar.gz.sigstore.json
           if-no-files-found: error
 
       - name: Package source archive
@@ -311,9 +326,17 @@ jobs:
 
       - name: Attest source archive provenance
         if: matrix.target == 'x86_64-unknown-linux-gnu'
+        id: attest-source
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: singbox-vpn-src.tar.gz
+
+      # See "Publish binary archive attestation bundle" above for why this
+      # bundle file, not the GitHub attestations API, is the verification
+      # channel a fresh install actually uses.
+      - name: Publish source archive attestation bundle
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cp "${{ steps.attest-source.outputs.bundle-path }}" "singbox-vpn-src.tar.gz.sigstore.json"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: matrix.target == 'x86_64-unknown-linux-gnu'
@@ -322,6 +345,7 @@ jobs:
           path: |
             singbox-vpn-src.tar.gz
             singbox-vpn-src.tar.gz.sha256
+            singbox-vpn-src.tar.gz.sigstore.json
           if-no-files-found: error
 
   publish:
@@ -349,6 +373,7 @@ jobs:
           prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
           files: |
             dist/*.tar.gz
+            dist/*.sigstore.json
             dist/SHA256SUMS
           generate_release_notes: true
 
