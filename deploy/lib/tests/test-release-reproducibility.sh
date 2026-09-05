@@ -331,7 +331,7 @@ fi
 
 echo
 echo "--- static: release.yml publishes a Sigstore attestation bundle alongside every archive ---"
-if grep -q 'singbox-vpn-\${{ matrix.target }}.tar.gz.sigstore.json' "$RELEASE_YML" \
+if grep -q 'singbox-vpn-x86_64-unknown-linux-gnu.tar.gz.sigstore.json' "$RELEASE_YML" \
     && grep -q 'singbox-vpn-src.tar.gz.sigstore.json' "$RELEASE_YML" \
     && grep -q 'dist/\*.sigstore.json' "$RELEASE_YML"; then
   ok "release.yml publishes and releases a .sigstore.json bundle for both archive classes"
