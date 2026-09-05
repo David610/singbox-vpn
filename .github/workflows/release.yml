@@ -2,23 +2,29 @@ name: Release
 
 # Builds prebuilt singbox-vpn binaries (vpn-admin, subscription) so
 # deploy/almalinux/install.sh (and the root install.sh bootstrap) can
-# install a production VPS without a Rust toolchain. Triggered on
-# `v*` tags; each tag produces one GitHub Release with per-arch tarballs
-# plus a SHA256SUMS file the installer verifies before using anything.
+# install a production VPS without a Rust toolchain.
 #
-# The stable bootstrap refuses to install when no release exists. For an
-# existing exact tag, the AlmaLinux installer prefers these prebuilt assets
-# and can build from that same checksum-verified tag source only when its
-# architecture-specific binary asset is unavailable.
+# Prerelease tags (for example v1.0.0-rc.1) may publish automatically after
+# the canonical CI gate. Stable tags never auto-publish: they require an
+# explicit workflow_dispatch from the exact stable tag plus the acceptance
+# record defined in docs/RELEASE.md.
 
 on:
   push:
-    tags: ["v*"]
+    # Only prerelease tags auto-publish. A stable vX.Y.Z tag is intentionally
+    # excluded and must be released through workflow_dispatch after the real
+    # VPS/device acceptance evidence is committed.
+    tags: ["v*-*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build and publish (e.g. v0.1.1)"
+        description: "Exact tag to build and publish (e.g. v1.0.0-rc.1 or v1.0.0)"
         required: true
+      confirm_stable_release:
+        description: "Required for a stable vX.Y.Z release after RC/VPS/device acceptance"
+        required: false
+        default: false
+        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,36 +35,44 @@ permissions:
   contents: read
 
 jobs:
-  # Checkpoint 6 §8: a manual workflow_dispatch run must build the exact
-  # tagged commit it claims to publish, never whatever ref happened to
-  # trigger the run. `actions/checkout@v4` with no explicit `ref:` checks
-  # out `github.sha`, which for workflow_dispatch is whichever branch/tag
-  # the operator selected in the "Use workflow from" dropdown — NOT
-  # necessarily the tag named in the `tag` input. Refuse to proceed unless
-  # they match, instead of silently building/publishing a mismatch.
   validate-tag:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Confirm tag push ref
         if: github.event_name == 'push'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           if [ "${{ github.ref_type }}" != "tag" ]; then
             echo "::error::release push was not a tag ref: ${{ github.ref }}"
             exit 1
           fi
-          echo "ok: release triggered by tag ${{ github.ref_name }}"
+          case "$RELEASE_TAG" in
+            *-*) ;;
+            *)
+              echo "::error::stable tags must not auto-publish. Run this workflow manually from the exact stable tag after completing docs/RELEASE.md."
+              exit 1 ;;
+          esac
+          echo "ok: prerelease triggered by tag $RELEASE_TAG"
 
       - name: Confirm dispatch ref is the requested tag
         if: github.event_name == 'workflow_dispatch'
+        # Contract: github.ref_name must equal github.event.inputs.tag. The
+        # values are routed through env rather than interpolated into shell
+        # code so a tag/input can never become script text.
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
-          if [ "${{ github.ref_type }}" != "tag" ] || [ "${{ github.ref_name }}" != "${{ github.event.inputs.tag }}" ]; then
-            echo "::error::workflow_dispatch was run from ref '${{ github.ref_name }}' (type: ${{ github.ref_type }}), but the 'tag' input requested '${{ github.event.inputs.tag }}'. Re-run this workflow using the 'Use workflow from' dropdown set to the '${{ github.event.inputs.tag }}' tag itself, so the built commit and the published tag are guaranteed to match."
+          if [ "$REF_TYPE" != "tag" ] || [ "$REF_NAME" != "$REQUESTED_TAG" ]; then
+            echo "::error::workflow_dispatch was run from ref '$REF_NAME' (type: $REF_TYPE), but the tag input requested '$REQUESTED_TAG'. Re-run using 'Use workflow from' set to the exact '$REQUESTED_TAG' tag."
             exit 1
           fi
-          echo "ok: dispatched from tag ${{ github.ref_name }}, matches requested tag ${{ github.event.inputs.tag }}"
+          echo "ok: dispatched from exact tag $REF_NAME"
 
   validate-version:
     runs-on: ubuntu-latest
@@ -68,15 +82,129 @@ jobs:
       - name: Confirm release tag matches packaged Rust versions
         run: bash deploy/lib/check-release-version.sh "${{ github.event.inputs.tag || github.ref_name }}"
 
-  # Checkpoint 6 §9: a release must not be publishable merely because
-  # binaries compiled — it must pass the same gate as every other change
-  # (fmt, clippy, workspace tests, shellcheck, cargo audit, secret-logging,
-  # release archive contract, real pinned sing-box interop). Reusing
-  # ci.yml as a reusable workflow (workflow_call) keeps this as one
-  # canonical job graph instead of a second, driftable copy.
-  gate:
+  validate-release-policy:
     needs: [validate-tag, validate-version]
     if: ${{ !cancelled() && needs.validate-tag.result == 'success' && needs.validate-version.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Enforce stable RC acceptance policy
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          CONFIRM_STABLE_RELEASE: ${{ github.event.inputs.confirm_stable_release || 'false' }}
+        run: |
+          set -euo pipefail
+
+          # Prereleases are intentionally allowed through after tag/version
+          # validation and the canonical CI graph below. Stable releases have
+          # the stronger evidence gate.
+          case "$RELEASE_TAG" in
+            *-*)
+              echo "ok: $RELEASE_TAG is a prerelease; stable acceptance record is not required yet."
+              exit 0 ;;
+          esac
+
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "::error::stable releases are manual-only. Use workflow_dispatch from the exact stable tag."
+            exit 1
+          fi
+          if [ "$CONFIRM_STABLE_RELEASE" != "true" ]; then
+            echo "::error::stable release requires confirm_stable_release=true after completing docs/RELEASE.md."
+            exit 1
+          fi
+
+          evidence="docs/release-acceptance/${RELEASE_TAG}.md"
+          if [ ! -f "$evidence" ]; then
+            echo "::error::missing stable acceptance record: $evidence"
+            exit 1
+          fi
+
+          require_exact_once() {
+            local line="$1"
+            local count
+            count="$(grep -Fxc -- "$line" "$evidence" || true)"
+            if [ "$count" != "1" ]; then
+              echo "::error::$evidence must contain exactly once: $line"
+              exit 1
+            fi
+          }
+
+          require_exact_once "Release: $RELEASE_TAG"
+          require_exact_once "Decision: ACCEPTED"
+          require_exact_once "VPS acceptance: PASS"
+          require_exact_once "Device acceptance: PASS"
+          require_exact_once "Certificate renewal: PASS"
+
+          rc_count="$(grep -c '^Accepted RC: ' "$evidence" || true)"
+          commit_count="$(grep -c '^Accepted RC commit: ' "$evidence" || true)"
+          if [ "$rc_count" != "1" ] || [ "$commit_count" != "1" ]; then
+            echo "::error::$evidence must contain exactly one 'Accepted RC:' and one 'Accepted RC commit:' line"
+            exit 1
+          fi
+
+          accepted_rc="$(sed -n 's/^Accepted RC: //p' "$evidence")"
+          recorded_rc_commit="$(sed -n 's/^Accepted RC commit: //p' "$evidence")"
+
+          case "$accepted_rc" in
+            v*-*) ;;
+            *)
+              echo "::error::Accepted RC must be a prerelease tag such as v1.0.0-rc.1; got '$accepted_rc'"
+              exit 1 ;;
+          esac
+
+          if ! printf '%s' "$recorded_rc_commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Accepted RC commit must be a full 40-character lowercase Git commit SHA"
+            exit 1
+          fi
+
+          git fetch --force --tags origin
+          if ! actual_rc_commit="$(git rev-parse "${accepted_rc}^{commit}" 2>/dev/null)"; then
+            echo "::error::Accepted RC tag '$accepted_rc' does not exist"
+            exit 1
+          fi
+          if [ "$recorded_rc_commit" != "$actual_rc_commit" ]; then
+            echo "::error::recorded RC commit $recorded_rc_commit does not match $accepted_rc ($actual_rc_commit)"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$actual_rc_commit" HEAD; then
+            echo "::error::accepted RC $accepted_rc is not an ancestor of stable tag $RELEASE_TAG"
+            exit 1
+          fi
+
+          # After real-world RC acceptance, production implementation is
+          # frozen on the path to stable. Only release-status/evidence
+          # documentation is permitted. Any other change requires a new RC
+          # and another acceptance cycle.
+          disallowed=0
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            case "$path" in
+              README.md|docs/DEVICE_ACCEPTANCE_TESTS.md|"docs/release-acceptance/${RELEASE_TAG}.md")
+                echo "allowed RC -> stable change: $path" ;;
+              *)
+                echo "::error::implementation/workflow change after accepted RC requires a new RC: $path"
+                disallowed=1 ;;
+            esac
+          done < <(git diff --name-only "$actual_rc_commit" HEAD)
+
+          if [ "$disallowed" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "stable release policy accepted for $RELEASE_TAG from $accepted_rc ($actual_rc_commit)"
+
+  # A release must not be publishable merely because binaries compiled. It
+  # must pass the same gate as every other change: fmt, clippy, workspace
+  # tests, shellcheck, cargo audit, secret-logging, release archive contract,
+  # and real pinned sing-box interoperability checks.
+  gate:
+    needs: [validate-tag, validate-version, validate-release-policy]
+    if: ${{ !cancelled() && needs.validate-tag.result == 'success' && needs.validate-version.result == 'success' && needs.validate-release-policy.result == 'success' }}
     uses: ./.github/workflows/ci.yml
 
   build:
@@ -104,10 +232,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      # Keep this exact revision aligned with rust-toolchain.toml. The action
-      # installs matrix targets for the selected toolchain; using @stable here
-      # would install aarch64 for a different toolchain when the repository pin
-      # overrides rustup's active version.
       - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
         with:
           targets: ${{ matrix.target }}
@@ -144,13 +268,6 @@ jobs:
         with:
           subject-path: singbox-vpn-${{ matrix.target }}.tar.gz
 
-      # Archive/installer contract test (docs/FINAL_PRODUCTION_AUDIT.md
-      # P0-6): extract the archive we JUST built using the exact same
-      # relative-path assumptions deploy/almalinux/install.sh's
-      # fetch_release_binaries() uses, and fail the release build if they
-      # have ever drifted apart — this is the one place both "descriptions"
-      # of the archive format (this workflow, and the installer) are
-      # checked against each other automatically instead of by hand.
       - name: Archive/installer contract test
         run: |
           set -euo pipefail
@@ -178,14 +295,6 @@ jobs:
             singbox-vpn-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
 
-      # Checksum-verified source payload (docs re: install.sh's bootstrap
-      # release-integrity gap): the top-level install.sh bootstrap
-      # downloads a source archive before it has any prebuilt binary to
-      # check — an unauthenticated `codeload.github.com` tag tarball is
-      # not itself a verified release artifact. Built once here (one
-      # matrix leg only, content doesn't depend on target arch) so the
-      # bootstrap has a checksum-manifested asset to verify against for
-      # any pinned SINGBOX_VPN_VERSION install.
       - name: Package source archive
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
@@ -237,13 +346,6 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          # GitHub's "latest release" resolution (which install.sh's
-          # resolve_version() queries via /releases/latest) skips any
-          # release marked prerelease. A tag containing a SemVer
-          # prerelease segment (e.g. v0.1.1-rc.1) is marked as such here
-          # so a release candidate can never be silently auto-installed by
-          # a normal stable `curl | sudo bash` run — only an explicit
-          # `--version v0.1.1-rc.1` pin resolves it (Checkpoint 6 §19).
           prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
           files: |
             dist/*.tar.gz
@@ -253,7 +355,7 @@ jobs:
   # Exercise the public assets after GitHub has published them. The fake
   # final handoff keeps this read-only while still running the real bootstrap
   # through release resolution, checksum verification, extraction, and the
-  # deploy/almalinux/install.sh boundary that broke in v0.1.0.
+  # deploy/almalinux/install.sh boundary.
   verify-published-bootstrap:
     needs: publish
     if: ${{ !cancelled() && needs.publish.result == 'success' }}

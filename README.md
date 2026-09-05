@@ -82,16 +82,49 @@ Tor-class anonymity guarantees.
 
 ## Install
 
+### Guided one-command install
+
+On a fresh supported VPS, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
+```
+
+The installer performs preflight checks, asks only for required deployment
+choices, verifies the selected stable release, and prints the client QR/URL
+only after the installation health gates pass. The VPS, DNS record, and
+provider/cloud firewall still have to exist before the server can be made
+reachable from the Internet.
+
+### Automated / non-interactive install
+
+For reproducible automation, provide the required security-sensitive values
+explicitly:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh \
   | sudo bash -s -- \
     --domain vpn.example.com \
-    --reality-handshake-server www.cloudflare.com
+    --reality-handshake-server www.cloudflare.com \
+    --non-interactive
+```
+
+### Preflight only
+
+Check a host without making persistent changes:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh \
+  | sudo bash -s -- \
+    --domain vpn.example.com \
+    --reality-handshake-server www.cloudflare.com \
+    --dry-run
 ```
 
 DNS, provider firewall setup (AWS/Cloudflare), distribution-specific notes,
-and every install flag are documented in
-**[docs/INSTALLATION.md](docs/INSTALLATION.md)**.
+the trust boundary of `curl | sudo bash`, and every install flag are documented
+in **[docs/INSTALLATION.md](docs/INSTALLATION.md)** and
+**[docs/SUPPLY_CHAIN_SECURITY.md](docs/SUPPLY_CHAIN_SECURITY.md)**.
 
 ## Connect with Hiddify
 
@@ -135,6 +168,7 @@ credentials leak. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
   client/server contract and its schema
 - [Client setup](docs/clients/README.md)
 - [Device acceptance status](docs/DEVICE_ACCEPTANCE_TESTS.md)
+- [Release policy](docs/RELEASE.md) — RC acceptance and stable-release gates
 - [Threat model](docs/THREAT_MODEL.md)
 - [Release and supply-chain security](docs/SUPPLY_CHAIN_SECURITY.md)
 - [Recovery](docs/RECOVERY.md)
