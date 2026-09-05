@@ -18,11 +18,8 @@ scope and `../../docs/ALMALINUX_DEPLOYMENT.md` for the full runbook.
 | `systemd/*.service`, `systemd/*.timer` | Hardened unit files for `sing-box`, `vpn-subscription`, `vpn-expiry-reconcile` (credential-expiry reconciliation), and `vpn-service-watchdog` (failed-unit recovery safety net). |
 | `templates/deployment.toml.template` | Rendered once into `/etc/vpn/deployment.toml` by `install.sh`. |
 
-This directory is intentionally separate from `deploy/local/` (the
-existing native-stack dev slice) — see spec §50 / `PLAN.md`. Nothing
-here touches `deploy/local/`.
-
-Not deployed by this directory: the native `direct-tls`/`noise-quic`
-stack (`services/rendezvous`, `services/relay-agent`,
-`apps/client-daemon`). That remains `deploy/local/`-only per
-`docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` §14 (non-goals).
+The native `direct-tls`/`noise-quic` adaptive-transport stack this
+directory never deployed (`services/rendezvous`, `services/relay-agent`,
+`apps/client-daemon`, and everything only they depended on) has been
+removed from `main` entirely — see `docs/SUPPORTED_PRODUCT.md` and the
+`archive/native-adaptive-stack-2026` branch.

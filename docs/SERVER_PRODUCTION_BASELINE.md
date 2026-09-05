@@ -14,25 +14,27 @@ verified bootstrap / transactional installer
 ```
 
 The installer and release workflow build only `admin` and `subscription`.
-Their local dependency closure is `common` plus `compat-config`. Root-level
-`cargo build` now has the same production boundary through Cargo
-`default-members`. `cargo test --workspace` remains deliberately broader and
-continues testing the experimental code; this is not evidence that it ships.
+Their local dependency closure is `common`, `compat-config`, and
+`provisioning-contract`.
 
-## Component classification
+**Update (post product-codebase-cleanup):** the experimental native
+adaptive stack this section originally classified as ISOLATE has since
+been physically removed from `main` -- there is no longer a broader
+workspace surface for `cargo build`/`cargo test --workspace` to
+distinguish from the production boundary; the whole workspace now IS
+the production boundary. Its full implementation is preserved on the
+`archive/native-adaptive-stack-2026` branch, not deleted. See
+`docs/SUPPORTED_PRODUCT.md`.
+
+## Component classification (current)
 
 | Component | Status | Installed/started | Decision |
 |---|---|---|---|
 | `apps/admin` | PRODUCTION | `/usr/local/bin/vpn-admin` | KEEP |
 | `services/subscription` | PRODUCTION | `vpn-subscription.service` | KEEP |
-| `crates/common`, `crates/compat-config` | PRODUCTION | linked into the two binaries | KEEP |
+| `crates/common`, `crates/compat-config`, `crates/provisioning-contract` | PRODUCTION | linked into the two binaries | KEEP |
 | upstream `sing-box` | PRODUCTION DATA PLANE | `sing-box.service` | KEEP PINNED |
 | nginx and deployment scripts/units | PRODUCTION ORCHESTRATION | yes | KEEP |
-| `apps/client-daemon` | EXPERIMENTAL | no; local dev slice only | ISOLATE |
-| `crates/transport-native`, `policy`, `failure-classifier`, `network-state`, `transport-api`, `rendezvous-client`, `telemetry` | EXPERIMENTAL | no | ISOLATE |
-| `services/rendezvous`, `services/relay-agent` | EXPERIMENTAL | no; local dev slice only | ISOLATE |
-| `services/test-service`, workspace `tests` crate | TEST-ONLY | no | KEEP TEST-ONLY |
-| `apps/cli`, `apps/keytool`, `crates/config`, `crates/crypto` | EXPERIMENTAL native-stack tooling | no | ISOLATE |
 
 Neither supported VPN transport, `vpn-admin`, the subscription service,
 Hiddify, nor the release archive depends on the native adaptive stack.

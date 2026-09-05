@@ -158,9 +158,9 @@ listed below.
   dashboard/multi-tenant control plane** — out of scope per spec §38 /
   not attempted.
 - **Native adaptive client (`client-daemon`/`transport-native`)** — out
-  of scope for this pass; unchanged. It remains the clearly-separated
-  "experimental/native adaptive mode" per `docs/ARCHITECTURE.md`, not
-  touched or presented as the recommended end-user path.
+  of scope for this pass; unchanged at the time. It has since been
+  removed from `main` entirely (see `docs/SUPPORTED_PRODUCT.md` and the
+  `archive/native-adaptive-stack-2026` branch).
 
 ## What was preserved deliberately
 

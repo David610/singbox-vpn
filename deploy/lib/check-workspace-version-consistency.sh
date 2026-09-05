@@ -23,7 +23,7 @@ while IFS= read -r manifest; do
     echo "FAIL: $manifest does not declare version.workspace = true" >&2
     failures=$((failures + 1))
   fi
-done < <(find apps crates services tests -type f -name Cargo.toml | sort)
+done < <(find apps crates services -type f -name Cargo.toml | sort)
 
 if [ "$checked" -eq 0 ]; then
   echo "no workspace member Cargo.toml files found; refusing to pass" >&2

@@ -27,9 +27,6 @@ In scope:
   scripts)
 - `crates/compat-config`, `apps/admin`, `services/subscription` (the
   Hiddify-compatible server stack's control plane)
-- `crates/crypto`, `crates/config`, `crates/transport-native`,
-  `services/rendezvous`, `services/relay-agent` (the native experimental
-  transport stack)
 
 Out of scope:
 

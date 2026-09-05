@@ -199,9 +199,7 @@ pub fn render_uri_list(
 /// by hand regardless of profile (see `render_singbox_client_subscription`'s
 /// doc comment for why `urltest` alone is never a safe silent default).
 ///
-/// There is no data-driven "smart" auto mode here: `crates/network-state`
-/// and `crates/failure-classifier` currently track only boolean
-/// success/failure, not latency or throughput (see
+/// There is no data-driven "smart" auto mode here (see
 /// docs/PERFORMANCE_OPTIMIZATION_PLAN.md), so `Auto` below means exactly
 /// what sing-box's own `urltest` group means — a plain-HTTPS
 /// latency/success race — not a throughput- or censorship-aware

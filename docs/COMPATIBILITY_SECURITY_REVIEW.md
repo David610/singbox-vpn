@@ -132,11 +132,10 @@ has not been run against a real AlmaLinux host/Android client — see
   endpoint.
 - **Can they brute-force subscription tokens?** Tokens are 160-bit
   CSPRNG values (`generate_subscription_token`), infeasible to guess.
-  Per-source-IP rate limiting (20 burst, 0.5/s refill, same pattern as
-  `services/rendezvous`) slows a single-IP brute force to a crawl but,
-  as documented in `docs/RENDEZVOUS_DESIGN.md` for the equivalent native
-  case, a **distributed** brute force across many source IPs is not
-  mitigated by this in-process limiter — flagged as needing a real
+  Per-source-IP rate limiting (20 burst, 0.5/s refill) slows a
+  single-IP brute force to a crawl but a **distributed** brute force
+  across many source IPs is not mitigated by this in-process limiter —
+  flagged as needing a real
   edge/CDN rate limiter in front of any public deployment, not solved
   by this codebase alone. Given 160 bits of entropy, distributed
   brute force is still computationally infeasible regardless (this is

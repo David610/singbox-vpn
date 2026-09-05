@@ -286,9 +286,9 @@ protocol change.
 - Hysteria2: sing-box's bundled inbound (not the standalone
   `apernet/hysteria` binary) — unchanged.
 - Xray-core: not used server-side; see "Why sing-box, not Xray-core" in
-  `docs/COMPATIBILITY_VERSIONS.md` and `docs/ADR/0002-transport-portfolio.md`.
-  No concrete server-side incompatibility with Xray-core has ever been
-  found — the seam (`CompatibilityBackend`) exists but was never exercised.
+  `docs/COMPATIBILITY_VERSIONS.md`. No concrete server-side
+  incompatibility with Xray-core has ever been found — the seam
+  (`CompatibilityBackend`) exists but was never exercised.
 - Hiddify client version/build: **UNVERIFIED** — not supplied this session.
 
 ### Hiddify `core=xray` / `xvless://` support — UNVERIFIED, not assumed

@@ -67,7 +67,7 @@ while IFS= read -r manifest; do
     echo "release tag $tag has version $tag_version, but $manifest declares $package_version" >&2
     exit 1
   fi
-done < <(find apps crates services tests -type f -name Cargo.toml | sort)
+done < <(find apps crates services -type f -name Cargo.toml | sort)
 
 if [ "$checked" -eq 0 ]; then
   echo "no package versions were found; refusing to validate release tag $tag" >&2

@@ -1,20 +1,18 @@
-# Containerized Rust services only. sing-box (VLESS+REALITY/Hysteria2 data
-# plane) stays on systemd on the host — see docs/DEPLOYMENT.md for why.
+# Containerized `subscription` service only, as an optional alternative
+# to running it natively via systemd (deploy/almalinux/install.sh). sing-box
+# (VLESS+REALITY/Hysteria2 data plane) and vpn-admin always stay on the
+# host regardless — see services/subscription/src/main.rs and this
+# file's own `subscription` service comments for why.
 #
-# Two independent use cases, selected via Compose profiles:
-#
-#   `production` — just `subscription`, running alongside an existing
-#   deploy/almalinux install (sing-box + vpn-admin still run natively on the
-#   host; this replaces only the vpn-subscription.service unit).
-#     SUBSCRIPTION_GID=$(getent group vpn-subscription | cut -d: -f3) \
-#       docker compose -f deploy/docker/docker-compose.yml --profile production up -d subscription
-#
-#   `dev` — the local vertical slice (rendezvous + relay-agent + test-service)
-#   as an alternative to deploy/local/run-dev-slice.sh, useful for exercising
-#   the native adaptive-transport stack without a local Rust toolchain.
-#     docker compose -f deploy/docker/docker-compose.yml --profile dev up
+#   SUBSCRIPTION_GID=$(getent group vpn-subscription | cut -d: -f3) \
+#     docker compose -f deploy/docker/docker-compose.yml --profile production up -d subscription
 #
 # Run from the REPO ROOT so the relative build context below resolves.
+#
+# (The native adaptive-transport stack's own dev-slice profile that used
+# to live here -- rendezvous/relay-agent/test-service -- was removed
+# along with that stack; see docs/SUPPORTED_PRODUCT.md and the
+# archive/native-adaptive-stack-2026 branch.)
 
 services:
   subscription:
@@ -57,73 +55,3 @@ services:
       - "no-new-privileges:true"
     environment:
       RUST_LOG: info
-
-  rendezvous:
-    profiles: ["dev"]
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile
-      target: rendezvous
-    image: singbox-vpn/rendezvous:local
-    container_name: singbox-vpn-rendezvous
-    command: ["--bind", "0.0.0.0:9000", "--pool-file", "/tmp/relay-pool.json"]
-    # Mounted inside /tmp (tmpfs, writable), not its own read-only
-    # directory: with no --key-dir given, rendezvous falls back to an
-    # ephemeral dev signing key (fine for this profile) and writes a
-    # `<pool-file>.root_pub` sidecar next to it on every boot — that write
-    # fails against a read-only bind-mounted directory, but succeeds
-    # against a writable tmpfs.
-    volumes:
-      - ../local/relay-pool.json:/tmp/relay-pool.json:ro,z
-    ports:
-      - "127.0.0.1:9000:9000" # local dev slice only — never a public bind
-    networks: ["singbox-vpn-dev"]
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop: ["ALL"]
-    security_opt:
-      - "no-new-privileges:true"
-
-  relay-agent:
-    profiles: ["dev"]
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile
-      target: relay-agent
-    image: singbox-vpn/relay-agent:local
-    container_name: singbox-vpn-relay-agent
-    command: ["--role", "combined", "--bind-tls", "0.0.0.0:9443"]
-    environment:
-      RELAY_TLS_PORT: "9443"
-    ports:
-      - "127.0.0.1:9443:9443" # local dev slice only — never a public bind
-    networks: ["singbox-vpn-dev"]
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop: ["ALL"]
-    security_opt:
-      - "no-new-privileges:true"
-
-  test-service:
-    profiles: ["dev"]
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile
-      target: test-service
-    image: singbox-vpn/test-service:local
-    container_name: singbox-vpn-test-service
-    ports:
-      - "127.0.0.1:8081:8081" # local dev slice only — never a public bind
-    networks: ["singbox-vpn-dev"]
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop: ["ALL"]
-    security_opt:
-      - "no-new-privileges:true"
-
-networks:
-  singbox-vpn-dev:
-    driver: bridge

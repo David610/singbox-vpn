@@ -117,7 +117,7 @@ Full command reference, troubleshooting, updating, and credential rotation:
 
 This project does not guarantee Tor-style anonymity, protection from a
 compromised VPS, access from every country/network, or protection after
-credentials leak. See [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
+credentials leak. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Documentation
 
@@ -129,7 +129,7 @@ credentials leak. See [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
   client/server contract and its schema
 - [Client setup](docs/clients/README.md)
 - [Device acceptance status](docs/DEVICE_ACCEPTANCE_TESTS.md)
-- [Security model](docs/SECURITY_MODEL.md)
+- [Threat model](docs/THREAT_MODEL.md)
 - [Release and supply-chain security](docs/SUPPLY_CHAIN_SECURITY.md)
 - [Recovery](docs/RECOVERY.md)
 

@@ -157,7 +157,8 @@ mod tests {
             // `fuzz/fuzz_targets/framing_header.rs` checks continuously
             // against a coverage-guided corpus; running it here too means
             // it's exercised on every `cargo test`, not only when
-            // cargo-fuzz is available (see docs/TEST_STRATEGY.md).
+            // cargo-fuzz is available (which needs a separate nightly
+            // toolchain install -- see fuzz/Cargo.toml).
             let _ = decode_destination(&bytes);
         }
     }

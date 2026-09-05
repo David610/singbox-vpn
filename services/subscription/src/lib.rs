@@ -1,9 +1,7 @@
 //! Subscription HTTP service: `GET /sub/{token}` returns a per-user
 //! client configuration (sing-box JSON, or a plain URI list) covering
-//! both VLESS+REALITY and Hysteria2 endpoints. Deliberately not part of
-//! the native `services/rendezvous` protocol (spec §17) — third-party
-//! clients have a different trust model (a bearer token over HTTPS, not
-//! a signed bundle chain).
+//! both VLESS+REALITY and Hysteria2 endpoints. Third-party clients use a
+//! bearer token over HTTPS, not a signed bundle chain.
 //!
 //! Binds loopback only; a reverse proxy terminates public HTTPS in front
 //! of it (spec §27) — this service performs no TLS termination itself.

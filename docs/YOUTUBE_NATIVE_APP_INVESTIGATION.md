@@ -68,11 +68,11 @@ methodology carries over and what doesn't.
   device."** No device data exists yet in this repository establishing
   whether `tcp-only` actually fixes the symptom. This is the single most
   important gap this investigation exists to close.
-- `docs/FAILURE_CLASSIFICATION.md`: describes `crates/network-state` /
-  `crates/failure-classifier`'s `FailureCategory` state machine. **Not
-  applicable here** — that machinery belongs to the native
-  `client-daemon`/`transport-native` stack (`docs/ARCHITECTURE.md`),
-  which Hiddify/sing-box clients never touch. Hiddify's failure
+- The native adaptive stack's `FailureCategory` state machine
+  (`crates/network-state`/`crates/failure-classifier`, removed from
+  `main` -- see `docs/SUPPORTED_PRODUCT.md`): **not applicable here** —
+  that machinery belonged to the native `client-daemon`/`transport-native`
+  stack, which Hiddify/sing-box clients never touched. Hiddify's failure
   handling is entirely internal to Hiddify/sing-box-core, invisible to
   this repository. Flagging this explicitly so it isn't mistaken for
   relevant machinery later.
