@@ -324,8 +324,16 @@ download_source() {
   if [ -n "$SINGBOX_VPN_VERSION" ]; then
     local expected_package_version="${SINGBOX_VPN_VERSION#v}"
     expected_package_version="${expected_package_version%%-*}"
+    # apps/admin/Cargo.toml declares version.workspace = true (no literal
+    # version string of its own — see deploy/lib/check-workspace-version-
+    # consistency.sh), so the authoritative version lives only in the root
+    # Cargo.toml's [workspace.package] section.
     local source_package_version
-    source_package_version="$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$extracted/apps/admin/Cargo.toml" 2>/dev/null | head -n1)"
+    source_package_version="$(awk '
+      /^\[workspace\.package\]/ { insec=1; next }
+      /^\[/ { insec=0 }
+      insec && /^version[[:space:]]*=/ { print; exit }
+    ' "$extracted/Cargo.toml" 2>/dev/null | sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"[[:space:]]*$/\1/p')"
     [ "$source_package_version" = "$expected_package_version" ] \
       || die "authenticated source archive version '$source_package_version' does not match requested release '$SINGBOX_VPN_VERSION' — refusing a wrong-version release asset."
   fi

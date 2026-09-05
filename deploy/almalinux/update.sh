@@ -582,7 +582,15 @@ STAGED_SRC_DIR="$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '
   || die "downloaded release source for $TARGET_VERSION is missing deploy/lib/versions.env. Nothing live has been changed."
 expected_package_version="${TARGET_VERSION#v}"
 expected_package_version="${expected_package_version%%-*}"
-source_package_version="$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' "$STAGED_SRC_DIR/apps/admin/Cargo.toml" 2>/dev/null | head -n1)"
+# apps/admin/Cargo.toml declares version.workspace = true (no literal
+# version string of its own — see deploy/lib/check-workspace-version-
+# consistency.sh), so the authoritative version lives only in the root
+# Cargo.toml's [workspace.package] section.
+source_package_version="$(awk '
+  /^\[workspace\.package\]/ { insec=1; next }
+  /^\[/ { insec=0 }
+  insec && /^version[[:space:]]*=/ { print; exit }
+' "$STAGED_SRC_DIR/Cargo.toml" 2>/dev/null | sed -nE 's/^version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)"[[:space:]]*$/\1/p')"
 [ "$source_package_version" = "$expected_package_version" ] \
   || die "authenticated source archive version '$source_package_version' does not match requested release '$TARGET_VERSION'. Nothing live has been changed."
 
