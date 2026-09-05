@@ -286,12 +286,15 @@ async fn get_subscription(
             profile,
             compat_mode,
         ) {
-            Ok(doc) => (
-                StatusCode::OK,
-                [("content-type", "application/json")],
-                serde_json::to_string_pretty(&doc).unwrap(),
-            )
-                .into_response(),
+            Ok(doc) => match serde_json::to_string_pretty(&doc) {
+                Ok(body) => {
+                    (StatusCode::OK, [("content-type", "application/json")], body).into_response()
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to serialize singbox subscription");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+                }
+            },
             Err(e) => {
                 tracing::error!(error = %e, "failed to render singbox subscription");
                 (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()

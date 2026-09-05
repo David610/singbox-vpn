@@ -1177,6 +1177,140 @@ fn doctor_reports_missing_singbox_binary_as_failure() {
         .stdout(predicates::str::contains("[FAIL]"));
 }
 
+#[test]
+fn doctor_json_emits_one_valid_json_object_with_stable_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let output = admin(dir.path(), &cfg_path)
+        .args(["doctor", "--json"])
+        .assert()
+        .failure();
+    let stdout = output.get_output().stdout.clone();
+    // The whole of stdout must be exactly one JSON value -- no prose
+    // before/after it, since a caller is expected to pipe this straight
+    // into a JSON parser (jq, a monitoring agent, etc.).
+    let value: serde_json::Value = serde_json::from_slice(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "doctor --json stdout was not exactly one JSON value: {e}\nstdout:\n{}",
+            String::from_utf8_lossy(&stdout)
+        )
+    });
+    assert_eq!(
+        value["healthy"],
+        serde_json::Value::Bool(false),
+        "a deployment missing its sing-box binary must report healthy: false"
+    );
+    assert_eq!(
+        value["protocol"],
+        serde_json::Value::String("not_run".into())
+    );
+    let checks = value["checks"]
+        .as_array()
+        .expect("checks must be a JSON array");
+    assert!(!checks.is_empty(), "checks must not be empty");
+    let has_failing_singbox_check = checks.iter().any(|c| {
+        c["status"] == "fail"
+            && c["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("sing-box binary")
+    });
+    assert!(
+        has_failing_singbox_check,
+        "expected a status:\"fail\" check mentioning the missing sing-box binary; got: {checks:#?}"
+    );
+    for check in checks {
+        assert!(check["layer"].is_string(), "every check needs a layer");
+        assert!(
+            matches!(
+                check["status"].as_str(),
+                Some("ok") | Some("info") | Some("warn") | Some("fail")
+            ),
+            "status must be one of ok/info/warn/fail, got {:?}",
+            check["status"]
+        );
+        assert!(check["message"].is_string(), "every check needs a message");
+    }
+}
+
+#[test]
+fn repair_fails_clearly_when_no_persistent_install_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    admin(dir.path(), &cfg_path)
+        .env(
+            "SINGBOX_VPN_REPAIR_UPDATE_SH",
+            dir.path().join("no-such-update.sh"),
+        )
+        .arg("repair")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("does not exist"));
+}
+
+#[test]
+fn repair_runs_the_located_update_script_with_repair_flag_and_propagates_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let fake_update_sh = dir.path().join("fake-update.sh");
+    let marker = dir.path().join("fake-update-ran.marker");
+    std::fs::write(
+        &fake_update_sh,
+        format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$*\" > {marker:?}\ntest \"$1\" = --repair\n"
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_update_sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    admin(dir.path(), &cfg_path)
+        .env("SINGBOX_VPN_REPAIR_UPDATE_SH", &fake_update_sh)
+        .arg("repair")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("repair complete"));
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap().trim(),
+        "--repair",
+        "repair must invoke update.sh with exactly --non-interactive"
+    );
+}
+
+#[test]
+fn repair_propagates_a_nonzero_exit_from_update_sh() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let fake_update_sh = dir.path().join("fake-update-fails.sh");
+    std::fs::write(&fake_update_sh, "#!/usr/bin/env bash\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_update_sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    admin(dir.path(), &cfg_path)
+        .env("SINGBOX_VPN_REPAIR_UPDATE_SH", &fake_update_sh)
+        .arg("repair")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("repair failed"));
+}
+
+#[test]
+fn doctor_json_rejects_combination_with_prose_only_output_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    for flag in ["--report", "--performance", "--telegram", "--client"] {
+        admin(dir.path(), &cfg_path)
+            .args(["doctor", "--json", flag])
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("--json cannot be combined"));
+    }
+}
+
 /// Public key confidentiality is not required, but its exact installed
 /// owner/group/mode is operationally required: vpn-subscription must read
 /// it and unrelated principals need no local access.

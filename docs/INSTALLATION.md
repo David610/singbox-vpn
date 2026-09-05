@@ -261,6 +261,7 @@ and reloads nginx after every successful renewal — no manual step needed.
 sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest
 sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version vX.Y.Z
 sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair   # reconcile without changing versions
+sudo vpn repair                                             # same as --repair, shorter to type
 ```
 
 Updates download and checksum-verify the target release before changing
