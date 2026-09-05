@@ -117,13 +117,17 @@ echo "--- static: the PRODUCTION path never requires Cargo (no-Cargo requirement
 # Extract everything from the "PRODUCTION PATH" banner to end of file,
 # and confirm no bare 'cargo' invocation appears there (only inside the
 # clearly separate DEV-REBUILD block above it, which is allowed to).
+# Use a here-string rather than `echo "$production_body" | grep -q`:
+# under pipefail, grep -q may close the pipe as soon as it finds a match,
+# causing echo to receive SIGPIPE and turn a successful assertion into a
+# timing-dependent failure.
 production_body="$(awk '/^# PRODUCTION PATH/{flag=1} flag{print}' "$UPDATE_SH")"
-if echo "$production_body" | grep -qE '(^|[^-])cargo (build|test)'; then
+if grep -qE '(^|[^-])cargo (build|test)' <<<"$production_body"; then
   fail "the production update path invokes cargo build/test — production updates must never require Cargo/Rust"
 else
   ok "the production update path never invokes cargo build/test"
 fi
-if echo "$production_body" | grep -q 'no prebuilt binaries are available'; then
+if grep -q 'no prebuilt binaries are available' <<<"$production_body"; then
   ok "production path fails closed (die) rather than falling back to a source build when no prebuilt release binaries exist"
 else
   fail "production path does not clearly refuse to fall back to a source build"
