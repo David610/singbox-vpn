@@ -178,6 +178,11 @@ SINGBOX_VPN_SSH_PORT="${SINGBOX_VPN_SSH_PORT:-}"
 # assumption that something might already exist, rather than risking a
 # full teardown of a live deployment it never actually verified was new.
 IS_FRESH_INSTALL=0
+# --dry-run: report-only preflight (see dry_run_report() below). Never
+# set from an environment variable — always an explicit, one-shot CLI
+# flag, so a stray exported env var from a previous run can never
+# silently turn a real install into a no-op.
+DRY_RUN=0
 print_install_help() {
   cat <<'USAGE'
 singbox-vpn installer (deploy/almalinux/install.sh).
@@ -219,6 +224,12 @@ Optional flags (all have environment-variable equivalents):
                                     Enter to skip is itself the opt-in — this
                                     flag is only needed when no prompt can be
                                     shown at all.
+  --dry-run                        run preflight checks only and print a
+                                    PASS/WARN/FAIL report; makes NO changes to
+                                    this host regardless of what else is
+                                    passed. Combine with --domain/
+                                    --reality-handshake-server/etc. to check
+                                    the exact configuration you intend to use.
   -h, --help                       show this message and exit
 USAGE
 }
@@ -236,6 +247,7 @@ parse_cli_args() {
       --ssh-port=*) SINGBOX_VPN_SSH_PORT="${1#*=}"; shift ;;
       --non-interactive) NONINTERACTIVE=1; shift ;;
       --allow-ip-hostname) ALLOW_IP_HOSTNAME=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
       -h|--help) print_install_help; exit 0 ;;
       *) die "unknown argument: $1 (see --help)" ;;
     esac
@@ -607,6 +619,159 @@ preflight_stage() {
   # manual uninstall.sh run to find, instead of only self-describing
   # once the whole install already succeeded.
   write_install_state_manifest "installing"
+}
+
+# ---------------------------------------------------------------------
+# --dry-run: report-only preflight. Deliberately calls ONLY read-only
+# detection/validation functions from deploy/lib/os.sh and
+# deploy/lib/preflight.sh directly — it must NEVER call preflight_stage()
+# itself, which also acquires the installer lock, persists a copy of the
+# source tree to /opt/singbox-vpn, installs IDN support packages, and
+# writes the install-state manifest. Those are real host mutations; a
+# --dry-run that ran them would not be a dry run.
+#
+# Exits 0 (and only then prints "READY TO INSTALL") iff no check FAILed.
+# A WARN never blocks readiness (e.g. an inactive firewall backend that
+# install.sh will enable itself) but is still shown so nothing is hidden.
+# ---------------------------------------------------------------------
+dry_run_report() {
+  echo
+  echo "singbox-vpn install --dry-run: checking this host only. No changes will be made."
+  local dr_failures=0 dr_warnings=0
+
+  dr_pass() { printf '  %-26s PASS  %s\n' "$1" "${2:-}"; }
+  dr_warn() { printf '  %-26s WARN  %s\n' "$1" "$2"; dr_warnings=$((dr_warnings + 1)); }
+  dr_fail() { printf '  %-26s FAIL  %s\n' "$1" "$2"; dr_failures=$((dr_failures + 1)); }
+
+  echo
+  echo "Environment"
+  if [ "$(id -u)" -eq 0 ]; then dr_pass "root/sudo"; else dr_fail "root/sudo" "must run as root"; fi
+
+  if detect_os; then
+    case "$OS_ID-$OS_VERSION_ID" in
+      almalinux-9*) dr_pass "OS" "$OS_PRETTY_NAME" ;;
+      *) dr_warn "OS" "$OS_PRETTY_NAME is outside the supported v1.0 target (AlmaLinux 9 x86_64); implementation_coverage=$OS_SUPPORT" ;;
+    esac
+  else
+    dr_fail "OS" "cannot detect OS (/etc/os-release missing)"
+  fi
+
+  local dr_arch
+  if dr_arch="$(detect_arch 2>/dev/null)"; then
+    if [ "$dr_arch" = "amd64" ]; then dr_pass "architecture" "$dr_arch"; else dr_warn "architecture" "$dr_arch is outside the supported v1.0 target (x86_64)"; fi
+  else
+    dr_fail "architecture" "unsupported CPU architecture: $(uname -m)"
+  fi
+
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then dr_pass "systemd"; else dr_fail "systemd" "not the running init system"; fi
+
+  local dr_missing=() dr_c
+  for dr_c in curl tar awk sed grep openssl; do command -v "$dr_c" >/dev/null 2>&1 || dr_missing+=("$dr_c"); done
+  if [ "${#dr_missing[@]}" -eq 0 ]; then dr_pass "required commands"; else dr_fail "required commands" "missing: ${dr_missing[*]}"; fi
+
+  local dr_disk_mib; dr_disk_mib="$(df -Pm / | awk 'NR==2{print $4}')"
+  if [ -n "$dr_disk_mib" ] && [ "$dr_disk_mib" -ge 2048 ]; then dr_pass "disk space" "${dr_disk_mib}MiB free on /"; else dr_fail "disk space" "${dr_disk_mib:-unknown}MiB free on / (need >= 2048MiB)"; fi
+
+  local dr_mem_mib; dr_mem_mib="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || true)"
+  if [ -n "$dr_mem_mib" ] && [ "$dr_mem_mib" -ge 1024 ]; then dr_pass "memory" "${dr_mem_mib}MiB total"; else dr_warn "memory" "${dr_mem_mib:-unknown}MiB total (recommended >= 1024MiB; only building sing-box/singbox-vpn from source needs the headroom)"; fi
+
+  if preflight_curl_retry -fsS -o /dev/null "https://github.com" 2>/dev/null; then dr_pass "outbound HTTPS"; else dr_fail "outbound HTTPS" "cannot reach github.com"; fi
+
+  if preflight_check_dns github.com >/dev/null 2>&1; then dr_pass "DNS (github.com)"; else dr_warn "DNS (github.com)" "resolution failed"; fi
+
+  echo
+  echo "Networking"
+  local dr_ssh_port=""
+  if dr_ssh_port="$(preflight_resolve_ssh_port 2>/dev/null)"; then
+    dr_pass "SSH port" "detected $dr_ssh_port"
+  else
+    dr_fail "SSH port" "could not positively determine sshd's listening port — pass --ssh-port <port>"
+  fi
+
+  if existing_install_present; then
+    dr_pass "TCP/443" "already owned by this host's existing singbox-vpn install"
+    dr_pass "UDP/443" "already owned by this host's existing singbox-vpn install"
+  else
+    if preflight_check_port_free tcp 443 >/dev/null 2>&1; then dr_pass "TCP/443"; else dr_fail "TCP/443" "already in use by another process"; fi
+    if preflight_check_port_free udp 443 >/dev/null 2>&1; then dr_pass "UDP/443"; else dr_fail "UDP/443" "already in use by another process"; fi
+  fi
+
+  local dr_sub_port="${SUBSCRIPTION_PORT:-8443}"
+  if existing_install_present || preflight_check_port_free tcp "$dr_sub_port" >/dev/null 2>&1; then
+    dr_pass "subscription port" "$dr_sub_port"
+  else
+    dr_fail "subscription port" "$dr_sub_port already in use (set --subscription-port to relocate it)"
+  fi
+
+  if preflight_check_port_free tcp 80 >/dev/null 2>&1; then
+    dr_pass "TCP/80 (ACME)"
+  else
+    dr_warn "TCP/80 (ACME)" "already in use — certbot's HTTP-01 challenge needs this free during issuance/renewal"
+  fi
+
+  echo
+  echo "Firewall"
+  case "${FIREWALL_BACKEND:-}" in
+    firewalld)
+      if systemctl is-active --quiet firewalld 2>/dev/null; then dr_pass "firewalld (host)" "active"; else dr_warn "firewalld (host)" "not currently active — install.sh will install/enable it"; fi ;;
+    ufw)
+      if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then dr_pass "ufw (host)" "active"; else dr_warn "ufw (host)" "not currently active — install.sh will install/enable it"; fi ;;
+    *) dr_warn "firewall (host)" "no recognized backend detected for this OS family" ;;
+  esac
+  echo "    NOTE: this only covers the HOST firewall. Your cloud/VPS provider's"
+  echo "    network firewall (security group / cloud firewall) is a SEPARATE"
+  echo "    control plane this installer cannot see or configure. Confirm these"
+  echo "    are allowed inbound there too: SSH (${dr_ssh_port:-your sshd port}), TCP/80 (ACME),"
+  echo "    TCP/443 (REALITY), UDP/443 (Hysteria2), and TCP/$dr_sub_port (subscription) if"
+  echo "    the subscription endpoint needs to be reachable from outside this host."
+
+  echo
+  echo "ACME prerequisites"
+  if command -v certbot >/dev/null 2>&1; then dr_pass "certbot"; else dr_warn "certbot" "not yet installed — install.sh installs it"; fi
+  if [ -n "${PUBLIC_HOST:-}" ]; then
+    if preflight_validate_hostname "$PUBLIC_HOST" "--domain" >/dev/null 2>&1; then
+      local dr_dns_rc=0
+      preflight_check_hostname_resolves_here "$PUBLIC_HOST" >/dev/null 2>&1 || dr_dns_rc=$?
+      case "$dr_dns_rc" in
+        0) dr_pass "DNS for --domain" "$PUBLIC_HOST resolves to this host" ;;
+        2) dr_warn "DNS for --domain" "could not verify $PUBLIC_HOST resolves here (no DNS tool, or DNS returned nothing)" ;;
+        *) dr_fail "DNS for --domain" "$PUBLIC_HOST does not resolve to this host — certbot's HTTP-01 challenge will fail" ;;
+      esac
+    else
+      dr_fail "--domain" "'$PUBLIC_HOST' is not a syntactically valid hostname"
+    fi
+  else
+    dr_warn "--domain" "none given — a real deployment should use --domain; the IP-derived sslip.io hostname is an explicit opt-in convenience, never a silent default (see --allow-ip-hostname)"
+  fi
+
+  echo
+  echo "REALITY handshake server"
+  local dr_decoy="${REALITY_HANDSHAKE_SERVER:-www.cloudflare.com}"
+  if preflight_validate_hostname "$dr_decoy" "--reality-handshake-server" >/dev/null 2>&1; then
+    local dr_probe_out
+    dr_probe_out="$(mktemp)"
+    if timeout 8 openssl s_client -connect "${dr_decoy}:443" -tls1_3 -servername "$dr_decoy" </dev/null >"$dr_probe_out" 2>&1; then
+      if reality_decoy_openssl_output_confirms_tls13 "$(cat "$dr_probe_out")"; then
+        dr_pass "REALITY decoy" "$dr_decoy answered with TLS 1.3 on 443/tcp"
+      else
+        dr_warn "REALITY decoy" "$dr_decoy is reachable on 443/tcp but did not confirm TLS 1.3 in this probe"
+      fi
+    else
+      dr_warn "REALITY decoy" "could not reach ${dr_decoy}:443 from this host (egress firewall, or the target itself)"
+    fi
+    rm -f "$dr_probe_out"
+  else
+    dr_fail "--reality-handshake-server" "'$dr_decoy' is not a syntactically valid hostname"
+  fi
+
+  echo
+  if [ "$dr_failures" -eq 0 ]; then
+    echo "READY TO INSTALL ($dr_warnings warning(s))."
+  else
+    echo "NOT READY: $dr_failures check(s) failed, $dr_warnings warning(s)."
+  fi
+  echo "No changes made."
+  [ "$dr_failures" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------
@@ -2476,6 +2641,16 @@ lifecycle_gate_abort_hook() {
 
 main() {
   parse_cli_args "$@"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    # `if ! dry_run_report` (not a bare call): dry_run_report's exit status
+    # reflects whether checks passed, not a script error — a bare call
+    # under `set -e` would trip the ERR trap's rollback-handler path on
+    # any FAIL, which is wrong for what is supposed to be a clean report.
+    if ! dry_run_report; then
+      exit 1
+    fi
+    exit 0
+  fi
   SINGBOX_VPN_STAGE=preflight
   preflight_stage
   SINGBOX_VPN_STAGE=packages
