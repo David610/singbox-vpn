@@ -209,6 +209,32 @@ else
   fail "a failing config migrate did not abort"
 fi
 
+echo
+echo "--- static: update.sh rejects an incompatible schema BEFORE SWITCH, using the STAGED (not-yet-installed) target binary ---"
+switch_line="$(grep -n '^log "SWITCHING to' "$UPDATE_SH" | head -n1 | cut -d: -f1)"
+precheck_line="$(grep -n 'reject an impossible state-schema transition before ANY' "$UPDATE_SH" | head -n1 | cut -d: -f1)"
+if [ -n "$precheck_line" ] && [ -n "$switch_line" ] && [ "$precheck_line" -lt "$switch_line" ]; then
+  ok "the pre-switch schema compatibility check runs strictly before SWITCH"
+else
+  fail "the pre-switch schema compatibility check is missing, or does not run before SWITCH (precheck_line=$precheck_line switch_line=$switch_line)"
+fi
+precheck_body="$(sed -n '/reject an impossible state-schema transition before ANY/,/^fi$/p' "$UPDATE_SH")"
+if echo "$precheck_body" | grep -q '"\$STAGED_BIN_DIR/vpn-admin" --config "\$DEPLOYMENT_TOML" config validate'; then
+  ok "the pre-switch check validates against the STAGED target vpn-admin, not the currently-installed one"
+else
+  fail "the pre-switch check does not use \$STAGED_BIN_DIR/vpn-admin -- it would be validating with the OLD binary, proving nothing about the target's compatibility"
+fi
+if echo "$precheck_body" | grep -q 'Nothing live has been changed'; then
+  ok "the pre-switch check's failure message confirms zero live mutation"
+else
+  fail "the pre-switch check's failure message does not state that nothing live was changed"
+fi
+if echo "$precheck_body" | grep -qE '0 \| 2\)'; then
+  ok "the pre-switch check treats both 'current' (0) and 'migration required' (2) as compatible -- migration itself still happens post-SWITCH with the live binary"
+else
+  fail "the pre-switch check does not accept the MIGRATION_REQUIRED (2) status as compatible"
+fi
+
 if [ "$failures" -eq 0 ]; then
   echo
   echo "all state-schema-migration wiring tests passed"

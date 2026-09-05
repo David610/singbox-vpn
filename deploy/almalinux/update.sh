@@ -619,6 +619,35 @@ STAGE_OK=1
 trap - EXIT
 log "STAGE complete: $TARGET_VERSION verified and ready (source + binaries$([ -n "$STAGED_SINGBOX_BIN" ] && echo " + sing-box"))."
 
+# ---- STAGE: reject an impossible state-schema transition before ANY
+# live mutation, not just before it's too late. The check_state_schema
+# block further below (after SWITCH) already runs `vpn-admin config
+# validate`/`config migrate` using the NEW binary against the live
+# state -- which correctly refuses a schema the new binary can't read
+# (e.g. an unintended downgrade past a schema bump), but only AFTER
+# SWITCH has already replaced the running binaries/units, relying on
+# this script's rollback path to recover. Running the exact same
+# read-only `config validate` here, against the STAGED (not yet
+# installed) target binary, catches the identical incompatibility
+# before touching anything live at all -- the rollback path stays as
+# defense in depth, not the primary safety mechanism, for this specific
+# failure. A clean, existing deployment.toml is required for this
+# check to mean anything; a repair with no prior deployment has nothing
+# to validate yet.
+if [ -f "$DEPLOYMENT_TOML" ]; then
+  precheck_rc=0
+  precheck_output="$("$STAGED_BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config validate 2>&1)" || precheck_rc=$?
+  case "$precheck_rc" in
+    0 | 2)
+      log "pre-switch schema compatibility check: $TARGET_VERSION's vpn-admin can read the current persistent state (status $precheck_rc)."
+      ;;
+    *)
+      echo "$precheck_output" >&2
+      die "$TARGET_VERSION's vpn-admin cannot read the current persistent state (status $precheck_rc) -- this update (or downgrade) would leave singbox-vpn unable to start. Nothing live has been changed. See output above."
+      ;;
+  esac
+fi
+
 # =======================================================================
 # PREPARE — snapshot everything this transaction may change, write the
 # transaction marker (enables interrupted-transaction detection above),
