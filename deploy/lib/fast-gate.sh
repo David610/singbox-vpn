@@ -28,7 +28,7 @@ cd "$REPO_ROOT"
 # never silently starts building/testing the native adaptive stack if a
 # crate is added to the workspace later — see docs/SUPPORTED_PRODUCT.md
 # "Supported code surface".
-SUPPORTED_CRATES=(admin subscription compat-config common)
+SUPPORTED_CRATES=(admin subscription compat-config common provisioning-contract)
 CARGO_PKG_ARGS=()
 for c in "${SUPPORTED_CRATES[@]}"; do CARGO_PKG_ARGS+=(-p "$c"); done
 
@@ -66,6 +66,9 @@ if bash deploy/lib/check-no-secret-logging.sh; then ok "no-secret-logging"; else
 
 step "no legacy pre-rename identity check"
 if bash deploy/lib/check-no-legacy-identity.sh; then ok "no-legacy-identity"; else fail "check-no-legacy-identity.sh"; fi
+
+step "workspace version consistency"
+if bash deploy/lib/check-workspace-version-consistency.sh; then ok "workspace-version-consistency"; else fail "check-workspace-version-consistency.sh"; fi
 
 step "supported-crate fmt check"
 if cargo fmt "${CARGO_PKG_ARGS[@]}" -- --check; then ok "cargo fmt"; else fail "cargo fmt --check"; fi
