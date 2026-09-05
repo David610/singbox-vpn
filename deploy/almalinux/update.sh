@@ -75,6 +75,8 @@ lifecycle_gate_abort_hook() {
 . "$REPO_ROOT/deploy/lib/preflight.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/state-schema.sh"
 
 CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
 
@@ -357,21 +359,15 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   systemctl daemon-reload
 
   log "install mode: UPGRADE (dev-rebuild) — checking persistent state schema before rendering..."
-  validate_output=""
-  validate_rc=0
-  validate_output="$("$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config validate 2>&1)" || validate_rc=$?
-  case "$validate_rc" in
-    0) log "persistent state schema: current, no migration needed." ;;
-    2)
-      log "persistent state schema: MIGRATION REQUIRED. Migrating now (backup taken automatically before any change)..."
-      echo "$validate_output"
-      "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config migrate \
-        || die "persistent state migration failed — see output above. Rolling back to the previous working binaries/config; nothing live was changed by this step."
-      log "persistent state schema: migration complete."
+  schema_rc=0
+  state_schema_validate_and_migrate "$BIN_DIR/vpn-admin" "$DEPLOYMENT_TOML" || schema_rc=$?
+  case "$schema_rc" in
+    0 | 2) ;;
+    3)
+      die "persistent state migration failed — see output above. Rolling back to the previous working binaries/config; nothing live was changed by this step."
       ;;
     *)
-      echo "$validate_output" >&2
-      die "persistent state is INVALID/unsupported (status $validate_rc) — see output above. Rolling back to the previous working binaries/config."
+      die "persistent state is INVALID/unsupported — see output above. Rolling back to the previous working binaries/config."
       ;;
   esac
 
@@ -842,22 +838,18 @@ log "reloading systemd unit definitions..."
 systemctl daemon-reload
 
 log "install mode: UPDATE ${CURRENT_VERSION:-unknown} -> $TARGET_VERSION — checking persistent state schema before rendering..."
-validate_output=""
-validate_rc=0
-validate_output="$("$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config validate 2>&1)" || validate_rc=$?
-case "$validate_rc" in
-  0) log "persistent state schema: current, no migration needed." ;;
+schema_rc=0
+state_schema_validate_and_migrate "$BIN_DIR/vpn-admin" "$DEPLOYMENT_TOML" || schema_rc=$?
+case "$schema_rc" in
+  0) ;;
   2)
-    log "persistent state schema: MIGRATION REQUIRED. Migrating now (backup taken automatically before any change)..."
-    echo "$validate_output"
-    "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config migrate \
-      || die "persistent state migration failed — see output above. Rolling back to $CURRENT_VERSION; nothing about this failure changes credentials."
-    log "persistent state schema: migration complete."
     lifecycle_gate_abort_hook after_migration
     ;;
+  3)
+    die "persistent state migration failed — see output above. Rolling back to $CURRENT_VERSION; nothing about this failure changes credentials."
+    ;;
   *)
-    echo "$validate_output" >&2
-    die "persistent state is INVALID/unsupported (status $validate_rc) — see output above. Rolling back to $CURRENT_VERSION."
+    die "persistent state is INVALID/unsupported — see output above. Rolling back to $CURRENT_VERSION."
     ;;
 esac
 lifecycle_gate_abort_hook after_switch

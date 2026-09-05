@@ -124,6 +124,8 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/ownership.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/state-schema.sh"
 
 # Installs $src to a FIXED, well-known destination path (a systemd unit,
 # a certbot renewal hook — anything named identically regardless of
@@ -1382,22 +1384,15 @@ check_state_schema() {
   if [ ! -f "$DEPLOYMENT_TOML" ]; then
     return 0
   fi
-  local validate_output="" validate_rc=0
-  validate_output="$("$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config validate 2>&1)" || validate_rc=$?
-  case "$validate_rc" in
-    0)
-      log "persistent state schema: current, no migration needed."
-      ;;
-    2)
-      log "persistent state schema: MIGRATION REQUIRED. Migrating now (backup taken automatically before any change)..."
-      echo "$validate_output"
-      "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config migrate \
-        || die "persistent state migration failed — see output above. Nothing live was changed by this step; the previous state remains in place. Re-run once the cause is fixed, or restore a backup under /etc/vpn/compat/**/*.pre-migration-*.bak."
-      log "persistent state schema: migration complete."
+  local schema_rc=0
+  state_schema_validate_and_migrate "$BIN_DIR/vpn-admin" "$DEPLOYMENT_TOML" || schema_rc=$?
+  case "$schema_rc" in
+    0 | 2) ;;
+    3)
+      die "persistent state migration failed — see output above. Nothing live was changed by this step; the previous state remains in place. Re-run once the cause is fixed, or restore a backup under /etc/vpn/compat/**/*.pre-migration-*.bak."
       ;;
     *)
-      echo "$validate_output" >&2
-      die "persistent state is INVALID/unsupported (status $validate_rc) — see output above. This is not something a repair/upgrade re-run can fix automatically: restore from a backup (/etc/vpn/backups, or /etc/vpn/compat/**/*.pre-migration-*.bak), or install a vpn-admin new enough to understand this state."
+      die "persistent state is INVALID/unsupported — see output above. This is not something a repair/upgrade re-run can fix automatically: restore from a backup (/etc/vpn/backups, or /etc/vpn/compat/**/*.pre-migration-*.bak), or install a vpn-admin new enough to understand this state."
       ;;
   esac
 }
