@@ -14,6 +14,18 @@ Release decisions use the evidence vocabulary in `DEVICE_ACCEPTANCE_TESTS.md`:
 
 A stable release requires all three levels where applicable.
 
+## Version model
+
+The Rust workspace stores the **SemVer core** only. For example, both
+`v1.0.0-rc.1` and `v1.0.0` are built from workspace version `1.0.0`.
+The prerelease identity lives in the Git tag, not in
+`[workspace.package].version`. `deploy/lib/check-release-version.sh` enforces
+that the tag's `MAJOR.MINOR.PATCH` core matches the workspace version.
+
+This has an important consequence: once an RC has been accepted, no Cargo
+version edit is needed to create the stable release. `Cargo.toml` and
+`Cargo.lock` therefore remain frozen between the accepted RC and stable tag.
+
 ## Release channels
 
 ### Development
@@ -43,17 +55,17 @@ Stable releases are manual-only. Creating or pushing a stable tag does not by it
 ## Mandatory release sequence
 
 1. Start from a clean, reviewed `main` with green CI and Security workflows.
-2. Set the workspace version to the intended RC version, e.g. `1.0.0-rc.1`.
+2. Set `[workspace.package].version` to the intended release **core**, e.g. `1.0.0`. Do not put `-rc.N` in the workspace version.
 3. Create and push the matching RC tag, e.g. `v1.0.0-rc.1`.
 4. Let the release workflow build, attest, publish, and verify the immutable RC artifacts.
 5. Run `.github/workflows/vps-acceptance.yml` against that exact immutable RC on a disposable AlmaLinux 9 x86_64 VPS. Do not use `main` and do not use an unverified development-channel run as release evidence.
 6. Record the real VPS result in `docs/DEVICE_ACCEPTANCE_TESTS.md`, including date, release tag, commit, OS, architecture, provider/region where appropriate, and the lifecycle result.
 7. Run the real-device acceptance checklist against the same RC. At minimum for the primary supported release path, record a real Hiddify client test covering REALITY, Hysteria2, subscription refresh, ordinary browsing, sustained transfer, reconnect/idle behaviour, and any relevant network handover checks.
 8. Run certificate-renewal acceptance on the disposable release environment where applicable, including firewall TCP/80 handling and post-renewal service health.
-9. If any implementation, deployment, workflow, dependency, or protocol code changes after RC acceptance, publish a new RC and repeat the acceptance sequence. Do not carry acceptance evidence forward across code changes.
-10. Once the RC is accepted, change only stable-release metadata/documentation needed to cut the final release. The stable release must remain a metadata/docs-only descendant of the accepted RC.
+9. If any implementation, deployment, workflow, dependency, Cargo manifest/lockfile, or protocol code changes after RC acceptance, publish a new RC and repeat the acceptance sequence. Do not carry acceptance evidence forward across code changes.
+10. Once the RC is accepted, change only the release-status/evidence documentation needed to record that acceptance. The stable release must remain a documentation-only descendant of the accepted RC.
 11. Add `docs/release-acceptance/<stable-tag>.md` using the exact format below.
-12. Set the workspace version to the stable version, create the stable tag, and manually dispatch the Release workflow from that exact tag with `confirm_stable_release=true`.
+12. Create the stable tag from that documentation-only descendant and manually dispatch the Release workflow from that exact tag with `confirm_stable_release=true`. Do not edit the Cargo version again: the RC and stable tag share the same SemVer core.
 13. Verify the published stable bootstrap and release assets.
 14. After publication, run one final smoke installation through the public stable one-command bootstrap.
 
@@ -108,7 +120,7 @@ Never put subscription tokens, passwords, private keys, REALITY private material
 - the accepted RC tag must exist;
 - the recorded accepted RC commit must match the RC tag's actual commit;
 - the accepted RC must be an ancestor of the stable tag;
-- changes between the accepted RC and stable tag are restricted to release metadata and acceptance documentation. Implementation/workflow changes require a new RC.
+- changes between the accepted RC and stable tag are restricted to the release-status/evidence documentation listed below. Any implementation, dependency, Cargo, deployment, or workflow change requires a new RC.
 
 The release workflow still runs the complete canonical CI graph before any release artifacts are built.
 
@@ -116,13 +128,11 @@ The release workflow still runs the complete canonical CI graph before any relea
 
 The stable tag may differ from the accepted RC only in:
 
-- `Cargo.toml`
-- `Cargo.lock`
-- `README.md`
-- `docs/DEVICE_ACCEPTANCE_TESTS.md`
-- the stable acceptance file itself under `docs/release-acceptance/`
+- `README.md` (release-status/documentation wording only);
+- `docs/DEVICE_ACCEPTANCE_TESTS.md`;
+- the stable acceptance file itself under `docs/release-acceptance/`.
 
-Any change to source code, deployment code, GitHub Actions workflows, systemd units, nginx templates, dependency manifests other than version metadata, or security-sensitive implementation requires another RC and another acceptance cycle.
+`Cargo.toml`, `Cargo.lock`, Rust source, deployment code, GitHub Actions workflows, systemd units, nginx templates, dependency definitions, and other security-sensitive implementation files are frozen after RC acceptance. Any change to them requires another RC and another acceptance cycle.
 
 ## Repository governance required for releases
 
