@@ -36,11 +36,36 @@ assert_eq() {
 TMPDIR_TEST="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
-echo "--- static: matrix targets match deploy/lib/os.sh's rust_target_for_arch() outputs ---"
-yml_targets="$(grep -oE 'target: [A-Za-z0-9_.-]+-unknown-linux-gnu' "$RELEASE_YML" | awk '{print $2}' | sort -u)"
+echo "--- static: every target release.yml builds/publishes has a corresponding deploy/lib/os.sh rust_target_for_arch() output ---"
+# Intentionally a subset check, not set equality: os.sh's
+# rust_target_for_arch() still resolves a target triple for every
+# architecture it recognizes (used for source-build fallback and the
+# pinned sing-box/cosign downloads on any arch), but release.yml no
+# longer builds/publishes a prebuilt singbox-vpn artifact for every one
+# of those — arm64 is cross-compiled-but-unvalidated and is NOT
+# published as of the v1.0.0-rc.4 ABI-baseline fix (see
+# docs/SUPPORTED_PRODUCT.md "Architecture support" / release.yml's
+# `build` job comment). Every target release.yml DOES build/publish
+# must still be one os.sh actually knows how to resolve.
+yml_targets="$(grep -oE 'singbox-vpn-[A-Za-z0-9_.-]+-unknown-linux-gnu\.tar\.gz' "$RELEASE_YML" | sed -E 's/^singbox-vpn-//; s/\.tar\.gz$//' | sort -u)"
 os_sh_targets="$(grep -oE 'echo "[A-Za-z0-9_.-]+-unknown-linux-gnu"' "$REPO_ROOT/deploy/lib/os.sh" | grep -oE '[A-Za-z0-9_.-]+-unknown-linux-gnu' | sort -u)"
-assert_eq "release.yml build matrix targets == os.sh rust_target_for_arch() targets" \
-  "$yml_targets" "$os_sh_targets"
+[ -n "$yml_targets" ] || { echo "FAIL: could not find any singbox-vpn-<target>.tar.gz reference in release.yml"; failures=$((failures + 1)); }
+missing=0
+for t in $yml_targets; do
+  if echo "$os_sh_targets" | grep -qFx "$t"; then
+    echo "ok: release.yml builds $t, which os.sh's rust_target_for_arch() also resolves to"
+  else
+    echo "FAIL: release.yml builds $t, but os.sh's rust_target_for_arch() has no matching output"
+    missing=1
+  fi
+done
+[ "$missing" -eq 0 ] || failures=$((failures + 1))
+if [ "$yml_targets" = "x86_64-unknown-linux-gnu" ]; then
+  echo "ok: release.yml currently publishes exactly the v1.0 SUPPORTED TARGET architecture (x86_64) and nothing else"
+else
+  echo "FAIL: release.yml's published target set changed from the expected x86_64-only set ($yml_targets) — update this test deliberately if that was intentional (e.g. arm64 gained real ABI-baseline + runtime validation)"
+  failures=$((failures + 1))
+fi
 
 echo
 echo "--- static: release target installation uses the repository's pinned Rust toolchain ---"
@@ -59,7 +84,7 @@ fi
 
 echo
 echo "--- static: asset filename pattern matches between release.yml and install.sh ---"
-if grep -q 'singbox-vpn-\${{ matrix.target }}\.tar\.gz' "$RELEASE_YML" && \
+if grep -q 'singbox-vpn-x86_64-unknown-linux-gnu\.tar\.gz' "$RELEASE_YML" && \
    grep -q 'asset="singbox-vpn-\${target}\.tar\.gz"' "$INSTALL_SH"; then
   echo "ok: both sides use the 'singbox-vpn-<target>.tar.gz' asset filename pattern"
 else

@@ -28,6 +28,25 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Linux release build baseline (v1.0.0-rc.4 fix): the x86_64 production
+  # artifact is compiled inside this exact, digest-pinned AlmaLinux 8.10
+  # container instead of on ubuntu-latest's own (much newer, and
+  # unpinned/drifting) host glibc. See the "Build release binaries"
+  # step below for why a container for the actual link step — not an
+  # env var, not static linking — is what makes this real, and
+  # RELEASE_GLIBC_BASELINE below for the version this is enforced
+  # against.
+  #
+  # v1.0.0-rc.3 incident: binaries built on ubuntu-latest inherited its
+  # glibc 2.39 ABI and failed to even start on an AlmaLinux 8 VPS (glibc
+  # 2.28) — and would also have failed on AlmaLinux 9 (glibc 2.34), the
+  # actual v1.0 SUPPORTED TARGET (docs/SUPPORTED_PRODUCT.md). AlmaLinux 8
+  # is used only as a conservative BUILD environment to guarantee a
+  # GLIBC_2.28-or-older ABI baseline; it does not make AlmaLinux 8 a
+  # supported OS (see docs/SUPPORTED_PRODUCT.md's "Binary ABI baseline"
+  # section).
+  RELEASE_BUILD_IMAGE: "almalinux@sha256:9f355ae942d6a6c0561f0771dc053a2cfae9580fc45fa4252756db7c7e80c09f" # almalinux:8.10, glibc 2.28
+  RELEASE_GLIBC_BASELINE: "2.28"
 
 # Default every release job to read-only. Build narrows in OIDC/attestation
 # writes; publish narrows in contents:write. No other job receives write scope.
@@ -210,15 +229,17 @@ jobs:
   build:
     needs: [gate]
     if: ${{ !cancelled() && needs.gate.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-    runs-on: ${{ matrix.os }}
+    # x86_64-unknown-linux-gnu is the only artifact this job builds. arm64
+    # is NOT published (see docs/SUPPORTED_PRODUCT.md "Architecture
+    # support" and docs/RELEASE.md): the old workflow cross-compiled an
+    # aarch64-unknown-linux-gnu artifact and published it despite having
+    # no way to execute/validate it on the runner (x86_64) — "cross-
+    # compilation succeeded" was never evidence it actually runs anywhere.
+    # Rather than publish another architecture's artifact with an
+    # unvalidated ABI/runtime contract, this workflow stops publishing it
+    # until arm64 gets the same real build-baseline + runtime-execution
+    # validation x86_64 has below.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -226,39 +247,86 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install cross-compilation toolchain
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-unknown-linux-gnu
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: ${{ matrix.target }}
+          key: x86_64-unknown-linux-gnu
 
-      - name: Configure aarch64 linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      # ---------------------------------------------------------------
+      # Build inside a pinned AlmaLinux 8.10 container (glibc 2.28) —
+      # NOT on ubuntu-latest's own host glibc (2.39 as of this runner
+      # image, and not pinned/controlled by this project at all). This
+      # is the actual fix for the v1.0.0-rc.3 incident: a Rust `-gnu`
+      # target dynamically links against whatever libc.so.6 the linker
+      # resolves against at build time, so the binary's resulting
+      # minimum-glibc requirement is set by the environment doing the
+      # link — not by the target triple, and not by an environment
+      # variable (RUSTFLAGS cannot make rustc link against a different
+      # libc than what's actually installed on the build host).
+      #
+      # This deliberately does NOT run the whole job inside the
+      # container (`jobs.build.container:`): GitHub Actions injects its
+      # own Node-based runner hooks into a container job to execute
+      # actions like actions/checkout — whether that Node binary would
+      # even run against AlmaLinux 8's glibc is untested and beside the
+      # point. Instead, only the actual compilation — a single `docker
+      # run` invoking `cargo build` — happens inside the pinned
+      # container; checkout/toolchain-setup/attestation/upload all run
+      # normally on the runner. The toolchain that dtolnay/rust-toolchain
+      # just installed (rustc/cargo themselves only need glibc <= 2.17 —
+      # they are build-time tools, not part of the shipped artifact) is
+      # bind-mounted straight into the container and used as-is, so the
+      # exact pinned Rust version above is what compiles the release,
+      # with no separate toolchain re-install/re-download inside the
+      # container and no drift between the two.
+      #
+      # Verified locally before this change shipped: the resulting
+      # vpn-admin/subscription binaries' maximum required GLIBC_* symbol
+      # is exactly GLIBC_2.28, and they execute correctly (`--version`)
+      # inside both almalinux:8.10 and almalinux:9 containers. Building
+      # on ubuntu-latest directly reproduces the field incident exactly
+      # (GLIBC_2.29/2.30/2.32/2.33/2.34/2.39 not found on an AlmaLinux 8
+      # host).
+      - name: Build release binaries (AlmaLinux 8.10 / glibc <= 2.28 container)
         run: |
-          mkdir -p .cargo
-          cat >> .cargo/config.toml <<'EOF'
-          [target.aarch64-unknown-linux-gnu]
-          linker = "aarch64-linux-gnu-gcc"
-          EOF
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD":/workspace -w /workspace \
+            -v "$HOME/.cargo":/root/.cargo:ro \
+            -v "$HOME/.rustup":/root/.rustup:ro \
+            -e CARGO_HOME=/root/.cargo \
+            -e RUSTUP_HOME=/root/.rustup \
+            -e PATH="/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            "$RELEASE_BUILD_IMAGE" \
+            bash -c '
+              set -euo pipefail
+              dnf install -y gcc gcc-c++ make >/dev/null
+              cargo build --locked --release --target x86_64-unknown-linux-gnu -p admin -p subscription
+            '
 
-      - name: Build release binaries
-        run: cargo build --locked --release --target ${{ matrix.target }} -p admin -p subscription
+      # Fail before packaging/attestation/publication ever see a binary
+      # that cannot run on the declared baseline — see deploy/lib/
+      # check-glibc-baseline.sh for the version-aware (never
+      # lexicographic — "2.9" must compare below "2.28") comparison and
+      # full diagnostics (file/readelf -d/readelf --version-info) it
+      # prints for both vpn-admin and subscription.
+      - name: Enforce release GLIBC ABI baseline
+        run: |
+          set -euo pipefail
+          bash deploy/lib/check-glibc-baseline.sh "$RELEASE_GLIBC_BASELINE" \
+            "target/x86_64-unknown-linux-gnu/release/vpn-admin" \
+            "target/x86_64-unknown-linux-gnu/release/subscription"
 
       - name: Package
         run: |
           set -euo pipefail
-          out="singbox-vpn-${{ matrix.target }}"
+          out="singbox-vpn-x86_64-unknown-linux-gnu"
           mkdir -p "$out"
-          cp "target/${{ matrix.target }}/release/vpn-admin" "$out/vpn-admin"
-          cp "target/${{ matrix.target }}/release/subscription" "$out/subscription"
+          cp "target/x86_64-unknown-linux-gnu/release/vpn-admin" "$out/vpn-admin"
+          cp "target/x86_64-unknown-linux-gnu/release/subscription" "$out/subscription"
           cp README.md LICENSE "$out/"
           tar -czf "${out}.tar.gz" "$out"
           sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
@@ -267,7 +335,7 @@ jobs:
         id: attest-binary
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: singbox-vpn-${{ matrix.target }}.tar.gz
+          subject-path: singbox-vpn-x86_64-unknown-linux-gnu.tar.gz
 
       # Publish the Sigstore bundle itself as a plain release asset, downloadable
       # over unauthenticated HTTPS exactly like the tarball/SHA256SUMS. This is
@@ -280,38 +348,40 @@ jobs:
       # docs/SUPPLY_CHAIN_SECURITY.md and verify_release_attestation() in
       # install.sh / deploy/almalinux/install.sh / deploy/almalinux/update.sh).
       - name: Publish binary archive attestation bundle
-        run: cp "${{ steps.attest-binary.outputs.bundle-path }}" "singbox-vpn-${{ matrix.target }}.tar.gz.sigstore.json"
+        run: cp "${{ steps.attest-binary.outputs.bundle-path }}" "singbox-vpn-x86_64-unknown-linux-gnu.tar.gz.sigstore.json"
 
       - name: Archive/installer contract test
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
-          tar -xzf "singbox-vpn-${{ matrix.target }}.tar.gz" -C "$tmp"
-          extracted="$tmp/singbox-vpn-${{ matrix.target }}"
-          test -d "$extracted" || { echo "::error::archive did not contain singbox-vpn-${{ matrix.target }}/ — install.sh's fetch_release_binaries() expects exactly this layout"; exit 1; }
+          tar -xzf "singbox-vpn-x86_64-unknown-linux-gnu.tar.gz" -C "$tmp"
+          extracted="$tmp/singbox-vpn-x86_64-unknown-linux-gnu"
+          test -d "$extracted" || { echo "::error::archive did not contain singbox-vpn-x86_64-unknown-linux-gnu/ — install.sh's fetch_release_binaries() expects exactly this layout"; exit 1; }
           test -x "$extracted/vpn-admin" || { echo "::error::vpn-admin missing or not executable in archive"; exit 1; }
           test -x "$extracted/subscription" || { echo "::error::subscription missing or not executable in archive"; exit 1; }
           test -f "$extracted/LICENSE" || { echo "::error::LICENSE missing from release archive"; exit 1; }
-          if [ "${{ matrix.target }}" = "$(uname -m)-unknown-linux-gnu" ]; then
-            "$extracted/vpn-admin" --version
-            "$extracted/subscription" --version
-          else
-            echo "skipping --version execution: ${{ matrix.target }} is cross-compiled, cannot run on $(uname -m) runner"
-          fi
+          # Sanity check on the runner's own (newer) glibc — glibc is
+          # backward compatible, so this only proves forward-compat, not
+          # the actual conservative-baseline claim. The real, decisive
+          # evidence for the declared baseline is the "Enforce release
+          # GLIBC ABI baseline" step above (static ABI check) and the
+          # runtime-compat job below (actual execution on AlmaLinux
+          # 8/9 against this exact packaged archive).
+          "$extracted/vpn-admin" --version
+          "$extracted/subscription" --version
           rm -rf "$tmp"
           echo "archive/installer contract OK: layout matches deploy/almalinux/install.sh's fetch_release_binaries()"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: singbox-vpn-${{ matrix.target }}
+          name: singbox-vpn-x86_64-unknown-linux-gnu
           path: |
-            singbox-vpn-${{ matrix.target }}.tar.gz
-            singbox-vpn-${{ matrix.target }}.tar.gz.sha256
-            singbox-vpn-${{ matrix.target }}.tar.gz.sigstore.json
+            singbox-vpn-x86_64-unknown-linux-gnu.tar.gz
+            singbox-vpn-x86_64-unknown-linux-gnu.tar.gz.sha256
+            singbox-vpn-x86_64-unknown-linux-gnu.tar.gz.sigstore.json
           if-no-files-found: error
 
       - name: Package source archive
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           set -euo pipefail
           git archive --format=tar.gz --prefix=singbox-vpn-src/ -o singbox-vpn-src.tar.gz HEAD
@@ -325,7 +395,6 @@ jobs:
           rm -rf "$tmp"
 
       - name: Attest source archive provenance
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
         id: attest-source
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -335,11 +404,9 @@ jobs:
       # bundle file, not the GitHub attestations API, is the verification
       # channel a fresh install actually uses.
       - name: Publish source archive attestation bundle
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cp "${{ steps.attest-source.outputs.bundle-path }}" "singbox-vpn-src.tar.gz.sigstore.json"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
         with:
           name: singbox-vpn-src
           path: |
@@ -348,9 +415,65 @@ jobs:
             singbox-vpn-src.tar.gz.sigstore.json
           if-no-files-found: error
 
-  publish:
+  # Real runtime-compatibility gate (Part C / Part D): extracts the EXACT
+  # tar.gz that `publish` below would ship and executes it — with
+  # absolute paths, never relying on PATH — inside clean AlmaLinux 8 and
+  # AlmaLinux 9 containers. This is deliberately a container `docker run`
+  # around plain shell, not a `jobs.<id>.container:` job (see the "Build
+  # release binaries" step's comment for why): actions/download-artifact
+  # runs normally on ubuntu-latest, and only the actual execution of the
+  # untrusted-until-proven binaries happens inside the pinned images.
+  #
+  # AlmaLinux 8 is a best-effort compatibility check (never a supported
+  # OS — see docs/SUPPORTED_PRODUCT.md); AlmaLinux 9 is the actual v1.0
+  # SUPPORTED TARGET and its result is decisive.
+  runtime-compat:
     needs: build
     if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: almalinux-8
+            image: "almalinux@sha256:9f355ae942d6a6c0561f0771dc053a2cfae9580fc45fa4252756db7c7e80c09f" # almalinux:8.10
+          - name: almalinux-9
+            image: "almalinux@sha256:3a3fa7f043b142bc8008c8b308d39b47d2c84008addcd52f9f9a7a82d2a90474" # almalinux:9 (9.8)
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: singbox-vpn-x86_64-unknown-linux-gnu
+          path: dist
+
+      - name: Extract the exact packaged archive
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          tar -xzf dist/singbox-vpn-x86_64-unknown-linux-gnu.tar.gz -C extracted
+          test -x extracted/singbox-vpn-x86_64-unknown-linux-gnu/vpn-admin
+          test -x extracted/singbox-vpn-x86_64-unknown-linux-gnu/subscription
+
+      # A bare, unmodified distro image (no other vpn-admin/subscription
+      # anywhere on its PATH) invoked purely by absolute path — this
+      # cannot accidentally pick up any other locally-installed binary.
+      - name: Execute the packaged archive on ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD/extracted/singbox-vpn-x86_64-unknown-linux-gnu":/artifact:ro \
+            "${{ matrix.image }}" \
+            bash -c '
+              set -euo pipefail
+              echo "--- /artifact/vpn-admin --version ---"
+              /artifact/vpn-admin --version
+              echo "--- /artifact/subscription --version ---"
+              /artifact/subscription --version
+            '
+
+  publish:
+    needs: [build, runtime-compat]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.runtime-compat.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
