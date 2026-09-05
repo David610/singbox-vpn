@@ -335,6 +335,29 @@ on_fatal_error() {
 }
 trap 'on_fatal_error $? "${LINENO:-unknown}" "${FUNCNAME[0]:-main}" "${SINGBOX_VPN_STAGE:-initialization}"' ERR
 
+# SIGINT/SIGTERM (Ctrl-C, or `systemctl stop`/timeout/orchestration
+# killing this script) previously had NO handler outside the narrow
+# ACME-issuance window below — bash's default disposition for both
+# signals is to terminate the process immediately, which does NOT fire
+# the ERR trap above (that only fires for a command's own non-zero
+# exit status, never for the process being killed by an external
+# signal). A fresh install interrupted this way left the host
+# partially mutated with no automatic rollback and no "this failed"
+# indication at all — silently violating the same "a failed fresh
+# install is always rolled back" guarantee on_fatal_error otherwise
+# provides. Route both signals through the exact same handler,
+# reporting the conventional 128+signum exit code.
+on_interrupt() {
+  on_fatal_error 130 "${BASH_LINENO[0]:-unknown}" "${FUNCNAME[1]:-main}" "${SINGBOX_VPN_STAGE:-initialization}"
+  exit 130
+}
+on_terminate() {
+  on_fatal_error 143 "${BASH_LINENO[0]:-unknown}" "${FUNCNAME[1]:-main}" "${SINGBOX_VPN_STAGE:-initialization}"
+  exit 143
+}
+trap on_interrupt INT
+trap on_terminate TERM
+
 # ---------------------------------------------------------------------
 # [1] preflight
 # ---------------------------------------------------------------------
@@ -1632,8 +1655,13 @@ attempt_automatic_certbot() {
       nginx_was_stopped=0
     fi
   }
-  trap 'acme_cleanup; exit 130' INT
-  trap 'acme_cleanup; exit 143' TERM
+  # Run acme_cleanup() first (closes the temp TCP/80 rule, restarts
+  # nginx) and THEN fall through to the same global on_interrupt/
+  # on_terminate handler installed above — not a bare `exit`, which
+  # used to skip on_fatal_error's rollback entirely for a Ctrl-C during
+  # certificate issuance on what might be a fresh install.
+  trap 'acme_cleanup; on_interrupt' INT
+  trap 'acme_cleanup; on_terminate' TERM
   if systemctl is-active --quiet nginx 2>/dev/null; then
     systemctl stop nginx 2>/dev/null || true
     nginx_was_stopped=1
@@ -1641,7 +1669,8 @@ attempt_automatic_certbot() {
   if ! preflight_check_port_free tcp 80 >/dev/null 2>&1; then
     warn "port 80/tcp is occupied by something other than nginx; certbot's standalone HTTP-01 challenge cannot run automatically for $host."
     acme_cleanup
-    trap - INT TERM
+    trap on_interrupt INT
+    trap on_terminate TERM
     return 1
   fi
   if firewall_open_port_80_temp; then
@@ -1654,7 +1683,8 @@ attempt_automatic_certbot() {
   certbot_output="$(certbot certonly --standalone -d "$host" --non-interactive --agree-tos \
       -m "admin@$host" --no-eff-email 2>&1)" || rc=$?
   acme_cleanup
-  trap - INT TERM
+  trap on_interrupt INT
+  trap on_terminate TERM
   if [ "$rc" -eq 0 ]; then
     log "certificate issued for $host."
     ownership_list_add CERT_LINEAGES_CREATED_BY_SINGBOX_VPN "$host"
