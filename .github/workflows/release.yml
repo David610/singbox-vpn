@@ -28,25 +28,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Linux release build baseline (v1.0.0-rc.4 fix): the x86_64 production
-  # artifact is compiled inside this exact, digest-pinned AlmaLinux 8.10
-  # container instead of on ubuntu-latest's own (much newer, and
-  # unpinned/drifting) host glibc. See the "Build release binaries"
-  # step below for why a container for the actual link step — not an
-  # env var, not static linking — is what makes this real, and
-  # RELEASE_GLIBC_BASELINE below for the version this is enforced
-  # against.
-  #
-  # v1.0.0-rc.3 incident: binaries built on ubuntu-latest inherited its
-  # glibc 2.39 ABI and failed to even start on an AlmaLinux 8 VPS (glibc
-  # 2.28) — and would also have failed on AlmaLinux 9 (glibc 2.34), the
-  # actual v1.0 SUPPORTED TARGET (docs/SUPPORTED_PRODUCT.md). AlmaLinux 8
-  # is used only as a conservative BUILD environment to guarantee a
-  # GLIBC_2.28-or-older ABI baseline; it does not make AlmaLinux 8 a
-  # supported OS (see docs/SUPPORTED_PRODUCT.md's "Binary ABI baseline"
-  # section).
-  RELEASE_BUILD_IMAGE: "almalinux@sha256:9f355ae942d6a6c0561f0771dc053a2cfae9580fc45fa4252756db7c7e80c09f" # almalinux:8.10, glibc 2.28
-  RELEASE_GLIBC_BASELINE: "2.28"
+  # RELEASE_BUILD_IMAGE / RELEASE_GLIBC_BASELINE (the pinned AlmaLinux
+  # 8.10 build container and its declared GLIBC ABI baseline) live in
+  # deploy/lib/release-build.env, not here — that file is the single
+  # source both this workflow's "build" job and ci.yml's cheap pre-tag
+  # "release-container-smoke" job load, so the two can never drift. See
+  # that file's header for the v1.0.0-rc.3/rc.4 incident history.
 
 # Default every release job to read-only. Build narrows in OIDC/attestation
 # writes; publish narrows in contents:write. No other job receives write scope.
@@ -247,13 +234,38 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Load pinned release build image/baseline (deploy/lib/release-build.env)
+        run: grep -vE '^\s*(#|$)' deploy/lib/release-build.env >> "$GITHUB_ENV"
+
       - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
         with:
           targets: x86_64-unknown-linux-gnu
 
+      # v1.0.0-rc.4 fix: the actual production compile (below) never
+      # touches the runner's own $HOME/.cargo — it happens inside the
+      # pinned AlmaLinux container against a dedicated, writable
+      # $RUNNER_TEMP/release-cargo-home instead (see
+      # deploy/lib/build-release-x86_64.sh's header comment for the full
+      # incident: rc.4 bind-mounted $HOME/.cargo read-only into the
+      # container and pointed CARGO_HOME at it, so `cargo build` could
+      # never write a registry update/download and failed with "Read-
+      # only file system" before compiling anything). $HOME/.cargo
+      # cannot simply be made writable in-place either — the container
+      # runs as root, so anything it wrote there would leave root-owned
+      # files in the runner's own home directory.
+      #
+      # Point CARGO_HOME at that same dedicated directory BEFORE
+      # Swatinem/rust-cache runs, so it restores/saves the registry the
+      # container build actually reads and writes — caching the
+      # unmodified host $HOME/.cargo here (the old behavior) would be a
+      # cache action that looks useful but is no longer connected to the
+      # production build at all.
+      - name: Point CARGO_HOME at the dedicated release Cargo directory
+        run: echo "CARGO_HOME=$RUNNER_TEMP/release-cargo-home" >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: x86_64-unknown-linux-gnu
+          key: release-x86_64-unknown-linux-gnu
 
       # ---------------------------------------------------------------
       # Build inside a pinned AlmaLinux 8.10 container (glibc 2.28) —
@@ -272,40 +284,40 @@ jobs:
       # own Node-based runner hooks into a container job to execute
       # actions like actions/checkout — whether that Node binary would
       # even run against AlmaLinux 8's glibc is untested and beside the
-      # point. Instead, only the actual compilation — a single `docker
-      # run` invoking `cargo build` — happens inside the pinned
-      # container; checkout/toolchain-setup/attestation/upload all run
-      # normally on the runner. The toolchain that dtolnay/rust-toolchain
-      # just installed (rustc/cargo themselves only need glibc <= 2.17 —
-      # they are build-time tools, not part of the shipped artifact) is
-      # bind-mounted straight into the container and used as-is, so the
-      # exact pinned Rust version above is what compiles the release,
-      # with no separate toolchain re-install/re-download inside the
-      # container and no drift between the two.
+      # point. Instead, only the actual compilation — deploy/lib/
+      # build-release-x86_64.sh's `docker run` invoking `cargo build` —
+      # happens inside the pinned container; checkout/toolchain-setup/
+      # attestation/upload all run normally on the runner. The toolchain
+      # dtolnay/rust-toolchain just installed (rustc/cargo themselves
+      # only need glibc <= 2.17 — they are build-time tools, not part of
+      # the shipped artifact) is bind-mounted straight into the
+      # container and used as-is, so the exact pinned Rust version above
+      # is what compiles the release, with no separate toolchain
+      # re-install/re-download inside the container and no drift
+      # between the two.
+      #
+      # deploy/lib/build-release-x86_64.sh is the single source for this
+      # container invocation — the same script also runs (in
+      # --environment-check mode, without compiling anything) as a
+      # cheap pre-tag smoke job in ci.yml, so a broken container/
+      # toolchain/CARGO_HOME contract fails on every relevant PR instead
+      # of only being discovered after a tag is cut (the process gap
+      # that let PR #53 ship the rc.4 bug: release.yml only triggers on
+      # tags/dispatch, so this exact invocation was never exercised by
+      # that PR's own CI run).
       #
       # Verified locally before this change shipped: the resulting
       # vpn-admin/subscription binaries' maximum required GLIBC_* symbol
       # is exactly GLIBC_2.28, and they execute correctly (`--version`)
-      # inside both almalinux:8.10 and almalinux:9 containers. Building
-      # on ubuntu-latest directly reproduces the field incident exactly
+      # inside both almalinux:8.10 and almalinux:9 containers, with no
+      # root-owned files left in $RUNNER_TEMP or the workspace (the
+      # script runs the actual compile as the runner's own UID/GID,
+      # which already owns every writable path it mounts). Building on
+      # ubuntu-latest directly reproduces the field incident exactly
       # (GLIBC_2.29/2.30/2.32/2.33/2.34/2.39 not found on an AlmaLinux 8
       # host).
       - name: Build release binaries (AlmaLinux 8.10 / glibc <= 2.28 container)
-        run: |
-          set -euo pipefail
-          docker run --rm \
-            -v "$PWD":/workspace -w /workspace \
-            -v "$HOME/.cargo":/root/.cargo:ro \
-            -v "$HOME/.rustup":/root/.rustup:ro \
-            -e CARGO_HOME=/root/.cargo \
-            -e RUSTUP_HOME=/root/.rustup \
-            -e PATH="/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-            "$RELEASE_BUILD_IMAGE" \
-            bash -c '
-              set -euo pipefail
-              dnf install -y gcc gcc-c++ make >/dev/null
-              cargo build --locked --release --target x86_64-unknown-linux-gnu -p admin -p subscription
-            '
+        run: bash deploy/lib/build-release-x86_64.sh
 
       # Fail before packaging/attestation/publication ever see a binary
       # that cannot run on the declared baseline — see deploy/lib/

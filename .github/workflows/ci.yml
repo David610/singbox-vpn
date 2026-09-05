@@ -61,6 +61,39 @@ jobs:
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
 
+  # Pre-tag release-infrastructure validation (v1.0.0-rc.4 process fix):
+  # release.yml's production build only ever runs on a tag push or
+  # workflow_dispatch, so a broken container/toolchain/CARGO_HOME
+  # contract in it was never exercised by ordinary PR CI — exactly how
+  # PR #53 shipped the rc.4 read-only-CARGO_HOME bug undetected (the
+  # build container mounted the runner's own CARGO_HOME read-only, so
+  # `cargo build` failed the moment it needed to write a registry
+  # update/download — after gate/fmt/clippy/test all passed, and only
+  # once a real tag had already been cut).
+  #
+  # This job runs the EXACT SAME script release.yml's "build" job uses
+  # (deploy/lib/build-release-x86_64.sh) — single-sourced, not a second
+  # hand-maintained copy of the container invocation — in
+  # --environment-check mode: it pulls the pinned AlmaLinux build image,
+  # installs build dependencies once, proves the bind-mounted toolchain/
+  # rustup proxies resolve under a non-root UID, proves the dedicated
+  # release Cargo home is writable, and asserts the container's actual
+  # GLIBC baseline — all in well under a minute, without compiling the
+  # workspace, publishing anything, or requiring a tag. No Rust
+  # dependency caching is needed here: --environment-check never runs
+  # `cargo build`, so there is nothing for a cache to warm.
+  release-container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Load pinned release build image/baseline (deploy/lib/release-build.env)
+        run: grep -vE '^\s*(#|$)' deploy/lib/release-build.env >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - run: bash deploy/lib/build-release-x86_64.sh --environment-check
+
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
