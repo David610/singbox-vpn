@@ -16,14 +16,28 @@
 # for the full incident writeup.
 #
 # Fix, matching the "toolchain read-only, Cargo state writable" split:
-#   - the pinned Rust toolchain (rustc/cargo/rustup, installed on the
-#     runner by dtolnay/rust-toolchain) is bind-mounted READ-ONLY, at a
-#     container path distinct from the host path — rustup's proxies
-#     (cargo/rustc are symlinks to the `rustup` binary) resolve the
-#     active toolchain via the RUSTUP_HOME env var and settings.toml
-#     alone, not via any hardcoded host path, so remapping the mount
-#     point is transparent to it (verified: see the environment-check
-#     step below, which is exactly this).
+#   - the pinned Rust toolchain BINARIES (rustc/cargo/rustup under
+#     ~/.cargo/bin, installed on the runner by dtolnay/rust-toolchain)
+#     are bind-mounted READ-ONLY, at a container path distinct from the
+#     host path — rustup's proxies (cargo/rustc are symlinks to the
+#     `rustup` binary) resolve the active toolchain via the RUSTUP_HOME
+#     env var and settings.toml alone, not via any hardcoded host path,
+#     so remapping the mount point is transparent to it.
+#   - RUSTUP_HOME itself is bind-mounted read-WRITE, not read-only: a
+#     real GitHub Actions run of the --environment-check smoke job below
+#     caught rustup writing a temp file under $RUSTUP_HOME/tmp on a
+#     plain `rustc --version` (rustup performs an internal channel-
+#     manifest consistency check on invocation; a local sandbox re-run
+#     against an already-fully-synced RUSTUP_HOME never happened to
+#     exercise this path, which is exactly why real CI — not local
+#     reasoning — caught it). This is the identical bug class as the
+#     rc.4 CARGO_HOME failure, but safe here in a way rc.4's fix was
+#     not: the container always runs `--user "<runner uid>:<runner
+#     gid>"` (below), the exact UID that already owns RUSTUP_HOME on the
+#     host, so a write there is the same user writing to their own
+#     directory — never root polluting another user's files. Nothing in
+#     the build actually modifies the installed toolchain binaries
+#     themselves, only rustup's own bookkeeping.
 #   - a dedicated CARGO_HOME, seeded from the host's own (Swatinem/
 #     rust-cache-restored) registry when present so a warm cache is
 #     never re-downloaded from scratch, is bind-mounted READ-WRITE.
@@ -122,7 +136,7 @@ main() {
       --user "${host_uid}:${host_gid}" \
       -v "$WORKSPACE_DIR:/workspace" -w /workspace \
       -v "$CARGO_BIN_DIR:/opt/rust-bin:ro" \
-      -v "$RUSTUP_HOME_DIR:/opt/rustup:ro" \
+      -v "$RUSTUP_HOME_DIR:/opt/rustup" \
       -v "$RELEASE_CARGO_HOME:/cargo-home" \
       -e CARGO_HOME=/cargo-home \
       -e RUSTUP_HOME=/opt/rustup \
