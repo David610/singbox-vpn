@@ -124,6 +124,36 @@ Never put subscription tokens, passwords, private keys, REALITY private material
 
 The release workflow still runs the complete canonical CI graph before any release artifacts are built.
 
+### Runtime compatibility gate (mandatory for every RC, not just stable)
+
+No release tag — release candidate or stable — can produce a published
+GitHub Release unless `publish` succeeds, and `publish` `needs: [build,
+runtime-compat]`. In practice this means a release candidate cannot be
+accepted (step 5 above requires an *immutable, already-published* RC
+artifact to run VPS acceptance against) unless all of the following
+already passed for that exact tag:
+
+- the x86_64 binaries compiled successfully inside the pinned AlmaLinux
+  8.10 / glibc 2.28 build container (`build` job);
+- `deploy/lib/check-glibc-baseline.sh` confirmed neither `vpn-admin` nor
+  `subscription` requires a `GLIBC_*` symbol newer than `2.28`;
+- the packaged archive's layout and `--version` output passed the
+  archive/installer contract test;
+- the exact packaged `.tar.gz` actually executed (`vpn-admin --version`,
+  `subscription --version`, absolute paths) inside clean AlmaLinux 8
+  *and* AlmaLinux 9 containers (`runtime-compat` job);
+- checksum (`SHA256SUMS`) and Sigstore/GitHub attestation generation
+  succeeded for both the binary and source archives;
+- the canonical CI graph (`gate`, reusing `ci.yml`) passed.
+
+This is what makes v1.0.0-rc.3's failure mode (a GLIBC-incompatible
+binary reaching a real customer VPS) structurally impossible to repeat:
+an artifact that cannot execute on the declared baseline, or on the
+actual AlmaLinux 9 SUPPORTED TARGET, never reaches a publishable
+release, so there is nothing for step 5's VPS acceptance run to
+discover the hard way. See `docs/SUPPORTED_PRODUCT.md`'s "Binary ABI
+baseline" section for what the baseline does and does not claim.
+
 ## Allowed changes between accepted RC and stable
 
 The stable tag may differ from the accepted RC only in:

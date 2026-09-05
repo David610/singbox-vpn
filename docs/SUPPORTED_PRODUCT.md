@@ -76,10 +76,56 @@ definitions:
 | Anything else | UNSUPPORTED | No guarantee; `detect_os()` fails loudly for anything outside the `rhel`/`debian` family shapes above. |
 
 **Architecture** is a separate dimension from OS: **amd64/x86_64 is the
-only SUPPORTED TARGET architecture.** arm64 has a working `detect_arch()` and
-release-build implementation path (release tooling publishes arm64
-binaries), but no live arm64 host install has been verified — treat it as
-RECOGNIZED / BEST-EFFORT, not SUPPORTED, regardless of OS tier.
+only SUPPORTED TARGET architecture.** arm64 has a working `detect_arch()`
+implementation path (source-build fallback, pinned sing-box/cosign
+downloads), but as of the v1.0.0-rc.4 release-pipeline fix,
+`.github/workflows/release.yml` no longer builds or publishes a
+prebuilt arm64 singbox-vpn binary artifact at all — the previous
+workflow cross-compiled one and published it despite having no way to
+execute or validate it on the (x86_64) build runner, i.e. "cross-
+compilation succeeded" was never evidence it actually ran anywhere. An
+arm64 host still installs via `install.sh`'s automatic source-build
+fallback (`fetch_release_binaries()` returns nothing to install, and
+the installer falls back to `cargo build` from source), it just never
+gets a prebuilt binary. arm64 remains RECOGNIZED / BEST-EFFORT, not
+SUPPORTED, regardless of OS tier; publishing it again requires the same
+real ABI-baseline + runtime-execution validation x86_64 now has (see
+"Binary ABI baseline" below).
+
+### Binary ABI baseline (x86_64)
+
+This is a **build-environment property**, distinct from the OS support
+tiers above — it does not make AlmaLinux 8 a supported OS.
+
+The published x86_64 `singbox-vpn-x86_64-unknown-linux-gnu.tar.gz`
+release artifact (`vpn-admin`, `subscription`) is compiled inside a
+pinned AlmaLinux 8.10 container (glibc 2.28), not on the GitHub-hosted
+`ubuntu-latest` runner's own (much newer, and unpinned/drifting) host
+glibc. `.github/workflows/release.yml`'s `build` job enforces, before
+any artifact is published, that both binaries' maximum required
+`GLIBC_*` symbol version is `<= 2.28`
+(`deploy/lib/check-glibc-baseline.sh`), and a separate `runtime-compat`
+job actually extracts and executes the exact packaged archive inside
+clean AlmaLinux 8 and AlmaLinux 9 containers before `publish` is allowed
+to run.
+
+This baseline exists because:
+
+- a real v1.0.0-rc.3 VPS install failed with `GLIBC_2.39' not found` —
+  the release binaries had silently inherited whatever glibc the build
+  runner happened to ship, which changes over time and was never
+  pinned or verified against anything;
+- AlmaLinux 9 (glibc 2.34) is the v1.0 SUPPORTED TARGET — a binary
+  requiring anything newer than glibc 2.34 could not run there either;
+- glibc is backward compatible (an old-glibc-linked binary runs fine on
+  a newer-glibc host), so a conservative `<= 2.28` baseline is a strict
+  superset of "runs on AlmaLinux 9" and additionally happens to run on
+  AlmaLinux 8 as a best-effort extra data point — it is not itself a
+  claim that AlmaLinux 8 is supported;
+- making this an explicit, tested, pinned build property (rather than
+  whatever `ubuntu-latest` happens to ship this month) makes release
+  portability a deliberate, reproducible decision instead of an
+  accident that only surfaces on a real customer VPS.
 
 `OS_SUPPORT` in `deploy/lib/os.sh` is an internal implementation-coverage
 classification used for installer warnings — it uses the same evidence
