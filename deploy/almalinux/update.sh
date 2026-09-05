@@ -90,6 +90,8 @@ done
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/state-schema.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/binary-version-check.sh"
 
 CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
 
@@ -632,13 +634,17 @@ stage_prebuilt_binaries() {
 if ! stage_prebuilt_binaries; then
   die "no prebuilt binaries are available for $TARGET_VERSION/$TARGET_RUST_TARGET — a production update requires prebuilt release assets and never silently falls back to a source build. Nothing live has been changed. Use --dev-rebuild (requires Cargo) if you specifically intend a source-tree rebuild instead of an ordinary update."
 fi
-# Harmless validation that the staged binary actually runs before it is
-# ever treated as trustworthy (checkpoint-3 requirement #7.5).
-"$STAGED_BIN_DIR/vpn-admin" --help >/dev/null 2>&1 \
-  || die "staged vpn-admin binary for $TARGET_VERSION does not run — refusing to install it. Nothing live has been changed."
-binary_package_version="$("$STAGED_BIN_DIR/vpn-admin" --version 2>/dev/null | awk '{print $NF}')"
-[ "$binary_package_version" = "$expected_package_version" ] \
-  || die "authenticated binary archive reports version '$binary_package_version', expected '$expected_package_version' for $TARGET_VERSION. Nothing live has been changed."
+# Validation that the staged binaries actually run before either is
+# ever treated as trustworthy (checkpoint-3 requirement #7.5). See
+# deploy/lib/binary-version-check.sh: distinguishes "cannot execute at
+# all" (e.g. a GLIBC/ABI mismatch between this release and this host)
+# from "executes but wrong version" instead of the old `--help
+# >/dev/null 2>&1` check (which proved nothing beyond exit status) plus
+# a separate `2>/dev/null`-masked version comparison. Checks both
+# shipped binaries, not just vpn-admin.
+staged_version_context="for $TARGET_VERSION. Nothing live has been changed."
+check_binary_version "$STAGED_BIN_DIR/vpn-admin" "$expected_package_version" "vpn-admin" "$staged_version_context"
+check_binary_version "$STAGED_BIN_DIR/vpn-subscription-svc" "$expected_package_version" "subscription" "$staged_version_context"
 
 # ---- STAGE: sing-box, only if the target release pins a different
 # version than what's currently installed. Same checksum-verification

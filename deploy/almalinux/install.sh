@@ -126,6 +126,8 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 . "$REPO_ROOT/deploy/lib/ownership.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/state-schema.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/binary-version-check.sh"
 
 # Installs $src to a FIXED, well-known destination path (a systemd unit,
 # a certbot renewal hook — anything named identically regardless of
@@ -370,6 +372,59 @@ existing_install_present() {
   [ -f /var/lib/singbox-vpn/install-state.json ]
 }
 
+# Real-VPS incident: after a failed install.sh run auto-rolled back
+# (uninstall.sh --yes), vpn-expiry-reconcile.{service,timer} and
+# vpn-service-watchdog.{service,timer} were left behind and had to be
+# removed by hand. Root cause was NOT a rollback/ownership-deletion bug —
+# restore_or_remove_fixed_path() in uninstall.sh is deliberately
+# conservative and, by design (see deploy/lib/tests/
+# test-uninstall-ownership-checkpoint2.sh), leaves a fixed path in place
+# rather than guessing when there is no ownership record for it at all.
+# Those 4 units could not have been created by the run that failed
+# (fetch_release_binaries() dies in stage 4 "singbox-vpn binaries",
+# strictly before stage 6 "systemd" ever installs them) — they were
+# already on disk from an earlier, separate attempt on that same host
+# whose own ownership record was lost (e.g. a prior manual/partial
+# cleanup that deleted /var/lib/singbox-vpn without first removing the
+# unit files it described).
+#
+# existing_install_present() alone cannot see this: it only checks for
+# install-state.json, which a host in exactly this state does not have —
+# so a "fresh" run proceeded without ever surfacing the ambiguity, and
+# the only trace of it was a NONCRITICAL_RESIDUE line buried in a later
+# rollback's output. Surface it loudly, up front, with zero host
+# mutation, instead of silently treating such a host as pristine.
+#
+# This deliberately does NOT delete or touch anything — genuinely
+# unrelated pre-existing files must never be removed just because they
+# share a name (see restore_or_remove_fixed_path's own "ambiguous
+# ownership" branch, which this function reuses the exact same
+# ownership keys as). It only refuses to proceed silently.
+check_no_ambiguous_preexisting_residue() {
+  local path key found=()
+  local -A known_fixed_paths=(
+    [/etc/systemd/system/sing-box.service]=SINGBOX_UNIT
+    [/etc/systemd/system/vpn-subscription.service]=VPNSUB_UNIT
+    [/etc/systemd/system/vpn-expiry-reconcile.service]=EXPIRY_SVC_UNIT
+    [/etc/systemd/system/vpn-expiry-reconcile.timer]=EXPIRY_TIMER_UNIT
+    [/etc/systemd/system/vpn-service-watchdog.service]=WATCHDOG_SVC_UNIT
+    [/etc/systemd/system/vpn-service-watchdog.timer]=WATCHDOG_TIMER_UNIT
+  )
+  for path in "${!known_fixed_paths[@]}"; do
+    [ -e "$path" ] || continue
+    key="${known_fixed_paths[$path]}"
+    # Empty/unset means "no ownership record at all" — the exact
+    # ambiguous state restore_or_remove_fixed_path() also checks for.
+    [ -n "$(ownership_get "FIXEDPATH_${key}_PRE_EXISTED" "")" ] && continue
+    found+=("$path")
+  done
+  if [ "${#found[@]}" -gt 0 ]; then
+    die "this host has no singbox-vpn install-state manifest (would be treated as a fresh install), but recognizable singbox-vpn systemd units already exist with no ownership record of how they got there:
+$(printf '  - %s\n' "${found[@]}")
+This is very likely residue from an earlier, incomplete singbox-vpn install/uninstall attempt on this host — proceeding would not know whether a later failure's automatic rollback is allowed to remove them (it will conservatively leave them in place rather than guess, requiring manual cleanup). Inspect the paths above and either remove them manually if they are confirmed singbox-vpn leftovers, or run '$REPO_ROOT/deploy/almalinux/uninstall.sh --yes' first to reconcile this host to a clean state, then re-run install.sh. Nothing has been mutated by this run."
+  fi
+}
+
 # Positively determine (or accept an explicit operator override for) the
 # SSH port that must remain reachable through any firewall
 # activation/reload. Runs in stage 1, before packages_stage ever
@@ -574,7 +629,7 @@ preflight_stage() {
   ARCH="$(detect_arch)" || die "unsupported CPU architecture: $(uname -m). Available implementation paths are x86_64 and aarch64; the supported v1.0 target is x86_64."
   log "detected architecture: $ARCH ($(uname -m))"
   if [ "$ARCH" != "amd64" ]; then
-    warn "this architecture is outside the supported v1.0 target (AlmaLinux 9 x86-64). Release tooling has an arm64 implementation path, but it is unsupported/unverified for v1.0."
+    warn "this architecture is outside the supported v1.0 target (AlmaLinux 9 x86-64). The release pipeline no longer publishes a prebuilt arm64 singbox-vpn binary (see docs/SUPPORTED_PRODUCT.md's 'Architecture support') — this run will fall back to building singbox-vpn from source, which requires a Rust toolchain."
   fi
   preflight_require_systemd
   preflight_require_commands curl tar awk sed grep
@@ -593,6 +648,7 @@ preflight_stage() {
     log "existing singbox-vpn installation detected at $DEPLOYMENT_TOML — this run will UPGRADE/REPAIR in place, preserving users and keys."
     IS_FRESH_INSTALL=0
   else
+    check_no_ambiguous_preexisting_residue
     log "no existing installation detected — this will be a fresh install."
     IS_FRESH_INSTALL=1
   fi
@@ -1301,10 +1357,14 @@ fetch_release_binaries() {
   [ -d "$extracted" ] || die "release asset $asset did not contain the expected singbox-vpn-${target}/ directory — archive layout does not match what install.sh expects. This is a packaging bug, not a transient failure; see docs/FINAL_PRODUCTION_AUDIT.md P0-6."
   local expected_package_version="${version#v}"
   expected_package_version="${expected_package_version%%-*}"
-  local binary_package_version
-  binary_package_version="$("$extracted/vpn-admin" --version 2>/dev/null | awk '{print $NF}')"
-  [ "$binary_package_version" = "$expected_package_version" ] \
-    || die "authenticated binary archive reports version '$binary_package_version', expected '$expected_package_version' for release $version — refusing wrong-version binaries."
+  # See deploy/lib/binary-version-check.sh: distinguishes "cannot execute
+  # at all" (e.g. a GLIBC/ABI mismatch — the v1.0.0-rc.3 incident) from
+  # "executes but wrong version" instead of collapsing both into the
+  # same confusing empty-string comparison. Checks both shipped
+  # binaries, not just vpn-admin.
+  local version_context="for release $version — refusing wrong-version/incompatible binaries. There is no checksum-only fallback for any release, historical or otherwise."
+  check_binary_version "$extracted/vpn-admin" "$expected_package_version" "vpn-admin" "$version_context"
+  check_binary_version "$extracted/subscription" "$expected_package_version" "subscription" "$version_context"
   install -m 0755 "$extracted/vpn-admin" "$BIN_DIR/vpn-admin"
   install -m 0755 "$extracted/vpn-admin" "$BIN_DIR/vpn"
   install -m 0755 "$extracted/subscription" "$BIN_DIR/vpn-subscription-svc"
