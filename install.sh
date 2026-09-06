@@ -66,8 +66,10 @@ die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 # network mid-download, requiring a manual Ctrl+C every time.
 # `--speed-limit`/`--speed-time` makes curl itself detect and abort a
 # stalled transfer so `--retry` actually gets a chance to run;
+# `--retry-connrefused` also treats a transient TCP connection refusal
+# as retryable (the lifecycle gate observed exactly this against github.com);
 # `--connect-timeout`/`--max-time` bound the rest.
-CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2 --retry-connrefused)
 
 # ---------------------------------------------------------------------
 # argument parsing (curl ... | sudo bash -s -- --version v1.2.3)

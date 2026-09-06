@@ -93,7 +93,12 @@ done
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/binary-version-check.sh"
 
-CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+# Production updates perform the same kinds of GitHub/SagerNet fetches as a
+# fresh install. A real lifecycle run reproduced a transient TCP connection
+# refusal, which plain `--retry` does not treat as retryable. Keep updater
+# downloads independently resilient because this array is defined after
+# preflight.sh is sourced and therefore cannot rely on preflight's augmentation.
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2 --retry-connrefused)
 
 # ---------------------------------------------------------------------
 # CLI

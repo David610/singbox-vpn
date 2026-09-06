@@ -3,6 +3,19 @@
 # root bootstrap installer. Expects log()/warn()/die() to already be
 # defined by the caller.
 
+# The AlmaLinux installer defines CURL_NET_FLAGS before sourcing this file.
+# Plain curl --retry does not retry a refused TCP connection by default; the
+# real lifecycle gate observed github.com intermittently returning ECONNREFUSED
+# and a later retry succeeding. Add the explicit retry class once for every
+# caller that already owns a shared curl-flags array. Keep this idempotent
+# because some fixture tests source helpers more than once in one shell.
+if declare -p CURL_NET_FLAGS >/dev/null 2>&1; then
+  case " ${CURL_NET_FLAGS[*]} " in
+    *" --retry-connrefused "*) ;;
+    *) CURL_NET_FLAGS+=(--retry-connrefused) ;;
+  esac
+fi
+
 preflight_require_root() {
   [ "$(id -u)" -eq 0 ] || die "must run as root (try: sudo bash install.sh)"
 }
@@ -55,9 +68,10 @@ preflight_check_memory() {
 
 # Shared bounded-retry curl wrapper for every network-dependent preflight
 # check below. A single transient blip against one URL (a dropped
-# packet, a momentary DNS hiccup, a mid-TLS-handshake stall) must not
-# hard-abort the whole installer — but retries are still bounded, and
-# failure after they're exhausted is still a hard failure (fail-closed).
+# packet, a momentary DNS hiccup, a mid-TLS-handshake stall, or a
+# transient connection-refused response) must not hard-abort the whole
+# installer — but retries are still bounded, and failure after they're
+# exhausted is still a hard failure (fail-closed).
 # `$@` = the same args you'd pass straight to `curl` (including the
 # URL), e.g. `preflight_curl_retry -fsS -o /dev/null "$url"`.
 #
@@ -72,7 +86,7 @@ preflight_curl_retry() {
   if declare -p CURL_NET_FLAGS >/dev/null 2>&1; then
     flags=("${CURL_NET_FLAGS[@]}")
   else
-    flags=(--connect-timeout 10 --max-time 60 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+    flags=(--connect-timeout 10 --max-time 60 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2 --retry-connrefused)
   fi
   if curl "${flags[@]}" "$@"; then
     return 0

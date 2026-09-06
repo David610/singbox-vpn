@@ -29,7 +29,10 @@ log() { echo "[bootstrap] $*" >&2; }
 warn() { echo "[bootstrap] WARNING: $*" >&2; }
 die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 
-CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+# Network fallback is only used when the persistent offline uninstaller is
+# missing, but it should be as tolerant of short GitHub/CDN outages as install
+# and update. In particular, plain --retry does not retry ECONNREFUSED.
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2 --retry-connrefused)
 
 PASSTHROUGH_ARGS=()
 while [ $# -gt 0 ]; do
