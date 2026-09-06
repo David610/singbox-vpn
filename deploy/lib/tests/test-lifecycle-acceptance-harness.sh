@@ -569,6 +569,116 @@ else
 fi
 
 echo
+echo "--- stage 27 residue audit: a baseline that was already dirty (pre-existing leftover state) must not fail a run that leaves the host CLEANER than it found it ---"
+cat > "$MOCKBIN/ssh" <<'MOCKSSH_RESIDUE'
+#!/bin/bash
+{ printf '%s\t' "$@"; echo; } >> "$SSH_LOG"
+cmd="${*: -1}"
+COUNTER_FILE="$TMPDIR_TEST/residue_call_count"
+case "$cmd" in
+  true) exit 0 ;;
+  *os-release*) echo 'ID=almalinux'; exit 0 ;;
+  *uname\ -m*) echo x86_64; exit 0 ;;
+  *"opt_singbox-vpn="*)
+    n=0
+    [ -f "$COUNTER_FILE" ] && n="$(cat "$COUNTER_FILE")"
+    n=$((n + 1))
+    echo "$n" > "$COUNTER_FILE"
+    if [ "$n" -eq 1 ]; then
+      # stage 1b (host baseline, captured BEFORE this run's own install):
+      # dirty on purpose — simulates a target this run was explicitly
+      # authorized to reuse (--allow-destroy-existing-singbox-vpn-install,
+      # stage 0a) that already had /var/lib/singbox-vpn from an earlier,
+      # unrelated interrupted test.
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=1\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=0\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    else
+      # stage 27 (after the final uninstall): CLEANER than baseline —
+      # this run's own uninstall removed the leftover /var/lib/singbox-vpn
+      # that baseline had. That is a strictly better outcome than
+      # baseline, not residue, and must not fail the gate.
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=0\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=0\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    fi
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCKSSH_RESIDUE
+chmod +x "$MOCKBIN/ssh"
+: > "$SSH_LOG"
+rm -f "$TMPDIR_TEST/residue_call_count"
+set +e
+residue_out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --allow-destroy-existing-singbox-vpn-install --skip-reboot 2>&1)"
+set -e
+if echo "$residue_out" | grep -qE '\[PASS\][[:space:]]+no NEW singbox-vpn-owned'; then
+  ok "a dirty baseline that this run cleaned up (not worsened) is reported PASS, not exact-equality FAIL"
+else
+  fail "stage 27 did not PASS a run that left the host cleaner than its (dirty) baseline: $(echo "$residue_out" | grep -i 'residue')"
+fi
+if echo "$residue_out" | grep -qE '\[FAIL\]\[required\][[:space:]]+new singbox-vpn-owned residue'; then
+  fail "stage 27 reported new-residue FAIL even though after-uninstall state was a strict subset of (dirty) baseline"
+fi
+
+echo
+echo "--- stage 27 residue audit: a field that is NEW after uninstall (not present at baseline) must still fail ---"
+cat > "$MOCKBIN/ssh" <<'MOCKSSH_RESIDUE2'
+#!/bin/bash
+{ printf '%s\t' "$@"; echo; } >> "$SSH_LOG"
+cmd="${*: -1}"
+COUNTER_FILE="$TMPDIR_TEST/residue_call_count"
+case "$cmd" in
+  true) exit 0 ;;
+  *os-release*) echo 'ID=almalinux'; exit 0 ;;
+  *uname\ -m*) echo x86_64; exit 0 ;;
+  *"opt_singbox-vpn="*)
+    n=0
+    [ -f "$COUNTER_FILE" ] && n="$(cat "$COUNTER_FILE")"
+    n=$((n + 1))
+    echo "$n" > "$COUNTER_FILE"
+    if [ "$n" -eq 1 ]; then
+      # Clean baseline: nothing pre-existing.
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=0\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=0\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    else
+      # After "uninstall": nginx_conf residue that was NOT in the
+      # baseline — a real leak this run's uninstall failed to remove.
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=0\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=1\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    fi
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCKSSH_RESIDUE2
+chmod +x "$MOCKBIN/ssh"
+: > "$SSH_LOG"
+rm -f "$TMPDIR_TEST/residue_call_count"
+set +e
+newresidue_out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --allow-destroy-existing-singbox-vpn-install --skip-reboot 2>&1)"
+set -e
+if echo "$newresidue_out" | grep -qE '\[FAIL\]\[required\][[:space:]]+new singbox-vpn-owned residue.*nginx_conf'; then
+  ok "a field genuinely new after uninstall (absent at baseline) is still correctly reported as residue and fails"
+else
+  fail "stage 27 did not catch genuinely new residue (nginx_conf) introduced beyond baseline: $(echo "$newresidue_out" | grep -i 'residue')"
+fi
+
+echo
+echo "--- run_install()/run_install_abort_after_singbox()/dev-rebuild use the long SSH timeout, not the short per-probe one ---"
+lifecycle_body="$(cat "$SCRIPT")"
+if echo "$lifecycle_body" | grep -qE '^ssh_run_long\(\) \{ timeout [0-9]+ ssh'; then
+  ok "ssh_run_long() exists with its own (longer) timeout"
+else
+  fail "ssh_run_long() is missing — a from-source dev-channel install/update can legitimately run past ssh_run()'s short timeout and would be falsely reported as failed"
+fi
+run_install_body="$(sed -n '/^run_install() {/,/^}/p' "$SCRIPT")"
+if echo "$run_install_body" | grep -q 'ssh_run_long '; then
+  ok "run_install() uses ssh_run_long (a from-source dev-channel build can run well past a short timeout)"
+else
+  fail "run_install() does not use ssh_run_long — a slow-but-correct from-source install would be falsely reported as [FAIL]"
+fi
+run_install_abort_body="$(sed -n '/^run_install_abort_after_singbox() {/,/^}/p' "$SCRIPT")"
+if echo "$run_install_abort_body" | grep -q 'ssh_run_long '; then
+  ok "run_install_abort_after_singbox() uses ssh_run_long"
+else
+  fail "run_install_abort_after_singbox() does not use ssh_run_long"
+fi
+
+echo
 echo "--- a required-stage failure cannot produce an overall PASS ---"
 cat > "$MOCKBIN/ssh" <<'MOCKSSH_FAILREQ'
 #!/bin/bash
