@@ -40,7 +40,44 @@ log "confirmed SSH port: $SSH_PORT"
 FIREWALLD_WAS_INACTIVE=0
 systemctl is-active --quiet firewalld || FIREWALLD_WAS_INACTIVE=1
 if [ "$FIREWALLD_WAS_INACTIVE" -eq 1 ]; then
-  systemctl start firewalld
+  # Do NOT start firewalld yet. Starting it before the SSH rule exists
+  # anywhere in its configuration means the daemon enforces its
+  # distro-default policy on this zone — default-deny for a custom SSH
+  # port — for a real (if brief) window before a rule is added. Stage the
+  # SSH allow into the permanent (offline) configuration via
+  # firewall-offline-cmd first, which needs no running daemon, verify it
+  # landed, and only then start firewalld — a freshly started daemon
+  # loads its permanent configuration as the initial runtime
+  # configuration, so the rule is already effective the moment it comes up.
+  command -v firewall-offline-cmd >/dev/null 2>&1 \
+    || die "firewall-offline-cmd not found (normally installed alongside firewall-cmd by the 'firewalld' package). Cannot safely stage the SSH allow rule before firewalld starts. Refusing to activate the firewall — nothing has been changed on this host."
+
+  OFFLINE_ZONE="$(firewall-offline-cmd --get-default-zone)" \
+    || die "firewall-offline-cmd --get-default-zone failed. Refusing to activate the firewall."
+  firewall-offline-cmd --zone="$OFFLINE_ZONE" --add-service=ssh >/dev/null \
+    || die "firewall-offline-cmd failed to stage the SSH service allow rule on zone '$OFFLINE_ZONE'. Refusing to start firewalld — nothing has been changed on this host."
+  if [ "$SSH_PORT" != "22" ]; then
+    firewall-offline-cmd --zone="$OFFLINE_ZONE" --add-port="${SSH_PORT}/tcp" >/dev/null \
+      || die "firewall-offline-cmd failed to stage the ${SSH_PORT}/tcp allow rule on zone '$OFFLINE_ZONE'. Refusing to start firewalld — nothing has been changed on this host."
+  fi
+  firewall-offline-cmd --zone="$OFFLINE_ZONE" --query-service=ssh >/dev/null 2>&1 \
+    || die "staged the SSH service rule but firewall-offline-cmd does not report it present on zone '$OFFLINE_ZONE' afterward. Refusing to start firewalld — nothing has been changed on this host."
+  if [ "$SSH_PORT" != "22" ]; then
+    firewall-offline-cmd --zone="$OFFLINE_ZONE" --query-port="${SSH_PORT}/tcp" >/dev/null 2>&1 \
+      || die "staged the ${SSH_PORT}/tcp rule but firewall-offline-cmd does not report it present on zone '$OFFLINE_ZONE' afterward. Refusing to start firewalld — nothing has been changed on this host."
+  fi
+  log "permanent SSH allow rule for port ${SSH_PORT}/tcp positively verified on zone '$OFFLINE_ZONE' — starting firewalld now."
+
+  systemctl start firewalld \
+    || die "firewalld failed to start after the SSH allow rule was staged and verified. Host firewall state is unchanged (firewalld inactive); investigate before retrying."
+
+  firewall-cmd --zone="$OFFLINE_ZONE" --query-service=ssh >/dev/null 2>&1 \
+    || die "firewalld is now active but the SSH service rule is NOT present in its effective runtime configuration on zone '$OFFLINE_ZONE'. This means SSH may be blocked. firewalld is running — do not disconnect this session; investigate immediately before assuming safety."
+  if [ "$SSH_PORT" != "22" ]; then
+    firewall-cmd --zone="$OFFLINE_ZONE" --query-port="${SSH_PORT}/tcp" >/dev/null 2>&1 \
+      || die "firewalld is now active but ${SSH_PORT}/tcp is NOT present in its effective runtime configuration on zone '$OFFLINE_ZONE'. This means SSH on that port may be blocked. firewalld is running — do not disconnect this session; investigate immediately before assuming safety."
+  fi
+  log "firewalld active on zone '$OFFLINE_ZONE'; SSH port ${SSH_PORT}/tcp positively confirmed allowed (permanent and runtime) before any further firewall changes."
 fi
 
 ZONE="$(firewall-cmd --get-default-zone)"
@@ -58,15 +95,28 @@ if [ -f "$OWNERSHIP_STATE" ]; then
   fi
 fi
 
-# The very first firewall-cmd calls after a fresh activation above must
-# be the SSH-allow rules — before anything else touches this zone.
-firewall-cmd --zone="$ZONE" --add-service=ssh >/dev/null 2>&1 || true
+# When firewalld was freshly activated above, the SSH rule is already
+# staged, verified, and active on this zone. When firewalld was already
+# active before this script ran (pre-existing installation, checkpoint-1:
+# never re-activate or flush it), the rule may still be missing — add and
+# positively verify it here too, in both the runtime and permanent
+# configuration. `firewall-cmd --add-*` on a rule that already exists is
+# idempotent (exit 0), so re-running these against an already-safe zone
+# is harmless — this is not a fail-open `|| true`: a real failure here
+# aborts the script under `set -e`, before any further firewall mutation.
+firewall-cmd --zone="$ZONE" --add-service=ssh >/dev/null
 if [ "$SSH_PORT" != "22" ]; then
-  firewall-cmd --zone="$ZONE" --add-port="${SSH_PORT}/tcp" >/dev/null 2>&1 || true
+  firewall-cmd --zone="$ZONE" --add-port="${SSH_PORT}/tcp" >/dev/null
 fi
-firewall-cmd --zone="$ZONE" --permanent --add-service=ssh
+firewall-cmd --zone="$ZONE" --permanent --add-service=ssh >/dev/null
 if [ "$SSH_PORT" != "22" ]; then
-  firewall-cmd --zone="$ZONE" --permanent --add-port="${SSH_PORT}/tcp"
+  firewall-cmd --zone="$ZONE" --permanent --add-port="${SSH_PORT}/tcp" >/dev/null
+fi
+firewall-cmd --zone="$ZONE" --query-service=ssh >/dev/null 2>&1 \
+  || die "SSH service rule is not present in the effective runtime configuration on zone '$ZONE' after adding it. Refusing to proceed to VLESS/Hysteria2/subscription firewall rules."
+if [ "$SSH_PORT" != "22" ]; then
+  firewall-cmd --zone="$ZONE" --query-port="${SSH_PORT}/tcp" >/dev/null 2>&1 \
+    || die "${SSH_PORT}/tcp is not present in the effective runtime configuration on zone '$ZONE' after adding it. Refusing to proceed to VLESS/Hysteria2/subscription firewall rules."
 fi
 firewall-cmd --zone="$ZONE" --permanent --query-port=443/tcp >/dev/null 2>&1 \
   || { firewall-cmd --zone="$ZONE" --permanent --add-port=443/tcp; owned_443_tcp=1; }

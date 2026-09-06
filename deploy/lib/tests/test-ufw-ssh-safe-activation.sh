@@ -42,22 +42,42 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 # every invocation (order preserved) to a calls file, and reporting whether
 # it currently considers itself "active" (so `--force enable` flips it).
 run_activate_ufw_ssh_safe() {
-  local ssh_port="$1" initially_active="$2" calls_file="$3"
+  local ssh_port="$1" initially_active="$2" calls_file="$3" break_verification="${4:-no}"
   (
     set -Eeuo pipefail
     log() { :; }
     warn() { :; }
+    die() { echo "die: $*" >&2; exit 1; }
     SSH_PORT="$ssh_port"
     UFW_ACTIVE="$initially_active"
+    ALLOWED_RULES=""
+    BREAK_VERIFICATION="$break_verification"
     ufw() {
       echo "ufw $*" >> "$calls_file"
       if [ "$1" = "status" ]; then
         if [ "$UFW_ACTIVE" = "yes" ]; then
           echo "Status: active"
+          # Positive verification (added alongside die()) greps this
+          # output for "<rule>  ALLOW", so a real stub must reflect what
+          # was actually allowed rather than a fixed canned response —
+          # otherwise the test would pass even if the verification step
+          # were silently broken (e.g. always true, or checking the
+          # wrong pattern).
+          if [ "$BREAK_VERIFICATION" != "yes" ]; then
+            printf '%s\n' "$ALLOWED_RULES"
+          fi
         else
           echo "Status: inactive"
         fi
         return 0
+      fi
+      if [ "$1" = "allow" ]; then
+        case "$2" in
+          OpenSSH) ALLOWED_RULES="${ALLOWED_RULES}OpenSSH                    ALLOW       Anywhere
+" ;;
+          *) ALLOWED_RULES="${ALLOWED_RULES}${2}                    ALLOW       Anywhere
+" ;;
+        esac
       fi
       if [ "$1" = "--force" ] && [ "$2" = "enable" ]; then
         UFW_ACTIVE="yes"
@@ -103,6 +123,19 @@ if grep -q -- '--force enable' "$calls"; then
   fail "ufw was already active but activate_ufw_ssh_safe() re-enabled it anyway (risks disrupting existing rules/state):"; sed 's/^/    /' "$calls"
 else
   ok "an already-active ufw is left completely alone (existing rules/state preserved)"
+fi
+
+echo
+echo "--- activate_ufw_ssh_safe(): ufw enable succeeds but the resulting rule never shows ALLOW — must fail closed, not report success ---"
+calls="$TMPDIR_TEST/calls-broken-verification"
+if run_activate_ufw_ssh_safe 22 no "$calls" yes 2>"$TMPDIR_TEST/stderr-broken"; then
+  fail "activate_ufw_ssh_safe() returned success even though 'ufw status' never showed the SSH rule as ALLOW — a fail-open verification bug"
+else
+  if grep -q 'does not show as ALLOW' "$TMPDIR_TEST/stderr-broken"; then
+    ok "activate_ufw_ssh_safe() fails closed (die) when the post-enable verification can't confirm SSH is allowed"
+  else
+    fail "activate_ufw_ssh_safe() failed, but not with the expected verification error:"; cat "$TMPDIR_TEST/stderr-broken"
+  fi
 fi
 
 echo

@@ -36,6 +36,17 @@ install — treat it as RECOGNIZED / BEST-EFFORT, not SUPPORTED.
 - A domain or subdomain pointed at the VPS (see DNS setup below).
 - [Hiddify](https://hiddify.com) or another sing-box-compatible client.
 
+**Bootstrap prerequisites** — `bash`, `curl`, and `tar` must already be on
+the VPS before the `curl -fsSL ... | bash` install commands below can run
+at all; the installer sets up everything else on the host (packages,
+firewall, systemd units, certificates), but it cannot install the very
+tool used to fetch and execute it. These three ship by default on every
+supported distribution's standard cloud image, but a minimal/hardened or
+custom image can omit `curl` in particular — if the install command below
+fails with `curl: command not found`, install it first
+(`dnf install -y curl` on AlmaLinux/RHEL-family, `apt-get install -y curl`
+on Ubuntu/Debian) and re-run.
+
 ## DNS setup
 
 Create an `A` record pointing your domain to the VPS:

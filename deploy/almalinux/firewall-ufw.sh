@@ -72,5 +72,14 @@ mv -f "$OWNERSHIP_STATE.tmp" "$OWNERSHIP_STATE"
 # connections" confirmation prompt.
 ufw --force enable >/dev/null
 
+# Positively verify the resulting rule/state rather than assume the
+# `ufw allow` calls above actually took effect.
+ufw status 2>/dev/null | grep -Eq '^(22/tcp|OpenSSH)[[:space:]]+ALLOW' \
+  || die "ufw is now active but port 22/OpenSSH does not show as ALLOW in 'ufw status' afterward. This means SSH may be blocked. ufw is running — do not disconnect this session; investigate immediately (e.g. 'ufw allow 22/tcp') before assuming safety."
+if [ "$SSH_PORT" != "22" ]; then
+  ufw status 2>/dev/null | grep -Eq "^${SSH_PORT}/tcp[[:space:]]+ALLOW" \
+    || die "ufw is now active but ${SSH_PORT}/tcp does not show as ALLOW in 'ufw status' afterward. This means SSH on that port may be blocked. ufw is running — do not disconnect this session; investigate immediately (e.g. 'ufw allow ${SSH_PORT}/tcp') before assuming safety."
+fi
+
 echo "firewall rules applied (ufw):"
 ufw status verbose

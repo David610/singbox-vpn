@@ -39,6 +39,19 @@ STATE_FILE="$TMPDIR_TEST/singbox_state"
 singbox_state() { cat "$STATE_FILE" 2>/dev/null || echo active; }
 case "$cmd" in
   true) exit 0 ;;
+  # Stage 0a's existing-installation guard: matched BEFORE any broader
+  # pattern below that also happens to contain one of these path
+  # substrings (e.g. "*install-state.json*", used generically further
+  # down for a different remote call) — case matches top-to-bottom, so
+  # this exact-command check has to come first or it would silently fall
+  # through to an unrelated mock response. A clean disposable target has
+  # none of these four markers by default; the "existing installation"
+  # test scenario flips this by touching $TMPDIR_TEST/mock_existing_install.
+  *"[ -e '/etc/vpn/deployment.toml' ]"* | \
+  *"[ -e '/var/lib/singbox-vpn/install-state.json' ]"* | \
+  *"[ -e '/var/lib/singbox-vpn/ownership.env' ]"* | \
+  *"[ -e '/opt/singbox-vpn' ]"*)
+    [ -f "$TMPDIR_TEST/mock_existing_install" ] && exit 0 || exit 1 ;;
   *os-release*) echo 'ID=almalinux'; exit 0 ;;
   *uname\ -m*) echo x86_64; exit 0 ;;
   *:*grep*) echo 1; exit 0 ;;
@@ -126,6 +139,8 @@ BENCH
   *certbot\ renew*) exit 0 ;;
   *"[ -e /opt/singbox-vpn ] || [ -e /etc/vpn ]"*) exit 0 ;;
   *"[ ! -e /etc/vpn ]"*) exit 0 ;;
+  *"command -v curl"*)
+    [ -f "$TMPDIR_TEST/mock_missing_curl" ] && exit 1 || exit 0 ;;
   *) exit 0 ;;
 esac
 MOCKSSH
@@ -188,6 +203,118 @@ rc=0
 out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --version 'main;id' 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'immutable vX.Y.Z release tag' \
   && ok "rejects a mutable or shell-unsafe --version" || fail "did not reject malformed --version"
+
+echo
+echo "--- malicious --domain values are rejected before SSH, never reach the remote command string ---"
+for bad_domain in 'example.com;touch /tmp/pwned' '$(touch /tmp/pwned)' 'foo`touch /tmp/pwned`' '"abc"' 'abc def' "abc'def"; do
+  rc=0
+  : > "$SSH_LOG"
+  out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --domain "$bad_domain" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'not a syntactically valid hostname\|contains characters that are never valid'; then
+    ok "rejects malicious --domain '$bad_domain' before any SSH call"
+  else
+    fail "did not reject malicious --domain '$bad_domain' (rc=$rc): $out"
+  fi
+  if [ -s "$SSH_LOG" ]; then
+    fail "--domain '$bad_domain' reached ssh despite being rejected"
+  fi
+done
+
+echo
+echo "--- malicious --update-to-ref values are rejected before SSH ---"
+for bad_ref in 'main;id' '$(id)' 'main`id`' '../../etc/passwd' '-rf' 'a b'; do
+  rc=0
+  : > "$SSH_LOG"
+  out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --update-to-ref "$bad_ref" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'not a syntactically valid git ref\|must not start with'; then
+    ok "rejects malicious --update-to-ref '$bad_ref' before any SSH call"
+  else
+    fail "did not reject malicious --update-to-ref '$bad_ref' (rc=$rc): $out"
+  fi
+  if [ -s "$SSH_LOG" ]; then
+    fail "--update-to-ref '$bad_ref' reached ssh despite being rejected"
+  fi
+done
+
+echo
+echo "--- a valid --domain is threaded through to the remote install.sh command as one safely-quoted argument ---"
+: > "$SSH_LOG"
+set +e
+run_harness --host root@disposable-test --i-understand-this-is-destructive --domain vpn.xn--p1aen4b.com --skip-reboot >"$TMPDIR_TEST/out-domain.log" 2>&1
+set -e
+install_line="$(grep -F 'install.sh' "$SSH_LOG" | grep -F 'curl' | head -1 || true)"
+if printf '%s' "$install_line" | grep -qE -- '--domain vpn\.xn--p1aen4b\.com'; then
+  ok "a valid IDN/punycode --domain reaches the remote install.sh invocation intact"
+else
+  fail "valid --domain vpn.xn--p1aen4b.com did not reach the remote install.sh command: $install_line"
+fi
+
+echo
+echo "--- Stage 0a: a target with an existing singbox-vpn install refuses destruction without the second explicit override ---"
+: > "$SSH_LOG"
+: > "$TMPDIR_TEST/mock_existing_install"
+set +e
+out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1)"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'already has an existing singbox-vpn installation'; then
+  ok "refuses to destroy a target with an existing singbox-vpn install (--i-understand-this-is-destructive alone is not enough)"
+else
+  fail "did not refuse a target with an existing singbox-vpn install (rc=$rc): $out"
+fi
+if grep -qE 'curl.*install\.sh.*\|.*bash' "$SSH_LOG"; then
+  fail "the destructive install pipeline was invoked against a target with a detected pre-existing installation"
+else
+  ok "no destructive install is attempted against a target with a detected pre-existing installation, absent the second override"
+fi
+
+echo
+echo "--- Stage 0a: the second override (--allow-destroy-existing-singbox-vpn-install) authorizes destruction of a detected existing install ---"
+: > "$SSH_LOG"
+set +e
+out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --allow-destroy-existing-singbox-vpn-install --skip-reboot 2>&1)"
+set -e
+rm -f "$TMPDIR_TEST/mock_existing_install"
+if echo "$out" | grep -qi 'destruction explicitly authorized via --allow-destroy-existing-singbox-vpn-install'; then
+  ok "--allow-destroy-existing-singbox-vpn-install authorizes proceeding against a detected existing install"
+else
+  fail "the second override did not authorize proceeding: $out"
+fi
+if grep -qE 'curl.*install\.sh.*\|.*bash' "$SSH_LOG"; then
+  ok "the destructive install pipeline runs once the second override is given"
+else
+  fail "the destructive install pipeline never ran even with the second override given"
+fi
+
+echo
+echo "--- Stage 0b: missing remote curl is caught as ONE clear bootstrap-prerequisite failure, not a generic pipeline error, and blocks (not cascades into) dependent stages ---"
+: > "$SSH_LOG"
+: > "$TMPDIR_TEST/mock_missing_curl"
+set +e
+out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1)"
+set -e
+rm -f "$TMPDIR_TEST/mock_missing_curl"
+if echo "$out" | grep -qE '\[FAIL\]\[required\][[:space:]]+bootstrap prerequisites[[:space:]]+missing:.*curl'; then
+  ok "missing curl is reported as one clear '[FAIL][required] bootstrap prerequisites ... missing: curl' line"
+else
+  fail "missing curl was not reported as a clear bootstrap-prerequisite failure: $(echo "$out" | grep -i 'bootstrap\|curl' | head -5)"
+fi
+if echo "$out" | grep -qE '\[BLOCKED\][[:space:]]+install\.sh \(clean\)'; then
+  ok "install.sh (clean) is reported BLOCKED, not attempted, once bootstrap prerequisites are known missing"
+else
+  fail "install.sh (clean) was not reported BLOCKED after a missing-curl bootstrap failure: $(echo "$out" | grep -i 'install.sh (clean)')"
+fi
+if grep -qE 'curl.*install\.sh.*\|.*bash' "$SSH_LOG"; then
+  fail "the curl|bash install pipeline was invoked against a target already known to be missing curl"
+else
+  ok "the curl|bash install pipeline is never attempted once stage 0b knows curl is missing"
+fi
+required_fail_count="$(echo "$out" | grep -cE '\[FAIL\]\[required\]' || true)"
+if [ "$required_fail_count" -le 2 ]; then
+  ok "one root cause (missing curl) produces at most $required_fail_count [required] failure(s), not a cascade of ~20"
+else
+  fail "missing curl cascaded into $required_fail_count separate [required] failures instead of blocking dependents:"; echo "$out" | grep -E '\[FAIL\]\[required\]'
+fi
 
 echo
 echo "--- full run: SSH port is not hardcoded to 22 ---"
@@ -418,8 +545,14 @@ cat > "$MOCKBIN/ssh" <<'MOCKSSH_NOOP'
 cmd="${*: -1}"
 case "$cmd" in
   true) exit 0 ;;
+  *"[ -e '/etc/vpn/deployment.toml' ]"* | \
+  *"[ -e '/var/lib/singbox-vpn/install-state.json' ]"* | \
+  *"[ -e '/var/lib/singbox-vpn/ownership.env' ]"* | \
+  *"[ -e '/opt/singbox-vpn' ]"*)
+    exit 1 ;;
   *os-release*) echo 'ID=almalinux'; exit 0 ;;
   *uname\ -m*) echo x86_64; exit 0 ;;
+  *"command -v "*) exit 0 ;;
   *install-state.json*) echo '{"singbox_vpn_version":"same"}'; exit 0 ;;
   *) exit 0 ;;
 esac
