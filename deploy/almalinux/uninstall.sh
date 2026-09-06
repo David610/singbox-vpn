@@ -615,8 +615,12 @@ if [ -d "$STATE_DIR_ROOT" ]; then
 fi
 # perf-tuning.sh's sysctl output logs are mktemp-created (never a fixed
 # /tmp path — see deploy/lib/perf-tuning.sh) and already self-cleaned, so
-# there is nothing named to remove here besides the installer lock.
+# there is nothing named to remove here besides the two lock files:
+# install.sh's own installer lock, and vpn-admin's separate operational
+# lock (also used by update.sh and the certbot deploy hook — see
+# deploy/almalinux/certbot-deploy-hook.sh).
 rm -f /run/lock/singbox-vpn-installer.lock 2>/dev/null || true
+rm -f /run/lock/singbox-vpn.lock 2>/dev/null || true
 
 # The persistent source tree — remove it last, since this script itself
 # very likely lives inside it (/opt/singbox-vpn/deploy/almalinux/uninstall.sh).
