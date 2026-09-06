@@ -64,6 +64,7 @@ UPDATE_TO_VERSION=""
 VERSION=""
 SKIP_REBOOT=0
 SSH_PORT=22
+DOMAIN=""
 
 usage() {
   cat <<'USAGE'
@@ -91,6 +92,17 @@ Options:
                          production-acceptance result.
   --skip-reboot          skip the reboot+health stage (e.g. host cannot be rebooted by this
                          SSH session's caller). Every other stage still runs.
+  --domain HOST          use this hostname for every install.sh/reinstall this run performs
+                         instead of letting install.sh auto-detect a *.sslip.io hostname from
+                         the target's public IP. Each fresh install in a single run requests a
+                         fresh Let's Encrypt certificate (stages 2, 8, and 21 can each do so);
+                         Let's Encrypt's real-world rate limit is 5 certificates per exact
+                         hostname per 168h, so repeated full runs against the same auto-detected
+                         sslip.io hostname (tied to the target's IP, so it never changes) can
+                         exhaust that limit and fail every subsequent fresh install with
+                         "too many certificates already issued" until it resets. Point this at a
+                         domain you control instead to avoid sharing a rate-limit budget with
+                         every other sslip.io run against this same IP.
   -h, --help             this help.
 USAGE
 }
@@ -109,6 +121,8 @@ while [ $# -gt 0 ]; do
     --version) VERSION="$2"; shift 2 ;;
     --version=*) VERSION="${1#*=}"; shift ;;
     --skip-reboot) SKIP_REBOOT=1; shift ;;
+    --domain) DOMAIN="$2"; shift 2 ;;
+    --domain=*) DOMAIN="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -175,6 +189,9 @@ ssh_reconnect() {
 INSTALL_ARGS="--non-interactive"
 if [ "$SSH_PORT" != "22" ]; then
   INSTALL_ARGS="$INSTALL_ARGS --ssh-port $SSH_PORT"
+fi
+if [ -n "$DOMAIN" ]; then
+  INSTALL_ARGS="$INSTALL_ARGS --domain $DOMAIN"
 fi
 
 failures=0
