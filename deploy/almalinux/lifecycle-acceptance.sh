@@ -155,6 +155,13 @@ fi
 if [ -n "$DOMAIN" ]; then
   INSTALL_ARGS="$INSTALL_ARGS --domain $DOMAIN"
 fi
+# The lifecycle controller itself fetches the bootstrap over the target VPS's
+# network before install.sh's own retry policy can take effect. A transient
+# ECONNREFUSED here was observed in a real gate run, so make this outermost
+# fetch independently resilient. `set -o pipefail` in run_install* below is
+# equally important: without it, curl can fail while an empty downstream bash
+# exits 0, producing a false install PASS.
+REMOTE_BOOTSTRAP_CURL_FLAGS="--connect-timeout 10 --max-time 300 --retry 5 --retry-delay 2 --retry-connrefused"
 
 failures=0
 required_fail=0
@@ -221,11 +228,11 @@ cleanup_cert_snapshot() {
 }
 
 run_install() {
-  ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"
+  ssh_run "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"
 }
 
 run_install_abort_after_singbox() {
-  ssh_run "curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"
+  ssh_run "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"
 }
 
 echo "singbox-vpn destructive lifecycle acceptance gate"
@@ -442,50 +449,66 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # legitimate periodic recovery can race this observation and turn a real
   # FAILED state back to active before the harness checks it. Reboot stage 5
   # already proves the timer is armed; here we test watchdog logic directly.
+  watchdog_timer_suspended=0
   if ssh_run 'sudo systemctl stop vpn-service-watchdog.timer && systemctl is-inactive --quiet vpn-service-watchdog.timer' 2>/dev/null; then
     pass "vpn-service-watchdog.timer suspended for deterministic crash-loop test"
+    watchdog_timer_suspended=1
   else
     fail_required "suspend vpn-service-watchdog.timer for crash-loop test"
   fi
-  if ssh_run '
-    last_killed=""
-    end=$(( $(date +%s) + 40 ))
-    while [ "$(date +%s)" -lt "$end" ]; do
-      pid="$(systemctl show -p MainPID --value sing-box)"
-      if [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "$last_killed" ]; then
-        sudo kill -9 "$pid" 2>/dev/null
-        last_killed="$pid"
-      fi
-      sleep 0.2
+
+  failed_state_ready=0
+  if [ "$watchdog_timer_suspended" -eq 1 ]; then
+    if ssh_run '
+      last_killed=""
+      end=$(( $(date +%s) + 40 ))
+      while [ "$(date +%s)" -lt "$end" ]; do
+        pid="$(systemctl show -p MainPID --value sing-box)"
+        if [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "$last_killed" ]; then
+          sudo kill -9 "$pid" 2>/dev/null
+          last_killed="$pid"
+        fi
+        sleep 0.2
+      done
+      sleep 5
+      systemctl is-failed --quiet sing-box
+    ' 2>/dev/null; then
+      pass "sing-box.service reached FAILED state after exhausting StartLimitBurst (proves the burst is real, not effectively infinite)"
+      failed_state_ready=1
+    else
+      fail_required "sing-box.service did not reach FAILED state after a fast repeated-crash burst" "(restart budget was not exhausted deterministically)"
+    fi
+  else
+    block "crash-loop FAILED-state creation" "(watchdog timer could not be suspended, so the observation would be racy)"
+  fi
+
+  if [ "$failed_state_ready" -eq 1 ]; then
+    if DOCTOR_DURING_FAILURE_OUT="$(ssh_run 'sudo vpn-admin doctor' 2>&1)"; then doctor_during_failure_rc=0; else doctor_during_failure_rc=$?; fi
+    if [ "$doctor_during_failure_rc" -ne 0 ] && printf '%s' "$DOCTOR_DURING_FAILURE_OUT" | grep -qi 'sing-box.service is in a FAILED state'; then
+      pass "vpn-admin doctor correctly reports sing-box.service as FAILED (distinct from merely 'not active')"
+    else
+      fail_required "vpn-admin doctor did not report the FAILED sing-box.service" "(exit=$doctor_during_failure_rc; see remote output above)"
+    fi
+    STATUS_DURING_FAILURE_OUT="$(ssh_run 'sudo vpn-admin status' 2>&1 || true)"
+    if printf '%s' "$STATUS_DURING_FAILURE_OUT" | grep -qi 'sing-box.*failed'; then pass "vpn-admin status correctly reports sing-box as failed"; else fail_required "vpn-admin status did not report sing-box as failed"; fi
+
+    if ssh_run 'sudo systemctl start vpn-service-watchdog.service' 2>/dev/null; then pass "vpn-service-watchdog.service ran without error"; else fail_required "vpn-service-watchdog.service ran without error"; fi
+    watchdog_recovered=0
+    for _ in $(seq 1 15); do
+      if ssh_run 'systemctl is-active --quiet sing-box' 2>/dev/null; then watchdog_recovered=1; break; fi
+      sleep 2
     done
-    sleep 5
-    systemctl is-failed --quiet sing-box
-  ' 2>/dev/null; then
-    pass "sing-box.service reached FAILED state after exhausting StartLimitBurst (proves the burst is real, not effectively infinite)"
+    if [ "$watchdog_recovered" -eq 1 ]; then pass "vpn-service-watchdog recovered sing-box.service from its parked FAILED state (a recoverable service is never left permanently down)"; else fail_required "vpn-service-watchdog did not recover sing-box.service from its FAILED state"; fi
   else
-    fail_required "sing-box.service did not reach FAILED state after a fast repeated-crash burst" "(restart budget was not exhausted deterministically)"
+    block "FAILED-state doctor/status/watchdog recovery assertions" "(the prerequisite FAILED state was not established; dependent failures are not counted separately)"
   fi
 
-  if DOCTOR_DURING_FAILURE_OUT="$(ssh_run 'sudo vpn-admin doctor' 2>&1)"; then doctor_during_failure_rc=0; else doctor_during_failure_rc=$?; fi
-  if [ "$doctor_during_failure_rc" -ne 0 ] && printf '%s' "$DOCTOR_DURING_FAILURE_OUT" | grep -qi 'sing-box.service is in a FAILED state'; then
-    pass "vpn-admin doctor correctly reports sing-box.service as FAILED (distinct from merely 'not active')"
-  else
-    fail_required "vpn-admin doctor did not report the FAILED sing-box.service" "(exit=$doctor_during_failure_rc; see remote output above)"
-  fi
-  STATUS_DURING_FAILURE_OUT="$(ssh_run 'sudo vpn-admin status' 2>&1 || true)"
-  if printf '%s' "$STATUS_DURING_FAILURE_OUT" | grep -qi 'sing-box.*failed'; then pass "vpn-admin status correctly reports sing-box as failed"; else fail_required "vpn-admin status did not report sing-box as failed"; fi
-
-  if ssh_run 'sudo systemctl start vpn-service-watchdog.service' 2>/dev/null; then pass "vpn-service-watchdog.service ran without error"; else fail_required "vpn-service-watchdog.service ran without error"; fi
-  watchdog_recovered=0
-  for _ in $(seq 1 15); do
-    if ssh_run 'systemctl is-active --quiet sing-box' 2>/dev/null; then watchdog_recovered=1; break; fi
-    sleep 2
-  done
-  if [ "$watchdog_recovered" -eq 1 ]; then pass "vpn-service-watchdog recovered sing-box.service from its parked FAILED state (a recoverable service is never left permanently down)"; else fail_required "vpn-service-watchdog did not recover sing-box.service from its FAILED state"; fi
-  if ssh_run 'sudo systemctl start vpn-service-watchdog.timer && systemctl is-active --quiet vpn-service-watchdog.timer' 2>/dev/null; then
-    pass "vpn-service-watchdog.timer re-armed after deterministic crash-loop test"
-  else
-    fail_required "re-arm vpn-service-watchdog.timer after crash-loop test"
+  if [ "$watchdog_timer_suspended" -eq 1 ]; then
+    if ssh_run 'sudo systemctl start vpn-service-watchdog.timer && systemctl is-active --quiet vpn-service-watchdog.timer' 2>/dev/null; then
+      pass "vpn-service-watchdog.timer re-armed after deterministic crash-loop test"
+    else
+      fail_required "re-arm vpn-service-watchdog.timer after crash-loop test"
+    fi
   fi
 
   section "13c. systemctl stop still behaves normally (a deliberate stop is never treated as a failure to auto-recover)"
@@ -547,7 +570,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   elif [ -n "$UPDATE_TO_REF" ]; then
     section "16. safe update path -> $UPDATE_TO_REF (--dev-rebuild; transactional updater machinery only)"
     version_before="$(ssh_run 'sudo /opt/singbox-vpn/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
-    if ssh_run "curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/singbox-vpn-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$UPDATE_TO_REF \
+    if ssh_run "curl -fsSL --connect-timeout 10 --max-time 120 --retry 5 --retry-delay 2 --retry-connrefused -o /tmp/singbox-vpn-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$UPDATE_TO_REF \
         && rm -rf /tmp/singbox-vpn-update-ref && mkdir -p /tmp/singbox-vpn-update-ref \
         && tar -xzf /tmp/singbox-vpn-update-ref.tar.gz -C /tmp/singbox-vpn-update-ref --strip-components=1 \
         && sudo rsync -a --delete --exclude target --exclude .git /tmp/singbox-vpn-update-ref/ /opt/singbox-vpn/ \
