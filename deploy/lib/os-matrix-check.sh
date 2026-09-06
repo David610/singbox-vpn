@@ -51,12 +51,75 @@ fi
 echo
 echo "--- L2: real dependency installation via install_dependencies_${OS_FAMILY}() (production function, real dnf/apt, firewall/systemd stubbed) ---"
 
-# systemctl/firewall-cmd/ufw: stubbed no-ops. No container runtime here
-# has a real init system or real firewall/netfilter access — this is the
-# documented L1/L2 boundary above, not an attempt to fake L3/L4.
-systemctl() { :; }
-firewall-cmd() { echo "public"; }
-ufw() { echo "Status: inactive"; }
+# systemctl/firewall-cmd/firewall-offline-cmd/ufw: stubbed — no container
+# runtime here has a real init system or real firewall/netfilter access,
+# this is the documented L1/L2 boundary above, not an attempt to fake
+# L3/L4. But activate_firewalld_ssh_safe()/activate_ufw_ssh_safe()
+# (deploy/almalinux/install.sh) now positively verify their own SSH-allow
+# rule before/after activation (a real P0 fix: never trust a firewall
+# activation without checking it), so these stubs have to track just
+# enough in-memory state for that self-verification to see a consistent
+# answer — a blanket no-op response now makes install_packages() itself
+# fail here, not because activation is broken, but because the stub
+# can't distinguish "rule requested" from "rule not requested". Still not
+# real netfilter/systemd — just enough state to round-trip the same
+# add/query calls the real tools would.
+_fw_zone_ssh_service=0
+_fw_zone_ssh_port=0
+_fw_active=0
+_ufw_active=0
+_ufw_rules=""
+systemctl() {
+  case "$1" in
+    is-active) [ "$_fw_active" -eq 1 ]; return ;;
+    start) [ "${2:-}" = "firewalld" ] && _fw_active=1; return 0 ;;
+    *) return 0 ;;
+  esac
+}
+firewall-cmd() {
+  case "$1" in
+    --get-default-zone) echo "public"; return 0 ;;
+  esac
+  case "$2" in
+    --add-service=ssh) _fw_zone_ssh_service=1; return 0 ;;
+    --add-port=*/tcp) _fw_zone_ssh_port=1; return 0 ;;
+    --query-service=ssh) [ "$_fw_zone_ssh_service" -eq 1 ]; return ;;
+    --query-port=*/tcp) [ "$_fw_zone_ssh_port" -eq 1 ]; return ;;
+  esac
+  return 0
+}
+firewall-offline-cmd() {
+  case "$1" in
+    --get-default-zone) echo "public"; return 0 ;;
+  esac
+  case "$2" in
+    --add-service=ssh) _fw_zone_ssh_service=1; return 0 ;;
+    --add-port=*/tcp) _fw_zone_ssh_port=1; return 0 ;;
+    --query-service=ssh) [ "$_fw_zone_ssh_service" -eq 1 ]; return ;;
+    --query-port=*/tcp) [ "$_fw_zone_ssh_port" -eq 1 ]; return ;;
+  esac
+  return 0
+}
+ufw() {
+  case "$1" in
+    status)
+      if [ "$_ufw_active" -eq 1 ]; then
+        echo "Status: active"
+        [ -n "$_ufw_rules" ] && printf '%s' "$_ufw_rules"
+      else
+        echo "Status: inactive"
+      fi
+      return 0 ;;
+    allow)
+      _ufw_rules="${_ufw_rules}${2}                    ALLOW       Anywhere
+"
+      return 0 ;;
+    --force)
+      [ "${2:-}" = "enable" ] && _ufw_active=1
+      return 0 ;;
+    *) return 0 ;;
+  esac
+}
 # shellcheck disable=SC2034 # read by activate_firewalld_ssh_safe()/activate_ufw_ssh_safe() after install.sh is sourced below
 SSH_PORT=22
 

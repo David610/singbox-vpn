@@ -947,19 +947,63 @@ activate_firewalld_ssh_safe() {
     return
   fi
   : "${SSH_PORT:?activate_firewalld_ssh_safe called before SSH_PORT was resolved in preflight_stage — refusing to activate the firewall.}"
-  log "activating firewalld with SSH port ${SSH_PORT}/tcp explicitly allowed as part of this same activation..."
-  systemctl start firewalld
+
+  # firewalld is NOT running yet at this point. Starting it first and only
+  # then adding an SSH-allow rule (the previous design here, and still a
+  # tempting-looking pattern) leaves a real runtime window — however
+  # short — where firewalld is enforcing its distro-default policy on
+  # this zone with the confirmed SSH port not yet in it. On a custom SSH
+  # port that window is default-deny for SSH. `|| true` on the runtime
+  # add-rule calls made that worse: a failed rule add would have been
+  # silently ignored and the function would still report success.
+  #
+  # Instead: write the SSH-allow rule into firewalld's permanent
+  # (offline) configuration via firewall-offline-cmd — which edits the
+  # on-disk zone files directly and needs no running daemon — positively
+  # verify it landed, and only THEN start firewalld. A freshly started
+  # firewalld loads its permanent configuration as the initial runtime
+  # configuration, so the SSH rule is already effective at the moment the
+  # daemon comes up; there is no window where it is active without it.
+  # Verify the runtime state positively afterward too, rather than assume
+  # that load behaved as documented.
+  command -v firewall-offline-cmd >/dev/null 2>&1 \
+    || die "firewall-offline-cmd not found (normally installed alongside firewall-cmd by the 'firewalld' package). Cannot safely stage the SSH allow rule before firewalld starts. Refusing to activate the firewall — nothing has been changed on this host."
+
+  log "staging SSH port ${SSH_PORT}/tcp into firewalld's permanent configuration before starting firewalld..."
   local zone
-  zone="$(firewall-cmd --get-default-zone)"
-  firewall-cmd --zone="$zone" --add-service=ssh >/dev/null 2>&1 || true
-  firewall-cmd --zone="$zone" --permanent --add-service=ssh >/dev/null 2>&1 || true
+  zone="$(firewall-offline-cmd --get-default-zone)" \
+    || die "firewall-offline-cmd --get-default-zone failed. Refusing to activate the firewall."
+
+  firewall-offline-cmd --zone="$zone" --add-service=ssh >/dev/null \
+    || die "firewall-offline-cmd failed to stage the SSH service allow rule on zone '$zone'. Refusing to start firewalld — nothing has been changed on this host."
   if [ "$SSH_PORT" != "22" ]; then
-    firewall-cmd --zone="$zone" --add-port="${SSH_PORT}/tcp" >/dev/null 2>&1
-    firewall-cmd --zone="$zone" --permanent --add-port="${SSH_PORT}/tcp" >/dev/null 2>&1
+    firewall-offline-cmd --zone="$zone" --add-port="${SSH_PORT}/tcp" >/dev/null \
+      || die "firewall-offline-cmd failed to stage the ${SSH_PORT}/tcp allow rule on zone '$zone'. Refusing to start firewalld — nothing has been changed on this host."
   fi
-  firewall-cmd --reload >/dev/null 2>&1
-  systemctl enable firewalld >/dev/null
-  log "firewalld active on zone '$zone'; SSH port ${SSH_PORT}/tcp confirmed allowed before any further firewall changes."
+
+  # Positively verify the offline/permanent rule before firewalld ever starts.
+  firewall-offline-cmd --zone="$zone" --query-service=ssh >/dev/null 2>&1 \
+    || die "staged the SSH service rule but firewall-offline-cmd does not report it present on zone '$zone' afterward. Refusing to start firewalld — nothing has been changed on this host."
+  if [ "$SSH_PORT" != "22" ]; then
+    firewall-offline-cmd --zone="$zone" --query-port="${SSH_PORT}/tcp" >/dev/null 2>&1 \
+      || die "staged the ${SSH_PORT}/tcp rule but firewall-offline-cmd does not report it present on zone '$zone' afterward. Refusing to start firewalld — nothing has been changed on this host."
+  fi
+  log "permanent SSH allow rule for port ${SSH_PORT}/tcp positively verified on zone '$zone' — starting firewalld now."
+
+  systemctl start firewalld \
+    || die "firewalld failed to start after the SSH allow rule was staged and verified. Host firewall state is unchanged (firewalld inactive); investigate before retrying."
+  systemctl enable firewalld >/dev/null \
+    || warn "firewalld started but 'systemctl enable firewalld' failed — it will not activate again automatically after a reboot. It is currently running with the SSH rule verified below; fix this separately (systemctl enable firewalld)."
+
+  # Positively verify the RUNTIME rule too, rather than trust that a
+  # freshly started daemon loaded its permanent configuration as expected.
+  firewall-cmd --zone="$zone" --query-service=ssh >/dev/null 2>&1 \
+    || die "firewalld is now active but the SSH service rule is NOT present in its effective runtime configuration on zone '$zone'. This means SSH may be blocked. firewalld is running — do not disconnect this session; investigate immediately (e.g. 'firewall-cmd --zone=$zone --add-service=ssh' from this same session) before assuming safety."
+  if [ "$SSH_PORT" != "22" ]; then
+    firewall-cmd --zone="$zone" --query-port="${SSH_PORT}/tcp" >/dev/null 2>&1 \
+      || die "firewalld is now active but ${SSH_PORT}/tcp is NOT present in its effective runtime configuration on zone '$zone'. This means SSH on that port may be blocked. firewalld is running — do not disconnect this session; investigate immediately (e.g. 'firewall-cmd --zone=$zone --add-port=${SSH_PORT}/tcp') before assuming safety."
+  fi
+  log "firewalld active on zone '$zone'; SSH port ${SSH_PORT}/tcp positively confirmed allowed (permanent and runtime) before any further firewall changes."
 }
 
 install_dependencies_debian() {
@@ -994,12 +1038,23 @@ activate_ufw_ssh_safe() {
   fi
   : "${SSH_PORT:?activate_ufw_ssh_safe called before SSH_PORT was resolved in preflight_stage — refusing to activate the firewall.}"
   log "activating ufw with SSH port ${SSH_PORT}/tcp explicitly allowed as part of this same activation..."
-  ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null 2>&1
+  ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null 2>&1 \
+    || die "'ufw allow OpenSSH'/'ufw allow 22/tcp' both failed. Refusing to enable ufw — nothing has been changed on this host."
   if [ "$SSH_PORT" != "22" ]; then
-    ufw allow "${SSH_PORT}/tcp" >/dev/null 2>&1
+    ufw allow "${SSH_PORT}/tcp" >/dev/null 2>&1 \
+      || die "'ufw allow ${SSH_PORT}/tcp' failed. Refusing to enable ufw — nothing has been changed on this host."
   fi
-  ufw --force enable >/dev/null
-  log "ufw active; SSH port ${SSH_PORT}/tcp confirmed allowed before any further firewall changes."
+  ufw --force enable >/dev/null \
+    || die "'ufw --force enable' failed after the SSH allow rule(s) were staged. Host firewall state is unchanged (ufw inactive); investigate before retrying."
+  # Positively verify the resulting rule/state rather than assume the
+  # `ufw allow` calls above actually took effect.
+  ufw status 2>/dev/null | grep -Eq '^(22/tcp|OpenSSH)[[:space:]]+ALLOW' \
+    || die "ufw is now active but port 22/OpenSSH does not show as ALLOW in 'ufw status' afterward. This means SSH may be blocked. ufw is running — do not disconnect this session; investigate immediately (e.g. 'ufw allow 22/tcp') before assuming safety."
+  if [ "$SSH_PORT" != "22" ]; then
+    ufw status 2>/dev/null | grep -Eq "^${SSH_PORT}/tcp[[:space:]]+ALLOW" \
+      || die "ufw is now active but ${SSH_PORT}/tcp does not show as ALLOW in 'ufw status' afterward. This means SSH on that port may be blocked. ufw is running — do not disconnect this session; investigate immediately (e.g. 'ufw allow ${SSH_PORT}/tcp') before assuming safety."
+  fi
+  log "ufw active; SSH port ${SSH_PORT}/tcp positively confirmed allowed before any further firewall changes."
 }
 
 install_packages() {

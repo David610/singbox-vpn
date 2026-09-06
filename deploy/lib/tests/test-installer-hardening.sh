@@ -194,19 +194,39 @@ else
 fi
 
 echo
-echo "--- static: firewalld is only ever activated via activate_firewalld_ssh_safe(), which allows the confirmed SSH port before/at the same activation as enabling it ---"
+echo "--- static: firewalld is only ever activated via activate_firewalld_ssh_safe(), which stages+verifies the confirmed SSH port BEFORE firewalld ever starts (offline, no fail-open) ---"
 if grep -qE 'systemctl enable --now firewalld' "$INSTALL_SH"; then
   fail "install.sh still contains a bare 'systemctl enable --now firewalld' — this is exactly the unsafe ordering (activates before SSH port is allowed)"
 else
   ok "install.sh no longer bare-activates firewalld outside the SSH-safe helper"
 fi
 activate_body="$(sed -n '/^activate_firewalld_ssh_safe() {/,/^}/p' "$INSTALL_SH")"
-start_line="$(echo "$activate_body" | grep -n '^\s*systemctl start firewalld\s*$' | head -n1 | cut -d: -f1)"
-ssh_rule_line="$(echo "$activate_body" | grep -n 'add-service=ssh\|add-port="\${SSH_PORT}' | head -n1 | cut -d: -f1)"
-if [ -n "$start_line" ] && [ -n "$ssh_rule_line" ] && [ "$start_line" -lt "$ssh_rule_line" ]; then
-  ok "activate_firewalld_ssh_safe() starts firewalld, then immediately adds the SSH-allow rule(s), before any other firewall change"
+# The REAL invariant: if firewalld is inactive, the SSH allow must be
+# staged (via firewall-offline-cmd, which needs no running daemon) and
+# positively verified BEFORE 'systemctl start firewalld' ever runs — not
+# added afterward, however "immediately". A test that blesses
+# start-then-add encodes the wrong invariant and would pass code with a
+# real (if brief) default-deny window on a custom SSH port.
+offline_add_line="$(echo "$activate_body" | grep -n 'firewall-offline-cmd.*add-service=ssh\|firewall-offline-cmd.*add-port="\${SSH_PORT}' | head -n1 | cut -d: -f1)"
+offline_query_line="$(echo "$activate_body" | grep -n 'firewall-offline-cmd.*query-service=ssh\|firewall-offline-cmd.*query-port="\${SSH_PORT}' | head -n1 | cut -d: -f1)"
+start_line="$(echo "$activate_body" | grep -n '^\s*systemctl start firewalld' | head -n1 | cut -d: -f1)"
+runtime_query_line="$(echo "$activate_body" | grep -n 'firewall-cmd.*query-service=ssh\|firewall-cmd.*query-port="\${SSH_PORT}' | head -n1 | cut -d: -f1)"
+if [ -n "$offline_add_line" ] && [ -n "$offline_query_line" ] && [ -n "$start_line" ] && [ -n "$runtime_query_line" ] \
+    && [ "$offline_add_line" -lt "$start_line" ] && [ "$offline_query_line" -lt "$start_line" ] \
+    && [ "$start_line" -lt "$runtime_query_line" ]; then
+  ok "activate_firewalld_ssh_safe() stages the SSH rule via firewall-offline-cmd and verifies it offline, THEN starts firewalld, THEN verifies the runtime rule — no unsafe activate-then-allow window"
 else
-  fail "activate_firewalld_ssh_safe() does not clearly order 'start firewalld' before 'allow SSH' (start=$start_line, ssh_rule=$ssh_rule_line)"
+  fail "activate_firewalld_ssh_safe() does not clearly order offline-stage(add=$offline_add_line,query=$offline_query_line) before start($start_line) before runtime-verify($runtime_query_line)"
+fi
+if echo "$activate_body" | grep -qE 'firewall-cmd --zone="\$zone" --add-(service=ssh|port="\$\{SSH_PORT\}/tcp") >/dev/null 2>&1 \|\| true'; then
+  fail "activate_firewalld_ssh_safe() still fail-opens an SSH-allow rule with '|| true' — a failed add would be silently treated as success"
+else
+  ok "activate_firewalld_ssh_safe() has no fail-open ('|| true') SSH-allow rule"
+fi
+if echo "$activate_body" | grep -q 'command -v firewall-offline-cmd'; then
+  ok "activate_firewalld_ssh_safe() fails closed if firewall-offline-cmd is unavailable, rather than falling back to the unsafe start-then-add ordering"
+else
+  fail "activate_firewalld_ssh_safe() does not guard against a missing firewall-offline-cmd"
 fi
 if echo "$activate_body" | grep -q 'is-active --quiet firewalld'; then
   ok "activate_firewalld_ssh_safe() checks whether firewalld was already active and preserves its existing config in that case"

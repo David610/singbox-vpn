@@ -52,8 +52,17 @@ on:
         description: "Optional second release tag to exercise update.sh + rollback against"
         required: false
         default: ""
+      domain:
+        description: "Hostname pointed at the disposable VPS, used for install/reinstall and certificate/lifecycle acceptance (e.g. vpn.example.com). Strongly preferred over relying on lifecycle-acceptance.sh's automatic sslip.io fallback for real RC acceptance. Validated the same way as the installer's own --domain before use."
+        required: false
+        default: ""
       skip_reboot:
         description: "Skip the reboot+health stage"
+        required: false
+        default: false
+        type: boolean
+      allow_destroy_existing:
+        description: "Target already has a singbox-vpn installation on it and you knowingly want to destroy it (separate from acknowledging the harness is destructive in general — see lifecycle-acceptance.sh --allow-destroy-existing-singbox-vpn-install)"
         required: false
         default: false
         type: boolean
@@ -119,7 +128,9 @@ jobs:
           SSH_PORT: ${{ inputs.ssh_port }}
           RELEASE_VERSION: ${{ inputs.version }}
           UPDATE_TO_VERSION: ${{ inputs.update_to_version }}
+          DOMAIN: ${{ inputs.domain }}
           SKIP_REBOOT: ${{ inputs.skip_reboot }}
+          ALLOW_DESTROY_EXISTING: ${{ inputs.allow_destroy_existing }}
         run: |
           set -euo pipefail
           args=(--host "$SSH_HOST" --i-understand-this-is-destructive --ssh-port "$SSH_PORT")
@@ -129,8 +140,14 @@ jobs:
           if [ -n "$UPDATE_TO_VERSION" ]; then
             args+=(--update-to-version "$UPDATE_TO_VERSION")
           fi
+          if [ -n "$DOMAIN" ]; then
+            args+=(--domain "$DOMAIN")
+          fi
           if [ "$SKIP_REBOOT" = "true" ]; then
             args+=(--skip-reboot)
+          fi
+          if [ "$ALLOW_DESTROY_EXISTING" = "true" ]; then
+            args+=(--allow-destroy-existing-singbox-vpn-install)
           fi
           echo "running: deploy/almalinux/lifecycle-acceptance.sh ${args[*]/--i-understand-this-is-destructive/[ack]}"
           bash deploy/almalinux/lifecycle-acceptance.sh "${args[@]}" 2>&1 | tee lifecycle-acceptance.log

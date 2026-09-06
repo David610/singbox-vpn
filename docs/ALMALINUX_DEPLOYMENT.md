@@ -21,7 +21,9 @@ stays on `deploy/local/` (see `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md`
 §14).
 
 **Most installs should use the one-command bootstrap** described in the
-top-level [`README.md`](../README.md#3-install):
+top-level [`README.md`](../README.md#requirements) (see its "Bootstrap
+prerequisites" note — `bash`, `curl`, `tar` must already be on the VPS
+before this command can run at all):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh \

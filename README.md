@@ -80,6 +80,20 @@ Tor-class anonymity guarantees.
 - A domain or subdomain pointing to the VPS.
 - [Hiddify](https://hiddify.com).
 
+**Bootstrap prerequisites** (must already be on the VPS *before* the
+one-command install below can run at all — the installer sets up
+everything else, but it cannot install its own means of being fetched
+and executed):
+- `bash`
+- `curl`
+- `tar`
+
+These ship by default on virtually every mainstream AlmaLinux/RHEL/Ubuntu/Debian
+cloud image, but a minimal/hardened or custom image can omit `curl` in
+particular. If the one-liner below fails with `curl: command not found`,
+install it first (e.g. `dnf install -y curl` / `apt-get install -y curl`)
+and re-run.
+
 ## Install
 
 ### Guided one-command install

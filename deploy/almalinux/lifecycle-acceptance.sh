@@ -35,6 +35,7 @@ set -Eeuo pipefail
 
 HOST=""
 ACK=0
+ALLOW_DESTROY_EXISTING=0
 UPDATE_TO_REF=""
 UPDATE_TO_VERSION=""
 VERSION=""
@@ -59,6 +60,17 @@ Required:
   --host USER@HOST                     disposable AlmaLinux 9 x86_64 target, reached via SSH.
   --i-understand-this-is-destructive   explicit acknowledgement; this WIPES singbox-vpn state.
 
+  --allow-destroy-existing-singbox-vpn-install
+                         SECOND, separate acknowledgement — required in addition to
+                         --i-understand-this-is-destructive whenever the target already has
+                         a singbox-vpn installation on it (detected via /etc/vpn/deployment.toml,
+                         /var/lib/singbox-vpn/install-state.json, /var/lib/singbox-vpn/ownership.env,
+                         or /opt/singbox-vpn). --i-understand-this-is-destructive only means "I know
+                         this harness is destructive"; this flag means "I knowingly authorize
+                         destroying an EXISTING singbox-vpn installation on this specific target."
+                         Without it, the harness refuses to touch a target that already looks
+                         provisioned, even if its hostname doesn't match any known production host.
+
 Options:
   --ssh-port PORT        SSH port for the controller and installer. Default: 22.
   --update-to-ref REF    exercise the development updater against REF.
@@ -81,6 +93,7 @@ while [ $# -gt 0 ]; do
     --host) HOST="$2"; shift 2 ;;
     --host=*) HOST="${1#*=}"; shift ;;
     --i-understand-this-is-destructive) ACK=1; shift ;;
+    --allow-destroy-existing-singbox-vpn-install) ALLOW_DESTROY_EXISTING=1; shift ;;
     --ssh-port) SSH_PORT="$2"; shift 2 ;;
     --ssh-port=*) SSH_PORT="${1#*=}"; shift ;;
     --update-to-ref) UPDATE_TO_REF="$2"; shift 2 ;;
@@ -98,6 +111,9 @@ while [ $# -gt 0 ]; do
 done
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/preflight.sh"
 
 [ -n "$HOST" ] || die "--host is required (no default target — see safety requirement #2)."
 [ "$ACK" -eq 1 ] || die "refusing to run: pass --i-understand-this-is-destructive to acknowledge this WIPES the target host."
@@ -110,8 +126,26 @@ fi
 if [ -n "$UPDATE_TO_VERSION" ] && [[ ! "$UPDATE_TO_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
   die "--update-to-version must be an immutable vX.Y.Z release tag, got '$UPDATE_TO_VERSION'."
 fi
-[ -z "$UPDATE_TO_REF" ] || [ -z "$UPDATE_TO_VERSION" ] \
-  || die "--update-to-ref and --update-to-version are mutually exclusive."
+# --update-to-ref crosses into a remote-executed URL/command string below
+# (section 16, codeload.github.com/.../refs/heads/$UPDATE_TO_REF) — validate
+# it as a real git ref/branch name before it ever reaches that string.
+# Reject anything containing shell metacharacters, path traversal, or a
+# leading '-' (which could be misread as a flag by a downstream command).
+if [ -n "$UPDATE_TO_REF" ]; then
+  case "$UPDATE_TO_REF" in
+    -*) die "--update-to-ref must not start with '-', got '$UPDATE_TO_REF'." ;;
+  esac
+  if [[ ! "$UPDATE_TO_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || [[ "$UPDATE_TO_REF" == *..* ]] || [[ "$UPDATE_TO_REF" == */ ]]; then
+    die "--update-to-ref '$UPDATE_TO_REF' is not a syntactically valid git ref/branch name — refusing to use it."
+  fi
+fi
+# --domain crosses into the same remote-executed command strings (the
+# installer's own --domain argument, quoted below) — reuse the installer's
+# own hostname grammar (preflight_validate_hostname) rather than a
+# second, subtly different one.
+if [ -n "$DOMAIN" ]; then
+  preflight_validate_hostname "$DOMAIN" "--domain" || die "refusing to use the --domain value above for a destructive remote run."
+fi
 
 host_part="${HOST#*@}"
 case "$host_part" in
@@ -129,7 +163,6 @@ if [ -n "${SINGBOX_VPN_PRODUCTION_HOST:-}" ] && [ "$host_part" = "$SINGBOX_VPN_P
   die "refusing to target '$HOST' — it matches SINGBOX_VPN_PRODUCTION_HOST. Use a disposable host."
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRANCH="$(cd "$REPO_ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 if [ -n "$VERSION" ]; then
   BOOTSTRAP_REF="main"
@@ -148,13 +181,31 @@ ssh_reconnect() {
     -o StrictHostKeyChecking=accept-new "$HOST" "$@"
 }
 
-INSTALL_ARGS="--non-interactive"
+# Built as an array, never as a raw interpolated string: every element
+# here crosses an SSH shell boundary (embedded into a single command
+# string executed by the remote shell in run_install() below). SSH_PORT
+# is already numeric-only (validated above) and DOMAIN is already
+# validated against the installer's own hostname grammar
+# (preflight_validate_hostname, above) — but quoting each element with
+# `printf '%q'` at the point of use (install_args_quoted(), below) is the
+# actual safety boundary, not the validation alone: it guarantees that
+# whatever ends up in these values can only ever be interpreted as a
+# single literal argument to install.sh on the remote end, never as
+# additional shell syntax (';', '$(...)', backticks, etc.).
+INSTALL_ARGS=(--non-interactive)
 if [ "$SSH_PORT" != "22" ]; then
-  INSTALL_ARGS="$INSTALL_ARGS --ssh-port $SSH_PORT"
+  INSTALL_ARGS+=(--ssh-port "$SSH_PORT")
 fi
 if [ -n "$DOMAIN" ]; then
-  INSTALL_ARGS="$INSTALL_ARGS --domain $DOMAIN"
+  INSTALL_ARGS+=(--domain "$DOMAIN")
 fi
+install_args_quoted() {
+  local out="" a
+  for a in "${INSTALL_ARGS[@]}"; do
+    out="$out $(printf '%q' "$a")"
+  done
+  printf '%s' "$out"
+}
 # The lifecycle controller itself fetches the bootstrap over the target VPS's
 # network before install.sh's own retry policy can take effect. A transient
 # ECONNREFUSED here was observed in a real gate run, so make this outermost
@@ -228,11 +279,11 @@ cleanup_cert_snapshot() {
 }
 
 run_install() {
-  ssh_run "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"
+  ssh_run "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
 }
 
 run_install_abort_after_singbox() {
-  ssh_run "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $INSTALL_ARGS"
+  ssh_run "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
 }
 
 echo "singbox-vpn destructive lifecycle acceptance gate"
@@ -252,6 +303,58 @@ if ssh_run '[ "$(uname -m)" = x86_64 ]' 2>/dev/null; then
   pass "x86_64 arch confirmed"
 else
   fail_required "x86_64 arch confirmed" "(not x86_64 — off the supported arch matrix)"
+fi
+
+section "0a. existing singbox-vpn installation guard"
+# Hostname-only production protection (above) is not enough: the SAME
+# production machine can also be reached via a different hostname/alias
+# or its bare IP, none of which would ever match /etc/vpn/deployment.toml
+# on THIS controller or SINGBOX_VPN_PRODUCTION_HOST. Positively inspect
+# the TARGET itself for signs of an existing singbox-vpn installation
+# before any destructive stage runs. These four paths are fixed literals
+# (never remotely-sourced values), so there is no injection surface here
+# — this is a plain existence check, not a place where malformed remote
+# data could ever influence what gets destroyed.
+existing_install_markers=""
+for marker in /etc/vpn/deployment.toml /var/lib/singbox-vpn/install-state.json /var/lib/singbox-vpn/ownership.env /opt/singbox-vpn; do
+  if ssh_run "[ -e '$marker' ]" 2>/dev/null; then
+    existing_install_markers="$existing_install_markers $marker"
+  fi
+done
+if [ -n "$existing_install_markers" ]; then
+  if [ "$ALLOW_DESTROY_EXISTING" -eq 1 ]; then
+    pass "existing singbox-vpn installation detected on target ($existing_install_markers) — destruction explicitly authorized via --allow-destroy-existing-singbox-vpn-install"
+  else
+    fail_required "existing singbox-vpn installation guard" "target already has singbox-vpn state:$existing_install_markers — refusing to destroy it. If this is genuinely disposable test state, re-run with --allow-destroy-existing-singbox-vpn-install ALSO given (in addition to --i-understand-this-is-destructive)."
+    die "refusing to proceed against '$HOST': it already has an existing singbox-vpn installation and --allow-destroy-existing-singbox-vpn-install was not given. Nothing on this host has been touched."
+  fi
+else
+  pass "no existing singbox-vpn installation detected on target — safe to provision fresh"
+fi
+
+section "0b. bootstrap prerequisites (bash, curl, tar)"
+# The controller's own bootstrap fetch (run_install(), below) is a
+# `curl ... | bash` pipeline against the TARGET host, not this
+# controller. If the target is missing curl (observed on a real host
+# once: "bash: line 1: curl: command not found"), that pipeline fails —
+# `set -o pipefail` (above) already turns that into a real non-zero exit
+# rather than a false PASS, but the resulting error is just a generic
+# pipeline failure buried in remote stderr. Check explicitly here instead,
+# so a missing prerequisite is reported as exactly that in one line, the
+# clean-install stage is never attempted against a host that cannot
+# possibly run it, and everything depending on a working install reports
+# BLOCKED (via INITIAL_BASELINE_READY staying 0) rather than a pile of
+# unrelated-looking failures.
+BOOTSTRAP_READY=0
+missing_tools=""
+for tool in bash curl tar; do
+  ssh_run "command -v $tool" >/dev/null 2>&1 || missing_tools="$missing_tools $tool"
+done
+if [ -z "$missing_tools" ]; then
+  pass "bootstrap prerequisites present (bash, curl, tar)"
+  BOOTSTRAP_READY=1
+else
+  fail_required "bootstrap prerequisites" "missing:$missing_tools"
 fi
 
 section "1. SSH baseline (before any install)"
@@ -275,7 +378,9 @@ BASELINE="$(ssh_run '
 if [ -n "$BASELINE" ]; then pass "host baseline captured"; else fail "host baseline captured"; fi
 
 section "2. clean install"
-if run_install; then
+if [ "$BOOTSTRAP_READY" -ne 1 ]; then
+  block "install.sh (clean)" "(bootstrap prerequisites missing on target — see stage 0b; the curl|bash pipeline cannot possibly run)"
+elif run_install; then
   pass "install.sh (clean)"
   INITIAL_BASELINE_READY=1
 else
@@ -326,7 +431,9 @@ else
 fi
 
 section "6. repair / idempotent re-run"
-if run_install && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
+if [ "$BOOTSTRAP_READY" -ne 1 ]; then
+  block "install.sh (idempotent re-run) + SSH reconnect" "(bootstrap prerequisites missing on target — see stage 0b)"
+elif run_install && ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then
   pass "install.sh (idempotent re-run) + SSH reconnect"
   INITIAL_BASELINE_READY=1
 else
@@ -374,6 +481,8 @@ if [ "$STAGE7_CLEANED" -eq 1 ]; then
   else
     fail_required "install.sh (clean, post-cleanup) + SSH reconnect"
   fi
+elif [ "$BOOTSTRAP_READY" -ne 1 ]; then
+  block "install.sh (baseline repair/retry) + SSH reconnect" "(bootstrap prerequisites missing on target — see stage 0b)"
 else
   # No destructive cleanup happened. A normal re-run is still useful: it can
   # recover from an earlier transient install failure and establish a valid
@@ -551,7 +660,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   if [ -n "$UPDATE_TO_VERSION" ]; then
     section "16. checksum-verified production update -> $UPDATE_TO_VERSION"
     version_before="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
-    if ssh_run "sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version $UPDATE_TO_VERSION" && ssh_reconnect 'true' 2>/dev/null; then
+    if ssh_run "sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version $(printf '%q' "$UPDATE_TO_VERSION")" && ssh_reconnect 'true' 2>/dev/null; then
       version_after="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
       if [ -n "$version_after" ] && [ "$version_before" != "$version_after" ]; then pass "production update -> $UPDATE_TO_VERSION (install state changed)"; else fail_required "production update -> $UPDATE_TO_VERSION" "(command succeeded but install state did not change)"; fi
     else
@@ -570,7 +679,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   elif [ -n "$UPDATE_TO_REF" ]; then
     section "16. safe update path -> $UPDATE_TO_REF (--dev-rebuild; transactional updater machinery only)"
     version_before="$(ssh_run 'sudo /opt/singbox-vpn/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
-    if ssh_run "curl -fsSL --connect-timeout 10 --max-time 120 --retry 5 --retry-delay 2 --retry-connrefused -o /tmp/singbox-vpn-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$UPDATE_TO_REF \
+    if ssh_run "curl -fsSL --connect-timeout 10 --max-time 120 --retry 5 --retry-delay 2 --retry-connrefused -o /tmp/singbox-vpn-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$(printf '%q' "$UPDATE_TO_REF") \
         && rm -rf /tmp/singbox-vpn-update-ref && mkdir -p /tmp/singbox-vpn-update-ref \
         && tar -xzf /tmp/singbox-vpn-update-ref.tar.gz -C /tmp/singbox-vpn-update-ref --strip-components=1 \
         && sudo rsync -a --delete --exclude target --exclude .git /tmp/singbox-vpn-update-ref/ /opt/singbox-vpn/ \
