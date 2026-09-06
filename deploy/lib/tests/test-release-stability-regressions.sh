@@ -27,6 +27,15 @@ if grep -q 'CURL_NET_FLAGS+=(--retry-connrefused)' "$PREFLIGHT" \
 else
   fail "shared preflight does not add --retry-connrefused to installer downloads"
 fi
+# The lifecycle controller has one network hop before the fetched bootstrap can
+# apply its own retry policy. That outer curl must retry too, and its pipeline
+# must use pipefail so a failed curl cannot be hidden by an empty `bash` exit 0.
+if grep -q 'REMOTE_BOOTSTRAP_CURL_FLAGS=.*--retry-connrefused' "$LIFECYCLE" \
+    && grep -q 'ssh_run "set -o pipefail; curl -fsSL \$REMOTE_BOOTSTRAP_CURL_FLAGS' "$LIFECYCLE"; then
+  ok "lifecycle bootstrap fetch retries ECONNREFUSED and fails the pipeline closed"
+else
+  fail "lifecycle outer curl can still flake or false-PASS when bootstrap download fails"
+fi
 
 # A freshly rendered config must be current to the same binary that created it.
 rust_schema="$(sed -nE 's/^pub const DEPLOYMENT_SCHEMA_VERSION: u32 = ([0-9]+);/\1/p' "$DEPLOYMENT_RS" | head -1)"
@@ -62,12 +71,16 @@ else
   fail "certbot dry-run can still false-PASS without testing a lineage"
 fi
 
-# The watchdog timer itself must not race the deliberate FAILED-state test.
+# The watchdog timer itself must not race the deliberate FAILED-state test,
+# and a failure to create FAILED must block its dependent assertions instead of
+# multiplying one prerequisite failure into several fake product failures.
 if grep -q 'systemctl stop vpn-service-watchdog.timer' "$LIFECYCLE" \
-    && grep -q 'systemctl start vpn-service-watchdog.timer' "$LIFECYCLE"; then
-  ok "crash-loop test suspends and re-arms the watchdog timer"
+    && grep -q 'systemctl start vpn-service-watchdog.timer' "$LIFECYCLE" \
+    && grep -q 'failed_state_ready=0' "$LIFECYCLE" \
+    && grep -q 'FAILED-state doctor/status/watchdog recovery assertions' "$LIFECYCLE"; then
+  ok "crash-loop test is timer-isolated and dependency-aware"
 else
-  fail "watchdog timer can still race the crash-loop FAILED-state assertion"
+  fail "watchdog crash-loop assertions can still race or cascade"
 fi
 
 if [ "$failures" -eq 0 ]; then
