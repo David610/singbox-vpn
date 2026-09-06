@@ -427,10 +427,23 @@ section "13b. exhaust the restart budget (StartLimitBurst) and prove vpn-service
 # timer's cadence itself is already proven separately by the reboot
 # stage confirming it comes up armed) and confirm sing-box comes back.
 if ssh_run '
-  for _ in $(seq 1 12); do
+  # Poll for MainPID actually changing rather than assuming a fixed
+  # sleep lines up with RestartSec=2 — on a slow/loaded host sing-box
+  # can take longer than a short fixed gap to rebind and register a new
+  # PID, so a kill landing during that dead window is a no-op and
+  # silently burns one of the 8 restart attempts we need to exhaust.
+  # Poll fast and kill every genuinely new PID for a bounded 40s wall
+  # clock instead, which comfortably clears 8 real restarts regardless
+  # of how long each individual respawn takes.
+  last_killed=""
+  end=$(( $(date +%s) + 40 ))
+  while [ "$(date +%s)" -lt "$end" ]; do
     pid="$(systemctl show -p MainPID --value sing-box)"
-    [ -n "$pid" ] && [ "$pid" != "0" ] && sudo kill -9 "$pid" 2>/dev/null
-    sleep 2.5
+    if [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "$last_killed" ]; then
+      sudo kill -9 "$pid" 2>/dev/null
+      last_killed="$pid"
+    fi
+    sleep 0.2
   done
   sleep 5
   systemctl is-failed --quiet sing-box
