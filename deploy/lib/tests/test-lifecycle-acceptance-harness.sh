@@ -427,11 +427,12 @@ MOCKSSH_NOOP
 chmod +x "$MOCKBIN/ssh"
 set +e
 noop_out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --skip-reboot --update-to-ref main 2>&1)"
+noop_rc=$?
 set -e
-if echo "$noop_out" | grep -qi 'must not be reported as an update'; then
+if [ "$noop_rc" -ne 0 ] && echo "$noop_out" | grep -qi 'command succeeded but version-state did not change'; then
   ok "harness detects a no-op update (identical before/after version-state) and fails it"
 else
-  fail "harness did not detect a no-op update as a failure"
+  fail "harness did not detect a no-op update as a failure (rc=$noop_rc)"
 fi
 
 echo
