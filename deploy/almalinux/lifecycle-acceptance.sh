@@ -64,6 +64,7 @@ UPDATE_TO_VERSION=""
 VERSION=""
 SKIP_REBOOT=0
 SSH_PORT=22
+DOMAIN=""
 
 usage() {
   cat <<'USAGE'
@@ -91,6 +92,17 @@ Options:
                          production-acceptance result.
   --skip-reboot          skip the reboot+health stage (e.g. host cannot be rebooted by this
                          SSH session's caller). Every other stage still runs.
+  --domain HOST          use this hostname for every install.sh/reinstall this run performs
+                         instead of letting install.sh auto-detect a *.sslip.io hostname from
+                         the target's public IP. Each fresh install in a single run requests a
+                         fresh Let's Encrypt certificate (stages 2, 8, and 21 can each do so);
+                         Let's Encrypt's real-world rate limit is 5 certificates per exact
+                         hostname per 168h, so repeated full runs against the same auto-detected
+                         sslip.io hostname (tied to the target's IP, so it never changes) can
+                         exhaust that limit and fail every subsequent fresh install with
+                         "too many certificates already issued" until it resets. Point this at a
+                         domain you control instead to avoid sharing a rate-limit budget with
+                         every other sslip.io run against this same IP.
   -h, --help             this help.
 USAGE
 }
@@ -109,6 +121,8 @@ while [ $# -gt 0 ]; do
     --version) VERSION="$2"; shift 2 ;;
     --version=*) VERSION="${1#*=}"; shift ;;
     --skip-reboot) SKIP_REBOOT=1; shift ;;
+    --domain) DOMAIN="$2"; shift 2 ;;
+    --domain=*) DOMAIN="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -176,6 +190,9 @@ INSTALL_ARGS="--non-interactive"
 if [ "$SSH_PORT" != "22" ]; then
   INSTALL_ARGS="$INSTALL_ARGS --ssh-port $SSH_PORT"
 fi
+if [ -n "$DOMAIN" ]; then
+  INSTALL_ARGS="$INSTALL_ARGS --domain $DOMAIN"
+fi
 
 failures=0
 required_fail=0
@@ -221,8 +238,10 @@ BASELINE="$(ssh_run '
   echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
   echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
-  echo "nginx_conf=$([ -e /etc/nginx/conf.d/singbox-vpn.conf ] && echo 1 || echo 0)"
+  echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn-subscription.conf ] && echo 1 || echo 0)"
   echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh ] && echo 1 || echo 0)"
+  echo "listeners=$(ss -ltnp 2>/dev/null | grep -Ec "sing-box|vpn-subscription")"
+  echo "locks=$(ls /run/lock/singbox-vpn* 2>/dev/null | wc -l)"
 ' 2>/dev/null || true)"
 if [ -n "$BASELINE" ]; then pass "host baseline captured"; else fail "host baseline captured"; fi
 
@@ -408,10 +427,23 @@ section "13b. exhaust the restart budget (StartLimitBurst) and prove vpn-service
 # timer's cadence itself is already proven separately by the reboot
 # stage confirming it comes up armed) and confirm sing-box comes back.
 if ssh_run '
-  for _ in $(seq 1 12); do
+  # Poll for MainPID actually changing rather than assuming a fixed
+  # sleep lines up with RestartSec=2 — on a slow/loaded host sing-box
+  # can take longer than a short fixed gap to rebind and register a new
+  # PID, so a kill landing during that dead window is a no-op and
+  # silently burns one of the 8 restart attempts we need to exhaust.
+  # Poll fast and kill every genuinely new PID for a bounded 40s wall
+  # clock instead, which comfortably clears 8 real restarts regardless
+  # of how long each individual respawn takes.
+  last_killed=""
+  end=$(( $(date +%s) + 40 ))
+  while [ "$(date +%s)" -lt "$end" ]; do
     pid="$(systemctl show -p MainPID --value sing-box)"
-    [ -n "$pid" ] && [ "$pid" != "0" ] && sudo kill -9 "$pid" 2>/dev/null
-    sleep 2.5
+    if [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "$last_killed" ]; then
+      sudo kill -9 "$pid" 2>/dev/null
+      last_killed="$pid"
+    fi
+    sleep 0.2
   done
   sleep 5
   systemctl is-failed --quiet sing-box
@@ -710,7 +742,7 @@ RESIDUE="$(ssh_run '
   echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
   echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
-  echo "nginx_conf=$([ -e /etc/nginx/conf.d/singbox-vpn.conf ] && echo 1 || echo 0)"
+  echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn-subscription.conf ] && echo 1 || echo 0)"
   echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh ] && echo 1 || echo 0)"
   echo "listeners=$(ss -ltnp 2>/dev/null | grep -Ec "sing-box|vpn-subscription")"
   echo "locks=$(ls /run/lock/singbox-vpn* 2>/dev/null | wc -l)"

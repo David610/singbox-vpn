@@ -48,8 +48,13 @@ case "$cmd" in
   # command — matched here, BEFORE the generic MainPID/is-failed
   # patterns below, specifically so this one opaque invocation can flip
   # the shared state file to "failed" and report success (real
-  # is-failed's contract: exit 0 means "yes, it is failed").
-  *"seq 1 12"*)
+  # is-failed's contract: exit 0 means "yes, it is failed"). Matched on
+  # "last_killed" — the loop variable that tracks the most recently
+  # killed PID so it polls for MainPID actually changing instead of
+  # assuming a fixed sleep — rather than an iteration-count/timing
+  # literal, so this hook doesn't silently stop firing the next time the
+  # real script's crash-loop timing is retuned.
+  *"last_killed"*)
     echo failed > "$STATE_FILE"
     exit 0 ;;
   *"systemctl start vpn-service-watchdog.service"*)
