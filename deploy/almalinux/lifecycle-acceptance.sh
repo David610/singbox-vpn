@@ -408,7 +408,7 @@ section "13b. exhaust the restart budget (StartLimitBurst) and prove vpn-service
 # timer's cadence itself is already proven separately by the reboot
 # stage confirming it comes up armed) and confirm sing-box comes back.
 if ssh_run '
-  for _ in $(seq 1 10); do
+  for _ in $(seq 1 12); do
     pid="$(systemctl show -p MainPID --value sing-box)"
     [ -n "$pid" ] && [ "$pid" != "0" ] && sudo kill -9 "$pid" 2>/dev/null
     sleep 2.5
