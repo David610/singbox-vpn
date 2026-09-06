@@ -6,7 +6,9 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 ROOT_INSTALL="$REPO_ROOT/install.sh"
+ROOT_UNINSTALL="$REPO_ROOT/uninstall.sh"
 PREFLIGHT="$REPO_ROOT/deploy/lib/preflight.sh"
+UPDATE="$REPO_ROOT/deploy/almalinux/update.sh"
 TEMPLATE="$REPO_ROOT/deploy/almalinux/templates/deployment.toml.template"
 DEPLOYMENT_RS="$REPO_ROOT/crates/compat-config/src/deployment.rs"
 LIFECYCLE="$REPO_ROOT/deploy/almalinux/lifecycle-acceptance.sh"
@@ -26,6 +28,16 @@ if grep -q 'CURL_NET_FLAGS+=(--retry-connrefused)' "$PREFLIGHT" \
   ok "AlmaLinux installer curl flags are augmented with connection-refused retry"
 else
   fail "shared preflight does not add --retry-connrefused to installer downloads"
+fi
+if grep -q 'CURL_NET_FLAGS=.*--retry-connrefused' "$UPDATE"; then
+  ok "production updater retries transient connection-refused downloads"
+else
+  fail "production updater lacks --retry-connrefused"
+fi
+if grep -q 'CURL_NET_FLAGS=.*--retry-connrefused' "$ROOT_UNINSTALL"; then
+  ok "network uninstall fallback retries transient connection-refused downloads"
+else
+  fail "network uninstall fallback lacks --retry-connrefused"
 fi
 # The lifecycle controller has one network hop before the fetched bootstrap can
 # apply its own retry policy. That outer curl must retry too, and its pipeline
