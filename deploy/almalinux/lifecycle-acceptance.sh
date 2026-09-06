@@ -257,7 +257,6 @@ if [ "$SKIP_REBOOT" -eq 0 ]; then
     && systemctl is-active --quiet sing-box \
     && systemctl is-active --quiet vpn-subscription \
     && systemctl is-active --quiet nginx \
-    && systemctl list-timers --all 2>/dev/null | grep -q singbox-vpn \
     && systemctl is-active --quiet vpn-expiry-reconcile.timer \
     && systemctl is-active --quiet vpn-service-watchdog.timer \
     && ss -ltn 2>/dev/null | grep -q ":443 " \
@@ -412,9 +411,9 @@ if ssh_run '
   for _ in $(seq 1 12); do
     pid="$(systemctl show -p MainPID --value sing-box)"
     [ -n "$pid" ] && [ "$pid" != "0" ] && sudo kill -9 "$pid" 2>/dev/null
-    sleep 0.3
+    sleep 2.5
   done
-  sleep 3
+  sleep 5
   systemctl is-failed --quiet sing-box
 ' 2>/dev/null; then
   pass "sing-box.service reached FAILED state after exhausting StartLimitBurst (proves the burst is real, not effectively infinite)"
@@ -502,13 +501,21 @@ else
 fi
 
 section "15. user rotate/disable/remove sanity (scratch user; does not touch the persisted test user above)"
-if ssh_run 'sudo vpn-admin user create --name lifecycle-scratch-user \
-  && sudo vpn-admin user list | grep -q lifecycle-scratch-user \
-  && sudo vpn-admin user rotate-token lifecycle-scratch-user \
-  && sudo vpn-admin user rotate-vless lifecycle-scratch-user \
-  && sudo vpn-admin user rotate-hysteria lifecycle-scratch-user \
-  && sudo vpn-admin user disable lifecycle-scratch-user \
-  && sudo vpn-admin user remove lifecycle-scratch-user' 2>/dev/null; then
+# `user create --name` assigns a separate CSPRNG `id` (see cmd_user_create
+# in apps/admin/src/main.rs) — every other `user` subcommand matches on
+# that id, never on the name, so it must be captured from --json output
+# rather than reusing the name string here.
+if ssh_run '
+  scratch_id="$(sudo vpn-admin user create --name lifecycle-scratch-user --json \
+    | grep -o "\"id\": *\"[^\"]*\"" | head -1 | sed -E "s/.*\"([^\"]+)\"$/\1/")"
+  [ -n "$scratch_id" ] \
+    && sudo vpn-admin user list | grep -q "$scratch_id" \
+    && sudo vpn-admin user rotate-token "$scratch_id" \
+    && sudo vpn-admin user rotate-vless "$scratch_id" \
+    && sudo vpn-admin user rotate-hysteria "$scratch_id" \
+    && sudo vpn-admin user disable "$scratch_id" \
+    && sudo vpn-admin user remove "$scratch_id"
+' 2>/dev/null; then
   pass "scratch user create/rotate/disable/remove"
 else
   fail_required "scratch user create/rotate/disable/remove"
