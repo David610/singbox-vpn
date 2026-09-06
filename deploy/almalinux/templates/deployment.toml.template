@@ -2,6 +2,11 @@
 # template. Safe to hand-edit afterwards; install.sh never overwrites an
 # existing file. See docs/ALMALINUX_DEPLOYMENT.md.
 
+# Current on-disk deployment schema. Fresh installs must start current;
+# schema_version = 0 is reserved for legacy pre-versioning deployments and
+# is handled only by `vpn-admin config migrate` on repair/update.
+schema_version = 1
+
 public_host = "{{PUBLIC_HOST}}"
 subscription_host = "{{SUBSCRIPTION_HOST}}"
 
