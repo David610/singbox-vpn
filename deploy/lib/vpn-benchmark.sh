@@ -457,9 +457,16 @@ tunnel_benchmark() {
     return
   fi
   created=1
-  bench_user_id="$(echo "$create_json" | jq -r .id)"
+  # `user create --json` may print an informational sing-box reload line
+  # to stdout before the JSON block (see apps/admin/tests/cli.rs's
+  # user_create_json_output_has_no_server_secrets, which documents and
+  # works around the same thing) — extract from the first `{` rather than
+  # assuming stdout is pure JSON.
+  create_json="${create_json#*"{"}"
+  create_json="{${create_json}"
+  bench_user_id="$(printf '%s' "$create_json" | jq -r .id)"
   local sub_url token subscription_backend_port
-  sub_url="$(echo "$create_json" | jq -r .subscription_url)"
+  sub_url="$(printf '%s' "$create_json" | jq -r .subscription_url)"
   # See vpn-benchmark-lib.sh's vpn_benchmark_extract_token doc comment:
   # the subscription URL always carries a "?format=..." query string, so
   # a bare "${sub_url##*/}" left it attached to the token, which broke
