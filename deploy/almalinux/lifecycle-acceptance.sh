@@ -238,8 +238,10 @@ BASELINE="$(ssh_run '
   echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
   echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
-  echo "nginx_conf=$([ -e /etc/nginx/conf.d/singbox-vpn.conf ] && echo 1 || echo 0)"
+  echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn-subscription.conf ] && echo 1 || echo 0)"
   echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh ] && echo 1 || echo 0)"
+  echo "listeners=$(ss -ltnp 2>/dev/null | grep -Ec "sing-box|vpn-subscription")"
+  echo "locks=$(ls /run/lock/singbox-vpn* 2>/dev/null | wc -l)"
 ' 2>/dev/null || true)"
 if [ -n "$BASELINE" ]; then pass "host baseline captured"; else fail "host baseline captured"; fi
 
@@ -727,7 +729,7 @@ RESIDUE="$(ssh_run '
   echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
   echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
   echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
-  echo "nginx_conf=$([ -e /etc/nginx/conf.d/singbox-vpn.conf ] && echo 1 || echo 0)"
+  echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn-subscription.conf ] && echo 1 || echo 0)"
   echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh ] && echo 1 || echo 0)"
   echo "listeners=$(ss -ltnp 2>/dev/null | grep -Ec "sing-box|vpn-subscription")"
   echo "locks=$(ls /run/lock/singbox-vpn* 2>/dev/null | wc -l)"
