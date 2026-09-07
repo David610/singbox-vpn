@@ -419,20 +419,44 @@ if [ "$INITIAL_BASELINE_READY" -eq 1 ]; then
       if ssh_reconnect 'true' 2>/dev/null; then reboot_ok=1; break; fi
       sleep 10
     done
-    if [ "$reboot_ok" -eq 1 ] && ssh_run '
-         sudo /opt/singbox-vpn/deploy/almalinux/health-check.sh \
-      && systemctl is-active --quiet sing-box \
-      && systemctl is-active --quiet vpn-subscription \
-      && systemctl is-active --quiet nginx \
-      && systemctl is-active --quiet vpn-expiry-reconcile.timer \
-      && systemctl is-active --quiet vpn-service-watchdog.timer \
-      && ss -ltn 2>/dev/null | grep -q ":443 " \
-      && sudo test -s /var/lib/singbox-vpn/install-state.json \
-      && sudo vpn-admin doctor --protocol
-       ' 2>/dev/null; then
+    # Run every check (not a short-circuiting `&&` chain) and report which
+    # ones actually failed. The previous all-or-nothing `&&` chain with a
+    # blanket `2>/dev/null` gave zero diagnostic value on failure — a real
+    # run reported [FAIL][required] here with nothing to indicate whether
+    # sing-box, vpn-subscription, nginx, either timer, the :443 listener,
+    # install-state.json, or the protocol self-test was the actual cause.
+    POST_REBOOT_OUT=""
+    if [ "$reboot_ok" -eq 1 ]; then
+      # `|| true`: this is a plain assignment under `set -e` — without it,
+      # a real (expected, reportable) remote failure here would make
+      # ssh_run itself exit non-zero and kill this ENTIRE script right at
+      # this line, silently, before ever reaching the fail_required below
+      # that's supposed to report it. Reproduced directly: a simulated
+      # nginx-down-after-reboot case with this guard missing vanished the
+      # whole run instead of producing the intended [FAIL][required] line.
+      POST_REBOOT_OUT="$(ssh_run '
+        fails=""
+        sudo /opt/singbox-vpn/deploy/almalinux/health-check.sh || fails="$fails health-check.sh"
+        systemctl is-active --quiet sing-box || fails="$fails sing-box"
+        systemctl is-active --quiet vpn-subscription || fails="$fails vpn-subscription"
+        systemctl is-active --quiet nginx || fails="$fails nginx"
+        systemctl is-active --quiet vpn-expiry-reconcile.timer || fails="$fails vpn-expiry-reconcile.timer"
+        systemctl is-active --quiet vpn-service-watchdog.timer || fails="$fails vpn-service-watchdog.timer"
+        ss -ltn 2>/dev/null | grep -q ":443 " || fails="$fails :443-listener"
+        sudo test -s /var/lib/singbox-vpn/install-state.json || fails="$fails install-state.json"
+        sudo vpn-admin doctor --protocol || fails="$fails doctor--protocol"
+        if [ -n "$fails" ]; then echo "POST_REBOOT_FAILED_CHECKS:$fails"; exit 1; fi
+        echo "POST_REBOOT_ALL_OK"
+      ' 2>&1)" || true
+    fi
+    if [ "$reboot_ok" -eq 1 ] && grep -q 'POST_REBOOT_ALL_OK' <<< "$POST_REBOOT_OUT"; then
       pass "reboot + independent post-reboot verification (sshd/sing-box/subscription/nginx/timers incl. watchdog/listener/install-state/protocol)"
+    elif [ "$reboot_ok" -ne 1 ]; then
+      fail_required "reboot + independent post-reboot verification" "(host never reconnected within the post-reboot polling budget)"
     else
-      fail_required "reboot + independent post-reboot verification"
+      failed_checks="$(grep -o 'POST_REBOOT_FAILED_CHECKS:.*' <<< "$POST_REBOOT_OUT")"
+      fail_required "reboot + independent post-reboot verification" "(${failed_checks:-no POST_REBOOT_ALL_OK/POST_REBOOT_FAILED_CHECKS marker in output — see remote output above})"
+      [ -n "$POST_REBOOT_OUT" ] && printf '%s\n' "$POST_REBOOT_OUT"
     fi
   else
     section "5. reboot + health (SKIPPED --skip-reboot)"
