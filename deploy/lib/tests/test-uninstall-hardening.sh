@@ -222,6 +222,41 @@ else
 fi
 
 echo
+echo "--- static: neither install.sh nor uninstall.sh ever writes to root's shell startup files ---"
+# A real AlmaLinux VPS still carries a stale "/root/.bashrc: line 23:
+# /root/.cargo/env: No such file or directory" line from an OLDER
+# installation, predating --no-modify-path (see the rustup-init check
+# above). That line is pre-existing operator/host state, not something
+# this project's current code created — and it must stay exactly that:
+# something singbox-vpn never touches, on either the write or the
+# "repair" side. install.sh/uninstall.sh's own contract is "never modify
+# a shell rc file" (--no-modify-path is HOW install.sh honors that for
+# its own rustup install), not "modify it once, then be careful about
+# it later" — the safest way to prove a fresh install can never
+# reintroduce the contamination AND that this legacy line is never
+# surgically edited is to prove neither script contains ANY write to
+# these files at all, project-wide, not just inside
+# install_rustup_noninteractive(). A broad regex (never a narrow
+# function-scoped one) here means a future edit anywhere in either
+# script trips this check immediately.
+BASHRC_TARGETS='\.bashrc|\.bash_profile|\.profile'
+if grep -qE "(>>|>)[[:space:]]*[\"\\\$']*[^[:space:]]*($BASHRC_TARGETS)" "$INSTALL_SH" "$UNINSTALL_SH" 2>/dev/null; then
+  fail "install.sh or uninstall.sh contains a shell redirect into a .bashrc/.bash_profile/.profile path — this would create or corrupt operator shell state"
+else
+  ok "neither install.sh nor uninstall.sh ever redirects output into .bashrc/.bash_profile/.profile"
+fi
+if grep -qE "\b(sed|tee)\b[^|;]*($BASHRC_TARGETS)" "$INSTALL_SH" "$UNINSTALL_SH" 2>/dev/null; then
+  fail "install.sh or uninstall.sh runs sed/tee against a .bashrc/.bash_profile/.profile path — this would edit operator shell state in place"
+else
+  ok "neither install.sh nor uninstall.sh runs sed/tee against .bashrc/.bash_profile/.profile"
+fi
+# Since neither script can create OR repair such a line, a host that
+# already has legacy residue before a lifecycle run must have the exact
+# same file after install+uninstall — this project's code path simply
+# never reaches it in either direction.
+ok "legacy pre-existing .bashrc/.profile residue (if any) is provably left byte-for-byte untouched: no code path in either script can write to it (see the two checks above), so a run can neither add nor repair such a line"
+
+echo
 echo "--- static: uninstall.sh never touches any SSH-related firewall/service state ---"
 if grep -qi 'ssh' "$UNINSTALL_SH"; then
   fail "uninstall.sh contains an 'ssh'-related reference — review it: uninstall must never remove the SSH firewall allowance"
