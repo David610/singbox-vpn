@@ -147,6 +147,71 @@ case "$cmd" in
     [ "$(singbox_state)" = "active" ] && exit 0 || exit 1 ;;
   *"is-failed --quiet sing-box"*)
     [ "$(singbox_state)" = "failed" ] && exit 0 || exit 1 ;;
+  # Stage 18's actual remote certbot invocation (ssh_run_certbot, section
+  # 18 of lifecycle-acceptance.sh) — matched on the inner-timeout-wrapped
+  # command text, which is unique to this one call. Scenario-controllable
+  # via flag files so dedicated fixtures below can exercise every
+  # classification branch without waiting out any real timeout. Placed
+  # here, BEFORE the generic "systemctl is-active"/etc. patterns further
+  # down: this and the two arms after it embed real remote shell script
+  # bodies (see lifecycle-acceptance.sh's stage 18) whose own text
+  # happens to CONTAIN those generic substrings (e.g. the post-check
+  # script below starts with "systemctl is-active --quiet nginx") — a
+  # broad pattern positioned earlier would silently intercept the whole
+  # call and return empty output instead of this scenario's real
+  # response. Reproduced directly: with these arms placed after the
+  # generic "systemctl is-active" pattern, the post-check call always
+  # returned empty, which fed an unmatched `grep -o` into a plain
+  # assignment and (correctly, per lifecycle-acceptance.sh's own
+  # defensive `|| true` there) never crashed the target script — but it
+  # also meant every "clean renewal" scenario here silently lost its
+  # post-renewal PASS line and this whole test suite's assertions about
+  # it stopped meaning anything.
+  *"timeout -k 10s 300s sudo certbot renew --dry-run"*)
+    if [ -f "$TMPDIR_TEST/mock_certbot_zero_renewals" ]; then
+      echo "Processing /etc/letsencrypt/renewal/example.test.conf"
+      echo "No simulated renewals were attempted."
+      certbot_mock_rc=0
+    elif [ -f "$TMPDIR_TEST/mock_certbot_nonzero" ]; then
+      echo "Processing /etc/letsencrypt/renewal/example.test.conf"
+      echo "Simulating renewal of an existing certificate for example.test"
+      echo "All simulated renewals failed. The following certs could not be renewed:"
+      certbot_mock_rc=1
+    else
+      echo "Processing /etc/letsencrypt/renewal/example.test.conf"
+      echo "Simulating renewal of an existing certificate for example.test"
+      echo "Congratulations, all simulated renewals succeeded:"
+      certbot_mock_rc=0
+    fi
+    if [ -f "$TMPDIR_TEST/mock_certbot_no_sentinel" ]; then
+      # Simulates the SSH session ending WITHOUT the remote script ever
+      # reaching its own sentinel print (e.g. dropped mid-run) — the
+      # controller must never treat this as proof of anything.
+      exit "$certbot_mock_rc"
+    fi
+    printf '\n__SINGBOX_VPN_CERTBOT_DONE__ rc=%d\n' "$certbot_mock_rc"
+    exit "$certbot_mock_rc" ;;
+  # Stage 18's post-renewal cleanup-contract check — matched on its
+  # distinctive "compgen -G" marker-glob text, BEFORE the generic
+  # firewall-cmd pattern below (which this same script also contains).
+  *"compgen -G "*)
+    if [ -f "$TMPDIR_TEST/mock_certbot_marker_stale" ]; then
+      echo "PORT80_AFTER=closed"
+      echo "POST_CERTBOT_FAILED: stale-hook-markers"
+      exit 1
+    elif [ -f "$TMPDIR_TEST/mock_certbot_nginx_down" ]; then
+      echo "PORT80_AFTER=closed"
+      echo "POST_CERTBOT_FAILED: nginx-not-active"
+      exit 1
+    else
+      echo "PORT80_AFTER=closed"
+      echo "POST_CERTBOT_OK"
+      exit 0
+    fi ;;
+  # Stage 18's pre-renewal TCP/80 baseline probe (port80_before). Reports
+  # "closed" by default — a firewalld host with no pre-existing TCP/80
+  # allow rule, the common case.
+  *"firewall-cmd --query-port=80/tcp"*) echo closed; exit 0 ;;
   *MainPID*sing-box*)
     counter_file="$TMPDIR_TEST/mainpid_counter"
     n=0
@@ -234,7 +299,6 @@ USERCREATE
   *install.sh*) exit 0 ;;
   *SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch*update.sh*) exit 1 ;;
   *update.sh*) exit 0 ;;
-  *certbot\ renew*) exit 0 ;;
   *"[ -e /opt/singbox-vpn ] || [ -e /etc/vpn ]"*) exit 0 ;;
   *"[ ! -e /etc/vpn ]"*) exit 0 ;;
   *"command -v curl"*)
@@ -987,14 +1051,254 @@ else
 fi
 
 echo
-echo "--- certbot renew --dry-run uses the long SSH timeout, not the short per-probe one ---"
-# Reproduced on a real VPS as exit=124 (ssh_run's 180s timeout is too short
-# for a live certbot renewal simulation), the same bug class already fixed
-# for run_install() above but missed on this stage.
-if grep -qE "ssh_run_long 'sudo certbot renew --dry-run'" "$SCRIPT"; then
-  ok "stage 18 (certbot renew --dry-run) uses ssh_run_long"
+echo "--- Stage 18 no longer uses ssh_run_long (Rust-build-sized 1200s), it has its own dedicated ssh_run_certbot bound ---"
+# Originally fixed by switching stage 18 to ssh_run_long (correct relative
+# to ssh_run's 180s, but still wrong: certbot inherited a 20-minute Rust
+# -build timeout and its entire output was hidden inside a plain
+# `VAR="$(...)"` substitution until the whole run finished — on a real VPS
+# this made an already-finished renewal look permanently frozen. Stage 18
+# now has its own certbot-sized helper and streams output live.
+if grep -qE '^ssh_run_certbot\(\) \{' "$SCRIPT"; then
+  ok "ssh_run_certbot() exists as its own dedicated helper"
 else
-  fail "stage 18 (certbot renew --dry-run) still uses the short ssh_run timeout — a slow-but-correct dry-run would be falsely reported as [FAIL] (exit=124)"
+  fail "ssh_run_certbot() is missing"
+fi
+ssh_run_certbot_body="$(sed -n '/^ssh_run_certbot() {/,/^}/p' "$SCRIPT")"
+if grep -qE 'timeout -k 10s 360s ssh' <<< "$ssh_run_certbot_body"; then
+  ok "ssh_run_certbot() has its own bounded outer timeout with a guaranteed forced-kill (-k)"
+else
+  fail "ssh_run_certbot() does not use a bounded timeout with -k (forced kill)"
+fi
+if grep -q 'ServerAliveInterval=15' <<< "$ssh_run_certbot_body" && grep -q 'ServerAliveCountMax=4' <<< "$ssh_run_certbot_body"; then
+  ok "ssh_run_certbot() sets SSH keepalive options to detect a stalled transport"
+else
+  fail "ssh_run_certbot() does not set SSH keepalive options"
+fi
+if grep -qE '^  section "18\.' "$SCRIPT" && \
+   ! grep -qE 'CERTBOT_DRY_OUT="\$\(ssh_run(_long)? ' "$SCRIPT"; then
+  ok "stage 18 no longer hides the entire certbot run inside a plain \"\$(...)\" command substitution"
+else
+  fail "stage 18 still captures certbot's output with a plain VAR=\"\$(...)\" substitution — output would be hidden until the whole run finishes"
+fi
+if grep -q 'ssh_run_certbot "\$remote_certbot_cmd" 2>&1 | tee "\$CERTBOT_LOG_FILE"' "$SCRIPT"; then
+  ok "stage 18 streams certbot's output live via tee while still capturing it"
+else
+  fail "stage 18 does not stream certbot's output live via tee"
+fi
+if grep -q 'certbot_dry_rc=\${PIPESTATUS\[0\]}' "$SCRIPT"; then
+  ok "stage 18 reads the real remote exit code via PIPESTATUS[0], not tee's own exit code"
+else
+  fail "stage 18 does not correctly capture the piped command's real exit status via PIPESTATUS"
+fi
+if grep -q "CERTBOT_SENTINEL='__SINGBOX_VPN_CERTBOT_DONE__'" "$SCRIPT" \
+    && grep -q '__SINGBOX_VPN_CERTBOT_DONE__ rc=%d' "$SCRIPT"; then
+  ok "stage 18 appends a project-specific completion sentinel carrying the real remote exit code"
+else
+  fail "stage 18 is missing its completion sentinel"
+fi
+
+echo
+echo "--- Stage 18: sentinel + real exit code drive PASS/FAIL, not the sentinel alone ---"
+cat > "$MOCKBIN/ssh" <<'MOCKSSH_CERTBOT'
+#!/bin/bash
+{ printf '%s\t' "$@"; echo; } >> "$SSH_LOG"
+cmd="${*: -1}"
+case "$cmd" in
+  true) exit 0 ;;
+  *"[ -e '/etc/vpn/deployment.toml' ]"* | \
+  *"[ -e '/var/lib/singbox-vpn/install-state.json' ]"* | \
+  *"[ -e '/var/lib/singbox-vpn/ownership.env' ]"* | \
+  *"[ -e '/opt/singbox-vpn' ]"*)
+    exit 1 ;;
+  *os-release*) echo 'ID=almalinux'; exit 0 ;;
+  *uname\ -m*) echo x86_64; exit 0 ;;
+  *"doctor --protocol"*) echo 'completed a full handshake'; exit 0 ;;
+  *"vpn-benchmark.sh"*) echo "throughput (Mbps), 1 run(s): min=42.00 median=42.00 max=42.00 (n=1)"; exit 0 ;;
+  # The real remote certbot invocation. Scenario-controlled via flag files
+  # so every classification branch is exercised end-to-end, through the
+  # SAME code this harness would run for real, with no real waiting.
+  *"timeout -k 10s 300s sudo certbot renew --dry-run"*)
+    if [ -f "$TMPDIR_TEST/mock_certbot_transport_timeout" ]; then
+      # Simulates ssh_run_certbot's own OUTER bound firing: the remote
+      # script never got a chance to print anything, sentinel included.
+      exit 124
+    fi
+    if [ -f "$TMPDIR_TEST/mock_certbot_zero_renewals" ]; then
+      echo "No simulated renewals were attempted."
+      certbot_mock_rc=0
+    elif [ -f "$TMPDIR_TEST/mock_certbot_nonzero" ]; then
+      echo "All simulated renewals failed. The following certs could not be renewed:"
+      certbot_mock_rc=1
+    elif [ -f "$TMPDIR_TEST/mock_certbot_remote_timeout" ]; then
+      # Simulates the REMOTE inner `timeout -k 10s 300s` firing: the
+      # wrapping script still runs to completion and reports it via the
+      # sentinel — this must be told apart from a dead transport.
+      certbot_mock_rc=124
+    else
+      echo "Congratulations, all simulated renewals succeeded:"
+      certbot_mock_rc=0
+    fi
+    if [ -f "$TMPDIR_TEST/mock_certbot_no_sentinel" ]; then
+      # SSH session ends WITHOUT the remote script ever reaching its own
+      # sentinel print — must never be treated as proof of anything.
+      exit "$certbot_mock_rc"
+    fi
+    printf '\n__SINGBOX_VPN_CERTBOT_DONE__ rc=%d\n' "$certbot_mock_rc"
+    exit "$certbot_mock_rc" ;;
+  # Post-renewal cleanup-contract check — matched on its distinctive
+  # "compgen -G" text, before the generic firewall-cmd pattern below
+  # (which this same remote script also contains).
+  *"compgen -G "*)
+    if [ -f "$TMPDIR_TEST/mock_certbot_marker_stale" ]; then
+      echo "PORT80_AFTER=closed"; echo "POST_CERTBOT_FAILED: stale-hook-markers"; exit 1
+    elif [ -f "$TMPDIR_TEST/mock_certbot_nginx_down" ]; then
+      echo "PORT80_AFTER=closed"; echo "POST_CERTBOT_FAILED: nginx-not-active"; exit 1
+    else
+      echo "PORT80_AFTER=closed"; echo "POST_CERTBOT_OK"; exit 0
+    fi ;;
+  *"firewall-cmd --query-port=80/tcp"*) echo closed; exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCKSSH_CERTBOT
+chmod +x "$MOCKBIN/ssh"
+
+run_certbot_scenario() {
+  : > "$SSH_LOG"
+  rm -f "$TMPDIR_TEST"/mock_certbot_*
+  for f in "$@"; do : > "$TMPDIR_TEST/mock_certbot_$f"; done
+  set +e
+  run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1
+  set -e
+}
+
+echo "  - (A) clean renewal + full cleanup contract -> PASS"
+out_a="$(run_certbot_scenario)"
+stage18_a="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_a")"
+if grep -qE '\[PASS\][[:space:]]+certbot renew --dry-run' <<< "$stage18_a"; then
+  ok "(A) certbot renewal reports PASS"
+else
+  fail "(A) certbot renewal did not report PASS: $stage18_a"
+fi
+if grep -qE '\[PASS\][[:space:]]+nginx restored, certbot hook markers cleaned' <<< "$stage18_a"; then
+  ok "(A) post-renewal cleanup contract (nginx/markers/firewall) reports PASS"
+else
+  fail "(A) post-renewal cleanup contract did not report PASS: $stage18_a"
+fi
+
+echo "  - (C) certbot exits nonzero -> FAIL, classified CERTBOT_EXIT_NONZERO"
+out_c="$(run_certbot_scenario nonzero)"
+stage18_c="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_c")"
+if grep -qE '\[FAIL\]\[required\].*CERTBOT_EXIT_NONZERO' <<< "$stage18_c"; then
+  ok "(C) nonzero certbot exit is a required FAIL classified CERTBOT_EXIT_NONZERO"
+else
+  fail "(C) nonzero certbot exit was not classified CERTBOT_EXIT_NONZERO: $stage18_c"
+fi
+
+echo "  - (F) zero lineages tested (\"No simulated renewals were attempted.\") -> FAIL, classified NO_RENEWAL_ATTEMPTED, even though certbot itself exited 0"
+out_f="$(run_certbot_scenario zero_renewals)"
+stage18_f="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_f")"
+if grep -qE '\[FAIL\]\[required\].*NO_RENEWAL_ATTEMPTED' <<< "$stage18_f"; then
+  ok "(F) zero-lineage dry-run (exit 0) is still a required FAIL, classified NO_RENEWAL_ATTEMPTED — this gate is not weakened"
+else
+  fail "(F) zero-lineage dry-run was not correctly rejected: $stage18_f"
+fi
+
+echo "  - (J) sentinel present but its OWN carried exit code is nonzero -> still FAILS (the sentinel is evidence, never a substitute for the real exit code)"
+if grep -qF '__SINGBOX_VPN_CERTBOT_DONE__' <<< "$out_c" && grep -qE '\[FAIL\]\[required\]' <<< "$stage18_c"; then
+  ok "(J) a completion sentinel is present in scenario (C) yet the stage still correctly FAILs on the nonzero exit code it carries"
+else
+  fail "(J) scenario (C) either lost its sentinel or incorrectly passed despite a nonzero carried exit code"
+fi
+
+echo "  - sentinel missing after an apparent clean SSH exit -> FAIL, classified SSH_SESSION_ENDED_UNEXPECTEDLY (suspicious transport, not silently accepted)"
+out_nosent="$(run_certbot_scenario no_sentinel)"
+stage18_nosent="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_nosent")"
+if grep -qE '\[FAIL\]\[required\].*SSH_SESSION_ENDED_UNEXPECTEDLY' <<< "$stage18_nosent"; then
+  ok "a missing completion sentinel is classified SSH_SESSION_ENDED_UNEXPECTEDLY and FAILs, never silently accepted as PASS"
+else
+  fail "a missing completion sentinel was not correctly classified/rejected: $stage18_nosent"
+fi
+
+echo "  - (D) remote inner timeout fires (sentinel present, carried rc=124) -> FAIL, classified CERTBOT_REMOTE_TIMEOUT"
+out_rtimeout="$(run_certbot_scenario remote_timeout)"
+stage18_rtimeout="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_rtimeout")"
+if grep -qE '\[FAIL\]\[required\].*CERTBOT_REMOTE_TIMEOUT' <<< "$stage18_rtimeout"; then
+  ok "(D) a remote inner-timeout completion (rc=124, sentinel present) is classified CERTBOT_REMOTE_TIMEOUT"
+else
+  fail "(D) a remote timeout was not correctly classified: $stage18_rtimeout"
+fi
+
+echo "  - (E) local/outer SSH timeout fires before the remote script ever prints anything -> FAIL, classified SSH_TRANSPORT_TIMEOUT (distinct from a remote timeout)"
+out_ttimeout="$(run_certbot_scenario transport_timeout)"
+stage18_ttimeout="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_ttimeout")"
+if grep -qE '\[FAIL\]\[required\].*SSH_TRANSPORT_TIMEOUT' <<< "$stage18_ttimeout"; then
+  ok "(E) an outer SSH/transport timeout (no sentinel ever seen) is classified SSH_TRANSPORT_TIMEOUT, distinct from CERTBOT_REMOTE_TIMEOUT"
+else
+  fail "(E) an outer SSH/transport timeout was not correctly classified: $stage18_ttimeout"
+fi
+
+echo "  - (G) certbot succeeds but nginx was not restored afterward -> FAIL, classified POST_RENEWAL_STATE_INVALID"
+out_g="$(run_certbot_scenario nginx_down)"
+stage18_g="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_g")"
+if grep -qE '\[PASS\][[:space:]]+certbot renew --dry-run' <<< "$stage18_g" \
+    && grep -qE '\[FAIL\]\[required\].*POST_RENEWAL_STATE_INVALID' <<< "$stage18_g" \
+    && grep -q 'nginx-not-active' <<< "$stage18_g"; then
+  ok "(G) a successful certbot run with nginx left down still FAILs the post-renewal cleanup check"
+else
+  fail "(G) nginx not being restored after a successful renewal was not caught: $stage18_g"
+fi
+
+echo "  - (H) certbot succeeds but a hook marker file was left behind -> FAIL, classified POST_RENEWAL_STATE_INVALID"
+out_h="$(run_certbot_scenario marker_stale)"
+stage18_h="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_h")"
+if grep -qE '\[PASS\][[:space:]]+certbot renew --dry-run' <<< "$stage18_h" \
+    && grep -qE '\[FAIL\]\[required\].*POST_RENEWAL_STATE_INVALID' <<< "$stage18_h" \
+    && grep -q 'stale-hook-markers' <<< "$stage18_h"; then
+  ok "(H) a successful certbot run with a leftover /run marker still FAILs the post-renewal cleanup check"
+else
+  fail "(H) a leftover hook marker after a successful renewal was not caught: $stage18_h"
+fi
+
+echo
+echo "--- Stage 18 classification logic (extracted from the real script, executed directly — not a duplicate) ---"
+CLASS_BODY="$(sed -n '/^  certbot_class=""$/,/^  fi$/p' "$SCRIPT")"
+if [ -z "$CLASS_BODY" ]; then
+  fail "could not extract stage 18's classification logic from $SCRIPT — its marker lines may have changed"
+else
+  # Runs the REAL extracted classification block in an isolated subshell
+  # with the four inputs it reads set as plain shell variables first —
+  # `eval` (not string-interpolating a nested `bash -c` argument) so `$`
+  # inside CLASS_BODY is expanded exactly once, by this subshell, using
+  # these values, never pre-expanded by the caller.
+  run_class_scenario() (
+    sentinel_present="$1"
+    sentinel_rc="$2"
+    certbot_dry_rc="$3"
+    zero_renewals="$4"
+    eval "$CLASS_BODY"
+    echo "$certbot_class"
+  )
+  class_all_ok=1
+  check_class() {
+    local desc="$1" expected="$2" got
+    shift 2
+    got="$(run_class_scenario "$@")"
+    if [ "$got" = "$expected" ]; then
+      ok "classification: $desc -> '$expected'"
+    else
+      fail "classification: $desc -> expected '$expected', got '$got'"
+      class_all_ok=0
+    fi
+  }
+  check_class "no sentinel, local timeout exit code (124)" "SSH_TRANSPORT_TIMEOUT" 0 "" 124 0
+  check_class "no sentinel, local timeout exit code (137, SIGKILL)" "SSH_TRANSPORT_TIMEOUT" 0 "" 137 0
+  check_class "no sentinel, non-timeout SSH exit (255, connection lost)" "SSH_SESSION_ENDED_UNEXPECTEDLY" 0 "" 255 0
+  check_class "sentinel present, carried rc=124 (remote inner timeout)" "CERTBOT_REMOTE_TIMEOUT" 1 124 124 0
+  check_class "sentinel present, carried rc=137 (remote inner SIGKILL)" "CERTBOT_REMOTE_TIMEOUT" 1 137 137 0
+  check_class "sentinel present, rc=0, but zero lineages tested" "NO_RENEWAL_ATTEMPTED" 1 0 0 1
+  check_class "sentinel present, carried rc=1 (genuine certbot failure)" "CERTBOT_EXIT_NONZERO" 1 1 1 0
+  check_class "sentinel present, rc=0, at least one lineage tested (PASS candidate)" "" 1 0 0 0
+  [ "$class_all_ok" -eq 1 ] && ok "all classification branches resolve correctly against the real extracted logic"
 fi
 
 echo

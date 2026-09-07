@@ -83,6 +83,56 @@ else
   fail "certbot dry-run can still false-PASS without testing a lineage"
 fi
 
+# Stage 18 (September 2026 real-VPS run): the entire certbot renewal was
+# hidden inside a plain `VAR="$(ssh_run_long ...)"` substitution and
+# inherited ssh_run_long's 1200s Rust-build timeout — an already-finished
+# renewal looked permanently frozen to the operator. Full behavioral
+# coverage (streaming, sentinel, classification, cleanup verification)
+# lives in test-lifecycle-acceptance-harness.sh; these are static
+# contract checks that the fix's core shape has not regressed.
+if grep -qE '^ssh_run_certbot\(\) \{' "$LIFECYCLE" \
+    && grep -qE 'timeout -k 10s 360s ssh' "$LIFECYCLE"; then
+  ok "stage 18 has its own dedicated, bounded, forced-kill SSH helper (ssh_run_certbot), separate from ssh_run_long"
+else
+  fail "ssh_run_certbot() is missing or lost its bounded/forced-kill timeout"
+fi
+if grep -qE "ssh_run_long 'sudo certbot renew --dry-run'" "$LIFECYCLE"; then
+  fail "stage 18 regressed back to ssh_run_long's 1200s Rust-build-sized timeout"
+else
+  ok "stage 18 no longer uses ssh_run_long's Rust-build-sized timeout"
+fi
+if grep -q 'ssh_run_certbot "\$remote_certbot_cmd" 2>&1 | tee "\$CERTBOT_LOG_FILE"' "$LIFECYCLE" \
+    && grep -q 'certbot_dry_rc=\${PIPESTATUS\[0\]}' "$LIFECYCLE"; then
+  ok "stage 18 streams certbot output live via tee while still capturing the real exit code via PIPESTATUS"
+else
+  fail "stage 18 no longer streams certbot output live (or lost correct PIPESTATUS-based exit capture)"
+fi
+if grep -q "CERTBOT_SENTINEL='__SINGBOX_VPN_CERTBOT_DONE__'" "$LIFECYCLE" \
+    && grep -q '__SINGBOX_VPN_CERTBOT_DONE__ rc=%d' "$LIFECYCLE"; then
+  ok "stage 18 appends a completion sentinel carrying the real remote exit code"
+else
+  fail "stage 18 lost its completion sentinel"
+fi
+# All five required failure classes (task requirement: never collapse
+# these into one generic "certbot failed").
+CERTBOT_CLASSES=(CERTBOT_REMOTE_TIMEOUT SSH_TRANSPORT_TIMEOUT CERTBOT_EXIT_NONZERO NO_RENEWAL_ATTEMPTED SSH_SESSION_ENDED_UNEXPECTEDLY)
+certbot_classes_missing=""
+for c in "${CERTBOT_CLASSES[@]}"; do
+  grep -q "$c" "$LIFECYCLE" || certbot_classes_missing="$certbot_classes_missing $c"
+done
+if [ -z "$certbot_classes_missing" ]; then
+  ok "stage 18 differentiates all required certbot/SSH failure classes"
+else
+  fail "stage 18 is missing failure classification(s):$certbot_classes_missing"
+fi
+if grep -q 'POST_RENEWAL_STATE_INVALID' "$LIFECYCLE" \
+    && grep -q 'compgen -G "/run/singbox-vpn-certbot-\*"' "$LIFECYCLE" \
+    && grep -q 'systemctl is-active --quiet nginx' "$LIFECYCLE"; then
+  ok "stage 18 independently verifies the post-renewal cleanup contract (nginx/markers/firewall)"
+else
+  fail "stage 18 no longer verifies the post-renewal cleanup contract"
+fi
+
 # The watchdog timer itself must not race the deliberate FAILED-state test,
 # and a failure to create FAILED must block its dependent assertions instead of
 # multiplying one prerequisite failure into several fake product failures.
