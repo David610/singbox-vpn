@@ -12,6 +12,7 @@ set -u
 
 : "${SINGBOX_VPN_CERTBOT_PORT80_MARKER:=/run/singbox-vpn-certbot-port80.opened}"
 : "${SINGBOX_VPN_CERTBOT_NGINX_MARKER:=/run/singbox-vpn-certbot-nginx-stopped.opened}"
+: "${SINGBOX_VPN_CERTBOT_RENEWAL_LOCK:=/run/lock/singbox-vpn-certbot-renewal.lock}"
 
 log() { echo "[certbot-firewall-post-hook] $*"; }
 
@@ -28,11 +29,26 @@ if [ -e "$SINGBOX_VPN_CERTBOT_PORT80_MARKER" ]; then
   rm -f "$SINGBOX_VPN_CERTBOT_PORT80_MARKER"
 fi
 
-if [ -e "$SINGBOX_VPN_CERTBOT_NGINX_MARKER" ]; then
-  systemctl start nginx >/dev/null 2>&1 \
-    && log "restarted nginx after the renewal attempt." \
-    || log "WARNING: could not restart nginx; run 'systemctl start nginx' by hand."
-  rm -f "$SINGBOX_VPN_CERTBOT_NGINX_MARKER"
-fi
+# Same short local critical section (and same lock file) the pre-hook
+# guards its nginx marker write with — see that file's concurrency note.
+# Runs regardless of whether certbot's renewal attempt itself succeeded:
+# a failed renewal must never leave nginx (and therefore the subscription
+# HTTPS vhost) down.
+(
+  flock -w 30 200 || { log "WARNING: could not acquire $SINGBOX_VPN_CERTBOT_RENEWAL_LOCK within 30s; restoring nginx anyway (best-effort, matches the marker file regardless)."; }
+  if [ -e "$SINGBOX_VPN_CERTBOT_NGINX_MARKER" ]; then
+    if systemctl start nginx >/dev/null 2>&1 && systemctl is-active --quiet nginx 2>/dev/null; then
+      log "restarted nginx after the renewal attempt."
+    else
+      # This is the one failure this hook pair cannot silently absorb:
+      # the subscription HTTPS vhost (and any other site sharing this
+      # nginx) is now down and will STAY down until an operator notices.
+      # Loud, specific, and impossible to miss in `journalctl -u
+      # certbot.timer` / cron mail — never just a generic "WARNING".
+      log "ERROR: nginx did NOT come back up after this renewal attempt — the subscription HTTPS vhost (and any other site on this nginx) is currently DOWN. Run 'systemctl status nginx' and 'systemctl start nginx' by hand immediately."
+    fi
+    rm -f "$SINGBOX_VPN_CERTBOT_NGINX_MARKER"
+  fi
+) 200>"$SINGBOX_VPN_CERTBOT_RENEWAL_LOCK"
 
 exit 0

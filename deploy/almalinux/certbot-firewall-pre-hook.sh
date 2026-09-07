@@ -35,33 +35,116 @@
 # before the INITIAL issuance; this hook applies the identical fix to
 # every later renewal, which was the actual gap.
 #
+# TRADE-OFF, chosen deliberately for the v1.0 release path (not hidden):
+# nginx is stopped as a WHOLE SERVICE, not just its default :80 vhost —
+# this project's own subscription vhost never listens on :80 (see
+# nginx-vpn-subscription.conf.template), so the ONLY thing actually
+# affected is nginx's OS-default vhost and any OTHER site an operator may
+# have added to this same nginx. If this host also serves unrelated
+# HTTP/HTTPS sites through this nginx, ALL of them go briefly offline for
+# the few seconds a renewal takes (typically well under 10s). singbox-vpn's
+# own VPN data plane (sing-box: REALITY/Hysteria2) and vpn-subscription
+# backend are never touched by this — only nginx. Switching authenticators
+# (webroot/nginx plugin) to avoid this was considered and deliberately
+# deferred past v1.0 (see the PR that introduced this comment for the
+# full option comparison) to keep the already-working --standalone
+# issuance model unchanged this close to release.
+#
 # This does not (and cannot) touch a separate cloud-provider firewall
 # layer (AWS security groups, GCP firewall rules, etc.) — see
 # docs/ALMALINUX_DEPLOYMENT.md "Cloud provider firewalls / security
 # groups" for why that layer still needs its own permanent TCP/80 allow
 # rule if it exists.
 #
-# Deliberately never fails the renewal attempt over firewall/nginx
-# management trouble: if this host has no managed firewall backend, nginx
-# isn't installed, or either tool misbehaves, the certbot HTTP-01
-# challenge itself will fail with its own clear, actionable error — this
-# hook does not manufacture a second, less informative failure on top of
-# that.
+# Concurrency: certbot itself locks /etc/letsencrypt for the duration of
+# any certonly/renew invocation (a second concurrent `certbot renew`
+# fails fast with its own "Another instance of Certbot is already
+# running" error) — this is documented, long-standing certbot behavior,
+# not something this project needs to re-implement. What that lock does
+# NOT cover is a completely separate code path also touching nginx/TCP80
+# around a certificate operation: install.sh's own
+# attempt_automatic_certbot() (used for the very first issuance) stops
+# nginx independently, with its own local bookkeeping, not these marker
+# files. An install.sh/update.sh run happening to overlap with a renewal
+# timer firing is a narrow, low-probability window, but the failure mode
+# (two independent nginx stop/start sequences interleaving) is exactly
+# the kind of thing that corrupts state silently — so this hook still
+# guards its own marker-file critical section with a short, local flock.
+# That is defense-in-depth around OUR bookkeeping, not a claim that it
+# alone prevents every possible overlap with install.sh's separate path.
+#
+# Deliberately never fails the renewal attempt over firewall management
+# trouble (missing firewalld/ufw, or the tool misbehaving): the certbot
+# HTTP-01 challenge itself will fail with its own clear, actionable error
+# in that case, and manufacturing a second, less informative failure on
+# top of that helps no one. Stopping nginx and freeing TCP/80 is
+# different — if THAT fails, continuing would only let certbot fail with
+# a confusing EADDRINUSE we could have diagnosed better ourselves, so
+# this hook fails closed (see check_port_80_free below) with a specific,
+# actionable error instead, and never continues with port 80 in a state
+# it did not itself verify.
 set -u
 
 : "${SINGBOX_VPN_CERTBOT_PORT80_MARKER:=/run/singbox-vpn-certbot-port80.opened}"
 : "${SINGBOX_VPN_CERTBOT_NGINX_MARKER:=/run/singbox-vpn-certbot-nginx-stopped.opened}"
+: "${SINGBOX_VPN_CERTBOT_RENEWAL_LOCK:=/run/lock/singbox-vpn-certbot-renewal.lock}"
 
 log() { echo "[certbot-firewall-pre-hook] $*"; }
+err() { echo "[certbot-firewall-pre-hook] ERROR: $*" >&2; }
 
+# Names the actual TCP/80 occupant when possible (never assumes it's
+# nginx — something else, an operator's own service, or a leftover
+# process could hold it) without ever killing anything. Mirrors
+# deploy/lib/preflight.sh's preflight_check_port_free(), duplicated
+# locally rather than sourced: these renewal hooks are installed as
+# self-contained copies (see certbot-deploy-hook.sh for the same
+# convention) so they keep working even if /opt/singbox-vpn is ever
+# absent when certbot's timer fires.
+port_80_owner() {
+  command -v ss >/dev/null 2>&1 || return 0
+  ss -H -lntp 2>/dev/null | awk '$4 ~ /:80$/ {print; exit}'
+}
+
+nginx_was_active=0
 if command -v nginx >/dev/null 2>&1 && systemctl is-active --quiet nginx 2>/dev/null; then
-  if systemctl stop nginx 2>/dev/null; then
-    : > "$SINGBOX_VPN_CERTBOT_NGINX_MARKER" 2>/dev/null
-    log "temporarily stopped nginx (it has no role in the ACME HTTP-01 challenge but was occupying TCP/80)."
-  else
-    log "WARNING: could not stop nginx; the renewal challenge may fail to bind TCP/80."
-  fi
+  nginx_was_active=1
 fi
+
+(
+  # Short, local critical section around the nginx stop + marker write —
+  # see the concurrency note above for exactly what this does and does
+  # not guarantee. -w 30: never hang the renewal indefinitely on a stuck
+  # lock; a held lock this old is itself a real problem worth surfacing
+  # via certbot's own failure rather than blocking forever.
+  flock -w 30 200 || { err "could not acquire $SINGBOX_VPN_CERTBOT_RENEWAL_LOCK within 30s — another singbox-vpn certbot transition appears stuck."; exit 1; }
+
+  if [ "$nginx_was_active" -eq 1 ]; then
+    if systemctl stop nginx 2>/dev/null && ! systemctl is-active --quiet nginx 2>/dev/null; then
+      # The marker means exactly one thing: nginx WAS active AND
+      # singbox-vpn itself just confirmed it is now stopped — never
+      # "an attempt was made." Only this confirmed state authorizes the
+      # post-hook to restart it later.
+      : > "$SINGBOX_VPN_CERTBOT_NGINX_MARKER" 2>/dev/null
+      log "temporarily stopped nginx (it has no role in the ACME HTTP-01 challenge but was occupying TCP/80)."
+    else
+      err "nginx did not actually stop; refusing to proceed with a renewal attempt that would fail with a confusing EADDRINUSE."
+      systemctl start nginx >/dev/null 2>&1 || true
+      exit 1
+    fi
+  fi
+
+  owner="$(port_80_owner)"
+  if [ -n "$owner" ]; then
+    err "TCP/80 is still occupied after stopping nginx; Certbot standalone HTTP-01 cannot start."
+    err "occupant: $owner"
+    if [ "$nginx_was_active" -eq 1 ]; then
+      systemctl start nginx >/dev/null 2>&1 || true
+      rm -f "$SINGBOX_VPN_CERTBOT_NGINX_MARKER"
+    fi
+    exit 1
+  fi
+  exit 0
+) 200>"$SINGBOX_VPN_CERTBOT_RENEWAL_LOCK" || exit 1
 
 firewall_backend() {
   if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
