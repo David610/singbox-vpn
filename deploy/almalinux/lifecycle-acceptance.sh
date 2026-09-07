@@ -290,12 +290,21 @@ cleanup_cert_snapshot() {
   ssh_run "sudo rm -f $CERT_SNAPSHOT_REMOTE" >/dev/null 2>&1 || true
 }
 
+# SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1: this harness's own transcript
+# (this stdout/stderr) is exactly the kind of thing that ends up in a CI
+# log or release-evidence bundle, and install.sh's normal onboarding
+# output includes the real subscription URL/QR — the app's own text
+# calls that URL "the credential — treat it like a password". Automated
+# runs must never print it (see install.sh's ensure_first_user()/
+# print_status() and apps/admin/src/main.rs's suppress_onboarding_secrets()
+# for how it's suppressed at the source rather than filtered after the
+# fact); a human running install.sh directly is unaffected.
 run_install() {
-  ssh_run_long "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
+  ssh_run_long "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
 }
 
 run_install_abort_after_singbox() {
-  ssh_run_long "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
+  ssh_run_long "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
 }
 
 echo "singbox-vpn destructive lifecycle acceptance gate"

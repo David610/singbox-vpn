@@ -2569,6 +2569,48 @@ extract_subscription_url() {
 #   - repair of an ALREADY-ACCEPTED install: user state is the
 #     operator's; never auto-create, rotate, or mint anything here, even
 #     if the user store is (deliberately) empty.
+# When SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 (set by the lifecycle
+# acceptance harness — see deploy/almalinux/lifecycle-acceptance.sh),
+# what print_status() echoes at the end of this run must never contain
+# the real subscription URL/QR: the app's own onboarding text calls that
+# URL "the credential — treat it like a password", and this install
+# transcript is exactly the kind of thing that ends up in a CI log or a
+# release-evidence bundle. `vpn user create`/`rotate-token --qr` are
+# still invoked with that variable UNSET for this one call (so the CLI
+# still renders its normal output — see suppress_onboarding_secrets() in
+# apps/admin/src/main.rs for the CLI's own suppression, used by direct
+# operator/CI invocations of the CLI itself), and the real URL is still
+# extracted from it below purely for verify_subscription_through_nginx()'s
+# own internal end-to-end proof (a bash variable, never printed) — only
+# what gets assigned to FIRST_USER_QR_OUTPUT (the text print_status()
+# actually prints) differs.
+onboarding_secrets_suppressed() {
+  case "${SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS:-0}" in
+    1 | true | TRUE | True) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+safe_onboarding_summary() {
+  printf '%s\n' \
+    "credential generated: yes" \
+    "subscription URL generated: yes" \
+    "QR generated: suppressed (SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1)"
+}
+# Used only on a failed create/rotate-token call. $out may already
+# contain the real credential even on failure (e.g. the token was minted
+# and printed, then a later, unrelated step such as QR rendering failed)
+# — so when suppressed, this must never echo $out itself, only the fact
+# that it failed and where to see the real error.
+die_onboarding_failed() {
+  local what="$1" out="$2"
+  if onboarding_secrets_suppressed; then
+    die "[FAIL] $what (output suppressed: SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 — re-run without it, or run the same 'vpn user ...' command by hand, to see the full error)"
+  else
+    die "[FAIL] $what. Output:
+$out"
+  fi
+}
+
 ensure_first_user() {
   local existing first_id
   existing="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user list 2>/dev/null | tail -n +2 | grep -c . || true)"
@@ -2582,12 +2624,15 @@ ensure_first_user() {
     first_id="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user list 2>/dev/null | tail -n +2 | awk '{print $1; exit}')"
     [ -n "$first_id" ] || die "[FAIL] a user was reported to exist but its ID could not be determined from 'vpn user list' output."
     local out
-    out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user rotate-token "$first_id" --qr 2>&1)" \
-      || die "[FAIL] could not mint a subscription token for the existing pending-install user '$first_id'. Output:
-$out"
-    FIRST_USER_QR_OUTPUT="$out"
+    out="$(env -u SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user rotate-token "$first_id" --qr 2>&1)" \
+      || die_onboarding_failed "could not mint a subscription token for the existing pending-install user '$first_id'" "$out"
     SUBSCRIPTION_URL="$(extract_subscription_url "$out")"
     [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] a subscription token was minted for '$first_id' but no subscription URL could be extracted from its output — cannot complete onboarding verification."
+    if onboarding_secrets_suppressed; then
+      FIRST_USER_QR_OUTPUT="$(safe_onboarding_summary)"
+    else
+      FIRST_USER_QR_OUTPUT="$out"
+    fi
     return
   fi
 
@@ -2598,12 +2643,15 @@ $out"
 
   log "creating initial VPN user '$DEFAULT_USER_NAME'..."
   local out
-  out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --qr 2>&1)" \
-    || die "[FAIL] initial user creation failed — a fresh install must produce at least one usable onboarding credential. Output:
-$out"
-  FIRST_USER_QR_OUTPUT="$out"
+  out="$(env -u SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --qr 2>&1)" \
+    || die_onboarding_failed "initial user creation failed — a fresh install must produce at least one usable onboarding credential" "$out"
   SUBSCRIPTION_URL="$(extract_subscription_url "$out")"
   [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] the initial user was created but no subscription URL could be extracted from its output — cannot complete onboarding verification."
+  if onboarding_secrets_suppressed; then
+    FIRST_USER_QR_OUTPUT="$(safe_onboarding_summary)"
+  else
+    FIRST_USER_QR_OUTPUT="$out"
+  fi
 }
 
 # ---------------------------------------------------------------------

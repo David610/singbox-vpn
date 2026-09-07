@@ -855,6 +855,123 @@ fn user_qr_rotates_token_and_warns_it_is_new() {
     assert!(stdout.contains("New Hiddify subscription URL for"));
 }
 
+/// SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS is for automated/CI callers
+/// (the lifecycle acceptance harness, in particular) whose transcripts
+/// can end up in a CI log or release-evidence bundle — `user create`'s
+/// own text calls the subscription URL "the credential — treat it like
+/// a password", so a transcript of a normal run is unsafe to keep
+/// verbatim. Without the variable set, normal interactive behavior
+/// (a human running `vpn-admin user create --qr` directly) must be
+/// completely unaffected — this test is the baseline proving that.
+#[test]
+fn user_create_qr_shows_the_real_credential_when_not_suppressed() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let output = admin(dir.path(), &cfg_path)
+        .env_remove("SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS")
+        .args(["user", "create", "--name", "erin", "--qr"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("Hiddify subscription URL (this IS the credential"));
+    assert!(stdout.contains("/sub/"));
+    assert!(stdout.contains("?format=hiddify"));
+    assert!(stdout.contains("?format=singbox"));
+    assert!(stdout.contains("/v1/provision/"));
+    // Terminal QR rendering uses block-drawing characters, same signal
+    // user_create_qr_prints_a_qr_code() uses.
+    assert!(stdout.lines().count() > 15);
+}
+
+/// The suppressed counterpart: same command, same user, but with the
+/// variable set — none of the credential-bearing text or the QR block
+/// may appear anywhere in stdout, while the non-secret status lines the
+/// task spec calls for are still present.
+#[test]
+fn user_create_qr_suppresses_the_credential_when_env_var_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let output = admin(dir.path(), &cfg_path)
+        .env("SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS", "1")
+        .args(["user", "create", "--name", "frank", "--qr"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("User ID:"));
+    assert!(stdout.contains("credential generated: yes"));
+    assert!(stdout.contains("subscription URL generated: yes"));
+    assert!(stdout.contains("QR generated: suppressed"));
+    // No real URL of any kind — stronger than checking "/sub/" alone,
+    // since the always-printed "IMPORTANT:" User-ID block legitimately
+    // mentions the literal string "/sub/" in its own explanatory text
+    // (never a real URL, so this would otherwise false-positive).
+    assert!(!stdout.contains("https://"));
+    assert!(!stdout.contains("/v1/provision/"));
+    assert!(!stdout.contains("?format=hiddify"));
+    assert!(!stdout.contains("?format=singbox"));
+    assert!(!stdout.contains("this IS the credential"));
+    // No QR block: the suppressed output is a handful of short status
+    // lines, nowhere near the >15-line signal the real QR render leaves.
+    assert!(stdout.lines().count() < 15);
+}
+
+/// Same suppression contract, but for `user rotate-token --qr` — the
+/// other call site the lifecycle harness/install.sh hit (an existing,
+/// not-yet-onboarded user reusing a pending install).
+#[test]
+fn user_rotate_token_qr_suppresses_the_credential_when_env_var_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let create_output = admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "grace"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(create_output.get_output().stdout.clone()).unwrap();
+    let user_id = stdout
+        .lines()
+        .skip_while(|l| *l != "User ID:")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    let output = admin(dir.path(), &cfg_path)
+        .env("SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS", "1")
+        .args(["user", "rotate-token", &user_id, "--qr"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("credential generated: yes"));
+    assert!(stdout.contains("subscription URL generated: yes"));
+    assert!(stdout.contains("QR generated: suppressed"));
+    assert!(!stdout.contains("https://"));
+    assert!(!stdout.contains("New Hiddify subscription URL for"));
+    assert!(stdout.lines().count() < 15);
+}
+
+/// `--json` is a data contract consumed by scripts (install.sh parses
+/// exactly one field out of it and never prints the blob itself, same
+/// as this test does) — it must stay completely unaffected by the
+/// suppression variable, or install.sh's own internal end-to-end
+/// subscription verification would have no real URL left to fetch.
+#[test]
+fn user_create_json_output_is_unaffected_by_suppression() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let output = admin(dir.path(), &cfg_path)
+        .env("SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS", "1")
+        .args(["user", "create", "--name", "heidi", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let json_start = stdout.find('{').expect("JSON object in output");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout[json_start..]).expect("valid JSON");
+    let url = parsed["subscription_url"].as_str().unwrap();
+    assert!(url.contains("/sub/"));
+    assert!(url.contains("?format=hiddify"));
+}
+
 /// `user links` is the out-of-band recovery path for a blocked/down
 /// subscription domain (Task 8, requirement 7): it must print raw
 /// `vless://`/`hysteria2://` URIs with no `https://<subscription_host>`
