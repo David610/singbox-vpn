@@ -472,6 +472,32 @@ if [ "$(ownership_is_marked USER_VPNSUB_CREATED)" = "1" ] && id vpn-subscription
   fi
   note_removed
 fi
+# install.sh's `useradd --system` for each user above (with no -g) also
+# implicitly creates a same-named private group under this platform's
+# default USERGROUPS_ENAB policy — a group that could only have been
+# created fresh by that exact useradd call, since useradd itself refuses
+# to run at all when a group of that name already exists (reproduced for
+# real: it exits with "group sing-box exists" instead of silently reusing
+# it). userdel does not reliably remove that private group on its own
+# (behavior varies by distro/config), so it survives uninstall as an
+# orphan and then breaks the NEXT fresh install's useradd the same way.
+# Only remove it once the matching user is confirmed gone, guarded by the
+# same ownership mark as the user itself — never a pre-existing operator
+# group, by the same argument above.
+if [ "$(ownership_is_marked USER_SINGBOX_CREATED)" = "1" ] && getent group sing-box >/dev/null 2>&1 && ! id sing-box >/dev/null 2>&1; then
+  if ! groupdel sing-box >/dev/null 2>&1; then
+    warn "could not remove orphaned group 'sing-box' (left behind after its user was removed)."
+    NONCRITICAL_RESIDUE+=("group 'sing-box' (singbox-vpn-created, orphaned after user removal) could not be removed")
+  fi
+  note_removed
+fi
+if [ "$(ownership_is_marked USER_VPNSUB_CREATED)" = "1" ] && getent group vpn-subscription >/dev/null 2>&1 && ! id vpn-subscription >/dev/null 2>&1; then
+  if ! groupdel vpn-subscription >/dev/null 2>&1; then
+    warn "could not remove orphaned group 'vpn-subscription' (left behind after its user was removed)."
+    NONCRITICAL_RESIDUE+=("group 'vpn-subscription' (singbox-vpn-created, orphaned after user removal) could not be removed")
+  fi
+  note_removed
+fi
 if [ "$(ownership_is_marked GROUP_VPNCOMPAT_CREATED)" = "1" ] && getent group vpn-compat >/dev/null 2>&1; then
   if ! groupdel vpn-compat >/dev/null 2>&1; then
     warn "could not remove group 'vpn-compat' (a pre-existing user may still be a member)."
