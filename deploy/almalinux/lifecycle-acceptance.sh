@@ -560,7 +560,15 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   section "12. Hysteria2 real handshake+transfer proof (deploy/lib/vpn-benchmark.sh)"
   if HY_OUT="$(ssh_run "sudo /opt/singbox-vpn/deploy/lib/vpn-benchmark.sh --runs 1 --download-url 'https://speed.cloudflare.com/__down?bytes=2000000'" 2>&1)"; then hy_rc=0; else hy_rc=$?; fi
   hy_block="$(printf '%s\n' "$HY_OUT" | sed -n '/^Hysteria2 protocol\/server-side overhead/,/^Assessment$/p' || true)"
-  hy_line="$(printf '%s\n' "$hy_block" | grep -A1 'throughput (Mbps)' | tail -1 || true)"
+  # vpn-benchmark.sh's `kv "throughput (Mbps), N run(s)" "min=... median=... max=..."`
+  # prints key and value on the SAME line — a real run showed
+  # "throughput (Mbps), 1 run(s): min=139.13 median=139.13 max=139.13
+  # (n=1)" as one line. `grep -A1 | tail -1` (the old form here) grabbed
+  # the line AFTER the match instead of the match itself, so hy_min_mbps
+  # below was always empty and this stage FAILed on every real,
+  # successful benchmark run — reproduced directly against real
+  # benchmark output, not a guess.
+  hy_line="$(printf '%s\n' "$hy_block" | grep -m1 'throughput (Mbps)' || true)"
   hy_min_mbps="$(printf '%s' "$hy_line" | grep -oE 'min=[0-9.]+' | cut -d= -f2 || true)"
   if [ "$hy_rc" -eq 0 ] && ! printf '%s' "$hy_block" | grep -qE 'SKIPPED|FAILED|unavailable' \
     && [ -n "$hy_min_mbps" ] && awk -v n="$hy_min_mbps" 'BEGIN{exit !(n>0)}'; then
@@ -595,11 +603,17 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # FAILED state back to active before the harness checks it. Reboot stage 5
   # already proves the timer is armed; here we test watchdog logic directly.
   watchdog_timer_suspended=0
-  if ssh_run 'sudo systemctl stop vpn-service-watchdog.timer && systemctl is-inactive --quiet vpn-service-watchdog.timer' 2>/dev/null; then
+  if WATCHDOG_SUSPEND_OUT="$(ssh_run 'sudo systemctl stop vpn-service-watchdog.timer && systemctl is-inactive --quiet vpn-service-watchdog.timer' 2>&1)"; then
     pass "vpn-service-watchdog.timer suspended for deterministic crash-loop test"
     watchdog_timer_suspended=1
   else
-    fail_required "suspend vpn-service-watchdog.timer for crash-loop test"
+    # Reproduced twice on real VPS runs with no diagnostic detail at all
+    # (the old check discarded both stdout and stderr) — nothing here is
+    # secret, so capture the actual command output plus the timer's
+    # ActiveState/SubState/Result to root-cause it on the next real run
+    # instead of guessing.
+    WATCHDOG_TIMER_STATE="$(ssh_run 'systemctl show -p ActiveState,SubState,Result --value vpn-service-watchdog.timer' 2>/dev/null || true)"
+    fail_required "suspend vpn-service-watchdog.timer for crash-loop test" "(command output: ${WATCHDOG_SUSPEND_OUT:-none}; timer ActiveState/SubState/Result: ${WATCHDOG_TIMER_STATE:-unknown})"
   fi
 
   failed_state_ready=0
@@ -664,7 +678,23 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   ssh_run 'sudo systemctl start vpn-service-watchdog.service' >/dev/null 2>&1 || true
   sleep 2
   if ssh_run 'systemctl is-active --quiet sing-box' 2>/dev/null; then fail_required "vpn-service-watchdog restarted a deliberately-stopped sing-box"; else pass "vpn-service-watchdog left the deliberately-stopped sing-box alone"; fi
-  if ssh_run 'sudo systemctl start sing-box' 2>/dev/null; then pass "sing-box restarted normally after the deliberate-stop test (restoring state for the rest of this run)"; else fail_required "sing-box restarted normally after the deliberate-stop test"; fi
+  # Clear any stale start-limit-hit state before the deliberate restart
+  # below: this test has already SIGKILLed sing-box once (stage 13) and
+  # will start it again here, all inside a short window — reset-failed on
+  # a unit that is NOT in `failed` state is a documented no-op, so this
+  # is safe regardless of whether StartLimitBurst is actually involved.
+  ssh_run 'sudo systemctl reset-failed sing-box' >/dev/null 2>&1 || true
+  if START_SINGBOX_OUT="$(ssh_run 'sudo systemctl start sing-box' 2>&1)"; then
+    pass "sing-box restarted normally after the deliberate-stop test (restoring state for the rest of this run)"
+  else
+    # Reproduced twice on real VPS runs with zero diagnostic output (the
+    # old check discarded both stdout and stderr) — capture the failing
+    # command's own output plus `systemctl status` so the next real run
+    # actually reveals why a plain `systemctl start` failed here, instead
+    # of leaving this a guess.
+    START_SINGBOX_STATUS="$(ssh_run 'systemctl status sing-box --no-pager -l --lines=30' 2>/dev/null || true)"
+    fail_required "sing-box restarted normally after the deliberate-stop test" "(start command output: ${START_SINGBOX_OUT:-none}; status: ${START_SINGBOX_STATUS:-unknown})"
+  fi
 
   section "14. protocol works after recovery (re-run doctor --protocol --require-protocol)"
   if POST_RECOVERY_PROTOCOL_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol' 2>&1)"; then post_recovery_rc=0; else post_recovery_rc=$?; fi
@@ -756,7 +786,11 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   elif printf '%s' "$CERTBOT_DRY_OUT" | grep -qF 'No simulated renewals were attempted.'; then
     fail_required "certbot renew --dry-run" "(certbot exited 0 but tested zero lineages — this is not renewal proof)"
   else
-    fail_required "certbot renew --dry-run" "(exit=$certbot_dry_rc; renewal must work before a stable release)"
+    # Reproduced on a real VPS run (exit=1) with the actual certbot output
+    # discarded entirely, so there was nothing to root-cause. certbot
+    # output here is diagnostic (ACME challenge/renewal errors), not
+    # secret-bearing, so it's safe to include.
+    fail_required "certbot renew --dry-run" "(exit=$certbot_dry_rc; renewal must work before a stable release; output: ${CERTBOT_DRY_OUT:-none})"
   fi
 else
   section "9-18. runtime/protocol/user/update/backup/renewal checks"

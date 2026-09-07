@@ -110,11 +110,16 @@ case "$cmd" in
   *list-timers*) echo 'singbox-vpn-cert-renew.timer'; exit 0 ;;
   *install-state.json*) echo '{"singbox_vpn_version":"mock"}'; exit 0 ;;
   *vpn-benchmark.sh*)
+    # Matches the REAL vpn-benchmark.sh's `kv "throughput (Mbps), N
+    # run(s)" "min=... ..."` output shape: key and value on the SAME
+    # line. A real VPS run showed the harness FAIL every real, successful
+    # benchmark because this fixture used to model an (incorrect) 2-line
+    # format the old `grep -A1 | tail -1` parsing happened to expect —
+    # this fixture never caught the bug because it was equally wrong.
     cat <<'BENCH'
 Hysteria2 protocol/server-side overhead (sing-box client on THIS VPS -> THIS VPS's public IP; NOT a remote-client network-path measurement)
 --------------------------------------------------------------------------------------------------------------------------------------------
-  throughput (Mbps), 1 run(s):
-    min=42.00 median=42.00 max=42.00 (n=1)
+throughput (Mbps), 1 run(s): min=42.00 median=42.00 max=42.00 (n=1)
 Assessment
 BENCH
     exit 0 ;;
