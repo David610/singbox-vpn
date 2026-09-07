@@ -1511,8 +1511,22 @@ install_rustup_noninteractive() {
   # The downloaded binary starts additional transfers of its own (the
   # toolchain itself). Bound the whole child, not only the first curl, so
   # a stalled toolchain fetch cannot hang installation indefinitely.
+  #
+  # --no-modify-path: without it, rustup appends a PATH-modifying block to
+  # root's .bashrc/.profile/.bash_profile — permanent shell-startup state
+  # this installer never asked for and uninstall.sh cannot safely reverse
+  # (it does remove ~/.rustup and ~/.cargo, but editing a stranger's shell
+  # rc file back out is much riskier than never writing to it). A real
+  # run reproduced exactly this: after uninstall removed ~/.cargo, root's
+  # next login printed "/root/.bashrc: line ...: /root/.cargo/env: No such
+  # file or directory" on every shell start. This process still needs
+  # cargo/rustc on PATH for the rest of THIS install run, which the
+  # explicit `. "$HOME/.cargo/env"` immediately below (and
+  # build_binaries_from_source()'s own sourcing on a re-run) already
+  # provides — --no-modify-path only removes the permanent side effect,
+  # not this process's own access to the toolchain it just installed.
   if ! timeout 900 "$rustup_init" -y --profile minimal \
-      --default-toolchain stable >/dev/null; then
+      --default-toolchain stable --no-modify-path >/dev/null; then
     rm -rf "$tmp"
     die "rustup installation failed or exceeded its 15-minute hard deadline"
   fi

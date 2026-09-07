@@ -184,6 +184,44 @@ else
 fi
 
 echo
+echo "--- static: rustup-init never permanently modifies root's shell startup files ---"
+INSTALL_SH="$REPO_ROOT/deploy/almalinux/install.sh"
+# A real run reproduced: "/root/.bashrc: line ...: /root/.cargo/env: No
+# such file or directory" on every new shell after uninstall removed
+# ~/.cargo — because rustup, by default, appends a PATH-modifying block
+# to .bashrc/.profile during install, and uninstall.sh correctly removes
+# ~/.rustup and ~/.cargo but has no safe way to surgically undo an edit
+# to a file it does not own. --no-modify-path stops the write at the
+# source instead: this process still gets cargo/rustc on its OWN PATH
+# via the explicit `. "$HOME/.cargo/env"` immediately after (checked
+# separately below), it just never becomes a permanent side effect of
+# every future login shell.
+rustup_init_body="$(sed -n '/^install_rustup_noninteractive() {/,/^}/p' "$INSTALL_SH")"
+if grep -q -- '--no-modify-path' <<< "$rustup_init_body"; then
+  ok "install_rustup_noninteractive() invokes rustup-init with --no-modify-path (never edits .bashrc/.profile/.bash_profile)"
+else
+  fail "install_rustup_noninteractive() no longer passes --no-modify-path to rustup-init — a fresh install would silently re-introduce the dangling '.cargo/env: No such file or directory' shell-startup error after a later uninstall"
+fi
+if grep -qF '. "$HOME/.cargo/env"' <<< "$rustup_init_body"; then
+  ok "install_rustup_noninteractive() explicitly sources \$HOME/.cargo/env for its OWN process after rustup-init (--no-modify-path means nothing else will)"
+else
+  fail "install_rustup_noninteractive() no longer sources \$HOME/.cargo/env itself — with --no-modify-path this process would have no cargo/rustc on PATH at all"
+fi
+# Ownership-safety (task requirement: an operator-owned pre-existing
+# toolchain must never be removed by uninstall) is existing, unchanged
+# behavior — install_rustup_noninteractive() is only ever reached after
+# build_binaries_from_source() has already checked `command -v cargo`
+# and found none, so RUSTUP_INSTALLED_BY_SINGBOX_VPN is never marked
+# when Rust was already present.
+build_binaries_body="$(sed -n '/^build_binaries_from_source() {/,/^}/p' "$INSTALL_SH")"
+if grep -q 'if ! command -v cargo >/dev/null 2>&1; then' <<< "$build_binaries_body" \
+    && grep -q 'install_rustup_noninteractive' <<< "$build_binaries_body"; then
+  ok "install_rustup_noninteractive() (and the RUSTUP_INSTALLED_BY_SINGBOX_VPN ownership mark inside it) is only reached when cargo was NOT already present — an operator-owned toolchain is never marked for later removal"
+else
+  fail "build_binaries_from_source() no longer gates rustup installation behind a 'cargo already present' check — this could mark (and later remove) an operator-owned Rust toolchain"
+fi
+
+echo
 echo "--- static: uninstall.sh never touches any SSH-related firewall/service state ---"
 if grep -qi 'ssh' "$UNINSTALL_SH"; then
   fail "uninstall.sh contains an 'ssh'-related reference — review it: uninstall must never remove the SSH firewall allowance"
