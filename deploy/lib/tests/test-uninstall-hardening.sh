@@ -281,6 +281,23 @@ else
 fi
 
 echo
+echo "--- static: uninstall.sh removes the certbot renewal-hook's own lock file, not just the installer/vpn-admin locks ---"
+# Real-VPS finding: certbot-firewall-pre-hook.sh/certbot-firewall-post-hook.sh
+# flock a SINGBOX_VPN_CERTBOT_RENEWAL_LOCK file (default
+# /run/lock/singbox-vpn-certbot-renewal.lock) around every renewal
+# attempt. flock never deletes its own lock file, so it persists on disk
+# after any successful renewal — a host that renewed even once before
+# being uninstalled otherwise still shows it as leftover singbox-vpn
+# residue (deploy/almalinux/lifecycle-acceptance.sh's stage 19/27 residue
+# audits count exactly this file).
+if grep -q 'SINGBOX_VPN_CERTBOT_RENEWAL_LOCK' "$UNINSTALL_SH" \
+    && grep -q 'singbox-vpn-certbot-renewal.lock' "$UNINSTALL_SH"; then
+  ok "uninstall.sh removes the certbot renewal-hook lock file (honors a SINGBOX_VPN_CERTBOT_RENEWAL_LOCK override, defaults to the same path the hooks use)"
+else
+  fail "uninstall.sh does not remove the certbot renewal-hook's lock file — it will be reported as residue after any host that ever renewed a certificate"
+fi
+
+echo
 if [ "$failures" -gt 0 ]; then
   echo "$failures test(s) FAILED"
   exit 1
