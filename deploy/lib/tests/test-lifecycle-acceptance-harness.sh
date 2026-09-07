@@ -54,6 +54,17 @@ case "$cmd" in
     [ -f "$TMPDIR_TEST/mock_existing_install" ] && exit 0 || exit 1 ;;
   *os-release*) echo 'ID=almalinux'; exit 0 ;;
   *uname\ -m*) echo x86_64; exit 0 ;;
+  # Stage 5's post-reboot verification script: matched here, before ANY
+  # of the granular sing-box/systemctl/health-check.sh patterns further
+  # down, since this one opaque multi-check script contains several of
+  # those exact substrings itself (e.g. "is-active --quiet sing-box") —
+  # placed later, those patterns would intercept it first and this test
+  # scenario would never see the marker it's supposed to react to.
+  # Reports the same "everything healthy" marker the real script emits on
+  # success, so stage 5 recognizes it as a pass the same way a real
+  # healthy host would.
+  *"POST_REBOOT_ALL_OK"*|*"POST_REBOOT_FAILED_CHECKS"*)
+    echo "POST_REBOOT_ALL_OK"; exit 0 ;;
   *:*grep*) echo 1; exit 0 ;;
   # The burst-crash-until-failed compound command (stage 13b): a real
   # multi-line script containing "systemctl show -p MainPID --value
@@ -684,6 +695,35 @@ if grep -q 'ssh_run_long ' <<< "$run_install_abort_body"; then
   ok "run_install_abort_after_singbox() uses ssh_run_long"
 else
   fail "run_install_abort_after_singbox() does not use ssh_run_long"
+fi
+
+echo
+echo "--- stage 5 (reboot+health) names the specific check that failed, instead of one opaque [FAIL] ---"
+cat > "$MOCKBIN/ssh" <<'MOCKSSH_REBOOT'
+#!/bin/bash
+{ printf '%s\t' "$@"; echo; } >> "$SSH_LOG"
+cmd="${*: -1}"
+case "$cmd" in
+  true) exit 0 ;;
+  *os-release*) echo 'ID=almalinux'; exit 0 ;;
+  *uname\ -m*) echo x86_64; exit 0 ;;
+  # The real post-reboot script checks nginx among others; simulate
+  # nginx specifically having failed to come back up after reboot,
+  # while everything else in that script would have passed.
+  *"POST_REBOOT_ALL_OK"*|*"POST_REBOOT_FAILED_CHECKS"*)
+    echo "POST_REBOOT_FAILED_CHECKS: nginx"; exit 1 ;;
+  *) exit 0 ;;
+esac
+MOCKSSH_REBOOT
+chmod +x "$MOCKBIN/ssh"
+: > "$SSH_LOG"
+set +e
+reboot_out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --allow-destroy-existing-singbox-vpn-install 2>&1)"
+set -e
+if grep -qE '\[FAIL\]\[required\][[:space:]]+reboot \+ independent post-reboot verification[[:space:]]+\(.*nginx' <<< "$reboot_out"; then
+  ok "stage 5 names the specific failed check (nginx) instead of a blank/generic failure"
+else
+  fail "stage 5 did not name which post-reboot check failed: $(grep -A1 'reboot + independent post-reboot verification' <<< "$reboot_out")"
 fi
 
 echo
