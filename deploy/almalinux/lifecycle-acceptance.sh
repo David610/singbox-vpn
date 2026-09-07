@@ -47,6 +47,16 @@ CERT_REUSE_READY=0
 CERT_HOST=""
 CERT_CREATED_BY_GATE=0
 INITIAL_BASELINE_READY=0
+# Set to 1 for as long as stage 19's offline-uninstall network block (see
+# OFFLINE_BLOCK_REMOTE_FILE below) might still be active on the target, so
+# the EXIT/INT/TERM trap knows whether it needs to remove it as a safety
+# net against this script being interrupted mid-stage.
+OFFLINE_BLOCK_ACTIVE=0
+# Remote file recording the exact IPs stage 19 blocked, so the matching
+# unblock (whether from the normal code path or the interruption safety
+# net above) always removes precisely what was inserted. See the stage 19
+# comment for why re-resolving DNS for the delete is not safe here.
+OFFLINE_BLOCK_REMOTE_FILE="/tmp/singbox-vpn-lifecycle-offline-block-ips"
 WORKING_BASELINE_READY=0
 REINSTALL_READY=0
 BACKUP_READY=0
@@ -284,6 +294,13 @@ section() { echo; echo "=== $1 ==="; }
 CERTBOT_LOG_FILE=""
 cleanup_lifecycle_tmp() {
   [ -n "$CERTBOT_LOG_FILE" ] && rm -f "$CERTBOT_LOG_FILE" 2>/dev/null
+  # Safety net: if this script is interrupted between stage 19 applying
+  # the offline-uninstall network block and it removing that same block,
+  # don't leave the target permanently unable to reach GitHub. Reuses the
+  # exact recorded IPs, not a fresh DNS lookup (see stage 19).
+  if [ "$OFFLINE_BLOCK_ACTIVE" = "1" ]; then
+    ssh_run "while read -r ip; do [ -n \"\$ip\" ] && sudo iptables -D OUTPUT -d \"\$ip\" -j REJECT 2>/dev/null; done < $OFFLINE_BLOCK_REMOTE_FILE 2>/dev/null; rm -f $OFFLINE_BLOCK_REMOTE_FILE" >/dev/null 2>&1 || true
+  fi
   return 0
 }
 trap cleanup_lifecycle_tmp EXIT INT TERM
@@ -1338,7 +1355,24 @@ else
 fi
 
 section "19. uninstall completely (offline singbox-vpn-uninstall)"
-ssh_run 'sudo iptables -I OUTPUT -d github.com -j REJECT 2>/dev/null; sudo iptables -I OUTPUT -d raw.githubusercontent.com -j REJECT 2>/dev/null' >/dev/null 2>&1 || true
+# Block github.com/raw.githubusercontent.com's CURRENT addresses to prove
+# singbox-vpn-uninstall needs no network access at all. `iptables -I/-D -d
+# <hostname>` each perform their OWN independent DNS lookup at the moment
+# they run — both hostnames are round-robin DNS names with more than one
+# A record, so the lookup done for the matching -D below can resolve to a
+# DIFFERENT address than the one this -I used. When that happens, -D
+# matches nothing (iptables matches by IP, not name) and silently leaves
+# this -I rule in place forever, with every error here suppressed.
+# Reproduced for real: an orphaned REJECT rule for a single github.com IP
+# survived across separate lifecycle-acceptance.sh runs on a host with no
+# other iptables rules of its own, and broke install.sh's GitHub
+# downloads in a LATER, unrelated run in a way that looked exactly like a
+# flaky network blip. Resolve once into OFFLINE_BLOCK_REMOTE_FILE and
+# have the matching -D below (and the interrupted-run safety net in
+# cleanup_lifecycle_tmp) remove only those exact recorded IPs — never
+# re-resolve for the delete.
+ssh_run "getent ahosts github.com raw.githubusercontent.com 2>/dev/null | cut -d' ' -f1 | sort -u > $OFFLINE_BLOCK_REMOTE_FILE; while read -r ip; do [ -n \"\$ip\" ] && sudo iptables -I OUTPUT -d \"\$ip\" -j REJECT 2>/dev/null; done < $OFFLINE_BLOCK_REMOTE_FILE" >/dev/null 2>&1 || true
+OFFLINE_BLOCK_ACTIVE=1
 if ssh_run 'test -x /opt/singbox-vpn/bin/singbox-vpn-uninstall' 2>/dev/null; then
   if run_uninstall_classified "singbox-vpn-uninstall --yes (offline, local binary only)"; then
     # Stage 19 PASS requires more than a zero exit code: verify the
@@ -1355,7 +1389,8 @@ elif ssh_run '[ ! -e /etc/vpn ] && [ ! -e /opt/singbox-vpn ] && [ ! -e /var/lib/
 else
   fail_required "offline uninstall available for partial state [UNINSTALL_MISSING_BINARY]" "(partial singbox-vpn state exists but local uninstaller is missing)"
 fi
-ssh_run 'sudo iptables -D OUTPUT -d github.com -j REJECT 2>/dev/null; sudo iptables -D OUTPUT -d raw.githubusercontent.com -j REJECT 2>/dev/null' >/dev/null 2>&1 || true
+ssh_run "while read -r ip; do [ -n \"\$ip\" ] && sudo iptables -D OUTPUT -d \"\$ip\" -j REJECT 2>/dev/null; done < $OFFLINE_BLOCK_REMOTE_FILE 2>/dev/null; rm -f $OFFLINE_BLOCK_REMOTE_FILE" >/dev/null 2>&1 || true
+OFFLINE_BLOCK_ACTIVE=0
 
 section "20. SSH after uninstall (new connection, port $SSH_PORT)"
 if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH still active post-uninstall"; else fail_required "SSH still active post-uninstall"; fi
