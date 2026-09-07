@@ -1541,6 +1541,33 @@ install_rustup_noninteractive() {
   . "$HOME/.cargo/env"
 }
 
+# `cargo build` below silently triggers rustup's OWN auto-install of
+# whatever toolchain rust-toolchain.toml pins (e.g. 1.94.1) the first time
+# it runs against this repo checkout, if that exact toolchain isn't already
+# present — a normal, documented rustup behavior, not a bug in cargo. But
+# that auto-install is rustup's internal downloader, not curl, so none of
+# this script's stall/timeout protection (CURL_NET_FLAGS, the explicit
+# `timeout 900` around install_rustup_noninteractive's own rustup-init
+# call) applies to it. Reproduced directly on a real VPS: cargo build hung
+# indefinitely mid "downloading 5 components" with no error at all, until
+# an unrelated OUTER timeout (the lifecycle test harness's own SSH
+# deadline) eventually killed the whole run — a working network before and
+# after, just a stalled toolchain-component fetch in between. Pre-install
+# the pinned toolchain here explicitly, bounded and retried the same way
+# every other network fetch in this installer already is, so a stall here
+# fails clearly and retries instead of hanging the entire install.
+ensure_pinned_toolchain_installed() {
+  command -v rustup >/dev/null 2>&1 || return 0
+  local attempt
+  for attempt in 1 2 3; do
+    if ( cd "$REPO_ROOT" && timeout 900 rustup toolchain install ); then
+      return 0
+    fi
+    log "rustup toolchain install (attempt $attempt/3) failed or exceeded its 15-minute deadline; retrying..."
+  done
+  die "could not install the Rust toolchain pinned by rust-toolchain.toml after 3 attempts — see rustup output above. This is very likely a transient network stall talking to static.rust-lang.org, not a broken pin; re-running the installer usually succeeds."
+}
+
 build_binaries_from_source() {
   # A `curl | sudo bash` session starts with a minimal PATH that never
   # includes `~/.cargo/bin`, so `command -v cargo` fails even when an
@@ -1557,6 +1584,7 @@ build_binaries_from_source() {
   if ! command -v cargo >/dev/null 2>&1; then
     install_rustup_noninteractive
   fi
+  ensure_pinned_toolchain_installed
   log "building release binaries from source (admin, subscription)..."
   # --locked matches every CI build/test job: without it, this install-time
   # build could silently resolve a different dependency set than the one
