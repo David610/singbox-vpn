@@ -1270,12 +1270,23 @@ else
   # `eval` (not string-interpolating a nested `bash -c` argument) so `$`
   # inside CLASS_BODY is expanded exactly once, by this subshell, using
   # these values, never pre-expanded by the caller.
+  # These four are consumed by $CLASS_BODY via `eval`, which shellcheck
+  # cannot see into (it's the real classification logic extracted from
+  # lifecycle-acceptance.sh, not a static string), so it reports both
+  # "appears unused" on these assignments and "referenced but not
+  # assigned" on certbot_class below. Real usage — proven by the
+  # classification assertions that follow actually passing.
   run_class_scenario() (
+    # shellcheck disable=SC2034
     sentinel_present="$1"
+    # shellcheck disable=SC2034
     sentinel_rc="$2"
+    # shellcheck disable=SC2034
     certbot_dry_rc="$3"
+    # shellcheck disable=SC2034
     zero_renewals="$4"
     eval "$CLASS_BODY"
+    # shellcheck disable=SC2154
     echo "$certbot_class"
   )
   class_all_ok=1
