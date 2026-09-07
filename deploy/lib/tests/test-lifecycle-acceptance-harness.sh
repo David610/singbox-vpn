@@ -162,7 +162,7 @@ run_harness() {
 echo "--- destructive opt-in is required ---"
 rc=0
 out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test 2>&1)" || rc=$?
-if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'i-understand-this-is-destructive'; then
+if [ "$rc" -ne 0 ] && grep -qi 'i-understand-this-is-destructive' <<< "$out"; then
   ok "refuses to run without --i-understand-this-is-destructive"
 else
   fail "did not refuse without destructive opt-in (rc=$rc)"
@@ -173,35 +173,35 @@ echo
 echo "--- --host is required ---"
 rc=0
 out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --i-understand-this-is-destructive 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] && echo "$out" | grep -qi -- '--host is required' \
+[ "$rc" -ne 0 ] && grep -qi -- '--host is required' <<< "$out" \
   && ok "refuses to run without --host" || fail "did not refuse without --host"
 
 echo
 echo "--- localhost is refused even with destructive opt-in ---"
 rc=0
 out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@localhost --i-understand-this-is-destructive 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] && echo "$out" | grep -qi 'localhost' \
+[ "$rc" -ne 0 ] && grep -qi 'localhost' <<< "$out" \
   && ok "refuses localhost target" || fail "did not refuse localhost target"
 
 echo
 echo "--- production host (SINGBOX_VPN_PRODUCTION_HOST) is refused ---"
 rc=0
 out="$(PATH="$MOCKBIN:$PATH" SINGBOX_VPN_PRODUCTION_HOST=prod.example.test "$SCRIPT" --host root@prod.example.test --i-understand-this-is-destructive 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] && echo "$out" | grep -qi 'SINGBOX_VPN_PRODUCTION_HOST' \
+[ "$rc" -ne 0 ] && grep -qi 'SINGBOX_VPN_PRODUCTION_HOST' <<< "$out" \
   && ok "refuses SINGBOX_VPN_PRODUCTION_HOST target" || fail "did not refuse the configured production host"
 
 echo
 echo "--- non-numeric --ssh-port is rejected ---"
 rc=0
 out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --ssh-port abc 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] && echo "$out" | grep -qi 'ssh-port must be numeric' \
+[ "$rc" -ne 0 ] && grep -qi 'ssh-port must be numeric' <<< "$out" \
   && ok "rejects a non-numeric --ssh-port" || fail "did not reject a non-numeric --ssh-port"
 
 echo
 echo "--- malformed --version is rejected before SSH ---"
 rc=0
 out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --version 'main;id' 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] && echo "$out" | grep -qi 'immutable vX.Y.Z release tag' \
+[ "$rc" -ne 0 ] && grep -qi 'immutable vX.Y.Z release tag' <<< "$out" \
   && ok "rejects a mutable or shell-unsafe --version" || fail "did not reject malformed --version"
 
 echo
@@ -210,7 +210,7 @@ for bad_domain in 'example.com;touch /tmp/pwned' '$(touch /tmp/pwned)' 'foo`touc
   rc=0
   : > "$SSH_LOG"
   out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --domain "$bad_domain" 2>&1)" || rc=$?
-  if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'not a syntactically valid hostname\|contains characters that are never valid'; then
+  if [ "$rc" -ne 0 ] && grep -qi 'not a syntactically valid hostname\|contains characters that are never valid' <<< "$out"; then
     ok "rejects malicious --domain '$bad_domain' before any SSH call"
   else
     fail "did not reject malicious --domain '$bad_domain' (rc=$rc): $out"
@@ -226,7 +226,7 @@ for bad_ref in 'main;id' '$(id)' 'main`id`' '../../etc/passwd' '-rf' 'a b'; do
   rc=0
   : > "$SSH_LOG"
   out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --update-to-ref "$bad_ref" 2>&1)" || rc=$?
-  if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'not a syntactically valid git ref\|must not start with'; then
+  if [ "$rc" -ne 0 ] && grep -qi 'not a syntactically valid git ref\|must not start with' <<< "$out"; then
     ok "rejects malicious --update-to-ref '$bad_ref' before any SSH call"
   else
     fail "did not reject malicious --update-to-ref '$bad_ref' (rc=$rc): $out"
@@ -257,7 +257,7 @@ set +e
 out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1)"
 rc=$?
 set -e
-if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'already has an existing singbox-vpn installation'; then
+if [ "$rc" -ne 0 ] && grep -qi 'already has an existing singbox-vpn installation' <<< "$out"; then
   ok "refuses to destroy a target with an existing singbox-vpn install (--i-understand-this-is-destructive alone is not enough)"
 else
   fail "did not refuse a target with an existing singbox-vpn install (rc=$rc): $out"
@@ -275,7 +275,7 @@ set +e
 out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --allow-destroy-existing-singbox-vpn-install --skip-reboot 2>&1)"
 set -e
 rm -f "$TMPDIR_TEST/mock_existing_install"
-if echo "$out" | grep -qi 'destruction explicitly authorized via --allow-destroy-existing-singbox-vpn-install'; then
+if grep -qi 'destruction explicitly authorized via --allow-destroy-existing-singbox-vpn-install' <<< "$out"; then
   ok "--allow-destroy-existing-singbox-vpn-install authorizes proceeding against a detected existing install"
 else
   fail "the second override did not authorize proceeding: $out"
@@ -294,26 +294,26 @@ set +e
 out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1)"
 set -e
 rm -f "$TMPDIR_TEST/mock_missing_curl"
-if echo "$out" | grep -qE '\[FAIL\]\[required\][[:space:]]+bootstrap prerequisites[[:space:]]+missing:.*curl'; then
+if grep -qE '\[FAIL\]\[required\][[:space:]]+bootstrap prerequisites[[:space:]]+missing:.*curl' <<< "$out"; then
   ok "missing curl is reported as one clear '[FAIL][required] bootstrap prerequisites ... missing: curl' line"
 else
-  fail "missing curl was not reported as a clear bootstrap-prerequisite failure: $(echo "$out" | grep -i 'bootstrap\|curl' | head -5)"
+  fail "missing curl was not reported as a clear bootstrap-prerequisite failure: $(grep -i 'bootstrap\|curl' <<< "$out" | head -5)"
 fi
-if echo "$out" | grep -qE '\[BLOCKED\][[:space:]]+install\.sh \(clean\)'; then
+if grep -qE '\[BLOCKED\][[:space:]]+install\.sh \(clean\)' <<< "$out"; then
   ok "install.sh (clean) is reported BLOCKED, not attempted, once bootstrap prerequisites are known missing"
 else
-  fail "install.sh (clean) was not reported BLOCKED after a missing-curl bootstrap failure: $(echo "$out" | grep -i 'install.sh (clean)')"
+  fail "install.sh (clean) was not reported BLOCKED after a missing-curl bootstrap failure: $(grep -i 'install.sh (clean)' <<< "$out")"
 fi
 if grep -qE 'curl.*install\.sh.*\|.*bash' "$SSH_LOG"; then
   fail "the curl|bash install pipeline was invoked against a target already known to be missing curl"
 else
   ok "the curl|bash install pipeline is never attempted once stage 0b knows curl is missing"
 fi
-required_fail_count="$(echo "$out" | grep -cE '\[FAIL\]\[required\]' || true)"
+required_fail_count="$(grep -cE '\[FAIL\]\[required\]' <<< "$out" || true)"
 if [ "$required_fail_count" -le 2 ]; then
   ok "one root cause (missing curl) produces at most $required_fail_count [required] failure(s), not a cascade of ~20"
 else
-  fail "missing curl cascaded into $required_fail_count separate [required] failures instead of blocking dependents:"; echo "$out" | grep -E '\[FAIL\]\[required\]'
+  fail "missing curl cascaded into $required_fail_count separate [required] failures instead of blocking dependents:"; grep -E '\[FAIL\]\[required\]' <<< "$out"
 fi
 
 echo
@@ -562,10 +562,128 @@ set +e
 noop_out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --skip-reboot --update-to-ref main 2>&1)"
 noop_rc=$?
 set -e
-if [ "$noop_rc" -ne 0 ] && echo "$noop_out" | grep -qi 'command succeeded but version-state did not change'; then
+if [ "$noop_rc" -ne 0 ] && grep -qi 'command succeeded but version-state did not change' <<< "$noop_out"; then
   ok "harness detects a no-op update (identical before/after version-state) and fails it"
 else
   fail "harness did not detect a no-op update as a failure (rc=$noop_rc)"
+fi
+
+echo
+echo "--- stage 27 residue audit: a baseline that was already dirty (pre-existing leftover state) must not fail a run that leaves the host CLEANER than it found it ---"
+cat > "$MOCKBIN/ssh" <<'MOCKSSH_RESIDUE'
+#!/bin/bash
+{ printf '%s\t' "$@"; echo; } >> "$SSH_LOG"
+cmd="${*: -1}"
+COUNTER_FILE="$TMPDIR_TEST/residue_call_count"
+case "$cmd" in
+  true) exit 0 ;;
+  *os-release*) echo 'ID=almalinux'; exit 0 ;;
+  *uname\ -m*) echo x86_64; exit 0 ;;
+  *"opt_singbox-vpn="*)
+    n=0
+    [ -f "$COUNTER_FILE" ] && n="$(cat "$COUNTER_FILE")"
+    n=$((n + 1))
+    echo "$n" > "$COUNTER_FILE"
+    if [ "$n" -eq 1 ]; then
+      # stage 1b (host baseline, captured BEFORE this run's own install):
+      # dirty on purpose — simulates a target this run was explicitly
+      # authorized to reuse (--allow-destroy-existing-singbox-vpn-install,
+      # stage 0a) that already had /var/lib/singbox-vpn from an earlier,
+      # unrelated interrupted test.
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=1\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=0\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    else
+      # stage 27 (after the final uninstall): CLEANER than baseline —
+      # this run's own uninstall removed the leftover /var/lib/singbox-vpn
+      # that baseline had. That is a strictly better outcome than
+      # baseline, not residue, and must not fail the gate.
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=0\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=0\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    fi
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCKSSH_RESIDUE
+chmod +x "$MOCKBIN/ssh"
+: > "$SSH_LOG"
+rm -f "$TMPDIR_TEST/residue_call_count"
+set +e
+residue_out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --allow-destroy-existing-singbox-vpn-install --skip-reboot 2>&1)"
+set -e
+if grep -qE '\[PASS\][[:space:]]+no NEW singbox-vpn-owned' <<< "$residue_out"; then
+  ok "a dirty baseline that this run cleaned up (not worsened) is reported PASS, not exact-equality FAIL"
+else
+  fail "stage 27 did not PASS a run that left the host cleaner than its (dirty) baseline: $(grep -i 'residue' <<< "$residue_out")"
+fi
+if grep -qE '\[FAIL\]\[required\][[:space:]]+new singbox-vpn-owned residue' <<< "$residue_out"; then
+  fail "stage 27 reported new-residue FAIL even though after-uninstall state was a strict subset of (dirty) baseline"
+fi
+
+echo
+echo "--- stage 27 residue audit: a field that is NEW after uninstall (not present at baseline) must still fail ---"
+cat > "$MOCKBIN/ssh" <<'MOCKSSH_RESIDUE2'
+#!/bin/bash
+{ printf '%s\t' "$@"; echo; } >> "$SSH_LOG"
+cmd="${*: -1}"
+COUNTER_FILE="$TMPDIR_TEST/residue_call_count"
+case "$cmd" in
+  true) exit 0 ;;
+  *os-release*) echo 'ID=almalinux'; exit 0 ;;
+  *uname\ -m*) echo x86_64; exit 0 ;;
+  *"opt_singbox-vpn="*)
+    n=0
+    [ -f "$COUNTER_FILE" ] && n="$(cat "$COUNTER_FILE")"
+    n=$((n + 1))
+    echo "$n" > "$COUNTER_FILE"
+    if [ "$n" -eq 1 ]; then
+      # Clean baseline: nothing pre-existing.
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=0\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=0\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    else
+      # After "uninstall": nginx_conf residue that was NOT in the
+      # baseline — a real leak this run's uninstall failed to remove.
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=0\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=1\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    fi
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCKSSH_RESIDUE2
+chmod +x "$MOCKBIN/ssh"
+: > "$SSH_LOG"
+rm -f "$TMPDIR_TEST/residue_call_count"
+set +e
+newresidue_out="$(PATH="$MOCKBIN:$PATH" "$SCRIPT" --host root@disposable-test --i-understand-this-is-destructive --allow-destroy-existing-singbox-vpn-install --skip-reboot 2>&1)"
+set -e
+if grep -qE '\[FAIL\]\[required\][[:space:]]+new singbox-vpn-owned residue.*nginx_conf' <<< "$newresidue_out"; then
+  ok "a field genuinely new after uninstall (absent at baseline) is still correctly reported as residue and fails"
+else
+  fail "stage 27 did not catch genuinely new residue (nginx_conf) introduced beyond baseline: $(grep -i 'residue' <<< "$newresidue_out")"
+fi
+
+echo
+echo "--- run_install()/run_install_abort_after_singbox()/dev-rebuild use the long SSH timeout, not the short per-probe one ---"
+# Grep the file directly rather than piping a captured variable through
+# `echo ... | grep -q`: under `set -o pipefail` (this file's own shebang
+# options), `grep -q` exiting early on an easy match can close its stdin
+# before `echo` finishes writing a large (~800-line) string, killing
+# `echo` with SIGPIPE — and pipefail then reports THAT non-zero exit
+# instead of grep's own successful match, turning a real pass into a
+# flaky false FAIL (reproduced on a real CI runner). A here-string is
+# fully materialized by bash before the reader starts, so it has no such
+# race.
+if grep -qE '^ssh_run_long\(\) \{ timeout [0-9]+ ssh' "$SCRIPT"; then
+  ok "ssh_run_long() exists with its own (longer) timeout"
+else
+  fail "ssh_run_long() is missing — a from-source dev-channel install/update can legitimately run past ssh_run()'s short timeout and would be falsely reported as failed"
+fi
+run_install_body="$(sed -n '/^run_install() {/,/^}/p' "$SCRIPT")"
+if grep -q 'ssh_run_long ' <<< "$run_install_body"; then
+  ok "run_install() uses ssh_run_long (a from-source dev-channel build can run well past a short timeout)"
+else
+  fail "run_install() does not use ssh_run_long — a slow-but-correct from-source install would be falsely reported as [FAIL]"
+fi
+run_install_abort_body="$(sed -n '/^run_install_abort_after_singbox() {/,/^}/p' "$SCRIPT")"
+if grep -q 'ssh_run_long ' <<< "$run_install_abort_body"; then
+  ok "run_install_abort_after_singbox() uses ssh_run_long"
+else
+  fail "run_install_abort_after_singbox() does not use ssh_run_long"
 fi
 
 echo

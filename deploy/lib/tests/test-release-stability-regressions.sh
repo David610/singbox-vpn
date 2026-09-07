@@ -43,7 +43,7 @@ fi
 # apply its own retry policy. That outer curl must retry too, and its pipeline
 # must use pipefail so a failed curl cannot be hidden by an empty `bash` exit 0.
 if grep -q 'REMOTE_BOOTSTRAP_CURL_FLAGS=.*--retry-connrefused' "$LIFECYCLE" \
-    && grep -q 'ssh_run "set -o pipefail; curl -fsSL \$REMOTE_BOOTSTRAP_CURL_FLAGS' "$LIFECYCLE"; then
+    && grep -qE 'ssh_run(_long)? "set -o pipefail; curl -fsSL \$REMOTE_BOOTSTRAP_CURL_FLAGS' "$LIFECYCLE"; then
   ok "lifecycle bootstrap fetch retries ECONNREFUSED and fails the pipeline closed"
 else
   fail "lifecycle outer curl can still flake or false-PASS when bootstrap download fails"

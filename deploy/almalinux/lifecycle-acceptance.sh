@@ -176,6 +176,18 @@ fi
 
 SSH_OPTS=(-p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 ssh_run() { timeout 180 ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
+# For calls that can legitimately run a from-source Rust build on the
+# target (installing an unpinned dev-channel ref with no prebuilt release
+# available means install.sh/update.sh --dev-rebuild compile the whole
+# workspace, plus a rustup toolchain install on a fresh host) — 180s is
+# nowhere near enough on a small (~2GB RAM) disposable VPS. Observed
+# directly: a real run's stage 2 install hit the 180s ssh_run timeout
+# mid-compile and was reported [FAIL], while the build kept running on
+# the remote side after the local ssh client was killed and had already
+# finished by the very next stage (its idempotent re-run showed "Finished
+# ... in 0.09s" — a from-cache no-op — instead of recompiling). That is a
+# false FAIL from an impatient controller, not a real installer failure.
+ssh_run_long() { timeout 1200 ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
 ssh_reconnect() {
   timeout 30 ssh -o ControlPath=none -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=15 \
     -o StrictHostKeyChecking=accept-new "$HOST" "$@"
@@ -279,11 +291,11 @@ cleanup_cert_snapshot() {
 }
 
 run_install() {
-  ssh_run "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
+  ssh_run_long "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
 }
 
 run_install_abort_after_singbox() {
-  ssh_run "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
+  ssh_run_long "set -o pipefail; curl -fsSL $REMOTE_BOOTSTRAP_CURL_FLAGS https://raw.githubusercontent.com/David610/singbox-vpn/$BOOTSTRAP_REF/install.sh | sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox $INSTALL_SOURCE_ENV REALITY_HANDSHAKE_SERVER=www.google.com SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 bash -s -- $(install_args_quoted)"
 }
 
 echo "singbox-vpn destructive lifecycle acceptance gate"
@@ -679,7 +691,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   elif [ -n "$UPDATE_TO_REF" ]; then
     section "16. safe update path -> $UPDATE_TO_REF (--dev-rebuild; transactional updater machinery only)"
     version_before="$(ssh_run 'sudo /opt/singbox-vpn/bin/vpn-admin --version 2>/dev/null || sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
-    if ssh_run "curl -fsSL --connect-timeout 10 --max-time 120 --retry 5 --retry-delay 2 --retry-connrefused -o /tmp/singbox-vpn-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$(printf '%q' "$UPDATE_TO_REF") \
+    if ssh_run_long "curl -fsSL --connect-timeout 10 --max-time 120 --retry 5 --retry-delay 2 --retry-connrefused -o /tmp/singbox-vpn-update-ref.tar.gz https://codeload.github.com/David610/singbox-vpn/tar.gz/refs/heads/$(printf '%q' "$UPDATE_TO_REF") \
         && rm -rf /tmp/singbox-vpn-update-ref && mkdir -p /tmp/singbox-vpn-update-ref \
         && tar -xzf /tmp/singbox-vpn-update-ref.tar.gz -C /tmp/singbox-vpn-update-ref --strip-components=1 \
         && sudo rsync -a --delete --exclude target --exclude .git /tmp/singbox-vpn-update-ref/ /opt/singbox-vpn/ \
@@ -692,7 +704,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
 
     section "16b. injected failed update -> rollback proof (failure injected after SWITCH begins)"
     pre_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
-    if ssh_run "sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/singbox-vpn/deploy/almalinux/update.sh --dev-rebuild" 2>/dev/null; then fail_required "failed update aborted as expected" "(expected non-zero exit, got success)"; else pass "failed update aborted as expected"; fi
+    if ssh_run_long "sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/singbox-vpn/deploy/almalinux/update.sh --dev-rebuild" 2>/dev/null; then fail_required "failed update aborted as expected" "(expected non-zero exit, got success)"; else pass "failed update aborted as expected"; fi
     if ssh_reconnect 'systemctl is-active --quiet sshd && systemctl is-active --quiet sing-box && systemctl is-active --quiet vpn-subscription && sudo vpn-admin doctor --protocol' 2>/dev/null; then
       post_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
       if [ "$pre_rollback_version" = "$post_rollback_version" ]; then pass "rollback restored the previous working release (prior binary/schema/units/config/services/protocol/SSH)"; else fail_required "rollback restored prior state" "(install-state.json differs)"; fi
@@ -798,10 +810,32 @@ RESIDUE="$(ssh_run '
   echo "listeners=$(ss -ltnp 2>/dev/null | grep -Ec "sing-box|vpn-subscription")"
   echo "locks=$(ls /run/lock/singbox-vpn* 2>/dev/null | wc -l)"
 ' 2>/dev/null || true)"
-if [ "$RESIDUE" = "$BASELINE" ]; then
-  pass "no singbox-vpn-owned runtime/config/state residue vs. pre-install host baseline"
+# Field-by-field, not exact-string-equality: the "baseline" captured at
+# stage 1b can itself already be dirty — e.g. a target this harness
+# authorized destroying via --allow-destroy-existing-singbox-vpn-install
+# (stage 0a) legitimately has singbox-vpn state BEFORE this run's own
+# clean install ever happens, so the true baseline reflects that. If this
+# run's uninstall cleans a field to LESS than that dirty baseline (e.g.
+# var_lib_singbox-vpn 1 -> 0), that is strictly better than baseline, not
+# residue — exact-equality would wrongly fail a run that left the host
+# cleaner than it found it. Only flag a field that is HIGHER after this
+# run than it was at baseline: something this run's uninstall left behind
+# that baseline did not already have.
+new_residue=""
+while IFS='=' read -r field after_val; do
+  [ -n "$field" ] || continue
+  baseline_val="$(printf '%s\n' "$BASELINE" | awk -F= -v k="$field" '$1==k{print $2; exit}')"
+  baseline_val="${baseline_val:-0}"
+  if [[ "$after_val" =~ ^[0-9]+$ ]] && [[ "$baseline_val" =~ ^[0-9]+$ ]] && [ "$after_val" -gt "$baseline_val" ]; then
+    new_residue="$new_residue $field(baseline=$baseline_val,after=$after_val)"
+  fi
+done <<RESIDUE_FIELDS
+$RESIDUE
+RESIDUE_FIELDS
+if [ -z "$new_residue" ]; then
+  pass "no NEW singbox-vpn-owned runtime/config/state residue vs. pre-install host baseline"
 else
-  fail_required "no singbox-vpn-owned residue vs. pre-install host baseline" "(baseline: $BASELINE | after uninstall: $RESIDUE)"
+  fail_required "new singbox-vpn-owned residue introduced beyond pre-install host baseline" "($new_residue | full baseline: $BASELINE | full after-uninstall: $RESIDUE)"
 fi
 
 section "manual-only / out-of-scope gates (cannot be automated here — UNVERIFIED, not PASS)"
