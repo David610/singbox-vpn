@@ -14,6 +14,8 @@ name: VPS release acceptance
 #
 # Required secrets (repository or environment scoped):
 #   VPS_ACCEPTANCE_SSH_KEY   private key for the target host's root/sudo user
+#                           Must be a dedicated, unencrypted CI key because
+#                           this workflow is intentionally non-interactive.
 # Optional secrets:
 #   VPS_ACCEPTANCE_PRODUCTION_HOST   hostname/IP this workflow must refuse to
 #                                    target (belt-and-suspenders alongside the
@@ -118,7 +120,23 @@ jobs:
           umask 077
           printf '%s\n' "$SSH_KEY" > ~/.ssh/vps_acceptance_key
           chmod 600 ~/.ssh/vps_acceptance_key
-          eval "$(ssh-agent -s)" >> "$GITHUB_ENV"
+
+          # Acceptance is headless. Refuse encrypted/passphrase-protected keys
+          # explicitly instead of letting ssh-add prompt on a runner with no TTY.
+          if ! ssh-keygen -y -P '' -f ~/.ssh/vps_acceptance_key >/dev/null 2>&1; then
+            echo "::error::VPS_ACCEPTANCE_SSH_KEY must be a dedicated unencrypted CI key; passphrase-protected keys cannot be used by this non-interactive workflow." >&2
+            exit 1
+          fi
+
+          # ssh-agent prints a human-readable `Agent pid ...` line. Do not append
+          # that raw stdout to GITHUB_ENV (GitHub treats it as malformed env
+          # syntax). Start the agent quietly and persist only the two actual
+          # environment assignments needed by subsequent workflow steps.
+          eval "$(ssh-agent -s)" >/dev/null
+          {
+            echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK"
+            echo "SSH_AGENT_PID=$SSH_AGENT_PID"
+          } >> "$GITHUB_ENV"
           ssh-add ~/.ssh/vps_acceptance_key
 
       - name: Run the destructive lifecycle acceptance gate
