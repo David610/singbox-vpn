@@ -615,12 +615,18 @@ if [ -d "$STATE_DIR_ROOT" ]; then
 fi
 # perf-tuning.sh's sysctl output logs are mktemp-created (never a fixed
 # /tmp path — see deploy/lib/perf-tuning.sh) and already self-cleaned, so
-# there is nothing named to remove here besides the two lock files:
-# install.sh's own installer lock, and vpn-admin's separate operational
-# lock (also used by update.sh and the certbot deploy hook — see
-# deploy/almalinux/certbot-deploy-hook.sh).
+# there is nothing named to remove here besides three lock files:
+# install.sh's own installer lock, vpn-admin's separate operational lock
+# (also used by update.sh and the certbot deploy hook — see
+# deploy/almalinux/certbot-deploy-hook.sh), and the certbot
+# pre/post-hook's own renewal-transition lock (certbot-firewall-pre-hook.sh
+# / certbot-firewall-post-hook.sh, SINGBOX_VPN_CERTBOT_RENEWAL_LOCK) —
+# left behind by design after ANY successful certbot renewal (flock does
+# not delete its own lock file), so a host that ever renewed even once
+# before being uninstalled would otherwise still show this as residue.
 rm -f /run/lock/singbox-vpn-installer.lock 2>/dev/null || true
 rm -f /run/lock/singbox-vpn.lock 2>/dev/null || true
+rm -f "${SINGBOX_VPN_CERTBOT_RENEWAL_LOCK:-/run/lock/singbox-vpn-certbot-renewal.lock}" 2>/dev/null || true
 
 # The persistent source tree — remove it last, since this script itself
 # very likely lives inside it (/opt/singbox-vpn/deploy/almalinux/uninstall.sh).

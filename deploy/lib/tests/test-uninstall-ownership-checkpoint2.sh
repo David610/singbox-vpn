@@ -305,7 +305,7 @@ fi
 # ---------------------------------------------------------------------
 echo
 echo "--- static: OPT_SINGBOX_VPN_PRE_EXISTED (and unit PRE_EXISTED facts) are cached BEFORE STATE_DIR_ROOT is removed ---"
-tail_body="$(tail -n 120 "$UNINSTALL_SH")"
+tail_body="$(tail -n 150 "$UNINSTALL_SH")"
 cache_line="$(echo "$tail_body" | grep -n 'opt_singbox_vpn_pre_existed="\$(ownership_get OPT_SINGBOX_VPN_PRE_EXISTED' | head -n1 | cut -d: -f1)"
 rm_line="$(echo "$tail_body" | grep -n 'rm -rf "\$STATE_DIR_ROOT"' | head -n1 | cut -d: -f1)"
 if [ -n "$cache_line" ] && [ -n "$rm_line" ] && [ "$cache_line" -lt "$rm_line" ]; then
