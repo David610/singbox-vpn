@@ -1991,8 +1991,8 @@ fn cmd_user_create(
             "SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS is set — the subscription URL, \
              provisioning URL, and QR code are suppressed below because they ARE the \
              credential (this is an automated/CI run, not an interactive onboarding \
-             session; re-run without this variable, or use `vpn-admin user rotate-token \
-             {id}` interactively, to see the real value)."
+             session; re-run without this variable, or use `vpn-admin user rotate-token` \
+             on the User ID shown above interactively, to see the real value)."
         );
         println!("credential generated: yes");
         println!("subscription URL generated: yes");
