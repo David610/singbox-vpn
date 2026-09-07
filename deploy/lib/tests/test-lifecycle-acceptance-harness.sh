@@ -37,6 +37,11 @@ cat > "$MOCKBIN/ssh" <<'MOCKSSH'
 cmd="${*: -1}"
 STATE_FILE="$TMPDIR_TEST/singbox_state"
 singbox_state() { cat "$STATE_FILE" 2>/dev/null || echo active; }
+WATCHDOG_TIMER_STATE_FILE="$TMPDIR_TEST/watchdog_timer_state"
+# Defaults to "active": a freshly installed host has this timer enabled
+# (WantedBy=timers.target); a scenario that needs it pre-set to inactive
+# writes "inactive" to this file before calling run_harness.
+watchdog_timer_state() { cat "$WATCHDOG_TIMER_STATE_FILE" 2>/dev/null || echo active; }
 case "$cmd" in
   true) exit 0 ;;
   # Stage 0a's existing-installation guard: matched BEFORE any broader
@@ -65,6 +70,21 @@ case "$cmd" in
   # healthy host would.
   *"POST_REBOOT_ALL_OK"*|*"POST_REBOOT_FAILED_CHECKS"*)
     echo "POST_REBOOT_ALL_OK"; exit 0 ;;
+  # Stage 15's entire scratch-user procedure is ONE opaque multi-line
+  # remote script (one ssh_run call) — matched here, BEFORE the generic
+  # "*:*grep*" catch-all just below, which would otherwise intercept it
+  # first: the script's own `grep -o "\"id\": ..."` pattern text contains
+  # a literal colon followed later by the `user list | grep -q` call,
+  # satisfying that catch-all and short-circuiting the whole block to a
+  # bare "exit 0". The happy-path outcome here (used by the end-to-end
+  # "stage 15 reports PASS" assertion) is exactly that: success. The
+  # script's OWN create/parse-id classification logic is exercised for
+  # real elsewhere (see "stage 15's OWN parsing pipeline" below), which
+  # extracts and directly executes the real embedded script body — a
+  # mocked ssh can only ever fake this block's end result, never its
+  # internal grep/sed behavior, since ssh here never actually executes
+  # remote text.
+  *"cleanup_scratch"*) exit 0 ;;
   *:*grep*) echo 1; exit 0 ;;
   # The burst-crash-until-failed compound command (stage 13b): a real
   # multi-line script containing "systemctl show -p MainPID --value
@@ -81,6 +101,31 @@ case "$cmd" in
   *"last_killed"*)
     echo failed > "$STATE_FILE"
     exit 0 ;;
+  # The stage 13b suspend check: a real multi-line script that stops the
+  # timer, reads its own ActiveState back, echoes it, then asserts
+  # inactive. Matched on the literal "stop vpn-service-watchdog.timer"
+  # text — BEFORE the generic is-active/timer patterns below — so this
+  # one opaque invocation can flip the shared timer-state file and print
+  # the same "ActiveState=..." line the real remote script would.
+  *"stop vpn-service-watchdog.timer"*)
+    echo inactive > "$WATCHDOG_TIMER_STATE_FILE"
+    echo "ActiveState=inactive"
+    exit 0 ;;
+  # The stage 13b re-arm check: `systemctl start ... && is-active --quiet
+  # ...`. Matched before the standalone is-active pattern below for the
+  # same reason as above.
+  *"start vpn-service-watchdog.timer"*)
+    echo active > "$WATCHDOG_TIMER_STATE_FILE"
+    exit 0 ;;
+  # The pre-test "was it active before" probe (a bare is-active, no
+  # stop/start alongside it) — reflects whatever state a scenario
+  # pre-seeded via $WATCHDOG_TIMER_STATE_FILE, defaulting to active.
+  *"is-active --quiet vpn-service-watchdog.timer"*)
+    [ "$(watchdog_timer_state)" = "active" ] && exit 0 || exit 1 ;;
+  # Diagnostic-only show call used when the suspend check fails; content
+  # doesn't affect any pass/fail assertion.
+  *"vpn-service-watchdog.timer"*)
+    echo "ActiveState=$(watchdog_timer_state)"; exit 0 ;;
   *"systemctl start vpn-service-watchdog.service"*)
     # Simulates the real watchdog script: only acts on a FAILED unit.
     [ "$(singbox_state)" = "failed" ] && echo active > "$STATE_FILE"
@@ -89,6 +134,13 @@ case "$cmd" in
     echo stopped > "$STATE_FILE"
     exit 0 ;;
   *"systemctl start sing-box"*)
+    # Reproduced twice on real VPS runs: a plain `systemctl start
+    # sing-box` in stage 13c can genuinely fail. Injectable via a flag
+    # file so a dedicated scenario can prove stage 14/15 correctly go
+    # BLOCKED (not independently FAILed) when this happens.
+    if [ -f "$TMPDIR_TEST/mock_singbox_start_fails" ]; then
+      exit 1
+    fi
     echo active > "$STATE_FILE"
     exit 0 ;;
   *"is-active --quiet sing-box"*)
@@ -124,6 +176,13 @@ Assessment
 BENCH
     exit 0 ;;
   *doctor\ --protocol*)
+    # Injectable via a flag file so a dedicated scenario can prove stage
+    # 14 stays a required FAIL (never BLOCKED) when sing-box is healthy
+    # but the protocol self-test genuinely fails on its own.
+    if [ -f "$TMPDIR_TEST/mock_protocol_fails" ]; then
+      echo 'protocol self-test FAILED: a throwaway sing-box client using the CURRENT REALITY public_key/short_id could not complete a handshake through 127.0.0.1:443'
+      exit 1
+    fi
     echo 'protocol self-test: a throwaway sing-box client using the CURRENT REALITY public_key/short_id and an active VLESS user completed a full handshake through 127.0.0.1:443 and returned application bytes end-to-end'
     exit 0 ;;
   *"vpn-admin doctor"*)
@@ -147,7 +206,30 @@ BENCH
   *SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox*) exit 1 ;;
   *singbox-vpn-uninstall\ --yes*) echo 'uninstalled'; exit 0 ;;
   *iptables*) exit 0 ;;
-  *vpn-admin\ user\ list*) echo 'mock-id-1 lifecycle-test-user yes'; exit 0 ;;
+  # Stage 9's persisted test-user create --json (the scratch-user create
+  # in stage 15 is a separate, opaque multi-line block matched earlier by
+  # "cleanup_scratch" above — this arm covers the standalone call only).
+  # Real `vpn-admin user create --json` output is NOT pure JSON —
+  # apply_users_and_save/render_and_apply_singbox_config print
+  # human-readable status lines (verified in apps/admin/src/main.rs)
+  # BEFORE the final JSON blob.
+  *"vpn-admin user create"*"--json"*)
+    scratch_id="mock-scratch-id-1"
+    cat <<USERCREATE
+sing-box config updated at "/etc/vpn/compat/sing-box/config.json" (validated by \`sing-box check\`).
+reloading sing-box (1 active user(s) in the new config) — this is a full restart (sing-box has no in-place reload), so all currently connected clients will be briefly disconnected.
+sing-box reloaded and verified active (including a real REALITY handshake self-test that PASSED).
+{
+  "id": "$scratch_id",
+  "name": "lifecycle-scratch-user",
+  "enabled": true,
+  "subscription_url": "https://sub.mock.example.com:8443/sub/mocktoken?format=hiddify"
+}
+USERCREATE
+    exit 0 ;;
+  *vpn-admin\ user\ list*)
+    echo "mock-id-1 lifecycle-test-user yes mock-scratch-id-1 lifecycle-scratch-user yes"
+    exit 0 ;;
   *vpn-admin\ user*) exit 0 ;;
   *install.sh*) exit 0 ;;
   *SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch*update.sh*) exit 1 ;;
@@ -471,6 +553,181 @@ else
 fi
 
 echo
+echo "--- stage 13b: timer suspension uses a real ActiveState check, never the invalid 'systemctl is-inactive' verb ---"
+# Confirmed directly against a real system: `systemctl is-inactive` is not
+# a real systemctl verb (systemd rejects it: "Unknown command verb
+# 'is-inactive', did you mean 'is-active'?", exit 1) — this made the old
+# check here fail unconditionally on every real host, regardless of
+# whether the stop itself worked.
+if grep -v '^\s*#' "$SCRIPT" | grep -q 'systemctl is-inactive'; then
+  fail "lifecycle-acceptance.sh still invokes the nonexistent 'systemctl is-inactive' verb outside a comment"
+else
+  ok "no 'systemctl is-inactive' invocation remains anywhere in the script (outside explanatory comments)"
+fi
+if printf '%s' "$stage13b_block" | grep -q 'vpn-service-watchdog.timer suspended for deterministic crash-loop test'; then
+  ok "the watchdog timer is successfully suspended using a real systemctl check"
+else
+  fail "stage 13b did not report the timer as successfully suspended"
+fi
+if printf '%s' "$stage13b_block" | grep -q 'vpn-service-watchdog.timer re-armed after deterministic crash-loop test'; then
+  ok "the watchdog timer is re-armed (restored to its pre-test active state) after the crash-loop test"
+else
+  fail "stage 13b did not report the timer as re-armed"
+fi
+
+echo
+echo "--- stage 13b: a timer that was already inactive before the test is restored to inactive, never turned on ---"
+SSH_LOG_BACKUP="$(cat "$SSH_LOG" 2>/dev/null || true)"
+: > "$SSH_LOG"
+echo inactive > "$TMPDIR_TEST/watchdog_timer_state"
+set +e
+timer_inactive_out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1)"
+set -e
+rm -f "$TMPDIR_TEST/watchdog_timer_state"
+if grep -q 'left inactive after the crash-loop test' <<< "$timer_inactive_out"; then
+  ok "a timer that was inactive before the test is reported as correctly left inactive, not activated"
+else
+  fail "a pre-test-inactive timer was not correctly handled"
+fi
+if grep -q 'systemctl start vpn-service-watchdog.timer' "$SSH_LOG"; then
+  fail "the harness sent 'start vpn-service-watchdog.timer' even though it was inactive beforehand — it must never activate a timer that was intentionally off"
+else
+  ok "no 'start vpn-service-watchdog.timer' command was sent when the timer was inactive beforehand"
+fi
+printf '%s' "$SSH_LOG_BACKUP" > "$SSH_LOG"
+
+echo
+echo "--- stage 13c restart failure BLOCKs stage 14 and stage 15 as prerequisite failures, not independent defects ---"
+touch "$TMPDIR_TEST/mock_singbox_start_fails"
+set +e
+d_out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1)"
+set -e
+rm -f "$TMPDIR_TEST/mock_singbox_start_fails"
+if grep -qE '\[FAIL\]\[required\][[:space:]]+sing-box restarted normally after the deliberate-stop test' <<< "$d_out"; then
+  ok "stage 13c reports the sing-box restart failure as a required FAIL"
+else
+  fail "stage 13c did not report the restart failure as a required FAIL"
+fi
+if grep -qE '\[BLOCKED\][[:space:]]+REALITY handshake self-test after recovery' <<< "$d_out"; then
+  ok "stage 14 is correctly BLOCKED (not an independent FAIL) when its sing-box prerequisite is down"
+else
+  fail "stage 14 was not correctly BLOCKED after stage 13c failed"
+fi
+if grep -qE '\[BLOCKED\][[:space:]]+scratch user create/rotate/disable/remove' <<< "$d_out"; then
+  ok "stage 15 is correctly BLOCKED (not an independent FAIL) when its sing-box prerequisite is down"
+else
+  fail "stage 15 was not correctly BLOCKED after stage 13c failed"
+fi
+if grep -A2 'sing-box restarted normally after the deliberate-stop test' <<< "$d_out" | grep -q 'diagnostics:'; then
+  ok "stage 13c's failure message includes real diagnostic detail, not a bare FAIL"
+else
+  fail "stage 13c's failure message lacks diagnostic detail"
+fi
+
+echo
+echo "--- stage 14 remains a required FAIL (never BLOCKED) when sing-box is healthy but the protocol self-test genuinely fails ---"
+touch "$TMPDIR_TEST/mock_protocol_fails"
+set +e
+e_out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1)"
+set -e
+rm -f "$TMPDIR_TEST/mock_protocol_fails"
+stage14_block="$(sed -n '/=== 14\./,/=== 15\./p' <<< "$e_out")"
+if printf '%s' "$stage14_block" | grep -qE '\[FAIL\]\[required\]'; then
+  ok "stage 14 is a required FAIL when sing-box is healthy but the protocol self-test fails on its own"
+else
+  fail "stage 14 was not reported as a required FAIL for a genuine protocol failure"
+fi
+if printf '%s' "$stage14_block" | grep -q 'BLOCKED'; then
+  fail "stage 14 was incorrectly BLOCKED even though its sing-box prerequisite (13c) succeeded"
+else
+  ok "stage 14 is not blocked when its prerequisite (sing-box) actually succeeded"
+fi
+if printf '%s' "$stage14_block" | grep -q 'see remote output above'; then
+  fail "stage 14 still claims output is 'above' even though it is only ever captured into a variable, never printed"
+else
+  ok "stage 14 no longer claims diagnostic output is displayed 'above' when it isn't"
+fi
+if printf '%s' "$stage14_block" | grep -qE 'output: '; then
+  ok "stage 14's failure message includes the actual doctor --protocol output"
+else
+  fail "stage 14's failure message does not include diagnostic output"
+fi
+
+echo
+echo "--- stage 15's OWN parsing pipeline (grep/sed, not the ssh mock): create failure, malformed response, realistic success ---"
+# The stage 15 scratch-user procedure is one opaque multi-line remote
+# script sent as a SINGLE ssh_run argument — mocking ssh can only decide
+# the whole block's outcome, it can never exercise that script's own
+# embedded `grep -o "\"id\": ...\" | sed -E ...` parsing logic (ssh here
+# never actually executes remote text, it only pattern-matches it). To
+# actually test that parsing — the exact logic this fix changed — extract
+# the real script body from lifecycle-acceptance.sh and execute it for
+# real, in bash, against a stubbed `sudo` that plays vpn-admin.
+SCRATCH_BODY="$(sed -n '/^    scratch_id=""$/,/^    trap - EXIT$/p' "$SCRIPT")"
+if [ -z "$SCRATCH_BODY" ]; then
+  fail "could not extract stage 15's scratch-user script body from $SCRIPT — its marker lines may have changed"
+else
+  run_scratch_scenario() {
+    local scenario="$1"
+    cat > "$TMPDIR_TEST/scratch_stub.sh" <<STUBEOF
+sudo() {
+  local bin="\$1"; shift
+  case "\$bin" in
+    */vpn-admin)
+      case "\$1 \$2" in
+        "user create")
+          if [ "$scenario" = "create-fails" ]; then
+            echo "Error: sing-box reload failed after applying the new config" >&2
+            return 1
+          fi
+          # Realistic --json output: non-JSON status lines BEFORE the
+          # JSON blob (verified against apps/admin/src/main.rs) — a
+          # parser that assumed stdout starts with '{' would break here.
+          echo 'sing-box config updated at "/etc/vpn/compat/sing-box/config.json" (validated by \`sing-box check\`).'
+          echo 'reloading sing-box (1 active user(s) in the new config) — this is a full restart.'
+          if [ "$scenario" = "no-id" ]; then
+            echo '{"name": "lifecycle-scratch-user", "enabled": true}'
+          else
+            echo '{"id": "real-scratch-id-1", "name": "lifecycle-scratch-user", "enabled": true}'
+          fi
+          return 0 ;;
+        "user list") echo "real-scratch-id-1 lifecycle-scratch-user yes"; return 0 ;;
+        *) return 0 ;;
+      esac ;;
+    *) return 0 ;;
+  esac
+}
+$SCRATCH_BODY
+STUBEOF
+    bash "$TMPDIR_TEST/scratch_stub.sh"
+  }
+
+  set +e
+  out_ok="$(run_scratch_scenario success 2>/dev/null)"; rc_ok=$?
+  out_create_fail="$(run_scratch_scenario create-fails 2>/dev/null)"; rc_create_fail=$?
+  out_no_id="$(run_scratch_scenario no-id 2>/dev/null)"; rc_no_id=$?
+  set -e
+
+  if [ "$rc_ok" -eq 0 ]; then
+    ok "the real parsing pipeline succeeds end-to-end against realistic non-JSON-prefixed --json output"
+  else
+    fail "the real parsing pipeline failed against a realistic successful create response (got: '$out_ok', rc=$rc_ok)"
+  fi
+
+  if [ "$rc_create_fail" -ne 0 ] && [ "$out_create_fail" = "create" ]; then
+    ok "the real parsing pipeline reports 'create' (not 'parse-id') when vpn-admin user create itself fails"
+  else
+    fail "a real create-command failure was not correctly classified (got: '$out_create_fail', rc=$rc_create_fail) — this is the exact bug this fix addresses"
+  fi
+
+  if [ "$rc_no_id" -ne 0 ] && [ "$out_no_id" = "parse-id" ]; then
+    ok "the real parsing pipeline reports 'parse-id' when create exits 0 but no id is present in the response"
+  else
+    fail "a malformed (no-id) create response was not correctly classified (got: '$out_no_id', rc=$rc_no_id)"
+  fi
+fi
+
+echo
 echo "--- systemctl stop still behaves normally, and the watchdog leaves a stopped unit alone (stage 13c) ---"
 stage13c_block="$(sed -n '/=== 13c\./,/=== 14\./p' "$TMPDIR_TEST/out-2222.log")"
 if printf '%s' "$stage13c_block" | grep -q "is inactive after systemctl stop"; then
@@ -487,6 +744,20 @@ if printf '%s' "$stage13c_block" | grep -q "left the deliberately-stopped sing-b
   ok "the watchdog is proven to never restart a deliberately-stopped unit"
 else
   fail "stage 13c did not prove the watchdog leaves a stopped unit alone"
+fi
+
+echo
+echo "--- stage 15 reports PASS end-to-end against the default (healthy) mocked target ---"
+# The actual id-extraction-against-realistic-output proof lives in "stage
+# 15's OWN parsing pipeline" above (real execution, not a mocked ssh) —
+# this assertion only confirms the STAGE reports PASS when its remote
+# calls succeed, i.e. that stage 13c's new BLOCKED-gating didn't
+# accidentally break the ordinary healthy-target path.
+stage15_block="$(sed -n '/=== 15\./,/=== 16/p' "$TMPDIR_TEST/out-2222.log")"
+if printf '%s' "$stage15_block" | grep -qE '\[PASS\][[:space:]]+scratch user create/rotate/disable/remove'; then
+  ok "the scratch-user lifecycle reports PASS against a healthy mocked target"
+else
+  fail "stage 15 did not pass against a healthy mocked target"
 fi
 
 echo

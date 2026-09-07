@@ -602,22 +602,48 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # legitimate periodic recovery can race this observation and turn a real
   # FAILED state back to active before the harness checks it. Reboot stage 5
   # already proves the timer is armed; here we test watchdog logic directly.
+  #
+  # Record whatever state the timer was ACTUALLY in beforehand so recovery
+  # below restores that, never unconditionally "turns it on" — this harness
+  # must never change host state as a side effect of a test's own plumbing.
+  if ssh_run 'systemctl is-active --quiet vpn-service-watchdog.timer' 2>/dev/null; then
+    watchdog_timer_was_active_before=1
+  else
+    watchdog_timer_was_active_before=0
+  fi
+
   watchdog_timer_suspended=0
-  if WATCHDOG_SUSPEND_OUT="$(ssh_run 'sudo systemctl stop vpn-service-watchdog.timer && systemctl is-inactive --quiet vpn-service-watchdog.timer' 2>&1)"; then
+  # `systemctl is-inactive` is NOT a real systemctl verb — confirmed
+  # directly (systemd rejects it: "Unknown command verb 'is-inactive', did
+  # you mean 'is-active'?", exit 1). The previous check here used it, so
+  # this compound command failed on every real run regardless of whether
+  # `systemctl stop` itself actually worked — the true root cause of this
+  # stage's failure on both real-VPS runs, not a systemd race. Use an
+  # explicit ActiveState read instead: it is `is-active`-equivalent and
+  # gives a real value to report on failure too.
+  if WATCHDOG_SUSPEND_OUT="$(ssh_run '
+      sudo systemctl stop vpn-service-watchdog.timer
+      state="$(systemctl show -p ActiveState --value vpn-service-watchdog.timer)"
+      echo "ActiveState=$state"
+      [ "$state" = "inactive" ]
+    ' 2>&1)"; then
     pass "vpn-service-watchdog.timer suspended for deterministic crash-loop test"
     watchdog_timer_suspended=1
   else
-    # Reproduced twice on real VPS runs with no diagnostic detail at all
-    # (the old check discarded both stdout and stderr) — nothing here is
-    # secret, so capture the actual command output plus the timer's
-    # ActiveState/SubState/Result to root-cause it on the next real run
-    # instead of guessing.
     WATCHDOG_TIMER_STATE="$(ssh_run 'systemctl show -p ActiveState,SubState,Result --value vpn-service-watchdog.timer' 2>/dev/null || true)"
     fail_required "suspend vpn-service-watchdog.timer for crash-loop test" "(command output: ${WATCHDOG_SUSPEND_OUT:-none}; timer ActiveState/SubState/Result: ${WATCHDOG_TIMER_STATE:-unknown})"
   fi
 
   failed_state_ready=0
   if [ "$watchdog_timer_suspended" -eq 1 ]; then
+    # Clear any start-limit accounting sing-box already picked up from
+    # stage 13's single SIGKILL+restart just above, so this loop's 40s
+    # budget only has to exhaust StartLimitBurst=8 from a known-zero
+    # baseline (`reset-failed` is systemd's documented mechanism for this
+    # — see sing-box.service's StartLimitIntervalSec=300/StartLimitBurst=8
+    # comment) rather than depending on how many restarts already
+    # happened earlier in this run.
+    ssh_run 'sudo systemctl reset-failed sing-box' >/dev/null 2>&1 || true
     if ssh_run '
       last_killed=""
       end=$(( $(date +%s) + 40 ))
@@ -635,7 +661,8 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
       pass "sing-box.service reached FAILED state after exhausting StartLimitBurst (proves the burst is real, not effectively infinite)"
       failed_state_ready=1
     else
-      fail_required "sing-box.service did not reach FAILED state after a fast repeated-crash burst" "(restart budget was not exhausted deterministically)"
+      FAILED_STATE_DIAG="$(ssh_run 'systemctl show sing-box -p ActiveState -p SubState -p Result -p NRestarts -p MainPID' 2>/dev/null || true)"
+      fail_required "sing-box.service did not reach FAILED state after a fast repeated-crash burst" "(restart budget was not exhausted deterministically; state: ${FAILED_STATE_DIAG:-unknown})"
     fi
   else
     block "crash-loop FAILED-state creation" "(watchdog timer could not be suspended, so the observation would be racy)"
@@ -646,7 +673,8 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
     if [ "$doctor_during_failure_rc" -ne 0 ] && printf '%s' "$DOCTOR_DURING_FAILURE_OUT" | grep -qi 'sing-box.service is in a FAILED state'; then
       pass "vpn-admin doctor correctly reports sing-box.service as FAILED (distinct from merely 'not active')"
     else
-      fail_required "vpn-admin doctor did not report the FAILED sing-box.service" "(exit=$doctor_during_failure_rc; see remote output above)"
+      doctor_during_failure_excerpt="$(printf '%s\n' "$DOCTOR_DURING_FAILURE_OUT" | tail -20)"
+      fail_required "vpn-admin doctor did not report the FAILED sing-box.service" "(exit=$doctor_during_failure_rc; output: ${doctor_during_failure_excerpt:-none})"
     fi
     STATUS_DURING_FAILURE_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin status' 2>&1 || true)"
     if printf '%s' "$STATUS_DURING_FAILURE_OUT" | grep -qi 'sing-box.*failed'; then pass "vpn-admin status correctly reports sing-box as failed"; else fail_required "vpn-admin status did not report sing-box as failed"; fi
@@ -663,10 +691,18 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   fi
 
   if [ "$watchdog_timer_suspended" -eq 1 ]; then
-    if ssh_run 'sudo systemctl start vpn-service-watchdog.timer && systemctl is-active --quiet vpn-service-watchdog.timer' 2>/dev/null; then
-      pass "vpn-service-watchdog.timer re-armed after deterministic crash-loop test"
+    if [ "$watchdog_timer_was_active_before" -eq 1 ]; then
+      if ssh_run 'sudo systemctl start vpn-service-watchdog.timer && systemctl is-active --quiet vpn-service-watchdog.timer' 2>/dev/null; then
+        pass "vpn-service-watchdog.timer re-armed after deterministic crash-loop test"
+      else
+        fail_required "re-arm vpn-service-watchdog.timer after crash-loop test"
+      fi
     else
-      fail_required "re-arm vpn-service-watchdog.timer after crash-loop test"
+      # It was NOT active before this stage touched it (unusual — a
+      # normal install enables it — but this harness must only ever
+      # restore prior state, never activate a timer that was
+      # intentionally left inactive for some other reason).
+      pass "vpn-service-watchdog.timer left inactive after the crash-loop test (restoring its pre-test state, not activating it)"
     fi
   fi
 
@@ -684,30 +720,76 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # a unit that is NOT in `failed` state is a documented no-op, so this
   # is safe regardless of whether StartLimitBurst is actually involved.
   ssh_run 'sudo systemctl reset-failed sing-box' >/dev/null 2>&1 || true
+  singbox_restored_after_stop=0
   if START_SINGBOX_OUT="$(ssh_run 'sudo systemctl start sing-box' 2>&1)"; then
     pass "sing-box restarted normally after the deliberate-stop test (restoring state for the rest of this run)"
+    singbox_restored_after_stop=1
   else
     # Reproduced twice on real VPS runs with zero diagnostic output (the
-    # old check discarded both stdout and stderr) — capture the failing
-    # command's own output plus `systemctl status` so the next real run
-    # actually reveals why a plain `systemctl start` failed here, instead
-    # of leaving this a guess.
-    START_SINGBOX_STATUS="$(ssh_run 'systemctl status sing-box --no-pager -l --lines=30' 2>/dev/null || true)"
-    fail_required "sing-box restarted normally after the deliberate-stop test" "(start command output: ${START_SINGBOX_OUT:-none}; status: ${START_SINGBOX_STATUS:-unknown})"
+    # old check discarded both stdout and stderr). None of this leaks
+    # secrets: systemctl show/status/journalctl report unit/process state,
+    # not sing-box's config contents, and `sing-box check` only validates
+    # the config file (pass/fail), it never prints it.
+    START_SINGBOX_DIAG="$(ssh_run '
+      echo "--- systemctl show ---"
+      systemctl show sing-box -p ActiveState -p SubState -p Result -p ExecMainStatus -p ExecMainCode -p NRestarts -p MainPID
+      echo "--- systemctl status (last 50 lines) ---"
+      systemctl status sing-box --no-pager -l --lines=50
+      echo "--- journalctl (last 80 lines) ---"
+      journalctl -u sing-box --no-pager -n 80
+      echo "--- config validation (contents never printed) ---"
+      sudo /usr/local/bin/sing-box check -c /etc/vpn/compat/sing-box/config.json
+    ' 2>&1 || true)"
+    fail_required "sing-box restarted normally after the deliberate-stop test" "(start command output: ${START_SINGBOX_OUT:-none}; diagnostics: ${START_SINGBOX_DIAG:-unknown})"
   fi
 
   section "14. protocol works after recovery (re-run doctor --protocol --require-protocol)"
-  if POST_RECOVERY_PROTOCOL_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol' 2>&1)"; then post_recovery_rc=0; else post_recovery_rc=$?; fi
-  if [ "$post_recovery_rc" -eq 0 ] && printf '%s' "$POST_RECOVERY_PROTOCOL_OUT" | grep -q 'completed a full handshake'; then pass "REALITY handshake self-test still PASSES after the SIGKILL+recovery cycle"; else fail_required "REALITY handshake self-test after recovery" "(exit=$post_recovery_rc; see remote output above)"; fi
+  if [ "$singbox_restored_after_stop" -eq 1 ]; then
+    if POST_RECOVERY_PROTOCOL_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol' 2>&1)"; then post_recovery_rc=0; else post_recovery_rc=$?; fi
+    if [ "$post_recovery_rc" -eq 0 ] && printf '%s' "$POST_RECOVERY_PROTOCOL_OUT" | grep -q 'completed a full handshake'; then
+      pass "REALITY handshake self-test still PASSES after the SIGKILL+recovery cycle"
+    else
+      # doctor --protocol's output is descriptive prose about pass/fail
+      # conditions (verified against apps/admin/src/main.rs's
+      # check_l5_l6_protocol_selftest) — it never prints raw key/token
+      # material, so a bounded excerpt is safe to include here instead of
+      # claiming output appears "above" when it was only ever captured
+      # into a variable and never actually printed.
+      post_recovery_excerpt="$(printf '%s\n' "$POST_RECOVERY_PROTOCOL_OUT" | tail -20)"
+      fail_required "REALITY handshake self-test after recovery" "(exit=$post_recovery_rc; output: ${post_recovery_excerpt:-none})"
+    fi
+  else
+    block "REALITY handshake self-test after recovery" "(stage 13c could not restart sing-box; this test's prerequisite service is down, so a failure here would not be an independent protocol defect)"
+  fi
 
   section "15. user rotate/disable/remove sanity (scratch user; does not touch the persisted test user above)"
-  # Report only the failing step name. Never echo rotate-token output because
-  # that contains a credential.
-  if SCRATCH_RESULT="$(ssh_run '
+  # Report only the failing step name. Never echo rotate-token/create output
+  # because both contain credentials (the create response includes the
+  # subscription URL/token).
+  if [ "$singbox_restored_after_stop" -ne 1 ]; then
+    # Verified directly (apps/admin/src/main.rs: cmd_user_create ->
+    # apply_users_and_save -> render_and_apply_singbox_config) that `user
+    # create`/rotate-* all reload sing-box as part of applying the change
+    # and `bail!` if that reload fails — so none of this is meaningfully
+    # testable while sing-box is down; a failure here would just be the
+    # same 13c prerequisite failure again, not a separate user-lifecycle
+    # defect.
+    block "scratch user create/rotate/disable/remove" "(stage 13c could not restart sing-box; user create/rotate cannot succeed while it's down)"
+  elif SCRATCH_RESULT="$(ssh_run '
     scratch_id=""
     cleanup_scratch() { [ -z "$scratch_id" ] || sudo /usr/local/bin/vpn-admin user remove "$scratch_id" >/dev/null 2>&1 || true; }
     trap cleanup_scratch EXIT
-    scratch_id="$(sudo /usr/local/bin/vpn-admin user create --name lifecycle-scratch-user --json | grep -o "\"id\": *\"[^\"]*\"" | head -1 | sed -E "s/.*\"([^\"]+)\"$/\1/")" || { echo create; exit 1; }
+    # Capture the create command exit status BEFORE piping its
+    # output through any parser: piping directly into `grep | head | sed`
+    # (the old form here) loses that exit status entirely, because `sed`
+    # exits 0 even on empty input — a real `vpn-admin user create`
+    # failure (e.g. sing-box reload rejected) was silently misreported as
+    # "parse-id" instead of "create". `--json` output is not pure JSON —
+    # it also emits human-readable status lines first (verified in
+    # cmd_user_create/render_and_apply_singbox_config), so the id is
+    # still extracted with grep -o against the whole captured text.
+    create_output="$(sudo /usr/local/bin/vpn-admin user create --name lifecycle-scratch-user --json)" || { echo create; exit 1; }
+    scratch_id="$(printf "%s\n" "$create_output" | grep -o "\"id\": *\"[^\"]*\"" | head -1 | sed -E "s/.*\"([^\"]+)\"$/\1/")"
     [ -n "$scratch_id" ] || { echo parse-id; exit 1; }
     sudo /usr/local/bin/vpn-admin user list | grep -q "$scratch_id" || { echo list; exit 1; }
     sudo /usr/local/bin/vpn-admin user rotate-token "$scratch_id" >/dev/null || { echo rotate-token; exit 1; }
@@ -787,10 +869,27 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
     fail_required "certbot renew --dry-run" "(certbot exited 0 but tested zero lineages — this is not renewal proof)"
   else
     # Reproduced on a real VPS run (exit=1) with the actual certbot output
-    # discarded entirely, so there was nothing to root-cause. certbot
-    # output here is diagnostic (ACME challenge/renewal errors), not
-    # secret-bearing, so it's safe to include.
-    fail_required "certbot renew --dry-run" "(exit=$certbot_dry_rc; renewal must work before a stable release; output: ${CERTBOT_DRY_OUT:-none})"
+    # discarded entirely, so there was nothing to root-cause. certbot's
+    # own dry-run output is diagnostic (ACME challenge/renewal errors),
+    # not secret-bearing, so it's safe to include. The extra commands
+    # below report metadata only — `certbot certificates` prints lineage
+    # names/paths/expiry, never key material; `ss`/`firewall-cmd` report
+    # listening sockets/configured ports, not secrets — and deliberately
+    # do NOT dump /etc/letsencrypt or any private key, per the task's own
+    # security constraints. This is diagnostics only: none of this
+    # attempts to guess or fix a firewall/nginx/ACME root cause without
+    # evidence.
+    CERTBOT_DIAG="$(ssh_run '
+      echo "--- certbot certificates ---"
+      sudo certbot certificates 2>&1
+      echo "--- nginx status ---"
+      systemctl status nginx --no-pager -l --lines=20 2>&1
+      echo "--- listeners on 80/443 ---"
+      ss -lntp 2>&1 | grep -E ":80 |:443 " || true
+      echo "--- firewalld configured ports ---"
+      sudo firewall-cmd --list-ports 2>&1 || true
+    ' 2>&1 || true)"
+    fail_required "certbot renew --dry-run" "(exit=$certbot_dry_rc; renewal must work before a stable release; output: ${CERTBOT_DRY_OUT:-none}; diagnostics: ${CERTBOT_DIAG:-none})"
   fi
 else
   section "9-18. runtime/protocol/user/update/backup/renewal checks"
