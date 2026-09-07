@@ -6,6 +6,79 @@ This file describes implementation history; `docs/archive/PRODUCTION_ACCEPTANCE_
 is a dated historical audit snapshot. Neither may upgrade ledger evidence.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
+## Release readiness update (2026-09-07)
+
+Final focused remediation pass on the last deterministic lifecycle blockers
+found by a real-VPS destructive run (stages 12/13/13b/13c/14/15 confirmed
+PASS separately and not touched here):
+
+- **Stage 18 (`certbot renew --dry-run`)**: root cause was nginx's
+  OS-default vhost occupying TCP/80, which conflicts with certbot's
+  `--standalone` HTTP-01 authenticator (singbox-vpn's own subscription
+  vhost never listens on `:80`). `deploy/almalinux/certbot-firewall-{pre,post}-hook.sh`
+  now transactionally stop/restore nginx around each renewal attempt —
+  verifying nginx actually stopped, that TCP/80 is genuinely free
+  (naming the occupant, never killing anything, failing closed if still
+  occupied), and that nginx actually comes back up after the attempt
+  (success or failure) — guarded by a short `flock` around the hooks'
+  own marker bookkeeping. See `docs/ALMALINUX_DEPLOYMENT.md`'s
+  "nginx and TCP/80" note for the accepted brief-outage trade-off.
+- **Stage 21 (fresh reinstall)**: a real run hit `curl: (7) Failed to
+  connect to github.com port 443: Connection refused` downloading the
+  pinned sing-box release asset — after the identical download had
+  already succeeded 3 times earlier in the same run (a transient
+  GitHub-side blip, not a bad URL/checksum). `deploy/almalinux/install.sh`'s
+  sing-box tarball/checksums download now routes through the existing
+  `preflight_curl_retry()` helper (retry + one IPv4-forced fallback
+  attempt) instead of a bare `curl` call, and `CURL_NET_FLAGS` across
+  `install.sh`, `uninstall.sh`, `deploy/almalinux/install.sh`, and
+  `deploy/almalinux/update.sh` now omit a fixed `--retry-delay` so
+  curl's own exponential backoff applies (previously a fixed 2s gap).
+  Pinned-SHA256/upstream-checksums.txt integrity verification is
+  unchanged and still fails closed.
+- **Onboarding credential leakage**: `install.sh`'s onboarding summary
+  (and the lifecycle acceptance harness's own transcript, which streams
+  `install.sh`'s stdout live and uncaptured) previously printed the real
+  subscription URL/QR — the app's own text calls that URL "the
+  credential — treat it like a password" — into what can become a CI
+  log or release-evidence bundle. `SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1`
+  (checked in `apps/admin/src/main.rs`'s `cmd_user_create`/
+  `cmd_user_rotate_token`, and set automatically by
+  `deploy/almalinux/lifecycle-acceptance.sh`'s `run_install()`/
+  `run_install_abort_after_singbox()`) suppresses the credential at the
+  point it would otherwise be rendered, replacing it with
+  non-secret status lines (`credential generated: yes`, `subscription
+  URL generated: yes`, `QR generated: suppressed`). Normal interactive
+  `vpn-admin user create`/install runs are completely unaffected; `--json`
+  output (a data contract, never printed to a transcript) is also
+  unaffected, so `install.sh`'s own internal subscription-through-nginx
+  proof still runs for real.
+- **Rustup shell residue**: a real run showed
+  `/root/.bashrc: line ...: /root/.cargo/env: No such file or directory`
+  after uninstall, because rustup's default install permanently edits
+  root's `.bashrc`/`.profile`, and uninstall correctly removes
+  `~/.rustup`/`~/.cargo` but cannot safely undo an edit to a file it does
+  not own. `install_rustup_noninteractive()` now passes
+  `--no-modify-path` to `rustup-init`, and explicitly sources
+  `~/.cargo/env` itself for the rest of that install run — the
+  toolchain works exactly the same for this process; it just never
+  becomes a permanent shell-startup side effect.
+
+Regression coverage added/extended: `deploy/lib/tests/test-certbot-firewall-hooks.sh`
+(nginx-stop-fails, something-else-owns-port-80 fail-closed scenarios),
+`deploy/lib/tests/test-preflight-curl-retry.sh` (retry/backoff policy
+checks, control-flow-never-uses-a-partial-download checks),
+`apps/admin/tests/cli.rs` (`user_create_qr_suppresses_the_credential_when_env_var_set`
+and siblings), `deploy/lib/tests/test-uninstall-hardening.sh`
+(`--no-modify-path` present, ownership-safety unchanged),
+`deploy/lib/tests/test-release-stability-regressions.sh` and
+`deploy/lib/tests/test-lifecycle-acceptance-harness.sh` (suppression
+plumbing, retry policy). Full workspace `cargo test`, `cargo clippy -D
+warnings`, `cargo fmt --check`, and `deploy/lib/fast-gate.sh` (including
+`shellcheck`) all pass. **Status: implemented and locally verified —
+NOT yet re-run against a real VPS; do not treat this as production
+acceptance.**
+
 ## Release readiness update (2026-08-19)
 
 - Russia connectivity regression investigation: real Russian Hiddify

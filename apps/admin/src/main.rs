@@ -1887,6 +1887,27 @@ fn subscription_url_vision_off(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
+/// Automated/CI callers (the lifecycle acceptance harness, in
+/// particular) run `user create`/`user rotate-token` for real, and the
+/// real subscription URL/QR this prints IS the bearer credential — the
+/// app's own onboarding text says so ("this IS the credential — treat
+/// it like a password"). A transcript of such a run (CI log, support
+/// bundle, release evidence) must never contain it. This must be
+/// checked at the point secret-bearing text would otherwise be rendered
+/// (println!/print_qr), not filtered from already-produced output
+/// afterward — the QR encodes the token as pixels, and there is more
+/// than one URL format (`?format=hiddify`, `?format=singbox`,
+/// `/v1/provision/...`), so a regex over rendered text could not
+/// reliably catch every one anyway. Normal interactive use (a human
+/// running `vpn-admin user create` directly) is untouched: this only
+/// activates when the caller explicitly opts in.
+fn suppress_onboarding_secrets() -> bool {
+    match std::env::var("SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS") {
+        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Err(_) => false,
+    }
+}
+
 /// Print a terminal QR code encoding `data`. QR codes intentionally
 /// encode only the subscription URL, never the full server
 /// configuration (spec §6). PNG file output is not implemented — kept
@@ -1965,6 +1986,19 @@ fn cmd_user_create(
     println!("  Never put the User ID after /sub/ — that endpoint takes the subscription");
     println!("  token below, and a User ID there will always 404.");
     println!();
+    if suppress_onboarding_secrets() {
+        println!(
+            "SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS is set — the subscription URL, \
+             provisioning URL, and QR code are suppressed below because they ARE the \
+             credential (this is an automated/CI run, not an interactive onboarding \
+             session; re-run without this variable, or use `vpn-admin user rotate-token` \
+             on the User ID shown above interactively, to see the real value)."
+        );
+        println!("credential generated: yes");
+        println!("subscription URL generated: yes");
+        println!("QR generated: suppressed");
+        return Ok(());
+    }
     println!("Hiddify subscription URL (this IS the credential — treat it like a password):");
     println!("  {url}");
     println!();
@@ -2119,6 +2153,18 @@ fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<(
     // Token rotation does not change VLESS/Hysteria2 credentials, so the
     // sing-box config is unaffected — no re-render needed.
     let url = subscription_url(cfg, &token);
+    if suppress_onboarding_secrets() {
+        println!(
+            "SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS is set — the new subscription URL and \
+             QR code are suppressed below because they ARE the credential (this is an \
+             automated/CI run, not an interactive session; re-run without this variable to \
+             see the real value)."
+        );
+        println!("credential generated: yes");
+        println!("subscription URL generated: yes");
+        println!("QR generated: suppressed");
+        return Ok(());
+    }
     println!("New Hiddify subscription URL for {id}:");
     println!("  {url}");
     println!();

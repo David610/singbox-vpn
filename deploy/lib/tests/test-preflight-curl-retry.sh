@@ -129,6 +129,78 @@ rc=0
 assert_eq "preflight_check_connectivity does not hard-abort on one transient failure" "0" "$rc"
 
 echo
+echo "--- policy: production CURL_NET_FLAGS get real exponential backoff, not a fixed delay ---"
+# preflight_curl_retry()'s own internal retry loop is exactly 2 attempts
+# (normal, then one -4 fallback) — already exercised above. The actual
+# many-attempt resilience against a flaky host comes from curl's OWN
+# internal --retry handling *within* each of those two attempts, which
+# only backs off exponentially (~1s/2s/4s/8s/16s) when --retry-delay is
+# NOT set (a fixed --retry-delay overrides curl's default exponential
+# schedule with a constant gap). A bash mock cannot exercise curl's own
+# internal retry loop without reimplementing curl, so this is a static
+# assertion on the shipped policy in every production caller rather than
+# a dynamic mock — it is what makes a "several refusals then success"
+# host actually recover in practice.
+check_retry_policy() {
+  local label="$1" file="$2" line
+  line="$(grep -m1 '^CURL_NET_FLAGS=' "$file" || true)"
+  if [ -z "$line" ]; then
+    fail_policy "$label: no CURL_NET_FLAGS= definition found in $file"
+    return
+  fi
+  if [[ "$line" == *"--retry-delay"* ]]; then
+    fail_policy "$label: CURL_NET_FLAGS sets a fixed --retry-delay, which overrides curl's own exponential backoff"
+    return
+  fi
+  local retry_n
+  retry_n="$(sed -n 's/.*--retry \([0-9]\+\).*/\1/p' <<<"$line")"
+  if [ -z "$retry_n" ] || [ "$retry_n" -lt 5 ]; then
+    fail_policy "$label: --retry count is '${retry_n:-<missing>}', expected >= 5"
+    return
+  fi
+  ok_policy "$label: --retry $retry_n with no fixed --retry-delay (curl's default exponential backoff applies)"
+}
+ok_policy() { echo "ok: $*"; }
+fail_policy() { echo "FAIL: $*"; failures=$((failures + 1)); }
+check_retry_policy "root install.sh" "$REPO_ROOT/install.sh"
+check_retry_policy "root uninstall.sh" "$REPO_ROOT/uninstall.sh"
+check_retry_policy "deploy/almalinux/install.sh" "$REPO_ROOT/deploy/almalinux/install.sh"
+check_retry_policy "deploy/almalinux/update.sh" "$REPO_ROOT/deploy/almalinux/update.sh"
+# deploy/almalinux/install.sh relies on preflight.sh auto-appending
+# --retry-connrefused (see preflight.sh's `CURL_NET_FLAGS+=(--retry-connrefused)`
+# idempotent guard) rather than listing it inline; the other three list it
+# inline. Either is fine as long as it ends up present at runtime.
+(
+  CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 5)
+  log() { :; }; warn() { :; }; die() { return 1; }
+  # shellcheck source=deploy/lib/preflight.sh
+  . "$LIB_DIR/preflight.sh"
+  case " ${CURL_NET_FLAGS[*]} " in
+    *" --retry-connrefused "*) ok_policy "deploy/almalinux/install.sh: preflight.sh augments CURL_NET_FLAGS with --retry-connrefused at source time" ;;
+    *) fail_policy "deploy/almalinux/install.sh: preflight.sh did not augment CURL_NET_FLAGS with --retry-connrefused" ;;
+  esac
+)
+
+echo
+echo "--- control-flow: a failed download never reaches checksum verification or extraction with a partial file ---"
+INSTALL_SH_ALMALINUX="$REPO_ROOT/deploy/almalinux/install.sh"
+download_line="$(grep -n 'die "download failed: \$url"' "$INSTALL_SH_ALMALINUX" | head -n1 | cut -d: -f1)"
+checksum_line="$(grep -n 'checksum verification failed for \$tarball' "$INSTALL_SH_ALMALINUX" | head -n1 | cut -d: -f1)"
+extract_line="$(grep -n 'tar -xzf "\$tmpdir/\$tarball"' "$INSTALL_SH_ALMALINUX" | head -n1 | cut -d: -f1)"
+if [ -n "$download_line" ] && [ -n "$checksum_line" ] && [ -n "$extract_line" ] \
+    && [ "$download_line" -lt "$checksum_line" ] && [ "$checksum_line" -lt "$extract_line" ]; then
+  ok_policy "install_singbox() dies on download failure strictly before checksum verification and extraction — a partial/failed download is never treated as valid input"
+else
+  fail_policy "install_singbox() control-flow ordering changed — a failed download might now reach checksum verification or extraction (download:${download_line:-?} checksum:${checksum_line:-?} extract:${extract_line:-?})"
+fi
+if grep -q 'network_diagnose_download_failure github.com >&2' "$INSTALL_SH_ALMALINUX" \
+    && grep -B2 'network_diagnose_download_failure github.com >&2' "$INSTALL_SH_ALMALINUX" | grep -q 'preflight_curl_retry -fsSL -o "\$tmpdir/\$tarball" "\$url"'; then
+  ok_policy "the pinned sing-box tarball download is routed through preflight_curl_retry (retry + IPv4 fallback), with non-fatal diagnostics only after it is exhausted"
+else
+  fail_policy "the pinned sing-box tarball download no longer uses preflight_curl_retry with diagnostics-on-exhaustion"
+fi
+
+echo
 if [ "$failures" -gt 0 ]; then
   echo "$failures test(s) FAILED"
   exit 1

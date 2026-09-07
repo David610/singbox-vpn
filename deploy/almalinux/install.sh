@@ -114,7 +114,19 @@ stage() { echo; echo "[install] === [$1/18] $2 ==="; }
 # real on a flaky VPS network. `--speed-limit`/`--speed-time` makes
 # curl itself detect and abort a stalled transfer so `--retry` gets a
 # chance to run; `--connect-timeout`/`--max-time` bound the rest.
-CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+#
+# `--retry 5` with NO `--retry-delay`: reproduced directly on a real VPS
+# — the sing-box release-asset download hit 4 consecutive "Connection
+# refused" errors and gave up, even though the exact same download had
+# already succeeded 3 times earlier in the same run (a short-lived
+# outbound GitHub blip, not a broken URL/checksum). The previous
+# `--retry 3 --retry-delay 2` forces a FIXED 2s gap between attempts —
+# curl's own default (used whenever --retry-delay is omitted) is
+# EXPONENTIAL backoff instead (roughly 1s/2s/4s/8s/16s), giving a
+# transient blip meaningfully more time to clear without turning a
+# persistent failure into a long hang (bounded by --max-time regardless,
+# and this is retries around ONE curl invocation, not an outer loop).
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 5)
 
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/os.sh"
@@ -128,6 +140,34 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 . "$REPO_ROOT/deploy/lib/state-schema.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/binary-version-check.sh"
+
+# Best-effort, non-fatal diagnostics printed AFTER preflight_curl_retry has
+# already exhausted its retries (including the IPv4 fallback) for a real
+# artifact download. Never fatal by itself and never the primary retry
+# mechanism — it exists only to tell a human "was this DNS, IPv4, IPv6, or
+# just this one asset?" without dumping env vars, proxy credentials,
+# tokens, or request headers into the log.
+network_diagnose_download_failure() {
+  local host="$1"
+  echo "[install] diagnosing network failure for $host (best-effort, none of this is fatal by itself):" >&2
+  if command -v getent >/dev/null 2>&1; then
+    if getent ahosts "$host" >/dev/null 2>&1; then
+      echo "[install]   DNS: $host resolves OK" >&2
+    else
+      echo "[install]   DNS: $host did NOT resolve" >&2
+    fi
+  fi
+  if curl -4 -fsS -o /dev/null --connect-timeout 5 "https://$host/" 2>/dev/null; then
+    echo "[install]   IPv4: https://$host/ reachable" >&2
+  else
+    echo "[install]   IPv4: https://$host/ NOT reachable" >&2
+  fi
+  if curl -6 -fsS -o /dev/null --connect-timeout 5 "https://$host/" 2>/dev/null; then
+    echo "[install]   IPv6: https://$host/ reachable" >&2
+  else
+    echo "[install]   IPv6: https://$host/ NOT reachable (may simply mean this host has no IPv6, not necessarily a failure)" >&2
+  fi
+}
 
 # Installs $src to a FIXED, well-known destination path (a systemd unit,
 # a certbot renewal hook — anything named identically regardless of
@@ -1471,8 +1511,22 @@ install_rustup_noninteractive() {
   # The downloaded binary starts additional transfers of its own (the
   # toolchain itself). Bound the whole child, not only the first curl, so
   # a stalled toolchain fetch cannot hang installation indefinitely.
+  #
+  # --no-modify-path: without it, rustup appends a PATH-modifying block to
+  # root's .bashrc/.profile/.bash_profile — permanent shell-startup state
+  # this installer never asked for and uninstall.sh cannot safely reverse
+  # (it does remove ~/.rustup and ~/.cargo, but editing a stranger's shell
+  # rc file back out is much riskier than never writing to it). A real
+  # run reproduced exactly this: after uninstall removed ~/.cargo, root's
+  # next login printed "/root/.bashrc: line ...: /root/.cargo/env: No such
+  # file or directory" on every shell start. This process still needs
+  # cargo/rustc on PATH for the rest of THIS install run, which the
+  # explicit `. "$HOME/.cargo/env"` immediately below (and
+  # build_binaries_from_source()'s own sourcing on a re-run) already
+  # provides — --no-modify-path only removes the permanent side effect,
+  # not this process's own access to the toolchain it just installed.
   if ! timeout 900 "$rustup_init" -y --profile minimal \
-      --default-toolchain stable >/dev/null; then
+      --default-toolchain stable --no-modify-path >/dev/null; then
     rm -rf "$tmp"
     die "rustup installation failed or exceeded its 15-minute hard deadline"
   fi
@@ -1571,7 +1625,20 @@ install_singbox() {
   tarball="sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"
   local url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${tarball}"
   log "downloading pinned sing-box ${SINGBOX_VERSION} (${ARCH}) from official release assets..."
-  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmpdir/$tarball" "$url" || die "download failed: $url"
+  # preflight_curl_retry() (not a bare curl call): reproduced directly on a
+  # real VPS — this exact download hit repeated "Connection refused"
+  # against github.com and gave up, even though the identical download had
+  # already succeeded 3 times earlier in the same run (a short-lived
+  # outbound blip, not a broken URL/checksum). preflight_curl_retry()
+  # already implements the project's one shared bounded-retry policy
+  # (CURL_NET_FLAGS' retry/backoff, plus one further IPv4-forced attempt
+  # after a normal attempt fails) — this is the largest, least-controlled
+  # external download in the installer, so it gets that full policy, not
+  # just the bare retry flags a plain curl call would apply.
+  if ! preflight_curl_retry -fsSL -o "$tmpdir/$tarball" "$url"; then
+    network_diagnose_download_failure github.com >&2
+    die "download failed: $url"
+  fi
 
   # Verify integrity before extracting/installing ANYTHING. Preferred:
   # upstream's own published checksums.txt when it exists for this
@@ -1583,7 +1650,7 @@ install_singbox() {
   # downgrade to an unverified install.
   local sums_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box_${SINGBOX_VERSION}_checksums.txt"
   local actual_sha256 expected_sha256=""
-  if curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
+  if preflight_curl_retry -fsSL -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
     ( cd "$tmpdir" && sha256sum --ignore-missing -c checksums.txt ) || die "checksum verification failed for $tarball (upstream checksums.txt) — refusing to install."
     log "checksum verified against upstream checksums.txt."
   else
@@ -2502,6 +2569,48 @@ extract_subscription_url() {
 #   - repair of an ALREADY-ACCEPTED install: user state is the
 #     operator's; never auto-create, rotate, or mint anything here, even
 #     if the user store is (deliberately) empty.
+# When SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 (set by the lifecycle
+# acceptance harness — see deploy/almalinux/lifecycle-acceptance.sh),
+# what print_status() echoes at the end of this run must never contain
+# the real subscription URL/QR: the app's own onboarding text calls that
+# URL "the credential — treat it like a password", and this install
+# transcript is exactly the kind of thing that ends up in a CI log or a
+# release-evidence bundle. `vpn user create`/`rotate-token --qr` are
+# still invoked with that variable UNSET for this one call (so the CLI
+# still renders its normal output — see suppress_onboarding_secrets() in
+# apps/admin/src/main.rs for the CLI's own suppression, used by direct
+# operator/CI invocations of the CLI itself), and the real URL is still
+# extracted from it below purely for verify_subscription_through_nginx()'s
+# own internal end-to-end proof (a bash variable, never printed) — only
+# what gets assigned to FIRST_USER_QR_OUTPUT (the text print_status()
+# actually prints) differs.
+onboarding_secrets_suppressed() {
+  case "${SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS:-0}" in
+    1 | true | TRUE | True) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+safe_onboarding_summary() {
+  printf '%s\n' \
+    "credential generated: yes" \
+    "subscription URL generated: yes" \
+    "QR generated: suppressed (SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1)"
+}
+# Used only on a failed create/rotate-token call. $out may already
+# contain the real credential even on failure (e.g. the token was minted
+# and printed, then a later, unrelated step such as QR rendering failed)
+# — so when suppressed, this must never echo $out itself, only the fact
+# that it failed and where to see the real error.
+die_onboarding_failed() {
+  local what="$1" out="$2"
+  if onboarding_secrets_suppressed; then
+    die "[FAIL] $what (output suppressed: SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 — re-run without it, or run the same 'vpn user ...' command by hand, to see the full error)"
+  else
+    die "[FAIL] $what. Output:
+$out"
+  fi
+}
+
 ensure_first_user() {
   local existing first_id
   existing="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user list 2>/dev/null | tail -n +2 | grep -c . || true)"
@@ -2515,12 +2624,15 @@ ensure_first_user() {
     first_id="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user list 2>/dev/null | tail -n +2 | awk '{print $1; exit}')"
     [ -n "$first_id" ] || die "[FAIL] a user was reported to exist but its ID could not be determined from 'vpn user list' output."
     local out
-    out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user rotate-token "$first_id" --qr 2>&1)" \
-      || die "[FAIL] could not mint a subscription token for the existing pending-install user '$first_id'. Output:
-$out"
-    FIRST_USER_QR_OUTPUT="$out"
+    out="$(env -u SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user rotate-token "$first_id" --qr 2>&1)" \
+      || die_onboarding_failed "could not mint a subscription token for the existing pending-install user '$first_id'" "$out"
     SUBSCRIPTION_URL="$(extract_subscription_url "$out")"
     [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] a subscription token was minted for '$first_id' but no subscription URL could be extracted from its output — cannot complete onboarding verification."
+    if onboarding_secrets_suppressed; then
+      FIRST_USER_QR_OUTPUT="$(safe_onboarding_summary)"
+    else
+      FIRST_USER_QR_OUTPUT="$out"
+    fi
     return
   fi
 
@@ -2531,12 +2643,15 @@ $out"
 
   log "creating initial VPN user '$DEFAULT_USER_NAME'..."
   local out
-  out="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --qr 2>&1)" \
-    || die "[FAIL] initial user creation failed — a fresh install must produce at least one usable onboarding credential. Output:
-$out"
-  FIRST_USER_QR_OUTPUT="$out"
+  out="$(env -u SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create --name "$DEFAULT_USER_NAME" --qr 2>&1)" \
+    || die_onboarding_failed "initial user creation failed — a fresh install must produce at least one usable onboarding credential" "$out"
   SUBSCRIPTION_URL="$(extract_subscription_url "$out")"
   [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] the initial user was created but no subscription URL could be extracted from its output — cannot complete onboarding verification."
+  if onboarding_secrets_suppressed; then
+    FIRST_USER_QR_OUTPUT="$(safe_onboarding_summary)"
+  else
+    FIRST_USER_QR_OUTPUT="$out"
+  fi
 }
 
 # ---------------------------------------------------------------------

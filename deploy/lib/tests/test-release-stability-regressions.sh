@@ -95,6 +95,48 @@ else
   fail "watchdog crash-loop assertions can still race or cascade"
 fi
 
+# install.sh's own onboarding transcript (ensure_first_user()/print_status())
+# must never render the real subscription URL/QR when
+# SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 — the actual suppression
+# behavior is covered end-to-end at the source (apps/admin/tests/cli.rs's
+# user_create_qr_suppresses_the_credential_when_env_var_set and siblings);
+# these are static contract checks that install.sh's own plumbing (which
+# decides what gets ECHOED into its own transcript, separately from the
+# CLI's own suppression) has not regressed.
+ALMALINUX_INSTALL="$REPO_ROOT/deploy/almalinux/install.sh"
+if grep -q 'onboarding_secrets_suppressed()' "$ALMALINUX_INSTALL" \
+    && grep -q 'safe_onboarding_summary()' "$ALMALINUX_INSTALL" \
+    && grep -q 'die_onboarding_failed()' "$ALMALINUX_INSTALL"; then
+  ok "install.sh has an onboarding-secret-suppression contract (onboarding_secrets_suppressed/safe_onboarding_summary/die_onboarding_failed)"
+else
+  fail "install.sh's onboarding-secret-suppression helpers are missing"
+fi
+# 3 call sites total: die_onboarding_failed()'s own check, plus one in
+# each of ensure_first_user()'s two onboarding paths (existing pending
+# user, fresh user).
+if grep -c 'if onboarding_secrets_suppressed; then' "$ALMALINUX_INSTALL" | grep -qx 3; then
+  ok "both ensure_first_user() paths (existing pending user + fresh user) branch FIRST_USER_QR_OUTPUT on suppression"
+else
+  fail "ensure_first_user() no longer branches both onboarding paths on onboarding_secrets_suppressed — one of them may leak the real credential into print_status()'s transcript"
+fi
+if grep -q 'env -u SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS .*user rotate-token' "$ALMALINUX_INSTALL" \
+    && grep -q 'env -u SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS .*user create' "$ALMALINUX_INSTALL"; then
+  ok "both onboarding CLI calls run with the suppression variable unset (so the real subscription URL stays extractable for verify_subscription_through_nginx()'s own internal proof)"
+else
+  fail "install.sh no longer isolates the suppression variable around its internal user create/rotate-token calls — verify_subscription_through_nginx() would lose its real URL under suppression"
+fi
+if grep -qF 'die_onboarding_failed "could not mint a subscription token' "$ALMALINUX_INSTALL" \
+    && grep -qF 'die_onboarding_failed "initial user creation failed' "$ALMALINUX_INSTALL"; then
+  ok "both onboarding failure paths route through die_onboarding_failed (never echo raw \$out — which may already contain the real credential printed just before an unrelated later failure — verbatim when suppressed)"
+else
+  fail "an onboarding failure path still echoes raw command output directly, which could leak the credential into a suppressed transcript on a failure that happens after the credential was already printed"
+fi
+if grep -q 'SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1' "$LIFECYCLE"; then
+  ok "the lifecycle harness itself sets SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 on install.sh invocations"
+else
+  fail "the lifecycle harness no longer auto-enables onboarding-secret suppression — its own transcript would carry the real credential again"
+fi
+
 if [ "$failures" -eq 0 ]; then
   echo "release-stability regression checks: PASS"
   exit 0

@@ -974,6 +974,19 @@ else
 fi
 
 echo
+echo "--- run_install()/run_install_abort_after_singbox() suppress onboarding credentials (install.sh's own transcript streams live to this harness's stdout, uncaptured) ---"
+if grep -q 'SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1' <<< "$run_install_body"; then
+  ok "run_install() sets SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 on the remote install.sh invocation"
+else
+  fail "run_install() no longer suppresses onboarding secrets — install.sh's real subscription URL/QR would stream into this harness's own transcript (CI logs, release evidence)"
+fi
+if grep -q 'SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1' <<< "$run_install_abort_body"; then
+  ok "run_install_abort_after_singbox() sets SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1 on the remote install.sh invocation"
+else
+  fail "run_install_abort_after_singbox() no longer suppresses onboarding secrets"
+fi
+
+echo
 echo "--- certbot renew --dry-run uses the long SSH timeout, not the short per-probe one ---"
 # Reproduced on a real VPS as exit=124 (ssh_run's 180s timeout is too short
 # for a live certbot renewal simulation), the same bug class already fixed
