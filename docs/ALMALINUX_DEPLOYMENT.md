@@ -192,9 +192,28 @@ closes exactly that rule again afterward — it never touches a rule it
 did not add itself (an operator's own permanent `--add-service=http` is
 left alone). This closes the gap where earlier versions only opened
 TCP/80 once, during install, so every renewal after the first would
-silently fail once that temporary rule was gone. `sudo certbot renew
---dry-run` exercises this same pre/post-hook pair and is the fastest way
-to confirm renewal still works end to end.
+silently fail once that temporary rule was gone.
+
+**nginx and TCP/80 (trade-off, deliberate for v1.0):** the renewal uses
+certbot's `--standalone` authenticator, which needs exclusive control of
+TCP/80 for the few seconds the HTTP-01 challenge takes. nginx's
+OS-default vhost binds `:80` even though singbox-vpn's own subscription
+vhost never does — so the same pre/post-hook pair also stops nginx
+(only if it was actually running) immediately before the renewal
+attempt and restarts it immediately afterward (success or failure),
+verifying at each step that nginx actually stopped, that TCP/80 is
+genuinely free before proceeding (naming the occupant and refusing to
+continue — never killing anything — if something else still holds it),
+and that nginx actually came back up. **This means nginx (and any other
+site sharing it, not just the subscription vhost) is briefly
+unreachable during each renewal** — typically a few seconds, roughly
+every 60 days. singbox-vpn's own VPN data plane (`sing-box`) and the
+`vpn-subscription` backend it fronts are never touched. A webroot or
+certbot nginx-plugin authenticator (which would avoid the outage
+entirely) was considered and deliberately deferred past v1.0. `sudo
+certbot renew --dry-run` exercises this same pre/post-hook pair,
+including the nginx suspend/restore cycle, and is the fastest way to
+confirm renewal still works end to end.
 
 This only manages the **host's own** firewall — it cannot open a
 separate cloud-provider security group (see "Cloud provider firewalls /
@@ -261,7 +280,13 @@ printed):
    auto-detects the public IP and assigns an `sslip.io` hostname)
 4. singbox-vpn binaries (prebuilt release if available and checksum-verified;
    otherwise `cargo build --release`, auto-installing `rustup` if
-   `cargo` is missing)
+   `cargo` is missing — via `rustup-init --no-modify-path`, so it never
+   edits root's `.bashrc`/`.profile`; the installer sources
+   `~/.cargo/env` itself for the rest of this run, and `uninstall.sh`
+   removes `~/.rustup`/`~/.cargo` cleanly with nothing left over in any
+   shell startup file, but only when singbox-vpn installed the toolchain
+   in the first place — an operator's own pre-existing toolchain is
+   never touched)
 5. sing-box installation (pinned version, checksum-verified when
    published, `LICENSE` copied alongside the binary)
 6. users/groups (`vpn-subscription`, `sing-box` service accounts)
