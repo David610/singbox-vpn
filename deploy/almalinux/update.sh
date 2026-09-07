@@ -98,7 +98,11 @@ done
 # refusal, which plain `--retry` does not treat as retryable. Keep updater
 # downloads independently resilient because this array is defined after
 # preflight.sh is sourced and therefore cannot rely on preflight's augmentation.
-CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2 --retry-connrefused)
+# `--retry 5` with no `--retry-delay`: see deploy/almalinux/install.sh's
+# identical comment — omitting --retry-delay gives curl's own exponential
+# backoff instead of a fixed 2s gap, which a real VPS run showed was not
+# always enough for a transient GitHub connection refusal to clear.
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 5 --retry-connrefused)
 
 # ---------------------------------------------------------------------
 # CLI

@@ -68,8 +68,11 @@ die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 # stalled transfer so `--retry` actually gets a chance to run;
 # `--retry-connrefused` also treats a transient TCP connection refusal
 # as retryable (the lifecycle gate observed exactly this against github.com);
-# `--connect-timeout`/`--max-time` bound the rest.
-CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2 --retry-connrefused)
+# `--connect-timeout`/`--max-time` bound the rest. `--retry 5` with no
+# `--retry-delay`: a later real run showed even 3 fixed-2s-gap retries
+# were not always enough for a transient GitHub refusal to clear —
+# omitting --retry-delay gives curl's own exponential backoff instead.
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 5 --retry-connrefused)
 
 # ---------------------------------------------------------------------
 # argument parsing (curl ... | sudo bash -s -- --version v1.2.3)

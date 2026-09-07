@@ -32,7 +32,10 @@ die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 # Network fallback is only used when the persistent offline uninstaller is
 # missing, but it should be as tolerant of short GitHub/CDN outages as install
 # and update. In particular, plain --retry does not retry ECONNREFUSED.
-CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2 --retry-connrefused)
+# `--retry 5` with no `--retry-delay` gives curl's own exponential backoff
+# instead of a fixed 2s gap — see deploy/almalinux/install.sh's identical
+# comment for why a fixed short gap was not always enough on a real run.
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 5 --retry-connrefused)
 
 PASSTHROUGH_ARGS=()
 while [ $# -gt 0 ]; do

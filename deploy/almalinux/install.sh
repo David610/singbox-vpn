@@ -114,7 +114,19 @@ stage() { echo; echo "[install] === [$1/18] $2 ==="; }
 # real on a flaky VPS network. `--speed-limit`/`--speed-time` makes
 # curl itself detect and abort a stalled transfer so `--retry` gets a
 # chance to run; `--connect-timeout`/`--max-time` bound the rest.
-CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 3 --retry-delay 2)
+#
+# `--retry 5` with NO `--retry-delay`: reproduced directly on a real VPS
+# — the sing-box release-asset download hit 4 consecutive "Connection
+# refused" errors and gave up, even though the exact same download had
+# already succeeded 3 times earlier in the same run (a short-lived
+# outbound GitHub blip, not a broken URL/checksum). The previous
+# `--retry 3 --retry-delay 2` forces a FIXED 2s gap between attempts —
+# curl's own default (used whenever --retry-delay is omitted) is
+# EXPONENTIAL backoff instead (roughly 1s/2s/4s/8s/16s), giving a
+# transient blip meaningfully more time to clear without turning a
+# persistent failure into a long hang (bounded by --max-time regardless,
+# and this is retries around ONE curl invocation, not an outer loop).
+CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-time 30 --retry 5)
 
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/os.sh"
@@ -128,6 +140,34 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 . "$REPO_ROOT/deploy/lib/state-schema.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/binary-version-check.sh"
+
+# Best-effort, non-fatal diagnostics printed AFTER preflight_curl_retry has
+# already exhausted its retries (including the IPv4 fallback) for a real
+# artifact download. Never fatal by itself and never the primary retry
+# mechanism — it exists only to tell a human "was this DNS, IPv4, IPv6, or
+# just this one asset?" without dumping env vars, proxy credentials,
+# tokens, or request headers into the log.
+network_diagnose_download_failure() {
+  local host="$1"
+  echo "[install] diagnosing network failure for $host (best-effort, none of this is fatal by itself):" >&2
+  if command -v getent >/dev/null 2>&1; then
+    if getent ahosts "$host" >/dev/null 2>&1; then
+      echo "[install]   DNS: $host resolves OK" >&2
+    else
+      echo "[install]   DNS: $host did NOT resolve" >&2
+    fi
+  fi
+  if curl -4 -fsS -o /dev/null --connect-timeout 5 "https://$host/" 2>/dev/null; then
+    echo "[install]   IPv4: https://$host/ reachable" >&2
+  else
+    echo "[install]   IPv4: https://$host/ NOT reachable" >&2
+  fi
+  if curl -6 -fsS -o /dev/null --connect-timeout 5 "https://$host/" 2>/dev/null; then
+    echo "[install]   IPv6: https://$host/ reachable" >&2
+  else
+    echo "[install]   IPv6: https://$host/ NOT reachable (may simply mean this host has no IPv6, not necessarily a failure)" >&2
+  fi
+}
 
 # Installs $src to a FIXED, well-known destination path (a systemd unit,
 # a certbot renewal hook — anything named identically regardless of
@@ -1571,7 +1611,20 @@ install_singbox() {
   tarball="sing-box-${SINGBOX_VERSION}-linux-${ARCH}.tar.gz"
   local url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${tarball}"
   log "downloading pinned sing-box ${SINGBOX_VERSION} (${ARCH}) from official release assets..."
-  curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmpdir/$tarball" "$url" || die "download failed: $url"
+  # preflight_curl_retry() (not a bare curl call): reproduced directly on a
+  # real VPS — this exact download hit repeated "Connection refused"
+  # against github.com and gave up, even though the identical download had
+  # already succeeded 3 times earlier in the same run (a short-lived
+  # outbound blip, not a broken URL/checksum). preflight_curl_retry()
+  # already implements the project's one shared bounded-retry policy
+  # (CURL_NET_FLAGS' retry/backoff, plus one further IPv4-forced attempt
+  # after a normal attempt fails) — this is the largest, least-controlled
+  # external download in the installer, so it gets that full policy, not
+  # just the bare retry flags a plain curl call would apply.
+  if ! preflight_curl_retry -fsSL -o "$tmpdir/$tarball" "$url"; then
+    network_diagnose_download_failure github.com >&2
+    die "download failed: $url"
+  fi
 
   # Verify integrity before extracting/installing ANYTHING. Preferred:
   # upstream's own published checksums.txt when it exists for this
@@ -1583,7 +1636,7 @@ install_singbox() {
   # downgrade to an unverified install.
   local sums_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box_${SINGBOX_VERSION}_checksums.txt"
   local actual_sha256 expected_sha256=""
-  if curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
+  if preflight_curl_retry -fsSL -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
     ( cd "$tmpdir" && sha256sum --ignore-missing -c checksums.txt ) || die "checksum verification failed for $tarball (upstream checksums.txt) — refusing to install."
     log "checksum verified against upstream checksums.txt."
   else
