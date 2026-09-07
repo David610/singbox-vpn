@@ -48,6 +48,7 @@ EOF
   chmod +x "$dir/bin/systemctl"
 }
 
+
 make_ufw_fake() {
   local dir=$1 initially_open=$2
   mkdir -p "$dir/bin"
@@ -70,12 +71,14 @@ run_pre() {
   local dir=$1
   env -i PATH="$dir/bin:/usr/bin:/bin" \
     SINGBOX_VPN_CERTBOT_PORT80_MARKER="$dir/marker" \
+    SINGBOX_VPN_CERTBOT_NGINX_MARKER="$dir/nginx-marker" \
     bash "$PRE"
 }
 run_post() {
   local dir=$1
   env -i PATH="$dir/bin:/usr/bin:/bin" \
     SINGBOX_VPN_CERTBOT_PORT80_MARKER="$dir/marker" \
+    SINGBOX_VPN_CERTBOT_NGINX_MARKER="$dir/nginx-marker" \
     bash "$POST"
 }
 
@@ -112,5 +115,77 @@ run_pre "$dir" | grep -q "no managed firewalld/ufw backend"
 [ ! -e "$dir/marker" ] || { echo "Test D FAILED: pre-hook wrote a marker with no firewall backend"; exit 1; }
 run_post "$dir"
 echo "Test D (no managed firewall backend -> safe no-op): PASS"
+
+# Combined firewalld+nginx fake for tests E/F: reproduced directly on a
+# real VPS — `certbot renew --dry-run` failed with "Could not bind TCP
+# port 80" even with the firewall correctly opened, because nginx (which
+# has no role in the ACME challenge — see certbot-firewall-pre-hook.sh)
+# was still bound to :80 via its OS-default vhost. A single systemctl
+# fake has to answer both firewalld's and nginx's is-active checks (the
+# per-scenario fakes above each only answer one), and track nginx's
+# stop/start state for real, unlike the blanket "always active" fake used
+# by tests A-D (which never actually exercises the stop branch).
+make_firewalld_and_nginx_fakes() {
+  local dir=$1 firewall_initially_open=$2 nginx_initially_active=$3
+  mkdir -p "$dir/bin"
+  [ "$firewall_initially_open" -eq 1 ] && touch "$dir/port80-open" || rm -f "$dir/port80-open"
+  [ "$nginx_initially_active" -eq 1 ] && echo active > "$dir/nginx-state" || echo inactive > "$dir/nginx-state"
+  cat > "$dir/bin/nginx" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$dir/bin/nginx"
+  cat > "$dir/bin/firewall-cmd" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  --query-port=80/tcp) [ -e "$dir/port80-open" ] && exit 0 || exit 1 ;;
+  --add-port=80/tcp) touch "$dir/port80-open"; exit 0 ;;
+  --remove-port=80/tcp) rm -f "$dir/port80-open"; exit 0 ;;
+esac
+exit 1
+EOF
+  chmod +x "$dir/bin/firewall-cmd"
+  cat > "$dir/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+case "\$1 \$2 \$3" in
+  "is-active --quiet firewalld") exit 0 ;;
+  "is-active --quiet nginx") [ "\$(cat "$dir/nginx-state" 2>/dev/null)" = "active" ] && exit 0 || exit 1 ;;
+esac
+case "\$1 \$2" in
+  "stop nginx") echo inactive > "$dir/nginx-state"; exit 0 ;;
+  "start nginx") echo active > "$dir/nginx-state"; exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$dir/bin/systemctl"
+}
+
+# --- Test E: nginx active + firewall closed — pre-hook stops nginx AND
+# opens the port; post-hook restarts nginx AND closes the port again ----
+dir="$WORK/e"; make_firewalld_and_nginx_fakes "$dir" 0 1
+pre_out="$(run_pre "$dir")"
+printf '%s' "$pre_out" | grep -q "temporarily stopped nginx" || { echo "Test E FAILED: pre-hook did not report stopping nginx: $pre_out"; exit 1; }
+printf '%s' "$pre_out" | grep -q "temporarily allowed" || { echo "Test E FAILED: pre-hook did not also open the firewall port"; exit 1; }
+[ "$(cat "$dir/nginx-state")" = "inactive" ] || { echo "Test E FAILED: nginx was not actually stopped"; exit 1; }
+[ -e "$dir/nginx-marker" ] || { echo "Test E FAILED: pre-hook did not record an nginx marker"; exit 1; }
+post_out="$(run_post "$dir")"
+printf '%s' "$post_out" | grep -q "restarted nginx" || { echo "Test E FAILED: post-hook did not report restarting nginx: $post_out"; exit 1; }
+[ "$(cat "$dir/nginx-state")" = "active" ] || { echo "Test E FAILED: nginx was not actually restarted"; exit 1; }
+[ ! -e "$dir/port80-open" ] || { echo "Test E FAILED: post-hook did not close the firewall port"; exit 1; }
+[ ! -e "$dir/nginx-marker" ] || { echo "Test E FAILED: post-hook did not clean up its nginx marker"; exit 1; }
+echo "Test E (nginx active -> stopped for the challenge -> restarted): PASS"
+
+# --- Test F: nginx already inactive — pre-hook must not touch it, and
+# must never claim to have stopped something that wasn't running --------
+dir="$WORK/f"; make_firewalld_and_nginx_fakes "$dir" 0 0
+pre_out="$(run_pre "$dir")"
+printf '%s' "$pre_out" | grep -qv "temporarily stopped nginx" 2>/dev/null
+if printf '%s' "$pre_out" | grep -q "temporarily stopped nginx"; then
+  echo "Test F FAILED: pre-hook claimed to stop nginx when it was already inactive"; exit 1
+fi
+[ ! -e "$dir/nginx-marker" ] || { echo "Test F FAILED: pre-hook wrote an nginx marker when nginx was already inactive"; exit 1; }
+run_post "$dir"
+[ "$(cat "$dir/nginx-state")" = "inactive" ] || { echo "Test F FAILED: post-hook started nginx even though the pre-hook never stopped it"; exit 1; }
+echo "Test F (nginx already inactive -> left untouched): PASS"
 
 echo "certbot-firewall-hooks tests: PASS"
