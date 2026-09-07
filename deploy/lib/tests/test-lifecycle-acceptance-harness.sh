@@ -698,6 +698,32 @@ else
 fi
 
 echo
+echo "--- certbot renew --dry-run uses the long SSH timeout, not the short per-probe one ---"
+# Reproduced on a real VPS as exit=124 (ssh_run's 180s timeout is too short
+# for a live certbot renewal simulation), the same bug class already fixed
+# for run_install() above but missed on this stage.
+if grep -qE "ssh_run_long 'sudo certbot renew --dry-run'" "$SCRIPT"; then
+  ok "stage 18 (certbot renew --dry-run) uses ssh_run_long"
+else
+  fail "stage 18 (certbot renew --dry-run) still uses the short ssh_run timeout — a slow-but-correct dry-run would be falsely reported as [FAIL] (exit=124)"
+fi
+
+echo
+echo "--- every vpn-admin/vpn invocation on the remote host uses an absolute path, never bare PATH lookup ---"
+# Reproduced on a real AlmaLinux VPS: 'sudo vpn-admin ...' failed with
+# 'sudo: vpn-admin: command not found' even though 'vpn-admin' (no sudo)
+# and 'sudo /usr/local/bin/vpn-admin' both worked — RHEL-family sudo's
+# default secure_path excludes /usr/local/bin (unlike Debian/Ubuntu),
+# where install.sh (BIN_DIR=/usr/local/bin) installs both binaries. Every
+# `sudo vpn-admin`/`sudo vpn ` call in this script must use the absolute
+# path so it cannot depend on sudo's secure_path containing /usr/local/bin.
+if grep -nE "sudo vpn-admin\b|sudo vpn ['\" ]" "$SCRIPT" | grep -v '/usr/local/bin/vpn'; then
+  fail "found a bare 'sudo vpn-admin'/'sudo vpn' call that relies on sudo's secure_path containing /usr/local/bin (see above)"
+else
+  ok "no bare 'sudo vpn-admin'/'sudo vpn' calls remain — all use the absolute /usr/local/bin path"
+fi
+
+echo
 echo "--- stage 5 (reboot+health) names the specific check that failed, instead of one opaque [FAIL] ---"
 cat > "$MOCKBIN/ssh" <<'MOCKSSH_REBOOT'
 #!/bin/bash

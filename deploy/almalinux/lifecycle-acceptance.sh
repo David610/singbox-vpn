@@ -444,7 +444,7 @@ if [ "$INITIAL_BASELINE_READY" -eq 1 ]; then
         systemctl is-active --quiet vpn-service-watchdog.timer || fails="$fails vpn-service-watchdog.timer"
         ss -ltn 2>/dev/null | grep -q ":443 " || fails="$fails :443-listener"
         sudo test -s /var/lib/singbox-vpn/install-state.json || fails="$fails install-state.json"
-        sudo vpn-admin doctor --protocol || fails="$fails doctor--protocol"
+        sudo /usr/local/bin/vpn-admin doctor --protocol || fails="$fails doctor--protocol"
         if [ -n "$fails" ]; then echo "POST_REBOOT_FAILED_CHECKS:$fails"; exit 1; fi
         echo "POST_REBOOT_ALL_OK"
       ' 2>&1)" || true
@@ -539,18 +539,18 @@ TEST_USER_NAME="lifecycle-test-user"
 
 if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   section "9. create test user (persists through the backup/restore verification below)"
-  if ssh_run "sudo vpn-admin user create --name $TEST_USER_NAME --json" >/dev/null 2>&1 \
-    && ssh_run "sudo vpn-admin user list | grep -q $TEST_USER_NAME" 2>/dev/null; then
+  if ssh_run "sudo /usr/local/bin/vpn-admin user create --name $TEST_USER_NAME --json" >/dev/null 2>&1 \
+    && ssh_run "sudo /usr/local/bin/vpn-admin user list | grep -q $TEST_USER_NAME" 2>/dev/null; then
     pass "test user created ($TEST_USER_NAME)"
   else
     fail_required "test user created ($TEST_USER_NAME)"
   fi
 
   section "10. vpn-admin doctor (standard checks, no protocol self-test)"
-  if ssh_run 'sudo vpn-admin doctor' 2>/dev/null; then pass "vpn-admin doctor"; else fail_required "vpn-admin doctor"; fi
+  if ssh_run 'sudo /usr/local/bin/vpn-admin doctor' 2>/dev/null; then pass "vpn-admin doctor"; else fail_required "vpn-admin doctor"; fi
 
   section "11. REALITY authentication proof (vpn-admin doctor --protocol --require-protocol)"
-  if PROTOCOL_OUT="$(ssh_run 'sudo vpn-admin doctor --protocol --require-protocol' 2>&1)"; then protocol_rc=0; else protocol_rc=$?; fi
+  if PROTOCOL_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol' 2>&1)"; then protocol_rc=0; else protocol_rc=$?; fi
   if [ "$protocol_rc" -eq 0 ] && printf '%s' "$PROTOCOL_OUT" | grep -q 'completed a full handshake'; then
     pass "REALITY handshake self-test PASSED (real sing-box client, live public_key/short_id, application bytes end-to-end)"
   else
@@ -628,13 +628,13 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   fi
 
   if [ "$failed_state_ready" -eq 1 ]; then
-    if DOCTOR_DURING_FAILURE_OUT="$(ssh_run 'sudo vpn-admin doctor' 2>&1)"; then doctor_during_failure_rc=0; else doctor_during_failure_rc=$?; fi
+    if DOCTOR_DURING_FAILURE_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor' 2>&1)"; then doctor_during_failure_rc=0; else doctor_during_failure_rc=$?; fi
     if [ "$doctor_during_failure_rc" -ne 0 ] && printf '%s' "$DOCTOR_DURING_FAILURE_OUT" | grep -qi 'sing-box.service is in a FAILED state'; then
       pass "vpn-admin doctor correctly reports sing-box.service as FAILED (distinct from merely 'not active')"
     else
       fail_required "vpn-admin doctor did not report the FAILED sing-box.service" "(exit=$doctor_during_failure_rc; see remote output above)"
     fi
-    STATUS_DURING_FAILURE_OUT="$(ssh_run 'sudo vpn-admin status' 2>&1 || true)"
+    STATUS_DURING_FAILURE_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin status' 2>&1 || true)"
     if printf '%s' "$STATUS_DURING_FAILURE_OUT" | grep -qi 'sing-box.*failed'; then pass "vpn-admin status correctly reports sing-box as failed"; else fail_required "vpn-admin status did not report sing-box as failed"; fi
 
     if ssh_run 'sudo systemctl start vpn-service-watchdog.service' 2>/dev/null; then pass "vpn-service-watchdog.service ran without error"; else fail_required "vpn-service-watchdog.service ran without error"; fi
@@ -667,7 +667,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   if ssh_run 'sudo systemctl start sing-box' 2>/dev/null; then pass "sing-box restarted normally after the deliberate-stop test (restoring state for the rest of this run)"; else fail_required "sing-box restarted normally after the deliberate-stop test"; fi
 
   section "14. protocol works after recovery (re-run doctor --protocol --require-protocol)"
-  if POST_RECOVERY_PROTOCOL_OUT="$(ssh_run 'sudo vpn-admin doctor --protocol --require-protocol' 2>&1)"; then post_recovery_rc=0; else post_recovery_rc=$?; fi
+  if POST_RECOVERY_PROTOCOL_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol' 2>&1)"; then post_recovery_rc=0; else post_recovery_rc=$?; fi
   if [ "$post_recovery_rc" -eq 0 ] && printf '%s' "$POST_RECOVERY_PROTOCOL_OUT" | grep -q 'completed a full handshake'; then pass "REALITY handshake self-test still PASSES after the SIGKILL+recovery cycle"; else fail_required "REALITY handshake self-test after recovery" "(exit=$post_recovery_rc; see remote output above)"; fi
 
   section "15. user rotate/disable/remove sanity (scratch user; does not touch the persisted test user above)"
@@ -675,16 +675,16 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # that contains a credential.
   if SCRATCH_RESULT="$(ssh_run '
     scratch_id=""
-    cleanup_scratch() { [ -z "$scratch_id" ] || sudo vpn-admin user remove "$scratch_id" >/dev/null 2>&1 || true; }
+    cleanup_scratch() { [ -z "$scratch_id" ] || sudo /usr/local/bin/vpn-admin user remove "$scratch_id" >/dev/null 2>&1 || true; }
     trap cleanup_scratch EXIT
-    scratch_id="$(sudo vpn-admin user create --name lifecycle-scratch-user --json | grep -o "\"id\": *\"[^\"]*\"" | head -1 | sed -E "s/.*\"([^\"]+)\"$/\1/")" || { echo create; exit 1; }
+    scratch_id="$(sudo /usr/local/bin/vpn-admin user create --name lifecycle-scratch-user --json | grep -o "\"id\": *\"[^\"]*\"" | head -1 | sed -E "s/.*\"([^\"]+)\"$/\1/")" || { echo create; exit 1; }
     [ -n "$scratch_id" ] || { echo parse-id; exit 1; }
-    sudo vpn-admin user list | grep -q "$scratch_id" || { echo list; exit 1; }
-    sudo vpn-admin user rotate-token "$scratch_id" >/dev/null || { echo rotate-token; exit 1; }
-    sudo vpn-admin user rotate-vless "$scratch_id" >/dev/null || { echo rotate-vless; exit 1; }
-    sudo vpn-admin user rotate-hysteria "$scratch_id" >/dev/null || { echo rotate-hysteria; exit 1; }
-    sudo vpn-admin user disable "$scratch_id" >/dev/null || { echo disable; exit 1; }
-    sudo vpn-admin user remove "$scratch_id" >/dev/null || { echo remove; exit 1; }
+    sudo /usr/local/bin/vpn-admin user list | grep -q "$scratch_id" || { echo list; exit 1; }
+    sudo /usr/local/bin/vpn-admin user rotate-token "$scratch_id" >/dev/null || { echo rotate-token; exit 1; }
+    sudo /usr/local/bin/vpn-admin user rotate-vless "$scratch_id" >/dev/null || { echo rotate-vless; exit 1; }
+    sudo /usr/local/bin/vpn-admin user rotate-hysteria "$scratch_id" >/dev/null || { echo rotate-hysteria; exit 1; }
+    sudo /usr/local/bin/vpn-admin user disable "$scratch_id" >/dev/null || { echo disable; exit 1; }
+    sudo /usr/local/bin/vpn-admin user remove "$scratch_id" >/dev/null || { echo remove; exit 1; }
     scratch_id=""
     trap - EXIT
   ' 2>/dev/null)"; then
@@ -706,7 +706,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
     section "16b. injected failed production repair -> rollback proof"
     pre_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
     if ssh_run "sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/singbox-vpn/deploy/almalinux/update.sh --repair" 2>/dev/null; then fail_required "failed production repair aborted as expected" "(expected non-zero exit, got success)"; else pass "failed production repair aborted as expected"; fi
-    if ssh_reconnect 'systemctl is-active --quiet sshd && systemctl is-active --quiet sing-box && systemctl is-active --quiet vpn-subscription && sudo vpn-admin doctor --protocol' 2>/dev/null; then
+    if ssh_reconnect 'systemctl is-active --quiet sshd && systemctl is-active --quiet sing-box && systemctl is-active --quiet vpn-subscription && sudo /usr/local/bin/vpn-admin doctor --protocol' 2>/dev/null; then
       post_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
       if [ "$pre_rollback_version" = "$post_rollback_version" ]; then pass "production repair rollback restored the prior working state"; else fail_required "production repair rollback restored prior state" "(install-state.json differs)"; fi
     else
@@ -729,7 +729,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
     section "16b. injected failed update -> rollback proof (failure injected after SWITCH begins)"
     pre_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
     if ssh_run_long "sudo SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/singbox-vpn/deploy/almalinux/update.sh --dev-rebuild" 2>/dev/null; then fail_required "failed update aborted as expected" "(expected non-zero exit, got success)"; else pass "failed update aborted as expected"; fi
-    if ssh_reconnect 'systemctl is-active --quiet sshd && systemctl is-active --quiet sing-box && systemctl is-active --quiet vpn-subscription && sudo vpn-admin doctor --protocol' 2>/dev/null; then
+    if ssh_reconnect 'systemctl is-active --quiet sshd && systemctl is-active --quiet sing-box && systemctl is-active --quiet vpn-subscription && sudo /usr/local/bin/vpn-admin doctor --protocol' 2>/dev/null; then
       post_rollback_version="$(ssh_run 'sudo cat /var/lib/singbox-vpn/install-state.json 2>/dev/null' 2>/dev/null || true)"
       if [ "$pre_rollback_version" = "$post_rollback_version" ]; then pass "rollback restored the previous working release (prior binary/schema/units/config/services/protocol/SSH)"; else fail_required "rollback restored prior state" "(install-state.json differs)"; fi
     else
@@ -741,8 +741,8 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   fi
 
   section "17. create vpn backup"
-  PRE_BACKUP_USERLIST="$(ssh_run 'sudo vpn-admin user list' 2>/dev/null || true)"
-  if ssh_run "sudo vpn-admin backup --output $BACKUP_PATH" 2>/dev/null && ssh_run "sudo test -s $BACKUP_PATH" 2>/dev/null; then
+  PRE_BACKUP_USERLIST="$(ssh_run 'sudo /usr/local/bin/vpn-admin user list' 2>/dev/null || true)"
+  if ssh_run "sudo /usr/local/bin/vpn-admin backup --output $BACKUP_PATH" 2>/dev/null && ssh_run "sudo test -s $BACKUP_PATH" 2>/dev/null; then
     pass "vpn-admin backup produced a non-empty archive at $BACKUP_PATH"
     BACKUP_READY=1
   else
@@ -750,7 +750,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   fi
 
   section "18. certbot renew --dry-run (while the deployment is still live, before the destructive uninstall below)"
-  if CERTBOT_DRY_OUT="$(ssh_run 'sudo certbot renew --dry-run' 2>&1)"; then certbot_dry_rc=0; else certbot_dry_rc=$?; fi
+  if CERTBOT_DRY_OUT="$(ssh_run_long 'sudo certbot renew --dry-run' 2>&1)"; then certbot_dry_rc=0; else certbot_dry_rc=$?; fi
   if [ "$certbot_dry_rc" -eq 0 ] && ! printf '%s' "$CERTBOT_DRY_OUT" | grep -qF 'No simulated renewals were attempted.'; then
     pass "certbot renew --dry-run (at least one renewal was eligible for simulation)"
   elif printf '%s' "$CERTBOT_DRY_OUT" | grep -qF 'No simulated renewals were attempted.'; then
@@ -791,15 +791,15 @@ fi
 
 if [ "$REINSTALL_READY" -eq 1 ] && [ "$BACKUP_READY" -eq 1 ]; then
   section "22. restore backup"
-  if ssh_run "sudo test -s $BACKUP_PATH" 2>/dev/null && ssh_run "sudo vpn-admin restore $BACKUP_PATH" 2>/dev/null; then pass "vpn-admin restore applied the backup archive"; else fail_required "vpn-admin restore applied the backup archive"; fi
+  if ssh_run "sudo test -s $BACKUP_PATH" 2>/dev/null && ssh_run "sudo /usr/local/bin/vpn-admin restore $BACKUP_PATH" 2>/dev/null; then pass "vpn-admin restore applied the backup archive"; else fail_required "vpn-admin restore applied the backup archive"; fi
 
   section "23. verify restored user/key state works"
-  POST_RESTORE_USERLIST="$(ssh_run 'sudo vpn-admin user list' 2>/dev/null || true)"
+  POST_RESTORE_USERLIST="$(ssh_run 'sudo /usr/local/bin/vpn-admin user list' 2>/dev/null || true)"
   if [ -n "$PRE_BACKUP_USERLIST" ] && [ "$PRE_BACKUP_USERLIST" = "$POST_RESTORE_USERLIST" ]; then pass "restored user list matches the pre-backup snapshot exactly (ids/names/enabled state, including $TEST_USER_NAME)"; else fail_required "restored user list matches the pre-backup snapshot" "(pre-backup: $PRE_BACKUP_USERLIST | post-restore: $POST_RESTORE_USERLIST)"; fi
-  if ssh_run "sudo vpn-admin user list | grep -q $TEST_USER_NAME" 2>/dev/null; then pass "the persisted test user ($TEST_USER_NAME) survived uninstall/reinstall/restore"; else fail_required "the persisted test user ($TEST_USER_NAME) survived uninstall/reinstall/restore"; fi
+  if ssh_run "sudo /usr/local/bin/vpn-admin user list | grep -q $TEST_USER_NAME" 2>/dev/null; then pass "the persisted test user ($TEST_USER_NAME) survived uninstall/reinstall/restore"; else fail_required "the persisted test user ($TEST_USER_NAME) survived uninstall/reinstall/restore"; fi
 
   section "24. doctor/protocol checks again (post-restore)"
-  if POST_RESTORE_PROTOCOL_OUT="$(ssh_run 'sudo vpn-admin doctor --protocol --require-protocol' 2>&1)"; then post_restore_rc=0; else post_restore_rc=$?; fi
+  if POST_RESTORE_PROTOCOL_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol' 2>&1)"; then post_restore_rc=0; else post_restore_rc=$?; fi
   if [ "$post_restore_rc" -eq 0 ] && printf '%s' "$POST_RESTORE_PROTOCOL_OUT" | grep -q 'completed a full handshake'; then pass "REALITY handshake self-test PASSES against the restored key material"; else fail_required "REALITY handshake self-test against restored key material" "(exit=$post_restore_rc; see remote output above)"; fi
 else
   section "22-24. backup restore/state/protocol checks"
