@@ -192,6 +192,25 @@ ssh_reconnect() {
   timeout 30 ssh -o ControlPath=none -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=15 \
     -o StrictHostKeyChecking=accept-new "$HOST" "$@"
 }
+# Certbot is neither a short probe (ssh_run's 180s) nor a from-source Rust
+# build (ssh_run_long's 1200s) — it needs its OWN bounded timeout class.
+# Real-VPS evidence: a full `certbot renew --dry-run` (standalone HTTP-01,
+# nginx suspend/restore, firewalld temp-open/close) completes in well under
+# a minute; 360s locally / 300s remotely leaves generous headroom without
+# ever approaching ssh_run_long's 20-minute budget, which is what made a
+# genuinely finished renewal look permanently frozen.
+# -n: this is a fully noninteractive remote command (see the sentinel-based
+# script this wraps) — it never needs to read the controller's own stdin.
+# ServerAliveInterval/CountMax: detect a stalled TCP session (not just a
+# hung remote command) within ~60s instead of waiting out the full local
+# timeout. `-k 10s`: guarantees a SIGKILL 10s after SIGTERM if ssh itself
+# (or anything it's waiting on) ignores the terminate signal, so this can
+# never hang past 370s regardless of what the remote end does.
+ssh_run_certbot() {
+  timeout -k 10s 360s ssh "${SSH_OPTS[@]}" -n \
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+    "$HOST" "$@"
+}
 
 # Built as an array, never as a raw interpolated string: every element
 # here crosses an SSH shell boundary (embedded into a single command
@@ -236,6 +255,20 @@ fail_required() { printf "[FAIL][required] %-45s %s\n" "$1" "${2:-}"; failures=$
 block() { printf "[BLOCKED] %-51s %s\n" "$1" "${2:-}"; blocked=$((blocked + 1)); }
 mark_unverified() { printf "[UNVERIFIED] %-49s %s\n" "$1" "${2:-}"; unverified=$((unverified + 1)); }
 section() { echo; echo "=== $1 ==="; }
+
+# Local-controller-side temp state this script itself creates (currently:
+# stage 18's certbot streaming log — see ssh_run_certbot()/section 18
+# below). Cleaned up on every exit path, not just the happy one, so an
+# interrupted or failing run never leaves a stray file behind. Stage 18
+# also removes its own log immediately after use as defense in depth; this
+# trap exists for every other exit (Ctrl-C, an earlier stage's failure
+# under `set -e`, etc).
+CERTBOT_LOG_FILE=""
+cleanup_lifecycle_tmp() {
+  [ -n "$CERTBOT_LOG_FILE" ] && rm -f "$CERTBOT_LOG_FILE" 2>/dev/null
+  return 0
+}
+trap cleanup_lifecycle_tmp EXIT INT TERM
 
 # Snapshot the real certificate lineage after the first successful install.
 # The snapshot lives under /root, outside every path the singbox-vpn
@@ -871,34 +904,187 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   fi
 
   section "18. certbot renew --dry-run (while the deployment is still live, before the destructive uninstall below)"
-  if CERTBOT_DRY_OUT="$(ssh_run_long 'sudo certbot renew --dry-run' 2>&1)"; then certbot_dry_rc=0; else certbot_dry_rc=$?; fi
-  if [ "$certbot_dry_rc" -eq 0 ] && ! printf '%s' "$CERTBOT_DRY_OUT" | grep -qF 'No simulated renewals were attempted.'; then
-    pass "certbot renew --dry-run (at least one renewal was eligible for simulation)"
-  elif printf '%s' "$CERTBOT_DRY_OUT" | grep -qF 'No simulated renewals were attempted.'; then
-    fail_required "certbot renew --dry-run" "(certbot exited 0 but tested zero lineages — this is not renewal proof)"
+  # Previously this stage hid the ENTIRE certbot run inside a plain
+  # `VAR="$(ssh_run_long ...)"` command substitution: zero output reached
+  # the operator until the whole thing finished, and it inherited
+  # ssh_run_long's 1200s timeout — sized for a from-source Rust build, not
+  # a certificate renewal. A real VPS run showed this looking frozen for
+  # a long time even though the renewal itself, and the pre/post-hook
+  # nginx/firewall dance around it, had already completed successfully
+  # (confirmed independently on that same host: no leftover certbot/hook
+  # processes, nginx active, TCP/80 closed again, zero renewal failures).
+  # This stage now streams certbot's own output live (via `tee`) while
+  # still capturing it for the assertions below, bounds both the remote
+  # certbot invocation and the local SSH session on ssh_run_certbot's own
+  # certbot-sized timeout (not ssh_run_long's), and appends a
+  # project-specific completion sentinel + real exit code so a genuine
+  # hang can be told apart from a renewal that finished but whose SSH
+  # session failed to tear down promptly.
+  CERTBOT_SENTINEL='__SINGBOX_VPN_CERTBOT_DONE__'
+  # Single-quoted: none of this is locally interpolated. `$?`/`$rc` are
+  # evaluated on the REMOTE shell, after the inner `timeout` returns —
+  # never by this controller. The inner timeout (300s, 60s inside
+  # ssh_run_certbot's own 360s/-k 10s outer bound) is what actually stops
+  # a wedged certbot/hook; the sentinel line is only ever printed AFTER
+  # that inner command has already exited, so its presence proves the
+  # remote command genuinely finished (see the classification logic
+  # below — the sentinel is evidence, never a substitute for checking the
+  # real exit code carried right next to it).
+  remote_certbot_cmd='set +e
+timeout -k 10s 300s sudo certbot renew --dry-run
+rc=$?
+printf "\n__SINGBOX_VPN_CERTBOT_DONE__ rc=%d\n" "$rc"
+exit "$rc"'
+
+  # Baseline TCP/80 firewalld state BEFORE this attempt, so the
+  # post-renewal check below can tell singbox-vpn's own temporary hook
+  # rule (real residue if still open afterward) apart from an operator's
+  # own pre-existing TCP/80 allow rule (not this run's to close) — see
+  # certbot-firewall-pre-hook.sh's ownership-tracking rationale. Best
+  # effort: a failure here just means the post-check below cannot assert
+  # the firewall half of the cleanup contract, not that the whole stage
+  # is blocked.
+  port80_before="$(ssh_run '
+    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+      firewall-cmd --query-port=80/tcp >/dev/null 2>&1 && echo open || echo closed
+    else
+      echo n/a
+    fi
+  ' 2>/dev/null || echo unknown)"
+
+  # set +e / PIPESTATUS / set -e: required here — under this script's own
+  # `set -Eeuo pipefail`, a pipeline that exits non-zero (a real, expected
+  # outcome: a genuine certbot failure or timeout) would otherwise kill
+  # the ENTIRE script right at this line, before the classification logic
+  # below ever runs. PIPESTATUS[0] (not `$?`, which pipefail would set
+  # from the LAST failing stage of the pipe) is what actually carries
+  # ssh's/timeout's real exit code — `tee`'s own exit status is
+  # irrelevant here and must never override it.
+  CERTBOT_LOG_FILE="$(mktemp)"
+  chmod 600 "$CERTBOT_LOG_FILE" 2>/dev/null || true
+  set +e
+  ssh_run_certbot "$remote_certbot_cmd" 2>&1 | tee "$CERTBOT_LOG_FILE"
+  certbot_dry_rc=${PIPESTATUS[0]}
+  set -e
+  CERTBOT_DRY_OUT="$(cat "$CERTBOT_LOG_FILE" 2>/dev/null || true)"
+  rm -f "$CERTBOT_LOG_FILE"
+  CERTBOT_LOG_FILE=""
+
+  sentinel_line="$(printf '%s\n' "$CERTBOT_DRY_OUT" | grep -F "$CERTBOT_SENTINEL" | tail -1 || true)"
+  sentinel_present=0
+  sentinel_rc=""
+  if [[ "$sentinel_line" =~ rc=([0-9]+) ]]; then
+    sentinel_present=1
+    sentinel_rc="${BASH_REMATCH[1]}"
+  fi
+  zero_renewals=0
+  printf '%s' "$CERTBOT_DRY_OUT" | grep -qF 'No simulated renewals were attempted.' && zero_renewals=1
+
+  # Failure classes (never collapsed into one generic "certbot failed" —
+  # each names a different root cause and a different fix):
+  #   CERTBOT_REMOTE_TIMEOUT        the remote 300s inner timeout fired;
+  #                                 the SSH session itself completed
+  #                                 cleanly and reported it.
+  #   SSH_TRANSPORT_TIMEOUT         ssh_run_certbot's own local/outer
+  #                                 bound fired — no sentinel ever came
+  #                                 back, so the remote side's true state
+  #                                 is unknown from here.
+  #   SSH_SESSION_ENDED_UNEXPECTEDLY  the SSH session ended (any other
+  #                                 non-timeout exit) without the
+  #                                 sentinel ever appearing — suspicious
+  #                                 transport/controller behavior, not
+  #                                 proof of anything remote.
+  #   NO_RENEWAL_ATTEMPTED          certbot ran and exited, but tested
+  #                                 zero lineages — exit 0 here is not
+  #                                 renewal proof.
+  #   CERTBOT_EXIT_NONZERO          certbot genuinely failed; the
+  #                                 sentinel's own rc says so.
+  certbot_class=""
+  if [ "$sentinel_present" -eq 0 ]; then
+    if [ "$certbot_dry_rc" -eq 124 ] || [ "$certbot_dry_rc" -eq 137 ]; then
+      certbot_class="SSH_TRANSPORT_TIMEOUT"
+    else
+      certbot_class="SSH_SESSION_ENDED_UNEXPECTEDLY"
+    fi
+  elif [ "$sentinel_rc" = "124" ] || [ "$sentinel_rc" = "137" ]; then
+    certbot_class="CERTBOT_REMOTE_TIMEOUT"
+  elif [ "$zero_renewals" -eq 1 ]; then
+    certbot_class="NO_RENEWAL_ATTEMPTED"
+  elif [ "$sentinel_rc" != "0" ]; then
+    certbot_class="CERTBOT_EXIT_NONZERO"
+  fi
+
+  # The sentinel is diagnostic evidence only — never a pass condition by
+  # itself (task requirement: "do not simply grep for DONE and mark
+  # PASS"). PASS requires ALL of: the sentinel actually present, its own
+  # carried rc=0, and at least one lineage genuinely tested.
+  if [ -z "$certbot_class" ] && [ "$sentinel_present" -eq 1 ] && [ "$sentinel_rc" = "0" ]; then
+    pass "certbot renew --dry-run (at least one renewal was eligible for simulation; remote exit=0, completion sentinel observed)"
+
+    # Post-renewal cleanup-contract check: certbot succeeding is not
+    # enough on its own — the pre/post hooks must have actually restored
+    # nginx, cleaned up their own /run markers, and left TCP/80 exactly
+    # as they found it (never newly open because of THIS run).
+    if POST_CERTBOT_STATE="$(ssh_run '
+        fails=""
+        systemctl is-active --quiet nginx || fails="$fails nginx-not-active"
+        compgen -G "/run/singbox-vpn-certbot-*" >/dev/null 2>&1 && fails="$fails stale-hook-markers"
+        port80_after="n/a"
+        if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+          if firewall-cmd --query-port=80/tcp >/dev/null 2>&1; then port80_after=open; else port80_after=closed; fi
+        fi
+        echo "PORT80_AFTER=$port80_after"
+        if [ -n "$fails" ]; then echo "POST_CERTBOT_FAILED:$fails"; exit 1; fi
+        echo "POST_CERTBOT_OK"
+      ' 2>&1)"; then
+      post_certbot_rc=0
+    else
+      post_certbot_rc=$?
+    fi
+    # `|| true`: under this script's `set -Eeuo pipefail`, a plain
+    # assignment whose RHS pipeline ends without a match (grep -o finds
+    # nothing) is NOT exempt from errexit the way an `if`/`&&`-guarded
+    # pipeline is — an unexpected/truncated remote response here would
+    # otherwise silently kill the entire lifecycle run right at this
+    # line, with no [FAIL] ever printed. Reproduced directly while
+    # developing this stage. A parse miss just leaves port80_after empty
+    # (never mistaken for "open" below), it never suppresses the real
+    # pass/fail signal, which comes from $post_certbot_rc (the actual
+    # remote exit code), not from this string extraction.
+    port80_after="$(printf '%s\n' "$POST_CERTBOT_STATE" | grep -o 'PORT80_AFTER=.*' | cut -d= -f2 || true)"
+    port80_regression=0
+    if [ "$port80_before" != "open" ] && [ "$port80_after" = "open" ]; then
+      port80_regression=1
+    fi
+    if [ "$post_certbot_rc" -eq 0 ] && [ "$port80_regression" -eq 0 ]; then
+      pass "nginx restored, certbot hook markers cleaned, TCP/80 firewall state restored after renewal"
+    else
+      failed_bits="$(printf '%s\n' "$POST_CERTBOT_STATE" | grep -o 'POST_CERTBOT_FAILED:.*' || true)"
+      [ "$port80_regression" -eq 1 ] && failed_bits="$failed_bits tcp80-left-open(before=$port80_before,after=$port80_after)"
+      fail_required "post-renewal cleanup contract (nginx/markers/firewall) [POST_RENEWAL_STATE_INVALID]" "(${failed_bits:-see remote state below}; before=$port80_before after=$port80_after; remote state: ${POST_CERTBOT_STATE:-none})"
+    fi
   else
-    # Reproduced on a real VPS run (exit=1) with the actual certbot output
-    # discarded entirely, so there was nothing to root-cause. certbot's
-    # own dry-run output is diagnostic (ACME challenge/renewal errors),
-    # not secret-bearing, so it's safe to include. The extra commands
-    # below report metadata only — `certbot certificates` prints lineage
-    # names/paths/expiry, never key material; `ss`/`firewall-cmd` report
-    # listening sockets/configured ports, not secrets — and deliberately
-    # do NOT dump /etc/letsencrypt or any private key, per the task's own
-    # security constraints. This is diagnostics only: none of this
-    # attempts to guess or fix a firewall/nginx/ACME root cause without
-    # evidence.
-    CERTBOT_DIAG="$(ssh_run '
-      echo "--- certbot certificates ---"
-      sudo certbot certificates 2>&1
-      echo "--- nginx status ---"
-      systemctl status nginx --no-pager -l --lines=20 2>&1
-      echo "--- listeners on 80/443 ---"
-      ss -lntp 2>&1 | grep -E ":80 |:443 " || true
-      echo "--- firewalld configured ports ---"
-      sudo firewall-cmd --list-ports 2>&1 || true
-    ' 2>&1 || true)"
-    fail_required "certbot renew --dry-run" "(exit=$certbot_dry_rc; renewal must work before a stable release; output: ${CERTBOT_DRY_OUT:-none}; diagnostics: ${CERTBOT_DIAG:-none})"
+    # Diagnostics only — never the raw /var/log/letsencrypt/letsencrypt.log
+    # (noisy, not useful for automated triage) and never anything from
+    # /etc/vpn or the environment. `certbot certificates` prints lineage
+    # names/paths/expiry (no key material); `ss`/`firewall-cmd` report
+    # listening sockets/configured ports, not secrets.
+    CERTBOT_DIAG=""
+    if [ "$certbot_class" != "SSH_TRANSPORT_TIMEOUT" ]; then
+      CERTBOT_DIAG="$(ssh_run '
+        echo "--- certbot certificates ---"
+        sudo certbot certificates 2>&1
+        echo "--- nginx status ---"
+        systemctl status nginx --no-pager -l --lines=20 2>&1
+        echo "--- listeners on 80/443 ---"
+        ss -lntp 2>&1 | grep -E ":80 |:443 " || true
+        echo "--- firewalld configured ports ---"
+        sudo firewall-cmd --list-ports 2>&1 || true
+      ' 2>&1 || true)"
+    fi
+    concise_out="$(printf '%s\n' "$CERTBOT_DRY_OUT" | grep -E 'ERROR|WARNING|Failed|failure|timeout|challenge|renew|Congratulations|simulated' || true)"
+    [ -z "$concise_out" ] && concise_out="$(printf '%s\n' "$CERTBOT_DRY_OUT" | tail -20)"
+    fail_required "certbot renew --dry-run [${certbot_class:-UNKNOWN}]" "(exit=$certbot_dry_rc; sentinel=${sentinel_present}/${sentinel_rc:-none}; output: ${concise_out:-none}; diagnostics: ${CERTBOT_DIAG:-none})"
   fi
 else
   section "9-18. runtime/protocol/user/update/backup/renewal checks"
