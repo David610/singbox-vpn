@@ -212,6 +212,24 @@ ssh_run_certbot() {
     "$HOST" "$@"
 }
 
+# Uninstall performs systemd/Certbot/nginx/firewall/SELinux/package/Rust
+# cleanup — plausibly more than certbot's quick dry-run but nowhere near a
+# from-source Rust build, so it gets its own bounded timeout class rather
+# than reusing either ssh_run's 180s (too tight — a previous run
+# misclassified an uninstall this short timeout cut off mid-run as a
+# false FAIL) or ssh_run_long's 1200s (too loose to ever notice a genuine
+# hang promptly). No real-VPS timing measurement for this exact stage was
+# available when this was written (this change was made without SSH
+# access to a live host) — 480s remote / 540s outer is a documented
+# starting point inside the same evidence-based-headroom shape as
+# ssh_run_certbot above, not a blind guess; re-tune from a real run's
+# actual elapsed time if it proves too tight or unnecessarily loose.
+ssh_run_uninstall() {
+  timeout -k 10s 540s ssh "${SSH_OPTS[@]}" -n \
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+    "$HOST" "$@"
+}
+
 # Built as an array, never as a raw interpolated string: every element
 # here crosses an SSH shell boundary (embedded into a single command
 # string executed by the remote shell in run_install() below). SSH_PORT
@@ -321,6 +339,155 @@ cleanup_cert_snapshot() {
     ssh_run "sudo rm -rf '/etc/letsencrypt/live/$CERT_HOST' '/etc/letsencrypt/archive/$CERT_HOST'; sudo rm -f '/etc/letsencrypt/renewal/$CERT_HOST.conf'" >/dev/null 2>&1 || true
   fi
   ssh_run "sudo rm -f $CERT_SNAPSHOT_REMOTE" >/dev/null 2>&1 || true
+}
+
+# Shared by both offline-uninstall stages (19 and the later "25. final
+# uninstall") so each gets the same real classification instead of one
+# opaque FAIL — a real VPS run previously reported bare
+# "[FAIL][required] singbox-vpn-uninstall --yes (offline, local binary
+# only)" with almost no other diagnostic, right after stage 18's certbot
+# gate had just been forcibly timed out; there was no way from that
+# output alone to tell a genuine uninstaller defect apart from
+# after-effects of the timeout immediately before it (a stuck lock, a
+# still-running certbot/hook process, etc.) — see ssh_run_uninstall()
+# above and the classification below for how this now tells those apart.
+# $1: the exact PASS/FAIL step label used for this call site (matches the
+# pre-existing text for the two original call sites, so no existing
+# assertion tied to that text needs to change).
+run_uninstall_classified() {
+  local step_label="$1"
+  local sentinel='__SINGBOX_VPN_UNINSTALL_DONE__'
+  # Same shape as stage 18's remote_certbot_cmd: `\$?`/`\$rc` stay escaped
+  # so they are evaluated on the REMOTE shell after `timeout` returns,
+  # never by this controller.
+  local remote_cmd="set +e
+timeout -k 10s 480s sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes
+rc=\$?
+printf '\n${sentinel} rc=%d\n' \"\$rc\"
+exit \"\$rc\""
+  local log_file rc out sentinel_line sentinel_present=0 sentinel_rc="" uclass=""
+  log_file="$(mktemp)"
+  chmod 600 "$log_file" 2>/dev/null || true
+  # set +e / PIPESTATUS / set -e: same reasoning as stage 18 — a
+  # genuinely nonzero/timed-out uninstall must reach the classification
+  # below, not kill the whole harness under this script's own
+  # `set -Eeuo pipefail` right at this line. tee here keeps the
+  # uninstaller's own output streaming live to the operator (it is
+  # destructive and release-critical) while still capturing it.
+  set +e
+  ssh_run_uninstall "$remote_cmd" 2>&1 | tee "$log_file"
+  rc=${PIPESTATUS[0]}
+  set -e
+  out="$(cat "$log_file" 2>/dev/null || true)"
+  rm -f "$log_file"
+
+  sentinel_line="$(printf '%s\n' "$out" | grep -F "$sentinel" | tail -1 || true)"
+  if [[ "$sentinel_line" =~ rc=([0-9]+) ]]; then
+    sentinel_present=1
+    sentinel_rc="${BASH_REMATCH[1]}"
+  fi
+
+  if [ "$sentinel_present" -eq 0 ]; then
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+      uclass="UNINSTALL_SSH_TIMEOUT"
+    else
+      uclass="UNINSTALL_SSH_SESSION_ENDED_UNEXPECTEDLY"
+    fi
+  elif [ "$sentinel_rc" = "124" ] || [ "$sentinel_rc" = "137" ]; then
+    uclass="UNINSTALL_REMOTE_TIMEOUT"
+  elif [ "$sentinel_rc" != "0" ]; then
+    uclass="UNINSTALL_EXIT_NONZERO"
+    # Distinguish lock contention from a generic failure without having
+    # to guess/match uninstall.sh's own error text: check directly
+    # whether a singbox-vpn-owned lock file is still held by another
+    # process (flock -n fails immediately if so; a stale, unheld lock
+    # file is not contention and is left alone here either way).
+    if ! ssh_run '
+      held=0
+      for l in /run/lock/singbox-vpn-installer.lock /run/lock/singbox-vpn.lock; do
+        [ -e "$l" ] || continue
+        flock -n -w 0 "$l" true 2>/dev/null || held=1
+      done
+      [ "$held" -eq 0 ]
+    ' 2>/dev/null; then
+      uclass="UNINSTALL_LOCK_CONTENTION"
+    fi
+  fi
+
+  if [ -z "$uclass" ]; then
+    pass "$step_label"
+    return 0
+  fi
+
+  # Diagnostics only, and only when the transport itself is known to be
+  # alive (a genuine SSH timeout means the remote state is unknown from
+  # here — a second remote call right after would just time out again).
+  # Never the full uninstall log a second time, never anything from
+  # /etc/vpn or the environment: lock/process/package-manager/nginx state
+  # only, matching stage 18's diagnostics scope.
+  local diag=""
+  if [ "$uclass" != "UNINSTALL_SSH_TIMEOUT" ]; then
+    diag="$(ssh_run '
+      echo "--- lock files ---"
+      ls -la /run/lock/singbox-vpn* 2>/dev/null || echo none
+      echo "--- dnf/rpm ---"
+      pgrep -x dnf >/dev/null 2>&1 && echo dnf-running || echo dnf-not-running
+      [ -e /var/lib/rpm/.rpm.lock ] && echo rpm-lock-present || echo rpm-lock-absent
+      echo "--- certbot ---"
+      pgrep -f certbot >/dev/null 2>&1 && echo certbot-running || echo certbot-not-running
+      echo "--- nginx ---"
+      systemctl is-active nginx 2>&1 || true
+      echo "--- related processes ---"
+      ps -eo pid,ppid,stat,cmd 2>/dev/null | grep -E "singbox-vpn-uninstall|certbot|dnf|rpm" | grep -v grep || echo none
+    ' 2>&1 || true)"
+  fi
+  local concise
+  concise="$(printf '%s\n' "$out" | tail -20)"
+  fail_required "$step_label [$uclass]" "(exit=$rc; sentinel=${sentinel_present}/${sentinel_rc:-none}; output: ${concise:-none}; diagnostics: ${diag:-none})"
+  return 1
+}
+
+# Shared by stage 19 (offline uninstall, while a reinstall is still
+# planned) and stage 27 (the true final uninstall) — the same
+# singbox-vpn-owned-residue-vs-baseline field diff, called with each
+# stage's own PASS/FAIL wording so neither call site's existing assertion
+# text has to change. See stage 27's original comment (preserved at its
+# call site below) for why this is a field-by-field "nothing NEW beyond
+# baseline" comparison, never exact-string equality.
+# $1: PASS message. $2: FAIL message (diagnostic detail is appended).
+check_residue_vs_baseline() {
+  local pass_msg="$1" fail_msg="$2"
+  local residue new_residue field after_val baseline_val
+  residue="$(ssh_run '
+    echo "opt_singbox-vpn=$([ -e /opt/singbox-vpn ] && echo 1 || echo 0)"
+    echo "etc_vpn=$([ -e /etc/vpn ] && echo 1 || echo 0)"
+    echo "var_lib_singbox-vpn=$([ -e /var/lib/singbox-vpn ] && echo 1 || echo 0)"
+    echo "user_singbox=$(id sing-box >/dev/null 2>&1 && echo 1 || echo 0)"
+    echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
+    echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
+    echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
+    echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn-subscription.conf ] && echo 1 || echo 0)"
+    echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh ] && echo 1 || echo 0)"
+    echo "listeners=$(ss -ltnp 2>/dev/null | grep -Ec "sing-box|vpn-subscription")"
+    echo "locks=$(ls /run/lock/singbox-vpn* 2>/dev/null | wc -l)"
+  ' 2>/dev/null || true)"
+  new_residue=""
+  while IFS='=' read -r field after_val; do
+    [ -n "$field" ] || continue
+    baseline_val="$(printf '%s\n' "$BASELINE" | awk -F= -v k="$field" '$1==k{print $2; exit}')"
+    baseline_val="${baseline_val:-0}"
+    if [[ "$after_val" =~ ^[0-9]+$ ]] && [[ "$baseline_val" =~ ^[0-9]+$ ]] && [ "$after_val" -gt "$baseline_val" ]; then
+      new_residue="$new_residue $field(baseline=$baseline_val,after=$after_val)"
+    fi
+  done <<RESIDUE_FIELDS
+$residue
+RESIDUE_FIELDS
+  if [ -z "$new_residue" ]; then
+    pass "$pass_msg"
+    return 0
+  fi
+  fail_required "$fail_msg" "($new_residue | full baseline: $BASELINE | full after: $residue)"
+  return 1
 }
 
 # SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS=1: this harness's own transcript
@@ -921,8 +1088,72 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # hang can be told apart from a renewal that finished but whose SSH
   # session failed to tear down promptly.
   CERTBOT_SENTINEL='__SINGBOX_VPN_CERTBOT_DONE__'
-  # Single-quoted: none of this is locally interpolated. `$?`/`$rc` are
-  # evaluated on the REMOTE shell, after the inner `timeout` returns —
+
+  # A bare `certbot renew --dry-run` selects EVERY lineage certbot knows
+  # about on the host, not just this deployment's — a real VPS run failed
+  # this stage because an unrelated, unrenewable lineage
+  # (vpn.sustechnologies.eu, since gone NXDOMAIN) happened to also live on
+  # that host, even though THIS deployment's own certificate renewed
+  # cleanly. Scope every remote invocation to this deployment's own
+  # lineage via `--cert-name`, determined from authoritative remote state
+  # (deployment.toml's public_host — the same value install.sh's own
+  # `certbot certonly -d "$host"` used to create the lineage in the first
+  # place), never from this controller's own --domain input (may be
+  # empty/stale) and never by interpolating a hostname string directly
+  # into a remote shell. The remote side extracts, allowlist-validates
+  # (rejects anything containing a shell metacharacter), and looks up the
+  # real certbot lineage itself — the same pattern already used by
+  # capture_cert_for_reuse() above — and this controller re-validates the
+  # returned name against the same allowlist before ever using it again.
+  cert_lookup_cmd='
+host="$(sed -nE "s/^public_host[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" /etc/vpn/deployment.toml 2>/dev/null | head -1)"
+case "$host" in
+  "") echo "CERT_LOOKUP:NO_DEPLOYMENT_HOST"; exit 2 ;;
+  *[!A-Za-z0-9.-]*) echo "CERT_LOOKUP:INVALID_HOST"; exit 2 ;;
+esac
+info="$(sudo certbot certificates --cert-name "$host" 2>/dev/null)"
+if ! printf "%s\n" "$info" | grep -qE "^[[:space:]]*Certificate Name:[[:space:]]*${host}\$"; then
+  echo "CERT_LOOKUP:NO_MATCHING_LINEAGE:$host"
+  exit 3
+fi
+if ! printf "%s\n" "$info" | grep -E "^[[:space:]]*Domains:" | grep -qE "(^|[[:space:]])${host}([[:space:]]|\$)"; then
+  echo "CERT_LOOKUP:DOMAIN_MISMATCH:$host"
+  exit 4
+fi
+echo "CERT_LOOKUP:OK:$host"
+'
+  cert_lookup_out="$(ssh_run "$cert_lookup_cmd" 2>&1 || true)"
+  cert_name=""
+  if [[ "$cert_lookup_out" =~ CERT_LOOKUP:OK:([A-Za-z0-9.-]+) ]]; then
+    cert_name="${BASH_REMATCH[1]}"
+  fi
+  # Defense in depth: re-validate locally against the identical allowlist
+  # even though the remote side already enforced it — this value is about
+  # to be interpolated into a second remote command string below, and
+  # this stage must never trust a value crossing that boundary on the
+  # strength of a single check alone.
+  if [[ -n "$cert_name" ]] && [[ ! "$cert_name" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    cert_name=""
+  fi
+
+  if [ -n "$cert_name" ]; then
+  # certbot added --no-random-sleep-on-renew in 1.25.0 (Nov 2022) to make
+  # `renew` deterministic for exactly this kind of scripted acceptance
+  # run; older installations don't recognize it. This cannot be assumed
+  # for an arbitrary AlmaLinux 9 host without checking what that host
+  # actually has installed — probed live via `certbot --help renew`
+  # rather than hardcoded from a version guess, so a real run's log shows
+  # which case actually applied instead of silently assuming one.
+  no_random_sleep_flag=""
+  if ssh_run 'sudo certbot --help renew 2>&1 | grep -q -- "--no-random-sleep-on-renew"' 2>/dev/null; then
+    no_random_sleep_flag=" --no-random-sleep-on-renew"
+  fi
+  cert_name_q="$(printf '%q' "$cert_name")"
+  # Single-quoted local variable for the parts with no local
+  # interpolation, then re-opened as a double-quoted string only for the
+  # two values that must actually be substituted here (cert_name_q,
+  # no_random_sleep_flag) — `\$?`/`\$rc` stay escaped so they are
+  # evaluated on the REMOTE shell, after the inner `timeout` returns,
   # never by this controller. The inner timeout (300s, 60s inside
   # ssh_run_certbot's own 360s/-k 10s outer bound) is what actually stops
   # a wedged certbot/hook; the sentinel line is only ever printed AFTER
@@ -930,11 +1161,11 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # remote command genuinely finished (see the classification logic
   # below — the sentinel is evidence, never a substitute for checking the
   # real exit code carried right next to it).
-  remote_certbot_cmd='set +e
-timeout -k 10s 300s sudo certbot renew --dry-run
-rc=$?
-printf "\n__SINGBOX_VPN_CERTBOT_DONE__ rc=%d\n" "$rc"
-exit "$rc"'
+  remote_certbot_cmd="set +e
+timeout -k 10s 300s sudo certbot renew --dry-run --cert-name ${cert_name_q}${no_random_sleep_flag}
+rc=\$?
+printf '\n__SINGBOX_VPN_CERTBOT_DONE__ rc=%d\n' \"\$rc\"
+exit \"\$rc\""
 
   # Baseline TCP/80 firewalld state BEFORE this attempt, so the
   # post-renewal check below can tell singbox-vpn's own temporary hook
@@ -1064,6 +1295,18 @@ exit "$rc"'
       fail_required "post-renewal cleanup contract (nginx/markers/firewall) [POST_RENEWAL_STATE_INVALID]" "(${failed_bits:-see remote state below}; before=$port80_before after=$port80_after; remote state: ${POST_CERTBOT_STATE:-none})"
     fi
   else
+    # A killed/timed-out certbot cannot run its OWN
+    # renewal-hooks/post/singbox-vpn-firewall.sh (that hook only fires
+    # when certbot itself reaches that point normally) — best-effort,
+    # defensively re-invoke it directly so a temporarily-stopped nginx or
+    # a temporarily-opened TCP/80 firewall rule from this attempt cannot
+    # linger indefinitely just because Stage 18 timed out. Bounded by
+    # ssh_run's own timeout; safe even when the post-hook already ran
+    # normally (test-certbot-firewall-hooks.sh's "Test I" proves a second
+    # invocation is a no-op — its own marker files make it idempotent).
+    if [ "$certbot_class" = "CERTBOT_REMOTE_TIMEOUT" ] || [ "$certbot_class" = "SSH_TRANSPORT_TIMEOUT" ] || [ "$certbot_class" = "SSH_SESSION_ENDED_UNEXPECTEDLY" ]; then
+      ssh_run 'sudo /etc/letsencrypt/renewal-hooks/post/singbox-vpn-firewall.sh' >/dev/null 2>&1 || true
+    fi
     # Diagnostics only — never the raw /var/log/letsencrypt/letsencrypt.log
     # (noisy, not useful for automated triage) and never anything from
     # /etc/vpn or the environment. `certbot certificates` prints lineage
@@ -1086,6 +1329,9 @@ exit "$rc"'
     [ -z "$concise_out" ] && concise_out="$(printf '%s\n' "$CERTBOT_DRY_OUT" | tail -20)"
     fail_required "certbot renew --dry-run [${certbot_class:-UNKNOWN}]" "(exit=$certbot_dry_rc; sentinel=${sentinel_present}/${sentinel_rc:-none}; output: ${concise_out:-none}; diagnostics: ${CERTBOT_DIAG:-none})"
   fi
+  else
+    fail_required "certbot renew --dry-run [CERT_LINEAGE_LOOKUP_FAILED]" "(could not determine this deployment's own certificate lineage from /etc/vpn/deployment.toml + certbot certificates — refusing to run a global 'certbot renew' that could pass or fail based on unrelated lineages on this host; lookup output: ${cert_lookup_out:-none})"
+  fi
 else
   section "9-18. runtime/protocol/user/update/backup/renewal checks"
   block "stages 9-18" "(stage 8 did not establish a working baseline; dependent failures are intentionally not counted as separate bugs)"
@@ -1094,11 +1340,20 @@ fi
 section "19. uninstall completely (offline singbox-vpn-uninstall)"
 ssh_run 'sudo iptables -I OUTPUT -d github.com -j REJECT 2>/dev/null; sudo iptables -I OUTPUT -d raw.githubusercontent.com -j REJECT 2>/dev/null' >/dev/null 2>&1 || true
 if ssh_run 'test -x /opt/singbox-vpn/bin/singbox-vpn-uninstall' 2>/dev/null; then
-  if ssh_run 'sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes'; then pass "singbox-vpn-uninstall --yes (offline, local binary only)"; else fail_required "singbox-vpn-uninstall --yes (offline, local binary only)"; fi
+  if run_uninstall_classified "singbox-vpn-uninstall --yes (offline, local binary only)"; then
+    # Stage 19 PASS requires more than a zero exit code: verify the
+    # uninstaller actually removed what it claims to, right now, before
+    # the reinstall below creates fresh state that would otherwise mask
+    # a real leak — stage 27 checks this again after the FINAL uninstall,
+    # this is the same check at the first one.
+    check_residue_vs_baseline \
+      "offline uninstall left no NEW singbox-vpn-owned residue vs. pre-install host baseline" \
+      "offline uninstall [UNINSTALL_POST_STATE_INVALID] left new singbox-vpn-owned residue beyond pre-install host baseline" || true
+  fi
 elif ssh_run '[ ! -e /etc/vpn ] && [ ! -e /opt/singbox-vpn ] && [ ! -e /var/lib/singbox-vpn ]' 2>/dev/null; then
   pass "target already clean (no installed uninstaller needed)"
 else
-  fail_required "offline uninstall available for partial state" "(partial singbox-vpn state exists but local uninstaller is missing)"
+  fail_required "offline uninstall available for partial state [UNINSTALL_MISSING_BINARY]" "(partial singbox-vpn state exists but local uninstaller is missing)"
 fi
 ssh_run 'sudo iptables -D OUTPUT -d github.com -j REJECT 2>/dev/null; sudo iptables -D OUTPUT -d raw.githubusercontent.com -j REJECT 2>/dev/null' >/dev/null 2>&1 || true
 
@@ -1137,11 +1392,11 @@ fi
 section "25. final uninstall (offline singbox-vpn-uninstall)"
 ssh_run "sudo rm -f $BACKUP_PATH" >/dev/null 2>&1 || true
 if ssh_run 'test -x /opt/singbox-vpn/bin/singbox-vpn-uninstall' 2>/dev/null; then
-  if ssh_run 'sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes'; then pass "final singbox-vpn-uninstall --yes (offline, local binary only)"; else fail_required "final singbox-vpn-uninstall --yes (offline, local binary only)"; fi
+  run_uninstall_classified "final singbox-vpn-uninstall --yes (offline, local binary only)" || true
 elif ssh_run '[ ! -e /etc/vpn ] && [ ! -e /opt/singbox-vpn ] && [ ! -e /var/lib/singbox-vpn ]' 2>/dev/null; then
   pass "target already clean at final uninstall"
 else
-  fail_required "final offline uninstall available for partial state"
+  fail_required "final offline uninstall available for partial state [UNINSTALL_MISSING_BINARY]"
 fi
 cleanup_cert_snapshot
 
@@ -1149,19 +1404,6 @@ section "26. SSH after final uninstall (new connection, port $SSH_PORT)"
 if ssh_reconnect 'systemctl is-active --quiet sshd' 2>/dev/null; then pass "SSH still active post-uninstall"; else fail_required "SSH still active post-uninstall"; fi
 
 section "27. final uninstall residue audit (vs. host baseline from stage 1b) — singbox-vpn-owned service/config/state/firewall/sysctl residue"
-RESIDUE="$(ssh_run '
-  echo "opt_singbox-vpn=$([ -e /opt/singbox-vpn ] && echo 1 || echo 0)"
-  echo "etc_vpn=$([ -e /etc/vpn ] && echo 1 || echo 0)"
-  echo "var_lib_singbox-vpn=$([ -e /var/lib/singbox-vpn ] && echo 1 || echo 0)"
-  echo "user_singbox=$(id sing-box >/dev/null 2>&1 && echo 1 || echo 0)"
-  echo "user_vpnsub=$(id vpn-subscription >/dev/null 2>&1 && echo 1 || echo 0)"
-  echo "unit_singbox=$([ -e /etc/systemd/system/sing-box.service ] && echo 1 || echo 0)"
-  echo "unit_vpnsub=$([ -e /etc/systemd/system/vpn-subscription.service ] && echo 1 || echo 0)"
-  echo "nginx_conf=$([ -e /etc/nginx/conf.d/vpn-subscription.conf ] && echo 1 || echo 0)"
-  echo "certbot_hook=$([ -e /etc/letsencrypt/renewal-hooks/deploy/singbox-vpn-hysteria.sh ] && echo 1 || echo 0)"
-  echo "listeners=$(ss -ltnp 2>/dev/null | grep -Ec "sing-box|vpn-subscription")"
-  echo "locks=$(ls /run/lock/singbox-vpn* 2>/dev/null | wc -l)"
-' 2>/dev/null || true)"
 # Field-by-field, not exact-string-equality: the "baseline" captured at
 # stage 1b can itself already be dirty — e.g. a target this harness
 # authorized destroying via --allow-destroy-existing-singbox-vpn-install
@@ -1172,23 +1414,11 @@ RESIDUE="$(ssh_run '
 # residue — exact-equality would wrongly fail a run that left the host
 # cleaner than it found it. Only flag a field that is HIGHER after this
 # run than it was at baseline: something this run's uninstall left behind
-# that baseline did not already have.
-new_residue=""
-while IFS='=' read -r field after_val; do
-  [ -n "$field" ] || continue
-  baseline_val="$(printf '%s\n' "$BASELINE" | awk -F= -v k="$field" '$1==k{print $2; exit}')"
-  baseline_val="${baseline_val:-0}"
-  if [[ "$after_val" =~ ^[0-9]+$ ]] && [[ "$baseline_val" =~ ^[0-9]+$ ]] && [ "$after_val" -gt "$baseline_val" ]; then
-    new_residue="$new_residue $field(baseline=$baseline_val,after=$after_val)"
-  fi
-done <<RESIDUE_FIELDS
-$RESIDUE
-RESIDUE_FIELDS
-if [ -z "$new_residue" ]; then
-  pass "no NEW singbox-vpn-owned runtime/config/state residue vs. pre-install host baseline"
-else
-  fail_required "new singbox-vpn-owned residue introduced beyond pre-install host baseline" "($new_residue | full baseline: $BASELINE | full after-uninstall: $RESIDUE)"
-fi
+# that baseline did not already have. (check_residue_vs_baseline() above
+# — shared with stage 19's own post-uninstall check.)
+check_residue_vs_baseline \
+  "no NEW singbox-vpn-owned runtime/config/state residue vs. pre-install host baseline" \
+  "new singbox-vpn-owned residue introduced beyond pre-install host baseline" || true
 
 section "manual-only / out-of-scope gates (cannot be automated here — UNVERIFIED, not PASS)"
 mark_unverified "public/internet reachability from outside the target's network" "(no independent external controller in this harness)"

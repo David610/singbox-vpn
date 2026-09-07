@@ -85,6 +85,28 @@ case "$cmd" in
   # internal grep/sed behavior, since ssh here never actually executes
   # remote text.
   *"cleanup_scratch"*) exit 0 ;;
+  # Stage 18's certificate-lineage lookup and its --no-random-sleep-on-renew
+  # feature probe — matched here, BEFORE the generic "*:*grep*" catch-all
+  # just below, which would otherwise intercept both: each genuinely
+  # contains a ':' followed later by 'grep' as part of its own real logic
+  # (parsing certbot's `certificates`/`--help renew` output), so placed
+  # after that catch-all they would silently fall through to "echo 1; exit
+  # 0" instead of either script's real response.
+  *"--help renew"*)
+    # `certbot --help renew | grep -q -- flag`: this ssh_run call's exit
+    # code IS the pipe's outcome the harness branches on. Default here
+    # (no flag file): supported.
+    exit 0 ;;
+  *"CERT_LOOKUP:NO_DEPLOYMENT_HOST"*)
+    if [ -f "$TMPDIR_TEST/mock_cert_lookup_no_deployment_host" ]; then
+      echo "CERT_LOOKUP:NO_DEPLOYMENT_HOST"; exit 2
+    elif [ -f "$TMPDIR_TEST/mock_cert_lookup_no_lineage" ]; then
+      echo "CERT_LOOKUP:NO_MATCHING_LINEAGE:example.test"; exit 3
+    elif [ -f "$TMPDIR_TEST/mock_cert_lookup_domain_mismatch" ]; then
+      echo "CERT_LOOKUP:DOMAIN_MISMATCH:example.test"; exit 4
+    else
+      echo "CERT_LOOKUP:OK:example.test"; exit 0
+    fi ;;
   *:*grep*) echo 1; exit 0 ;;
   # The burst-crash-until-failed compound command (stage 13b): a real
   # multi-line script containing "systemctl show -p MainPID --value
@@ -269,7 +291,10 @@ BENCH
   *systemctl\ reboot*) exit 0 ;;
   *sudo\ systemctl\ reboot*) exit 0 ;;
   *SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox*) exit 1 ;;
-  *singbox-vpn-uninstall\ --yes*) echo 'uninstalled'; exit 0 ;;
+  *singbox-vpn-uninstall\ --yes*)
+    echo 'uninstalled'
+    printf '\n__SINGBOX_VPN_UNINSTALL_DONE__ rc=0\n'
+    exit 0 ;;
   *iptables*) exit 0 ;;
   # Stage 9's persisted test-user create --json (the scratch-user create
   # in stage 15 is a separate, opaque multi-line block matched earlier by
@@ -1114,6 +1139,28 @@ case "$cmd" in
   *uname\ -m*) echo x86_64; exit 0 ;;
   *"doctor --protocol"*) echo 'completed a full handshake'; exit 0 ;;
   *"vpn-benchmark.sh"*) echo "throughput (Mbps), 1 run(s): min=42.00 median=42.00 max=42.00 (n=1)"; exit 0 ;;
+  # Stage 18's certificate-lineage lookup and --no-random-sleep-on-renew
+  # feature probe, run BEFORE the actual renewal attempt below.
+  # Scenario-controlled the same way as the renewal mock itself.
+  *"--help renew"*)
+    # The real remote command is `certbot --help renew | grep -q -- flag`
+    # (grep -q, no stdout) — this ssh_run call's exit code IS the pipe's
+    # outcome the harness branches on (0 = flag supported, 1 = not), so
+    # this mock must decide THAT exit code, not just always exit 0.
+    if [ -f "$TMPDIR_TEST/mock_certbot_no_random_sleep_unsupported" ]; then
+      exit 1
+    fi
+    exit 0 ;;
+  *"CERT_LOOKUP:NO_DEPLOYMENT_HOST"*)
+    if [ -f "$TMPDIR_TEST/mock_cert_lookup_no_deployment_host" ]; then
+      echo "CERT_LOOKUP:NO_DEPLOYMENT_HOST"; exit 2
+    elif [ -f "$TMPDIR_TEST/mock_cert_lookup_no_lineage" ]; then
+      echo "CERT_LOOKUP:NO_MATCHING_LINEAGE:example.test"; exit 3
+    elif [ -f "$TMPDIR_TEST/mock_cert_lookup_domain_mismatch" ]; then
+      echo "CERT_LOOKUP:DOMAIN_MISMATCH:example.test"; exit 4
+    else
+      echo "CERT_LOOKUP:OK:example.test"; exit 0
+    fi ;;
   # The real remote certbot invocation. Scenario-controlled via flag files
   # so every classification branch is exercised end-to-end, through the
   # SAME code this harness would run for real, with no real waiting.
@@ -1164,8 +1211,17 @@ chmod +x "$MOCKBIN/ssh"
 
 run_certbot_scenario() {
   : > "$SSH_LOG"
-  rm -f "$TMPDIR_TEST"/mock_certbot_*
+  rm -f "$TMPDIR_TEST"/mock_certbot_* "$TMPDIR_TEST"/mock_cert_lookup_*
   for f in "$@"; do : > "$TMPDIR_TEST/mock_certbot_$f"; done
+  set +e
+  run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1
+  set -e
+}
+
+run_certbot_lookup_scenario() {
+  : > "$SSH_LOG"
+  rm -f "$TMPDIR_TEST"/mock_certbot_* "$TMPDIR_TEST"/mock_cert_lookup_*
+  for f in "$@"; do : > "$TMPDIR_TEST/mock_cert_lookup_$f"; done
   set +e
   run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1
   set -e
@@ -1183,6 +1239,67 @@ if grep -qE '\[PASS\][[:space:]]+nginx restored, certbot hook markers cleaned' <
   ok "(A) post-renewal cleanup contract (nginx/markers/firewall) reports PASS"
 else
   fail "(A) post-renewal cleanup contract did not report PASS: $stage18_a"
+fi
+if grep -q -- 'certbot renew --dry-run --cert-name example.test' "$SSH_LOG"; then
+  ok "(A) the renewal is scoped to this deployment's own lineage via --cert-name, never a bare/global 'certbot renew'"
+else
+  fail "(A) the renewal was not scoped via --cert-name — this is the exact unrelated-lineage false-failure bug this fix addresses"
+fi
+if grep -q -- '--no-random-sleep-on-renew' "$SSH_LOG"; then
+  ok "(A) --no-random-sleep-on-renew is added when the installed certbot supports it (probed live, not assumed)"
+else
+  fail "(A) --no-random-sleep-on-renew was not added even though the mocked certbot advertises support for it"
+fi
+
+echo "  - (K) certbot lacks --no-random-sleep-on-renew support -> the flag is omitted, never blindly assumed"
+out_k="$(run_certbot_scenario no_random_sleep_unsupported)"
+# Note: SSH_LOG's own PROBE command line legitimately contains the literal
+# string "--no-random-sleep-on-renew" (it's grepping FOR that flag in
+# certbot's --help output) — so the assertion must target the actual
+# renewal invocation line specifically, not just search the whole log for
+# that substring.
+if grep -q -- 'certbot renew --dry-run --cert-name example.test$' "$SSH_LOG"; then
+  ok "(K) the flag is correctly omitted against an older certbot that doesn't advertise it"
+else
+  fail "(K) the flag was sent even though the mocked certbot's --help renew doesn't advertise support for it: $(grep -- 'certbot renew --dry-run' "$SSH_LOG")"
+fi
+stage18_k="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_k")"
+if grep -qE '\[PASS\][[:space:]]+certbot renew --dry-run' <<< "$stage18_k"; then
+  ok "(K) the renewal itself still PASSes normally without the flag"
+else
+  fail "(K) omitting the flag broke the otherwise-healthy renewal: $stage18_k"
+fi
+
+echo "  - (D-new) no current-deployment certificate lineage exists -> FAIL, classified CERT_LINEAGE_LOOKUP_FAILED, and certbot is NEVER invoked globally"
+out_nolineage="$(run_certbot_lookup_scenario no_lineage)"
+stage18_nolineage="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_nolineage")"
+if grep -qE '\[FAIL\]\[required\].*CERT_LINEAGE_LOOKUP_FAILED' <<< "$stage18_nolineage"; then
+  ok "(D-new) a missing current-deployment lineage is a required FAIL, classified CERT_LINEAGE_LOOKUP_FAILED"
+else
+  fail "(D-new) a missing current-deployment lineage was not correctly classified: $stage18_nolineage"
+fi
+if grep -q -- 'sudo certbot renew --dry-run' "$SSH_LOG"; then
+  fail "(D-new) certbot renew was invoked even though no matching current-deployment lineage was ever found — this could still be affected by/affect unrelated lineages"
+else
+  ok "(D-new) certbot renew is never attempted at all when the current deployment's own lineage cannot be established"
+fi
+
+echo "  - (D-new2) deployment.toml has no public_host at all -> FAIL, classified CERT_LINEAGE_LOOKUP_FAILED"
+out_nohost="$(run_certbot_lookup_scenario no_deployment_host)"
+stage18_nohost="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_nohost")"
+if grep -qE '\[FAIL\]\[required\].*CERT_LINEAGE_LOOKUP_FAILED' <<< "$stage18_nohost"; then
+  ok "(D-new2) a missing deployment public_host is a required FAIL, classified CERT_LINEAGE_LOOKUP_FAILED"
+else
+  fail "(D-new2) a missing deployment public_host was not correctly classified: $stage18_nohost"
+fi
+
+echo "  - (domain-mismatch) the matched lineage's Domains: list does not actually contain the current public_host -> FAIL, classified CERT_LINEAGE_LOOKUP_FAILED"
+out_mismatch="$(run_certbot_lookup_scenario domain_mismatch)"
+stage18_mismatch="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_mismatch")"
+if grep -qE '\[FAIL\]\[required\].*CERT_LINEAGE_LOOKUP_FAILED' <<< "$stage18_mismatch"; then
+  ok "(domain-mismatch) a lineage whose Domains: list doesn't include the current host is rejected, not silently used"
+else
+  fail "(domain-mismatch) a domain/lineage mismatch was not correctly classified: $stage18_mismatch"
 fi
 
 echo "  - (C) certbot exits nonzero -> FAIL, classified CERTBOT_EXIT_NONZERO"
@@ -1310,6 +1427,129 @@ else
   check_class "sentinel present, carried rc=1 (genuine certbot failure)" "CERTBOT_EXIT_NONZERO" 1 1 1 0
   check_class "sentinel present, rc=0, at least one lineage tested (PASS candidate)" "" 1 0 0 0
   [ "$class_all_ok" -eq 1 ] && ok "all classification branches resolve correctly against the real extracted logic"
+fi
+
+echo
+echo "--- Stage 19: uninstall gets its own execution classification instead of one opaque FAIL ---"
+cat > "$MOCKBIN/ssh" <<'MOCKSSH_UNINSTALL'
+#!/bin/bash
+{ printf '%s\t' "$@"; echo; } >> "$SSH_LOG"
+cmd="${*: -1}"
+COUNTER_FILE="$TMPDIR_TEST/uninstall_residue_counter"
+case "$cmd" in
+  true) exit 0 ;;
+  *"[ -e '/etc/vpn/deployment.toml' ]"* | \
+  *"[ -e '/var/lib/singbox-vpn/install-state.json' ]"* | \
+  *"[ -e '/var/lib/singbox-vpn/ownership.env' ]"* | \
+  *"[ -e '/opt/singbox-vpn' ]"*)
+    exit 1 ;;
+  *os-release*) echo 'ID=almalinux'; exit 0 ;;
+  *uname\ -m*) echo x86_64; exit 0 ;;
+  *"test -x /opt/singbox-vpn/bin/singbox-vpn-uninstall"*) exit 0 ;;
+  # The lock-contention probe (flock -n -w 0 ...), run only when the
+  # uninstaller itself exited nonzero — matched on its own distinctive
+  # marker text, before the uninstall-invocation arm below.
+  *"flock -n -w 0"*)
+    [ -f "$TMPDIR_TEST/mock_uninstall_lock_held" ] && exit 1 || exit 0 ;;
+  # The real remote uninstall invocation (run_uninstall_classified()).
+  *"timeout -k 10s 480s sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes"*)
+    if [ -f "$TMPDIR_TEST/mock_uninstall_ssh_timeout" ]; then
+      exit 124
+    fi
+    if [ -f "$TMPDIR_TEST/mock_uninstall_nonzero" ] || [ -f "$TMPDIR_TEST/mock_uninstall_lock_held" ]; then
+      rc=1
+    elif [ -f "$TMPDIR_TEST/mock_uninstall_remote_timeout" ]; then
+      rc=124
+    else
+      rc=0
+    fi
+    printf '\n__SINGBOX_VPN_UNINSTALL_DONE__ rc=%d\n' "$rc"
+    exit "$rc" ;;
+  # check_residue_vs_baseline(): 1st call is stage 1b's own baseline
+  # capture (clean); subsequent calls are stage 19's (and later stage
+  # 27's) post-uninstall checks.
+  *"opt_singbox-vpn="*)
+    n=0
+    [ -f "$COUNTER_FILE" ] && n="$(cat "$COUNTER_FILE")"
+    n=$((n + 1))
+    echo "$n" > "$COUNTER_FILE"
+    if [ "$n" -eq 1 ]; then
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=0\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=0\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    elif [ -f "$TMPDIR_TEST/mock_uninstall_residue_left" ]; then
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=0\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=1\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    else
+      printf 'opt_singbox-vpn=0\netc_vpn=0\nvar_lib_singbox-vpn=0\nuser_singbox=0\nuser_vpnsub=0\nunit_singbox=0\nunit_vpnsub=0\nnginx_conf=0\ncertbot_hook=0\nlisteners=0\nlocks=0\n'
+    fi
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCKSSH_UNINSTALL
+chmod +x "$MOCKBIN/ssh"
+
+run_uninstall_scenario() {
+  : > "$SSH_LOG"
+  rm -f "$TMPDIR_TEST"/mock_uninstall_* "$TMPDIR_TEST/uninstall_residue_counter"
+  for f in "$@"; do : > "$TMPDIR_TEST/mock_uninstall_$f"; done
+  set +e
+  run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot 2>&1
+  set -e
+}
+
+echo "  - default: uninstall succeeds and leaves no new residue -> PASS, residue check PASS"
+out19_ok="$(run_uninstall_scenario)"
+stage19_ok="$(sed -n '/=== 19\./,/=== 20\./p' <<< "$out19_ok")"
+if grep -qE '\[PASS\][[:space:]]+singbox-vpn-uninstall --yes \(offline, local binary only\)' <<< "$stage19_ok" \
+    && grep -qE '\[PASS\][[:space:]]+offline uninstall left no NEW singbox-vpn-owned residue' <<< "$stage19_ok"; then
+  ok "default: stage 19 and its post-uninstall residue check both PASS"
+else
+  fail "default: stage 19 did not PASS cleanly: $stage19_ok"
+fi
+
+echo "  - uninstaller exits nonzero (no lock held) -> FAIL, classified UNINSTALL_EXIT_NONZERO"
+out19_nz="$(run_uninstall_scenario nonzero)"
+stage19_nz="$(sed -n '/=== 19\./,/=== 20\./p' <<< "$out19_nz")"
+if grep -qE '\[FAIL\]\[required\].*UNINSTALL_EXIT_NONZERO' <<< "$stage19_nz"; then
+  ok "a genuine nonzero uninstall exit is classified UNINSTALL_EXIT_NONZERO"
+else
+  fail "a nonzero uninstall exit was not correctly classified: $stage19_nz"
+fi
+
+echo "  - uninstaller exits nonzero AND a singbox-vpn lock is still held -> FAIL, classified UNINSTALL_LOCK_CONTENTION (not the generic class)"
+out19_lock="$(run_uninstall_scenario lock_held)"
+stage19_lock="$(sed -n '/=== 19\./,/=== 20\./p' <<< "$out19_lock")"
+if grep -qE '\[FAIL\]\[required\].*UNINSTALL_LOCK_CONTENTION' <<< "$stage19_lock"; then
+  ok "a nonzero exit with a held singbox-vpn lock is specifically classified UNINSTALL_LOCK_CONTENTION"
+else
+  fail "lock contention was not distinguished from a generic nonzero exit: $stage19_lock"
+fi
+
+echo "  - remote inner timeout fires (sentinel present, carried rc=124) -> FAIL, classified UNINSTALL_REMOTE_TIMEOUT"
+out19_rt="$(run_uninstall_scenario remote_timeout)"
+stage19_rt="$(sed -n '/=== 19\./,/=== 20\./p' <<< "$out19_rt")"
+if grep -qE '\[FAIL\]\[required\].*UNINSTALL_REMOTE_TIMEOUT' <<< "$stage19_rt"; then
+  ok "a remote inner-timeout completion is classified UNINSTALL_REMOTE_TIMEOUT"
+else
+  fail "a remote uninstall timeout was not correctly classified: $stage19_rt"
+fi
+
+echo "  - outer SSH/transport timeout fires before any sentinel -> FAIL, classified UNINSTALL_SSH_TIMEOUT (distinct from a remote timeout)"
+out19_st="$(run_uninstall_scenario ssh_timeout)"
+stage19_st="$(sed -n '/=== 19\./,/=== 20\./p' <<< "$out19_st")"
+if grep -qE '\[FAIL\]\[required\].*UNINSTALL_SSH_TIMEOUT' <<< "$stage19_st"; then
+  ok "an outer SSH/transport timeout (no sentinel) is classified UNINSTALL_SSH_TIMEOUT"
+else
+  fail "an SSH transport timeout was not correctly classified: $stage19_st"
+fi
+
+echo "  - uninstaller exits 0 but leaves NEW residue beyond baseline -> uninstall PASS, but post-condition FAILs classified UNINSTALL_POST_STATE_INVALID"
+out19_res="$(run_uninstall_scenario residue_left)"
+stage19_res="$(sed -n '/=== 19\./,/=== 20\./p' <<< "$out19_res")"
+if grep -qE '\[PASS\][[:space:]]+singbox-vpn-uninstall --yes \(offline, local binary only\)' <<< "$stage19_res" \
+    && grep -qE '\[FAIL\]\[required\].*UNINSTALL_POST_STATE_INVALID' <<< "$stage19_res" \
+    && grep -q 'nginx_conf' <<< "$stage19_res"; then
+  ok "a zero exit code alone is not enough — leftover residue after uninstall still FAILs, naming the field"
+else
+  fail "leftover residue after a zero-exit uninstall was not caught: $stage19_res"
 fi
 
 echo

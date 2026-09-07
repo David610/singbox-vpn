@@ -253,4 +253,26 @@ printf '%s' "$pre_out" | grep -q "some-other-daemon" || { echo "Test H FAILED: p
 [ "$(cat "$dir/nginx-state")" = "active" ] || { echo "Test H FAILED: pre-hook did not restore nginx to its prior active state after failing closed"; exit 1; }
 echo "Test H (something else owns TCP/80 -> fail closed, name the occupant, restore nginx): PASS"
 
+# --- Test I: post-hook idempotence — a defensive SECOND invocation right
+# after a normal one (e.g. the lifecycle harness's own timeout-recovery
+# path defensively re-invoking cleanup when it cannot be sure the normal
+# post-hook ran to completion) must be a safe no-op: both marker checks
+# are already false by then, so it must not re-remove a firewall rule
+# that doesn't exist, must not call `systemctl start nginx` a second
+# time, and must not regress nginx/port-80 state.
+dir="$WORK/i"; make_firewalld_and_nginx_fakes "$dir" 0 1
+run_pre "$dir" >/dev/null
+run_post "$dir" >/dev/null
+[ "$(cat "$dir/nginx-state")" = "active" ] || { echo "Test I FAILED: nginx was not active after the normal post-hook"; exit 1; }
+[ ! -e "$dir/port80-open" ] || { echo "Test I FAILED: TCP/80 was not closed after the normal post-hook"; exit 1; }
+second_out="$(run_post "$dir")"
+second_rc=$?
+[ "$second_rc" -eq 0 ] || { echo "Test I FAILED: a defensive second post-hook invocation exited nonzero (rc=$second_rc)"; exit 1; }
+if printf '%s' "$second_out" | grep -qi "restarted nginx\|removed the temporary"; then
+  echo "Test I FAILED: the second invocation re-acted on markers that were already cleaned up: $second_out"; exit 1
+fi
+[ "$(cat "$dir/nginx-state")" = "active" ] || { echo "Test I FAILED: a second post-hook invocation regressed nginx state"; exit 1; }
+[ ! -e "$dir/port80-open" ] || { echo "Test I FAILED: a second post-hook invocation regressed the firewall state"; exit 1; }
+echo "Test I (post-hook run twice in a row -> second run is a safe no-op, no state regression): PASS"
+
 echo "certbot-firewall-hooks tests: PASS"
