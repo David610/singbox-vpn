@@ -27,6 +27,24 @@ if "$TOOL" udp-egress-capture 192.0.2.1 /tmp/no.notpcap 1 2>/dev/null; then exit
 # test-idn-punycode.sh's SKIP path) since this sandbox/CI does not
 # guarantee either is installed.
 "$TOOL" --help | grep -q 'udp-egress-verdict'
+# Regression for the local-address direction fix: this deployment's own
+# Hysteria2 inbound also listens on UDP/443 on this same host (same port
+# as application-QUIC egress toward Google), so udp-egress-verdict must
+# anchor egress-vs-inbound direction to this host's own addresses rather
+# than port number alone — otherwise Hysteria2 control traffic (or
+# internet scanner noise hitting the public port) reads as false Case
+# B/C "application QUIC reached Google" evidence. See the function's own
+# comment in vpn-investigate.sh for the full mechanism.
+"$TOOL" --help | grep -q "anchored to this host's own local IP addresses"
+# local_addrs() must never fail even when 'ip' is unavailable (this
+# sandbox has no 'ip' command, which exercises exactly that path) — it
+# must return empty output with exit 0, not error out and abort the
+# whole verdict. bash -c runs without this script's `set -e`, so a
+# nonzero exit from local_addrs propagates as bash -c's own exit status,
+# which this script's `set -e` then catches as a test failure.
+LOCAL_ADDRS_SRC=$(sed -n '/^local_addrs() {/,/^}/p' "$TOOL")
+bash -c "$LOCAL_ADDRS_SRC"$'\n''local_addrs -4' >/dev/null
+bash -c "$LOCAL_ADDRS_SRC"$'\n''local_addrs -6' >/dev/null
 if "$TOOL" udp-egress-verdict /tmp/no.pcap 'not-an-ip' 2>/dev/null; then exit 1; fi
 if "$TOOL" udp-egress-verdict /tmp/does-not-exist.pcap 192.0.2.1 2>/dev/null; then exit 1; fi
 if ! command -v tshark >/dev/null 2>&1 || ! command -v tcpdump >/dev/null 2>&1; then
