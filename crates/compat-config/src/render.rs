@@ -271,6 +271,57 @@ pub enum CompatibilityMode {
     /// Everything else about the REALITY endpoint (UUID, flow, TLS,
     /// uTLS fingerprint, public key, short ID) is unchanged.
     TcpOnly,
+    /// Hiddify/mobile YouTube-app compatibility mode: every endpoint and
+    /// every credential is rendered exactly as in `Normal` (REALITY keeps
+    /// its `xtls-rprx-vision` flow and its normal UDP relay; Hysteria2
+    /// stays offered), and a single `route.rules` entry is added that
+    /// rejects application UDP/443 with an explicit, immediate failure:
+    ///
+    /// ```json
+    /// { "network": "udp", "port": 443, "action": "reject",
+    ///   "method": "default", "no_drop": true }
+    /// ```
+    ///
+    /// WHY THIS EXISTS, AND WHY IT IS NOT `TcpOnly`. Both modes intend
+    /// "stop application QUIC so the app falls back to HTTP/2 over TCP",
+    /// but only this one can actually produce that fallback. Traced
+    /// through sing-box v1.13.19 and sing-tun (the versions this project
+    /// deploys and Hiddify bundles):
+    ///
+    ///  - `TcpOnly`'s `"network": "tcp"` is NOT consulted by
+    ///    `Router::PreMatch` (`route/route.go`), the hook the TUN stack
+    ///    calls before accepting a flow. With no matching rule, PreMatch
+    ///    returns `(nil, nil)` for UDP, the flow is accepted, and the
+    ///    outbound's network restriction is only noticed later, in
+    ///    `routePacketConnection`, as a plain error whose return value
+    ///    `tun.Inbound::NewPacketConnectionEx` discards. Nothing is ever
+    ///    sent back to the application: UDP/443 is silently black-holed,
+    ///    and an app waiting on a QUIC handshake simply waits.
+    ///  - A `reject` rule IS matched by `PreMatch`, which returns
+    ///    `RejectedError{tun.ErrReset}`. sing-tun's gVisor UDP forwarder
+    ///    calls `gWriteUnreachable` for any error that is not `ErrDrop`,
+    ///    so the application gets an ICMP unreachable immediately, per
+    ///    packet — a fast, explicit failure it can fall back from.
+    ///
+    /// `no_drop: true` is load-bearing, not decoration: without it
+    /// `RuleActionReject::Error` escalates to `ErrDrop` after 50 rejects
+    /// in 30 seconds (`route/rule/rule_action.go`), which would turn this
+    /// back into the silent black hole it exists to avoid — and a video
+    /// session trips that counter easily.
+    ///
+    /// Hysteria2 is deliberately kept. A `route.rules` entry governs
+    /// traffic the router routes on behalf of an inbound; an outbound's
+    /// own dial to the VPS does not pass through the route table, so
+    /// Hysteria2's outer UDP/443 transport is unaffected. See the
+    /// `quic_reject_keeps_hysteria2_and_vision` test.
+    ///
+    /// STATUS: opt-in diagnostic/compatibility mode, never a default. The
+    /// mechanism above is proven from upstream source; that Hiddify
+    /// *preserves an imported `route.rules` array* is NOT proven from
+    /// this environment and remains the one open question — which is why
+    /// this ships alongside `TcpOnly` rather than replacing it. See
+    /// `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`.
+    QuicReject,
     /// EXPERIMENTAL diagnostic for
     /// `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5: the VLESS+REALITY
     /// outbound is rendered with NO `flow` field (instead of
@@ -299,6 +350,7 @@ impl CompatibilityMode {
         match s {
             "normal" => Some(Self::Normal),
             "tcp-only" => Some(Self::TcpOnly),
+            "quic-reject" => Some(Self::QuicReject),
             "vision-off" => Some(Self::VisionOff),
             _ => None,
         }
@@ -511,10 +563,48 @@ pub fn render_singbox_client_subscription_with_options(
 
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
 
+    // `route.final` is unconditional and identical in every mode. Only
+    // `QuicReject` adds rules, and it adds exactly one — see
+    // `CompatibilityMode::QuicReject` for why each field is required and
+    // why `no_drop` is load-bearing rather than decorative.
+    let mut route = json!({ "final": "select" });
+    if compat_mode == CompatibilityMode::QuicReject {
+        route["rules"] = json!([quic_reject_rule()]);
+    }
+
     Ok(json!({
         "outbounds": outbounds,
-        "route": { "final": "select" }
+        "route": route
     }))
+}
+
+/// The single `route.rules` entry `CompatibilityMode::QuicReject` emits.
+///
+/// Every field is required for the mode to do what it claims, so this is
+/// built in one place and asserted against in the tests rather than
+/// spelled out at each call site:
+///
+///  - `network: "udp"` + `port: 443` — application QUIC only. Scoped this
+///    narrowly on purpose: a broader UDP reject would also break DNS/53
+///    and QUIC to non-Google hosts, and this mode exists to change one
+///    variable.
+///  - `action: "reject"` — matched by `Router::PreMatch`, which is what
+///    makes the failure reach the application at all.
+///  - `method: "default"` — yields `tun.ErrReset`, which sing-tun turns
+///    into an ICMP unreachable. `method: "drop"` yields `tun.ErrDrop`,
+///    which sing-tun silently swallows: the exact black-hole behavior
+///    this mode exists to avoid.
+///  - `no_drop: true` — suppresses the 50-rejects-in-30s escalation from
+///    reset to drop, which a video session would otherwise trip in
+///    seconds, silently reverting the mode to a black hole mid-playback.
+fn quic_reject_rule() -> serde_json::Value {
+    json!({
+        "network": "udp",
+        "port": 443,
+        "action": "reject",
+        "method": "default",
+        "no_drop": true,
+    })
 }
 
 /// Build the two standard endpoint labels ("Reality" / "Hysteria2") from
@@ -1246,10 +1336,192 @@ mod tests {
         assert_eq!(doc["route"]["final"], "select");
         assert!(
             doc["route"].get("rules").is_none(),
-            "TcpOnly must not add a route.rules UDP/443 reject rule — enforcement is via the \
-             outbound's own network field, not an unverifiable client-side routing rule, see \
-             docs/COMPATIBILITY_QUIC_EXPERIMENT.md"
+            "TcpOnly's contract is the outbound's own network field and nothing else — the \
+             UDP/443 reject rule belongs to CompatibilityMode::QuicReject, and the two modes \
+             must stay independently testable. NOTE: tracing sing-box v1.13.19 later \
+             established that network=tcp black-holes UDP rather than rejecting it (see \
+             CompatibilityMode::QuicReject), so TcpOnly cannot by itself trigger an \
+             application's TCP fallback. That is why QuicReject exists; TcpOnly's own \
+             behavior is deliberately left unchanged."
         );
+    }
+
+    // --- CompatibilityMode::QuicReject ---
+    //
+    // The mode's whole value is that the emitted rule produces a failure
+    // the application can SEE. Every field below is load-bearing for that
+    // (see `CompatibilityMode::QuicReject` for the upstream trace), so
+    // each is asserted individually rather than by comparing one blob —
+    // a future edit that drops `no_drop` or flips `method` to `"drop"`
+    // would silently turn the mode back into the black hole it exists to
+    // replace, and must fail loudly here.
+
+    #[test]
+    fn quic_reject_parses_and_normal_mode_is_still_the_default() {
+        assert_eq!(
+            CompatibilityMode::parse("quic-reject"),
+            Some(CompatibilityMode::QuicReject)
+        );
+        assert_eq!(CompatibilityMode::default(), CompatibilityMode::Normal);
+        assert_eq!(CompatibilityMode::parse("quic_reject"), None);
+        assert_eq!(CompatibilityMode::parse("QUIC-REJECT"), None);
+    }
+
+    #[test]
+    fn quic_reject_emits_exactly_one_udp_443_reject_rule_with_every_required_field() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::QuicReject,
+        )
+        .unwrap();
+        assert_eq!(doc["route"]["final"], "select");
+        let rules = doc["route"]["rules"]
+            .as_array()
+            .expect("route.rules present");
+        assert_eq!(
+            rules.len(),
+            1,
+            "exactly one rule — this mode changes one variable"
+        );
+        let rule = &rules[0];
+        assert_eq!(rule["network"], "udp");
+        assert_eq!(rule["port"], 443);
+        assert_eq!(rule["action"], "reject");
+        assert_eq!(
+            rule["method"], "default",
+            "method=drop yields tun.ErrDrop, which sing-tun swallows silently — the exact \
+             black-hole behavior this mode exists to avoid"
+        );
+        assert_eq!(
+            rule["no_drop"], true,
+            "without no_drop, RuleActionReject escalates reset->drop after 50 rejects in 30s, \
+             which a video session trips in seconds"
+        );
+    }
+
+    #[test]
+    fn quic_reject_keeps_hysteria2_and_vision() {
+        // A route.rules entry governs traffic the router routes for an
+        // inbound; an outbound's own dial to the VPS never passes through
+        // the route table, so Hysteria2's outer UDP/443 transport is not
+        // affected by the rule and must stay offered. Vision likewise
+        // stays on: unlike VisionOff, this mode changes no credential,
+        // no flow, and no security property of the REALITY endpoint.
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::QuicReject,
+        )
+        .unwrap();
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        let types: Vec<&str> = outbounds
+            .iter()
+            .map(|o| o["type"].as_str().unwrap())
+            .collect();
+        assert!(
+            types.contains(&"hysteria2"),
+            "QuicReject must not drop Hysteria2 — that is TcpOnly's behavior, and the rule \
+             cannot affect an outbound's own dial"
+        );
+        let vless = outbounds.iter().find(|o| o["type"] == "vless").unwrap();
+        assert_eq!(vless["flow"], "xtls-rprx-vision");
+        assert!(
+            vless.get("network").is_none(),
+            "QuicReject must NOT also set network=tcp — that would black-hole the very \
+             packets the rule is supposed to reject visibly, and reintroduce the bug"
+        );
+    }
+
+    #[test]
+    fn quic_reject_leaves_every_credential_and_endpoint_identical_to_normal() {
+        // The mode must differ from Normal by exactly the route block.
+        let args = |mode| {
+            render_singbox_client_subscription_with_options(
+                &user(),
+                &[reality_endpoint(), hysteria_endpoint()],
+                SelectionProfile::default(),
+                mode,
+            )
+            .unwrap()
+        };
+        let normal = args(CompatibilityMode::Normal);
+        let quic = args(CompatibilityMode::QuicReject);
+        assert_eq!(
+            normal["outbounds"], quic["outbounds"],
+            "QuicReject must change nothing but route — same UUIDs, keys, tags, selector"
+        );
+        assert_eq!(normal["route"]["final"], quic["route"]["final"]);
+        assert!(normal["route"].get("rules").is_none());
+        assert!(quic["route"].get("rules").is_some());
+    }
+
+    #[test]
+    fn quic_reject_rule_does_not_target_the_server_or_leak_credentials() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::QuicReject,
+        )
+        .unwrap();
+        let rules = serde_json::to_string(&doc["route"]["rules"]).unwrap();
+        // The rule is destination-port-scoped only. It must never grow a
+        // host/IP selector: naming the VPS in a reject rule is how you
+        // would accidentally kill Hysteria2's own transport.
+        for forbidden in [
+            "domain", "ip_cidr", "server", "outbound", "uuid", "password",
+        ] {
+            assert!(
+                !rules.contains(forbidden),
+                "QuicReject rule must stay a bare udp/443 reject; found {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn quic_reject_survives_a_reality_only_deployment() {
+        // Same defensive contract as the other modes: a deployment with
+        // no Hysteria2 endpoint must still render, and still carry the
+        // rule.
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::QuicReject,
+        )
+        .unwrap();
+        assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 1);
+        let selector = doc["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["type"] == "selector")
+            .expect("selector present");
+        assert_eq!(selector["default"], "Germany - Reality");
+    }
+
+    #[test]
+    fn only_quic_reject_emits_route_rules() {
+        for mode in [
+            CompatibilityMode::Normal,
+            CompatibilityMode::TcpOnly,
+            CompatibilityMode::VisionOff,
+        ] {
+            let doc = render_singbox_client_subscription_with_options(
+                &user(),
+                &[reality_endpoint(), hysteria_endpoint()],
+                SelectionProfile::default(),
+                mode,
+            )
+            .unwrap();
+            assert!(
+                doc["route"].get("rules").is_none(),
+                "{mode:?} must not emit route.rules — only QuicReject does"
+            );
+        }
     }
 
     #[test]

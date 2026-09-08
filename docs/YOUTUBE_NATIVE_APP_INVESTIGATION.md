@@ -1,5 +1,18 @@
 # YouTube native-app failure vs. Safari success vs. WARP success (2026-08-20)
 
+> **SUPERSEDED CONCLUSIONS (2026-09-08).** See
+> `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` for the current root cause and fix.
+> The evidence in this document stands and is deliberately preserved, but
+> two of its conclusions do not: tracing sing-box v1.13.19 established
+> that a `"network": "tcp"` outbound restriction **black-holes**
+> application UDP rather than rejecting it (`Router::PreMatch` never
+> consults it; the later error is discarded by
+> `tun.Inbound::NewPacketConnectionEx`), so `?compat=tcp-only` could
+> never have triggered an application's TCP fallback and is an INVALID
+> TEST, not a negative result. The `route.rules` reject rule this
+> document declined to ship is the only mechanism that reaches the
+> application, and now ships as `?compat=quic-reject`.
+
 > **REMOVAL NOTICE (provisioning-contract pass).** References below to
 > the `format=xray` A/B mechanism describe a **removed** feature; it
 > changed only a share-link label. §9.5a's own finding — that Hiddify

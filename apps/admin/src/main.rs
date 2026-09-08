@@ -1887,6 +1887,33 @@ fn subscription_url_vision_off(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
+/// Opt-in QUIC-reject subscription URL
+/// (`?format=singbox&compat=quic-reject`, see
+/// `compat_config::render::CompatibilityMode::QuicReject`). Identical
+/// credentials, endpoints, flow and transports to the normal profile —
+/// the only difference is one `route.rules` entry that rejects
+/// application UDP/443 with an immediate ICMP unreachable instead of
+/// letting it be silently black-holed.
+///
+/// `?format=singbox` and NOT `?format=hiddify`, unlike every other link
+/// this app prints: a routing rule has no representation in
+/// `vless://`/`hysteria2://` share-link syntax at all, so the raw
+/// sing-box JSON profile is the only format that can carry it. That is
+/// also this mode's one unverified assumption — whether Hiddify
+/// preserves an imported `route.rules` array is not established, and is
+/// exactly what the device test in `docs/YOUTUBE_FINAL_ROOT_CAUSE.md`
+/// is for.
+///
+/// Unlike the Vision-off link, this needs NO server-side opt-in and
+/// weakens no security property: the server sees an ordinary Vision
+/// REALITY session.
+fn subscription_url_quic_reject(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}?format=singbox&compat=quic-reject",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
 /// Automated/CI callers (the lifecycle acceptance harness, in
 /// particular) run `user create`/`user rotate-token` for real, and the
 /// real subscription URL/QR this prints IS the bearer credential — the
@@ -1972,6 +1999,9 @@ fn cmd_user_create(
             // server-side; see subscription_url_vision_off's doc comment.
             "subscription_url_vision_off": subscription_url_vision_off(cfg, &token),
             "subscription_url_vision_off_is_experimental": true,
+            // Opt-in, no server-side change required, no security
+            // property weakened; see subscription_url_quic_reject.
+            "subscription_url_quic_reject": subscription_url_quic_reject(cfg, &token),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
@@ -2029,6 +2059,18 @@ fn cmd_user_create(
          vision-off-experiment {id}`, which flips this ONE user's server-side flow (their \
          normal Vision profile stops working while it is on). Not a fix, not a default: \
          without Vision, a proxied TLS session is easier for DPI to fingerprint."
+    );
+    println!();
+    println!(
+        "YouTube/native-app compatibility link (same credentials, same transports, adds one \
+         route rule that fails application QUIC fast instead of black-holing it — see \
+         docs/YOUTUBE_FINAL_ROOT_CAUSE.md):"
+    );
+    println!("  {}", subscription_url_quic_reject(cfg, &token));
+    println!(
+        "  Needs no server-side change and weakens nothing. Import it as a SEPARATE profile \
+         and keep the normal one. It is format=singbox (raw JSON), because a routing rule \
+         cannot be expressed in a share link."
     );
     if qr {
         println!();

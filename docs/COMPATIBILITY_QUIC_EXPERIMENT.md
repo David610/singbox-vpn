@@ -1,5 +1,18 @@
 # QUIC compatibility profile — feasibility research and decision (P10)
 
+> **SUPERSEDED CONCLUSIONS (2026-09-08).** See
+> `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` for the current root cause and fix.
+> The evidence in this document stands and is deliberately preserved, but
+> two of its conclusions do not: tracing sing-box v1.13.19 established
+> that a `"network": "tcp"` outbound restriction **black-holes**
+> application UDP rather than rejecting it (`Router::PreMatch` never
+> consults it; the later error is discarded by
+> `tun.Inbound::NewPacketConnectionEx`), so `?compat=tcp-only` could
+> never have triggered an application's TCP fallback and is an INVALID
+> TEST, not a negative result. The `route.rules` reject rule this
+> document declined to ship is the only mechanism that reaches the
+> application, and now ships as `?compat=quic-reject`.
+
 Investigated whether the generated Hiddify/sing-box subscription could
 safely offer an optional fourth profile — alongside Reality, Hysteria2,
 and Auto — that forces application-level UDP/443 (QUIC/HTTP3) to fail so

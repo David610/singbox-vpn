@@ -67,6 +67,16 @@ from spec conformance or code review alone.
 | Windows | Hiddify | not yet tested | not yet tested | not yet tested | not yet tested |
 | macOS | Hiddify | not yet tested | not yet tested | not yet tested | not yet tested |
 
+## Open: YouTube native-app acceptance (`compat=quic-reject`)
+
+No row above covers native-app media playback, and no YouTube test has
+passed on any device. `?format=singbox&compat=quic-reject` is implemented
+and unit-tested but **not device-verified** — see
+`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §10-11 for the one test that closes
+the incident and what each outcome means. Do not mark it working here
+without a dated entry recording device, OS, client version, active core,
+server commit, endpoint and network.
+
 ## What each column means
 
 - **VLESS+REALITY** / **Hysteria2**: the client successfully connects

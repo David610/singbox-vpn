@@ -107,6 +107,22 @@ all, because those are the client's to decide.
   see `docs/TELEGRAM_RESILIENCE_PLAN.md` and every per-client doc's
   advice to test Hysteria2 independently, never assume it inherits
   REALITY's reachability.
+- **Application UDP through VLESS+REALITY**: sing-box relays it as XUDP
+  frames inside the REALITY TCP connection, opening a **new TCP
+  connection and full REALITY TLS handshake per UDP session**
+  (`vlessDialer::ListenPacket`, sing-box v1.13.19). This is the material
+  difference from a layer-3 tunnel (WireGuard/AmneziaWG), which forwards
+  UDP as UDP through kernel NAT with no per-flow setup.
+- **A `"network": "tcp"` outbound restriction does NOT reject application
+  UDP — it black-holes it.** `Router::PreMatch` does not consult the
+  outbound's network list; the restriction is noticed later, in
+  `routePacketConnection`, and that error is discarded by
+  `tun.Inbound::NewPacketConnectionEx`. Nothing reaches the application.
+  Only a `route.rules` `reject` with `method: "default"` (and
+  `no_drop: true`, or it escalates to a silent drop after 50 rejects in
+  30s) produces an ICMP unreachable the application can react to. This is
+  why `?compat=quic-reject` exists and why `?compat=tcp-only` cannot
+  substitute for it — see `docs/YOUTUBE_FINAL_ROOT_CAUSE.md`.
 - **When UDP/443 is unavailable**: the manual `selector` outbound
   (`render.rs`) still lists the REALITY (TCP) endpoint and defaults to
   it — Hysteria2 being entirely blocked on a network does not make the

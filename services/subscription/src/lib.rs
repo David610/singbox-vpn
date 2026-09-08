@@ -166,7 +166,12 @@ pub struct SubQuery {
     /// Opt-in compatibility mode: `tcp-only` drops Hysteria2 and forces
     /// the VLESS+REALITY outbound to `"network": "tcp"` — see
     /// `compat_config::render::CompatibilityMode` and
-    /// `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`. `vision-off` is the
+    /// `docs/COMPATIBILITY_QUIC_EXPERIMENT.md`. `quic-reject` keeps every
+    /// endpoint and credential exactly as in the normal profile and adds
+    /// one `route.rules` entry rejecting application UDP/443 with
+    /// `method: "default"`/`no_drop: true`, which is the only one of the
+    /// two that produces a failure the application can actually see (see
+    /// `render::CompatibilityMode::QuicReject`). `vision-off` is the
     /// EXPERIMENTAL §9.5 diagnostic of
     /// `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md`: everything stays as
     /// in the normal profile except that the VLESS+REALITY profile omits
@@ -273,7 +278,7 @@ async fn get_subscription(
                 Some(mode) => mode,
                 None => return (
                     StatusCode::BAD_REQUEST,
-                    "unknown compat value (expected \"normal\", \"tcp-only\" or \"vision-off\")",
+                    "unknown compat value (expected \"normal\", \"tcp-only\", \"quic-reject\" or \"vision-off\")",
                 )
                     .into_response(),
             },
@@ -301,6 +306,20 @@ async fn get_subscription(
             }
         },
         "uri" | "hiddify" => {
+            if compat_mode == render::CompatibilityMode::QuicReject {
+                // `quic-reject` IS a `route.rules` entry — there is no
+                // share-link parameter that can express a routing rule at
+                // all, so unlike `vision-off` this cannot be represented
+                // in `vless://`/`hysteria2://` syntax even approximately.
+                // Reject explicitly rather than hand back a normal
+                // profile that silently does nothing the caller asked for.
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "compat=quic-reject is only supported with format=singbox — it is a \
+                     route.rules entry, which share-link syntax cannot express",
+                )
+                    .into_response();
+            }
             if compat_mode == render::CompatibilityMode::TcpOnly {
                 // The share-link (`vless://`/`hysteria2://`) syntax has no
                 // reliable way to enforce TCP-only VLESS across supported
@@ -769,6 +788,68 @@ mod tests {
         let state = make_state(vec![user_with_token("goodtoken", true)]);
         let resp = oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&compat=tcp-only").await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // --- compat=quic-reject ---
+
+    #[tokio::test]
+    async fn compat_quic_reject_with_singbox_format_emits_the_udp_443_reject_rule() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=singbox&compat=quic-reject").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rules = doc["route"]["rules"]
+            .as_array()
+            .expect("route.rules present");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["network"], "udp");
+        assert_eq!(rules[0]["port"], 443);
+        assert_eq!(rules[0]["action"], "reject");
+        assert_eq!(rules[0]["method"], "default");
+        assert_eq!(rules[0]["no_drop"], true);
+        assert_eq!(doc["route"]["final"], "select");
+        // Unlike tcp-only, every transport stays on offer.
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        assert!(outbounds.iter().any(|o| o["type"] == "hysteria2"));
+        let vless = outbounds.iter().find(|o| o["type"] == "vless").unwrap();
+        assert_eq!(vless["flow"], "xtls-rprx-vision");
+        assert!(vless.get("network").is_none());
+    }
+
+    #[tokio::test]
+    async fn compat_quic_reject_with_uri_format_is_rejected_not_silently_degraded() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri&compat=quic-reject").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn compat_quic_reject_with_hiddify_format_is_rejected_not_silently_degraded() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&compat=quic-reject").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn adding_quic_reject_does_not_change_the_normal_subscription() {
+        // The mode is strictly opt-in: a user who never passes `compat`
+        // must be served exactly what they were served before it existed.
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=singbox").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            doc["route"].get("rules").is_none(),
+            "the default subscription must never carry a UDP reject rule"
+        );
     }
 
     #[tokio::test]
