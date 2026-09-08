@@ -35,8 +35,13 @@ attempted QUIC" from "client attempted it but it was never relayed" from
 server-side packet metadata alone), Case B (UDP/443 left this host but no
 reply ever returned), or Case C (bidirectional UDP/443 present) — by
 correlating the client's REALITY TCP/443 tunnel window against host-wide
-UDP/443 packet direction, all timestamps in UTC. It does not itself decide
-the fix; see docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §8's decision tree
+UDP/443 packet direction, all timestamps in UTC. Direction (egress vs. a
+reply) is anchored to this host's own local IP addresses, so this
+deployment's own Hysteria2 inbound (also UDP/443, on this same host) and
+unrelated internet scanner noise hitting the public port are excluded
+from the egress/reply counts, not misread as application-QUIC evidence.
+It does not itself decide the fix; see
+docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §8's decision tree
 for what each case means next. Reuse the exact iPhone reset procedure in
 that document's §9.1/§9.7 before capturing — this command only reads an
 existing pcap, it starts no capture and changes nothing on the phone.
@@ -191,15 +196,36 @@ summarize() {
 #   - TCP/443 packets to/from CLIENT_IP prove the REALITY tunnel was in use
 #     during the window (same signal `client CLIENT_IP` already reports).
 #   - Because the capture is host-wide for UDP/443 (see udp-egress-capture),
-#     THIS HOST is always one endpoint of every captured UDP/443 packet —
-#     there is no third party being captured. So udp.dstport==443 packets
-#     are this host acting as the SENDER (egress toward some external
-#     UDP/443 service — outbound) and udp.srcport==443 packets are this
-#     host acting as the RECEIVER (a reply arriving FROM some external
-#     UDP/443 service — inbound). This needs no local-IP enumeration.
-#   - "host-wide" UDP/443 is a proxy for "traffic this client's relayed
-#     session generated", not a proven per-flow attribution — restated
-#     explicitly in the verdict output, not just this comment.
+#     THIS HOST is always one endpoint of every captured UDP/443 packet.
+#     Port number ALONE does not say which side sent it, though: this
+#     deployment's own Hysteria2 inbound also listens on UDP/443 on this
+#     same host (`deploy/almalinux/templates/deployment.toml.template`'s
+#     default `listen_port = 443` for both transports) — so a packet with
+#     dst port 443 can equally be the VPS dialing OUT to some external
+#     UDP/443 service (application-QUIC egress, what this verdict is
+#     supposed to measure), or the phone's OWN Hysteria2 handshake/keepalive
+#     (or an unrelated internet-wide UDP/443 scanner) arriving INBOUND at
+#     this host's own Hysteria2 listener. Those are opposite directions
+#     that happen to share a port number. An earlier version of this
+#     function conflated them — any Hysteria2 control traffic bidirectional
+#     with the phone (or even scanner noise hitting the public Hysteria2
+#     port) was misread as "application UDP/443 egress reachable" (Case
+#     B/C), which would send an operator down the wrong branch of §8's
+#     decision tree. Fixed by anchoring direction to this host's own local
+#     addresses (`local_addrs()` below), not port number alone:
+#       - egress (VPS -> external): dst port 443 AND destination is NOT one
+#         of this host's own addresses.
+#       - reply from an external service: src port 443 AND source is NOT
+#         one of this host's own addresses (and, implicitly, arrived at
+#         this host).
+#       - excluded from both counts, tallied separately: any udp/443 packet
+#         whose local endpoint is this host's OWN address — that is
+#         inbound-to-a-local-listener traffic (Hysteria2 or scanner noise),
+#         never egress evidence.
+#   - "host-wide" UDP/443 (once local-listener traffic is excluded) is a
+#     proxy for "traffic this client's relayed session generated", not a
+#     proven per-flow attribution — restated explicitly in the verdict
+#     output, not just this comment.
 #
 # What this can and cannot distinguish (the documented gap this function
 # exists to close): it can tell outbound-only (Case B) from bidirectional
@@ -209,6 +235,19 @@ summarize() {
 # this host's own NIC, because both mean zero UDP/443 packets appear here.
 # That is stated as UNKNOWN in the output, never guessed at.
 # ---------------------------------------------------------------------------
+
+# local_addrs FAMILY_FLAG (-4 or -6) — global-scope addresses on this host,
+# one per line. Excludes loopback/link-local. Used to anchor egress-vs-
+# inbound direction in udp_egress_verdict; never printed as a "secret" (a
+# server's own public/private IPs are already visible to anyone it talks
+# to) but kept out of routine output regardless, since it's plumbing, not
+# a finding.
+local_addrs() {
+  local family=$1
+  command -v ip >/dev/null || return 0
+  ip -o "$family" addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+}
+
 udp_egress_verdict() {
   local input=${1:-} client_ip=${2:-}
   valid_ip "$client_ip" || { echo "invalid client IP" >&2; return 2; }
@@ -221,6 +260,31 @@ udp_egress_verdict() {
   echo "captured separately (see docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §9.1)."
   echo "Every line is labeled FACT, INFERENCE, or UNKNOWN. No secret is ever printed."
   echo
+
+  local -a local_v4 local_v6
+  mapfile -t local_v4 < <(local_addrs -4)
+  mapfile -t local_v6 < <(local_addrs -6)
+  local dst_is_local="" src_is_local="" a
+  for a in "${local_v4[@]}"; do
+    [[ -n "$a" ]] || continue
+    dst_is_local+="${dst_is_local:+ or }ip.dst==${a}"
+    src_is_local+="${src_is_local:+ or }ip.src==${a}"
+  done
+  for a in "${local_v6[@]}"; do
+    [[ -n "$a" ]] || continue
+    dst_is_local+="${dst_is_local:+ or }ipv6.dst==${a}"
+    src_is_local+="${src_is_local:+ or }ipv6.src==${a}"
+  done
+  local have_local_addrs=1
+  if [[ -z "$dst_is_local" && -z "$src_is_local" ]]; then
+    have_local_addrs=0
+    echo "UNKNOWN: could not enumerate this host's own IP addresses (no 'ip' command, or no"
+    echo "  global-scope address found) — this host's own Hysteria2 listener (UDP/443, same port"
+    echo "  as application-QUIC egress) cannot be distinguished from real egress below. Every"
+    echo "  udp_out/udp_in count in this run is a WEAKER signal than usual — install/enable 'ip'"
+    echo "  (iproute2) and re-run for a direction-verified verdict."
+    echo
+  fi
 
   local tcp_count
   tcp_count=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.number 2>/dev/null | wc -l)
@@ -244,24 +308,47 @@ udp_egress_verdict() {
   echo "FACT: tunnel window (UTC): $(date -u -d "@${tcp_first%.*}" '+%Y-%m-%dT%H:%M:%SZ') .. $(date -u -d "@${tcp_last%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
   echo
 
-  local udp_out udp_in
-  udp_out=$(tshark -n -r "$input" -Y 'udp.dstport==443' -T fields -e frame.number 2>/dev/null | wc -l)
-  udp_in=$(tshark -n -r "$input" -Y 'udp.srcport==443' -T fields -e frame.number 2>/dev/null | wc -l)
-  echo "FACT: host-wide UDP/443 packets with THIS HOST as sender (dst port 443 — egress toward"
-  echo "  some external UDP/443 service): ${udp_out}"
-  echo "FACT: host-wide UDP/443 packets with THIS HOST as receiver (src port 443 — a reply"
-  echo "  arriving from some external UDP/443 service): ${udp_in}"
+  local udp_out_filter udp_in_filter udp_local_listener_filter
+  if [[ "$have_local_addrs" -eq 1 ]]; then
+    udp_out_filter="udp.dstport==443 and not (${dst_is_local})"
+    udp_in_filter="udp.srcport==443 and not (${src_is_local})"
+    udp_local_listener_filter="(udp.dstport==443 and (${dst_is_local})) or (udp.srcport==443 and (${src_is_local}))"
+  else
+    # No local-address anchor available — fall back to the old, weaker
+    # port-only heuristic rather than refusing to run at all. The UNKNOWN
+    # warning above already applies to every count below in this branch.
+    udp_out_filter="udp.dstport==443"
+    udp_in_filter="udp.srcport==443"
+    udp_local_listener_filter=""
+  fi
+
+  local udp_out udp_in udp_local_listener
+  udp_out=$(tshark -n -r "$input" -Y "$udp_out_filter" -T fields -e frame.number 2>/dev/null | wc -l)
+  udp_in=$(tshark -n -r "$input" -Y "$udp_in_filter" -T fields -e frame.number 2>/dev/null | wc -l)
+  echo "FACT: host-wide UDP/443 packets with THIS HOST as sender toward an EXTERNAL destination"
+  echo "  (dst port 443, destination is not this host's own address — application-QUIC egress"
+  echo "  candidate): ${udp_out}"
+  echo "FACT: host-wide UDP/443 packets with THIS HOST as receiver FROM an EXTERNAL source"
+  echo "  (src port 443, source is not this host's own address — a reply candidate): ${udp_in}"
+  if [[ -n "$udp_local_listener_filter" ]]; then
+    udp_local_listener=$(tshark -n -r "$input" -Y "$udp_local_listener_filter" -T fields -e frame.number 2>/dev/null | wc -l)
+    echo "FACT: host-wide UDP/443 packets where THIS HOST's own address was the local endpoint"
+    echo "  (traffic to/from this VPS's own UDP/443 listener — i.e. this deployment's Hysteria2"
+    echo "  inbound, or unrelated internet scanner noise hitting the public port; deliberately"
+    echo "  EXCLUDED from the egress/reply counts above, not evidence either way about application"
+    echo "  QUIC reaching Google): ${udp_local_listener}"
+  fi
   echo "INFERENCE: 'host-wide' means ANY relayed session on this VPS during the window, not"
   echo "  provably traffic relayed from ${client_ip} specifically — see udp-egress-capture's"
   echo "  own comment for why this proxy is used instead of per-flow NAT-table correlation."
   if [[ "$udp_out" -gt 0 ]]; then
     local udp_out_first
-    udp_out_first=$(tshark -n -r "$input" -Y 'udp.dstport==443' -T fields -e frame.time_epoch 2>/dev/null | head -1)
+    udp_out_first=$(tshark -n -r "$input" -Y "$udp_out_filter" -T fields -e frame.time_epoch 2>/dev/null | head -1)
     echo "FACT: first outbound UDP/443 packet (UTC): $(date -u -d "@${udp_out_first%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
   fi
   if [[ "$udp_in" -gt 0 ]]; then
     local udp_in_first
-    udp_in_first=$(tshark -n -r "$input" -Y 'udp.srcport==443' -T fields -e frame.time_epoch 2>/dev/null | head -1)
+    udp_in_first=$(tshark -n -r "$input" -Y "$udp_in_filter" -T fields -e frame.time_epoch 2>/dev/null | head -1)
     echo "FACT: first inbound UDP/443 reply (UTC): $(date -u -d "@${udp_in_first%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
   fi
   echo
@@ -293,6 +380,14 @@ udp_egress_verdict() {
   echo "  cannot observe the phone's TUN state, whether the YouTube app actually attempted QUIC,"
   echo "  or Hiddify/sing-box's internal relay decision — see"
   echo "  docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md §1's client/server observability boundary."
+  if [[ "$have_local_addrs" -eq 0 ]]; then
+    echo
+    echo "WARNING: the VERDICT above used the port-only fallback (no local-address anchor was"
+    echo "  available) and therefore CANNOT exclude this host's own Hysteria2 listener (UDP/443)"
+    echo "  or unrelated scanner traffic from the counts — a Case B/C result from this run is"
+    echo "  materially less trustworthy than a run where local addresses were enumerated. Fix the"
+    echo "  'ip' command availability on this host and re-run before treating Case B/C as evidence."
+  fi
 }
 
 # ---------------------------------------------------------------------------

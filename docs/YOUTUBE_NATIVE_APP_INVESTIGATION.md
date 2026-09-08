@@ -964,6 +964,68 @@ exit-IP-ASN reputation) and its interaction with Russia-specific network
 filtering. See that document's §5 ranking, which this section does not
 override — only reinforces the direction it already pointed.
 
+## 14. 2026-09-08 addendum: `udp-egress-verdict` direction-anchoring fix (no new device evidence)
+
+A static re-audit of this repository (no live VPS, device, or capture
+available in that session — see the entries in
+`docs/DEVICE_ACCEPTANCE_TESTS.md`, all still "not yet tested"/UNVERIFIED
+as of this addendum) found a real correctness defect in §9.1's own
+tooling, `deploy/lib/vpn-investigate.sh udp-egress-verdict`, that would
+have corrupted the Phase-1 experiment's result if run as originally
+written. This section records the defect and the fix; it does **not**
+supply the device-level YouTube evidence §9.1–§9.6 still require.
+
+**The defect.** `udp_egress_verdict()`'s original comment asserted that,
+because the capture is host-wide for UDP/443, "`udp.dstport==443` packets
+are this host acting as the SENDER (egress toward some external UDP/443
+service)... This needs no local-IP enumeration." That reasoning is wrong:
+port number alone never establishes which side of a packet is local. This
+deployment's own Hysteria2 inbound listens on UDP/443 on the SAME host
+(`deploy/almalinux/templates/deployment.toml.template`'s default
+`listen_port = 443` for both the VLESS+REALITY and Hysteria2 inbounds —
+confirmed by reading `crates/compat-config/src/server.rs` and the
+template, not assumed). A packet with `udp.dstport==443` is equally
+consistent with two opposite things: the VPS dialing OUT to Google (real
+egress, what the function claims to measure) or the phone's own
+Hysteria2 handshake/keepalive — or an unrelated internet-wide UDP/443
+scanner — arriving INBOUND at this host's own Hysteria2 listener. The
+original filter could not tell these apart, so any Hysteria2 control
+traffic exchanged with the phone during the capture window (plausible
+even during a REALITY-only test, since nothing in §9.7's reset procedure
+disables Hysteria2 on the client, and a public VPS on UDP/443 also
+regularly receives unsolicited internet scanner traffic) would inflate
+`udp_out`/`udp_in` and could turn a genuine Case A/D (no application QUIC
+egress at all) into a false Case B or C — sending an operator down the
+wrong branch of §8's decision tree with false confidence, exactly the
+failure mode this whole document exists to prevent.
+
+**The fix.** `udp_egress_verdict()` now anchors direction to this host's
+own IP addresses (a new `local_addrs()` helper, `ip addr show scope
+global`) rather than port number alone: a packet only counts as egress if
+its destination is NOT one of this host's own addresses, and only as a
+reply if its source is NOT one of this host's own addresses. Traffic
+where this host's own address IS the local endpoint (Hysteria2 traffic,
+or scanner noise) is tallied separately and explicitly excluded from both
+counts, with a new FACT line reporting how many such packets were seen.
+If `ip` is unavailable or no global-scope address is found, the function
+falls back to the old port-only heuristic rather than refusing to run,
+but now prints an explicit UNKNOWN/WARNING that the result is weaker
+evidence than usual — it no longer silently claims the same confidence
+as a direction-verified run.
+
+**What this does and does not change.** This is a diagnostic-tooling
+correctness fix, not a network finding. It does not touch any
+service/firewall/route/credential, does not change what Case A/B/C/D
+mean, and does not supply the real-device evidence §9.1 still requires —
+`docs/DEVICE_ACCEPTANCE_TESTS.md`'s YouTube-specific record remains
+blank. It does mean that a future run of §9.1's Phase-1 experiment will
+no longer risk a false Case B/C purely from Hysteria2/scanner noise on
+this deployment's own UDP/443 listener. Regression coverage:
+`deploy/lib/tests/test-vpn-investigate.sh` asserts `local_addrs()` never
+fails even when `ip` is unavailable (exercised directly in the audit
+sandbox, which genuinely lacks `ip`/`tshark`/`tcpdump`) and that the
+updated `--help` text describes the anchoring behavior.
+
 ## Sources
 
 - [Rule Action - sing-box](https://sing-box.sagernet.org/configuration/route/rule_action/) — `reject` action `method: default` (TCP RST / ICMP port-unreachable) vs. `method: drop` (silent), and the 50-triggers/30s auto-escalation to `drop`. Cited in §6.3.

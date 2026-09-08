@@ -457,3 +457,13 @@ public RC and supported-host gates run successfully.
 
 These entries do not alter earlier device/Russia rows. No SERVER-VERIFIED or
 DEVICE-VERIFIED status was created by this pass.
+
+### 2026-09-08 — static audit: `udp-egress-verdict` direction-anchoring defect fixed, no new device evidence
+
+| Claim | Scope | Status | Evidence | Date | Commit | Environment |
+|---|---|---|---|---|---|---|
+| `vpn-investigate.sh udp-egress-verdict` (the §9.1 Phase-1 YouTube/QUIC diagnostic in `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md`) misclassified this deployment's own Hysteria2 inbound traffic (UDP/443, same port as application-QUIC egress) as application-QUIC egress/reply evidence, because it distinguished direction by port number alone | Diagnostic-tooling correctness | CODE-VERIFIED, fixed | Root cause and fix documented in `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §14; direction now anchored to this host's own addresses via a new `local_addrs()` helper; `deploy/lib/tests/test-vpn-investigate.sh` extended and passing (including exercising the no-`ip`-available fallback directly, since this audit's sandbox genuinely lacks `ip`/`tshark`/`tcpdump`) | 2026-09-08 | based on `d84131c`, fix applied this pass | Local static analysis + sandbox test run; no VPS, device, or live capture available |
+| YouTube native playback, Safari playback, egress reachability, or any other network-behavior claim | Application/device behavior | Unchanged: UNVERIFIED | This pass supplies no new device, VPS, or live-capture evidence — it only prevents a specific false-positive the existing tooling could have produced if used before this fix | — | — | Required: an actual §9.1 Phase-1 capture run on a real VPS with a real device, per that document's procedure |
+
+This entry does not alter the YouTube/TikTok/streaming matrix or any other
+device row above — every cell there remains exactly as it was.
