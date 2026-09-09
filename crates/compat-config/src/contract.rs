@@ -11,7 +11,7 @@
 //! parameters/password this user gets for this endpoint" rather than one
 //! per output format that can silently drift apart.
 
-use crate::model::{CompatEndpoint, CompatUser, PublicParameters};
+use crate::model::{CompatEndpoint, CompatUser, EndpointOrigin, PeerCredential, PublicParameters};
 use crate::CompatError;
 use provisioning_contract as contract;
 
@@ -43,6 +43,29 @@ pub fn contract_endpoint(
     flow: VlessFlow,
     tag_override: Option<&str>,
 ) -> Result<contract::Endpoint, CompatError> {
+    contract_endpoint_opt(user, endpoint, flow, tag_override)?.ok_or_else(|| {
+        CompatError::Parse(format!(
+            "user {} has no credential for peer endpoint {:?}; this server cannot mint one              because it does not control that server (see `vpn-admin user peer set`)",
+            user.id, endpoint.id
+        ))
+    })
+}
+
+/// As [`contract_endpoint`], but returns `Ok(None)` for a PEER endpoint
+/// this user has no credential for.
+///
+/// That case is not an error at the document level: a user simply has not
+/// been given access to that peer yet, and the correct response is to omit
+/// the endpoint entirely. Serving it with a placeholder or with the user's
+/// LOCAL credential would hand the client something that cannot possibly
+/// authenticate, and the client has no way to tell that from a network
+/// failure.
+pub fn contract_endpoint_opt(
+    user: &CompatUser,
+    endpoint: &CompatEndpoint,
+    flow: VlessFlow,
+    tag_override: Option<&str>,
+) -> Result<Option<contract::Endpoint>, CompatError> {
     let server_name = endpoint
         .server_name
         .clone()
@@ -51,39 +74,98 @@ pub fn contract_endpoint(
         .map(str::to_string)
         .unwrap_or_else(|| endpoint.label.clone());
 
+    // Resolve the credential BEFORE shaping anything, so "which secret
+    // does this user present to this endpoint" stays a single decision
+    // with a single answer.
+    let credential = match endpoint.origin {
+        EndpointOrigin::Local => None,
+        EndpointOrigin::Peer => match user.peer_credential(&endpoint.id) {
+            None => return Ok(None),
+            Some(c) => {
+                if c.transport() != endpoint.transport {
+                    return Err(CompatError::Parse(format!(
+                        "user {}: peer credential for {:?} is a {} credential but that endpoint                          is {}; a credential is never coerced across transports",
+                        user.id,
+                        endpoint.id,
+                        c.transport().as_str(),
+                        endpoint.transport.as_str()
+                    )));
+                }
+                Some(c)
+            }
+        },
+    };
+
     let params = match &endpoint.public_parameters {
         PublicParameters::Reality {
             public_key_hex,
             short_id,
             fingerprint,
-        } => contract::TransportParams::VlessReality {
-            uuid: user.vless_uuid.clone(),
-            flow: match flow {
-                VlessFlow::Vision => Some(contract::VLESS_FLOW_VISION.to_string()),
-                VlessFlow::VisionOff => None,
-            },
-            reality: contract::RealityParams {
-                public_key: public_key_hex.clone(),
-                short_id: short_id.clone(),
-                fingerprint: fingerprint.clone(),
-            },
-        },
-        PublicParameters::Hysteria2 { obfs_password } => contract::TransportParams::Hysteria2 {
-            password: user.hysteria2_password.expose().to_string(),
-            obfs: obfs_password
-                .as_ref()
-                .map(|pw| contract::Hysteria2Obfs::salamander(pw.clone())),
-        },
+        } => {
+            let uuid = match credential {
+                None => user.vless_uuid.clone(),
+                Some(PeerCredential::VlessReality { uuid }) => uuid.clone(),
+                Some(other) => {
+                    return Err(CompatError::Parse(format!(
+                        "user {}: endpoint {:?} needs a vless-reality credential, got {}",
+                        user.id,
+                        endpoint.id,
+                        other.transport().as_str()
+                    )))
+                }
+            };
+            contract::TransportParams::VlessReality {
+                uuid,
+                flow: match flow {
+                    VlessFlow::Vision => Some(contract::VLESS_FLOW_VISION.to_string()),
+                    VlessFlow::VisionOff => None,
+                },
+                reality: contract::RealityParams {
+                    public_key: public_key_hex.clone(),
+                    short_id: short_id.clone(),
+                    fingerprint: fingerprint.clone(),
+                },
+            }
+        }
+        PublicParameters::Hysteria2 { obfs_password } => {
+            let password = match credential {
+                None => user.hysteria2_password.expose().to_string(),
+                Some(PeerCredential::Hysteria2 { password }) => password.expose().to_string(),
+                Some(other) => {
+                    return Err(CompatError::Parse(format!(
+                        "user {}: endpoint {:?} needs a hysteria2 credential, got {}",
+                        user.id,
+                        endpoint.id,
+                        other.transport().as_str()
+                    )))
+                }
+            };
+            contract::TransportParams::Hysteria2 {
+                password,
+                obfs: obfs_password
+                    .as_ref()
+                    .map(|pw| contract::Hysteria2Obfs::salamander(pw.clone())),
+            }
+        }
     };
 
-    Ok(contract::Endpoint {
-        id: endpoint.id.clone(),
-        tag,
-        host: endpoint.host.clone(),
-        port: endpoint.port,
-        server_name,
-        params,
-    })
+    Ok(Some(
+        contract::Endpoint::new(
+            endpoint.id.clone(),
+            tag,
+            endpoint.host.clone(),
+            endpoint.port,
+            server_name,
+            params,
+        )
+        .with_metadata(
+            endpoint.failure_domain.clone(),
+            endpoint.region.clone(),
+            endpoint.provider.clone(),
+            endpoint.asn.clone(),
+            endpoint.path.as_deref().map(contract::PathType::from_wire),
+        ),
+    ))
 }
 
 /// Build the contract representation of every listener offered to
@@ -166,7 +248,9 @@ pub fn provisioning_document_with_mode(
         }
         let vision_off = mode == DiagnosticMode::VisionOff
             && matches!(ep.transport, crate::model::CompatTransport::VlessReality);
-        contract_endpoints.push(contract_endpoint(
+        // `_opt`: a peer endpoint this user has no credential for is
+        // omitted, not rendered broken. See `contract_endpoint_opt`.
+        if let Some(built) = contract_endpoint_opt(
             user,
             ep,
             if vision_off {
@@ -175,7 +259,9 @@ pub fn provisioning_document_with_mode(
                 VlessFlow::Vision
             },
             None,
-        )?);
+        )? {
+            contract_endpoints.push(built);
+        }
     }
 
     let mut capabilities: Vec<contract::Capability> = Vec::new();
@@ -204,12 +290,29 @@ pub fn provisioning_document_with_mode(
         }
     }
 
+    // The embedded Core config is rendered from THIS list, not from a
+    // second derivation of it, so the catalog and the config a client
+    // hands to Core cannot describe different things. `validate()` then
+    // cross-checks them anyway — a guarantee worth having twice, since it
+    // is the whole basis for a client trusting one fetch.
+    let singbox_config = crate::render::render_singbox_config_from_contract(
+        &contract_endpoints,
+        crate::render::SelectionProfile::default(),
+        match mode {
+            DiagnosticMode::TcpOnly => crate::render::CompatibilityMode::TcpOnly,
+            DiagnosticMode::VisionOff | DiagnosticMode::None => {
+                crate::render::CompatibilityMode::Normal
+            }
+        },
+    )?;
+
     let doc = contract::ProvisioningDocument::new(
         contract::ServerInfo::current(SERVER_VERSION),
         capabilities,
         contract_endpoints,
     )
-    .with_experimental_capabilities(experimental);
+    .with_experimental_capabilities(experimental)
+    .with_singbox_config(singbox_config);
     doc.validate()?;
     Ok(doc)
 }
@@ -232,6 +335,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            peer_credentials: Default::default(),
         }
     }
 
@@ -345,8 +449,21 @@ mod tests {
     fn generated_document_never_carries_server_private_material() {
         // `provisioning_document` validates, and validation includes the
         // forbidden-content audit — so this passing is the proof.
+        //
+        // The scan runs over the ENVELOPE, with `singbox_config` removed.
+        // That is not a weakening: the embedded Core config legitimately
+        // contains `"insecure": false` — an assertion that certificate
+        // verification is ON — which a substring scan for the word
+        // "insecure" cannot tell from the opt-out it exists to forbid.
+        // The embedded half is audited structurally instead (see
+        // `embedded_core_config_is_audited_structurally_not_by_substring`
+        // below and `ProvisioningDocument::audit_embedded_config`), which
+        // catches strictly more, because it can judge position and value.
         let doc = provisioning_document(&user(), &endpoints()).unwrap();
-        let json = doc.to_json().unwrap().to_ascii_lowercase();
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(&doc.to_json().unwrap()).unwrap();
+        envelope.as_object_mut().unwrap().remove("singbox_config");
+        let json = envelope.to_string().to_ascii_lowercase();
         for forbidden in [
             "private_key",
             "-----begin",
@@ -361,6 +478,61 @@ mod tests {
         ] {
             assert!(!json.contains(forbidden), "{forbidden} present in {json}");
         }
+    }
+
+    #[test]
+    fn embedded_core_config_is_audited_structurally_not_by_substring() {
+        let doc = provisioning_document(&user(), &endpoints()).unwrap();
+        let config = doc.singbox_config.as_ref().expect("config is embedded");
+
+        // The value a substring scan could not have judged.
+        let hy2 = config["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["type"] == "hysteria2")
+            .expect("hysteria2 outbound");
+        assert_eq!(
+            hy2["tls"]["insecure"],
+            serde_json::json!(false),
+            "certificate verification must be asserted ON, and this is exactly the value the \
+             envelope's substring audit had to stop judging"
+        );
+
+        // Client-owned policy is absent by allowlist, not by luck.
+        let root = config.as_object().unwrap();
+        for key in root.keys() {
+            assert!(
+                matches!(key.as_str(), "outbounds" | "route"),
+                "unexpected top-level key {key:?} in the embedded config"
+            );
+        }
+        assert!(!doc.to_json().unwrap().contains("private_key"));
+    }
+
+    #[test]
+    fn a_zero_peer_document_embeds_a_config_whose_selector_matches_its_catalog() {
+        // The invariant a client relies on when it trusts ONE fetch.
+        let doc = provisioning_document(&user(), &endpoints()).unwrap();
+        let config = doc.singbox_config.as_ref().unwrap();
+        let selector = config["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["tag"] == contract::SELECTOR_GROUP_TAG)
+            .expect("selector group");
+        let mut options: Vec<String> = selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let mut expected: Vec<String> = doc.endpoints.iter().map(|e| e.tag.clone()).collect();
+        expected.push(contract::AUTO_GROUP_TAG.to_string());
+        options.sort();
+        expected.sort();
+        assert_eq!(options, expected);
+        assert_eq!(config["route"]["final"], contract::SELECTOR_GROUP_TAG);
     }
 
     #[test]

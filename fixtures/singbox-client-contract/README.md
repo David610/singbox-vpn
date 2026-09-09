@@ -120,3 +120,35 @@ UPDATE_CONTRACT_FIXTURES=1 cargo test -p compat-config --test contract_fixtures
 Review the diff, and mirror any change in `singbox-client` before
 releasing it. `08-invalid-missing-short-id.json` is hand-written on
 purpose: it is an example of what the server must never produce.
+
+## About this directory's name
+
+`singbox-client-contract` is a **historical name**. `singbox-client` was
+the originally-intended primary client and is no longer part of this
+product; the current first-party client is
+[Tamara](https://github.com/David610/tamara). The directory is
+deliberately not renamed — the name is stale, but renaming it would touch
+every fixture consumer for no runtime or test-architecture benefit. These
+files document the provisioning contract itself, not any one client.
+
+## What the fixtures cover
+
+Fixtures `01`-`09` document the **catalog envelope**. The generator
+strips `singbox_config` before comparing, so these stay readable as
+contract documentation rather than becoming a second byte-level copy of
+the sing-box renderer's output (which that renderer's own suite already
+covers).
+
+Fixture `10-peer-endpoint-with-embedded-config.json` pins the
+**complete** document exactly once: an operator-declared peer endpoint
+with its own host, key, per-user credential and `failure_domain`, plus
+the embedded `singbox_config`. It is the fixture that demonstrates the
+property a client's single fetch depends on — the catalog and the config
+are rendered from one endpoint model, so the config's `select` group can
+name every endpoint listed beside it.
+
+Note that fixture `10` legitimately contains `"insecure": false`. That is
+a security-*positive* assertion that certificate verification is on, not
+an opt-out; see the forbidden-content section of
+`docs/PROVISIONING_CONTRACT.md` for why the embedded config is audited
+structurally rather than by substring.

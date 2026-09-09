@@ -302,6 +302,7 @@ mod tests {
                 created_at: 0,
                 expires_at: None,
                 vision_off_experiment: false,
+                peer_credentials: Default::default(),
             },
             CompatUser {
                 id: "u-disabled".into(),
@@ -313,6 +314,7 @@ mod tests {
                 created_at: 0,
                 expires_at: None,
                 vision_off_experiment: false,
+                peer_credentials: Default::default(),
             },
             CompatUser {
                 id: "u-expired".into(),
@@ -324,6 +326,7 @@ mod tests {
                 created_at: 0,
                 expires_at: Some(100),
                 vision_off_experiment: false,
+                peer_credentials: Default::default(),
             },
         ]
     }
@@ -406,6 +409,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: true,
+            peer_credentials: Default::default(),
         });
         let ports = ServerPorts {
             vless_reality_port: 443,

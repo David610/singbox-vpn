@@ -241,6 +241,54 @@ enum ConfigCommands {
 }
 
 #[derive(Subcommand)]
+enum PeerCommands {
+    /// Set (or replace) this user's credential for a peer endpoint.
+    ///
+    /// Exactly one of `--uuid` / `--password` must be given, and it must
+    /// match the peer endpoint's declared transport: `--uuid` for
+    /// `vless-reality`, `--password` for `hysteria2`. A mismatch is
+    /// refused rather than coerced — silently reshaping it would produce
+    /// a profile that looks dialable and cannot authenticate.
+    Set {
+        user_id: String,
+        /// Peer endpoint id, as declared in `[[peer_endpoints]]`.
+        endpoint_id: String,
+        /// VLESS client id issued to this user ON THE PEER SERVER.
+        #[arg(long, conflicts_with = "password")]
+        uuid: Option<String>,
+        /// Hysteria2 password issued to this user ON THE PEER SERVER.
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Replace an existing peer credential (after rotating it on the peer
+    /// server). Refuses if this user has no credential for that endpoint
+    /// yet — use `set` for that, so a typo in the endpoint id cannot
+    /// silently create a second, unused entry.
+    Rotate {
+        user_id: String,
+        endpoint_id: String,
+        #[arg(long, conflicts_with = "password")]
+        uuid: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Remove this user's credential for a peer endpoint. The endpoint
+    /// then disappears from their provisioning document; it does NOT
+    /// revoke anything on the peer server, which this deployment cannot
+    /// reach — do that there as well.
+    Remove {
+        user_id: String,
+        endpoint_id: String,
+    },
+    /// List which peer endpoint ids this user has a credential for.
+    ///
+    /// Prints ids and transports only. The credential VALUE is never
+    /// printed by any command: reading one back out is not an operation
+    /// this CLI offers.
+    List { user_id: String },
+}
+
+#[derive(Subcommand)]
 enum UserCommands {
     Create {
         #[arg(long)]
@@ -316,6 +364,19 @@ enum UserCommands {
     Remove {
         user_id: String,
     },
+    /// Manage this user's credentials for PEER endpoints — endpoints on
+    /// servers this deployment does not control, declared in
+    /// `deployment.toml`'s `[[peer_endpoints]]`.
+    ///
+    /// The credential is created on the PEER server by that server's own
+    /// `vpn-admin` and pasted here by the operator who runs both. This
+    /// server never generates one: it cannot, because a value it invents
+    /// would not authenticate on a machine it does not administer.
+    ///
+    /// A user with no credential for a peer simply does not see that
+    /// endpoint in their provisioning document.
+    #[command(subcommand)]
+    Peer(PeerCommands),
     /// EXPERIMENTAL, one user at a time: render this user's VLESS
     /// inbound entry with an EMPTY flow instead of `xtls-rprx-vision`,
     /// so the `?compat=vision-off` subscription profile can actually
@@ -448,6 +509,25 @@ fn main() -> Result<()> {
             cmd_user_rotate_credentials(&cfg, &user_id)
         }
         Commands::User(UserCommands::Remove { user_id }) => cmd_user_remove(&cfg, &user_id),
+        Commands::User(UserCommands::Peer(PeerCommands::Set {
+            user_id,
+            endpoint_id,
+            uuid,
+            password,
+        })) => cmd_user_peer_set(&cfg, &user_id, &endpoint_id, uuid, password, false),
+        Commands::User(UserCommands::Peer(PeerCommands::Rotate {
+            user_id,
+            endpoint_id,
+            uuid,
+            password,
+        })) => cmd_user_peer_set(&cfg, &user_id, &endpoint_id, uuid, password, true),
+        Commands::User(UserCommands::Peer(PeerCommands::Remove {
+            user_id,
+            endpoint_id,
+        })) => cmd_user_peer_remove(&cfg, &user_id, &endpoint_id),
+        Commands::User(UserCommands::Peer(PeerCommands::List { user_id })) => {
+            cmd_user_peer_list(&cfg, &user_id)
+        }
         Commands::User(UserCommands::Subscription { user_id }) => {
             cmd_user_subscription(&cfg, &user_id)
         }
@@ -1979,6 +2059,7 @@ fn cmd_user_create(
         created_at: UnixSeconds::now().0 as i64,
         expires_at,
         vision_off_experiment: false,
+        peer_credentials: Default::default(),
     };
     users.push(user);
     apply_users_and_save(cfg, &previous_users, &users)?;
@@ -2186,6 +2267,166 @@ fn cmd_user_vision_off_experiment(cfg: &DeploymentConfig, id: &str, on: bool) ->
     Ok(())
 }
 
+/// Turn `--uuid`/`--password` into a [`PeerCredential`] for a declared
+/// peer endpoint, refusing anything that would not authenticate there.
+///
+/// The transport check is the point of this function. A `--password`
+/// accepted for a `vless-reality` peer would serialize happily and then
+/// render a VLESS outbound with a password-shaped UUID: a profile that
+/// looks completely normal in the client and can never connect, with no
+/// diagnostic pointing back at the typo that caused it.
+fn peer_credential_from_flags(
+    peer: &compat_config::deployment::PeerEndpointSection,
+    uuid: Option<String>,
+    password: Option<String>,
+) -> Result<compat_config::model::PeerCredential> {
+    use compat_config::model::{CompatTransport, PeerCredential};
+    match (peer.transport, uuid, password) {
+        (CompatTransport::VlessReality, Some(uuid), None) => {
+            let uuid = uuid.trim().to_string();
+            if !credentials::is_uuid_v4_shaped(&uuid) {
+                anyhow::bail!(
+                    "peer endpoint {:?} is vless-reality, and {uuid:?} is not an 8-4-4-4-12 hex \
+                     UUID. Paste the client id the PEER server issued for this user.",
+                    peer.id
+                );
+            }
+            Ok(PeerCredential::VlessReality { uuid })
+        }
+        (CompatTransport::Hysteria2, None, Some(password)) => {
+            if password.trim().is_empty() {
+                anyhow::bail!("peer endpoint {:?}: password must not be empty", peer.id);
+            }
+            Ok(PeerCredential::Hysteria2 {
+                password: SecretString::new(password),
+            })
+        }
+        (CompatTransport::VlessReality, _, Some(_)) => anyhow::bail!(
+            "peer endpoint {:?} is vless-reality: pass --uuid, not --password. A credential is \
+             never coerced across transports.",
+            peer.id
+        ),
+        (CompatTransport::Hysteria2, Some(_), _) => anyhow::bail!(
+            "peer endpoint {:?} is hysteria2: pass --password, not --uuid.",
+            peer.id
+        ),
+        (_, None, None) => anyhow::bail!(
+            "peer endpoint {:?}: supply the credential the PEER server issued for this user \
+             ({}). This server cannot generate one — it does not administer that machine.",
+            peer.id,
+            match peer.transport {
+                CompatTransport::VlessReality => "--uuid",
+                CompatTransport::Hysteria2 => "--password",
+            }
+        ),
+    }
+}
+
+fn find_peer_endpoint<'a>(
+    cfg: &'a DeploymentConfig,
+    endpoint_id: &str,
+) -> Result<&'a compat_config::deployment::PeerEndpointSection> {
+    cfg.peer_endpoints
+        .iter()
+        .find(|p| p.id == endpoint_id)
+        .ok_or_else(|| {
+            let known: Vec<&str> = cfg.peer_endpoints.iter().map(|p| p.id.as_str()).collect();
+            anyhow::anyhow!(
+                "no [[peer_endpoints]] entry with id {endpoint_id:?} in deployment.toml \
+                 (declared: {known:?}). Declare the endpoint before giving anyone a credential \
+                 for it, so a typo cannot create a credential nothing will ever read."
+            )
+        })
+}
+
+/// `vpn-admin user peer set|rotate`.
+///
+/// Deliberately does NOT re-render or reload the sing-box server config.
+/// A peer credential authenticates against a DIFFERENT server's inbound;
+/// nothing about this deployment's own listeners changes, so there is
+/// nothing to apply. It affects only what this user's next subscription
+/// fetch returns.
+fn cmd_user_peer_set(
+    cfg: &DeploymentConfig,
+    id: &str,
+    endpoint_id: &str,
+    uuid: Option<String>,
+    password: Option<String>,
+    require_existing: bool,
+) -> Result<()> {
+    let peer = find_peer_endpoint(cfg, endpoint_id)?;
+    let credential = peer_credential_from_flags(peer, uuid, password)?;
+
+    let mut users = store::load_users(&cfg.users_file())?;
+    let user = find_user_mut(&mut users, id)?;
+    let existed = user.peer_credentials.contains_key(endpoint_id);
+    if require_existing && !existed {
+        anyhow::bail!(
+            "{id} has no credential for peer endpoint {endpoint_id:?} to rotate. Use \
+             `vpn-admin user peer set` to add one — rotate refuses so a mistyped endpoint id \
+             cannot quietly create a second, unused entry."
+        );
+    }
+    user.peer_credentials
+        .insert(endpoint_id.to_string(), credential);
+    store::save_users_atomic(&cfg.users_file(), &users)?;
+
+    println!(
+        "{id}: peer credential {} for {endpoint_id} ({})",
+        if existed { "replaced" } else { "set" },
+        peer.transport.as_str()
+    );
+    println!(
+        "This changes only what this user's subscription returns. It does not reach {}, and it \
+         does not revoke the previous credential there — do that on the peer server.",
+        peer.host
+    );
+    Ok(())
+}
+
+fn cmd_user_peer_remove(cfg: &DeploymentConfig, id: &str, endpoint_id: &str) -> Result<()> {
+    let mut users = store::load_users(&cfg.users_file())?;
+    let user = find_user_mut(&mut users, id)?;
+    if user.peer_credentials.remove(endpoint_id).is_none() {
+        anyhow::bail!("{id} has no credential for peer endpoint {endpoint_id:?}");
+    }
+    store::save_users_atomic(&cfg.users_file(), &users)?;
+    println!("{id}: peer credential for {endpoint_id} removed.");
+    println!(
+        "That endpoint no longer appears in this user's provisioning document. Their existing \
+         credential still works ON THE PEER SERVER until you revoke it there — this deployment \
+         cannot do that for you."
+    );
+    Ok(())
+}
+
+/// `vpn-admin user peer list`. Ids and transports only — never a value.
+fn cmd_user_peer_list(cfg: &DeploymentConfig, id: &str) -> Result<()> {
+    let users = store::load_users(&cfg.users_file())?;
+    let user = users
+        .iter()
+        .find(|u| u.id == id)
+        .ok_or_else(|| anyhow::anyhow!("no such user: {id}"))?;
+    if user.peer_credentials.is_empty() {
+        println!("{id}: no peer credentials configured.");
+        return Ok(());
+    }
+    println!("{id}: peer credentials (values are never printed)");
+    for (endpoint_id, credential) in &user.peer_credentials {
+        let declared = cfg.peer_endpoints.iter().any(|p| p.id == *endpoint_id);
+        println!(
+            "  {endpoint_id}  transport={}{}",
+            credential.transport().as_str(),
+            if declared {
+                ""
+            } else {
+                "  [WARN] no matching [[peer_endpoints]] entry; this credential is never served"
+            }
+        );
+    }
+    Ok(())
+}
+
 fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     let token = credentials::generate_subscription_token();
@@ -2240,6 +2481,44 @@ fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     cmd_user_rotate_token(cfg, id, true)
 }
 
+/// Every endpoint `vpn-subscription` serves: this deployment's own two
+/// listeners, plus operator-declared peers.
+///
+/// This exists because `AppState.endpoints` in the running service is
+/// built exactly this way, and anything reproducing that set here has to
+/// match it or produce a false mismatch. Peers are appended after the
+/// local endpoints, in declaration order, which is the order the service
+/// uses.
+///
+/// NOTE: not every caller wants this. The L4 REALITY render-coherence
+/// check deliberately uses `standard_endpoints` alone, because it
+/// compares a rendered client short_id against the short_ids THIS
+/// server's inbound accepts — a peer's short_id is not one of them, and
+/// including peers there would report a real coherence check as broken.
+fn served_endpoints(
+    cfg: &DeploymentConfig,
+    reality: &compat_config::model::RealityServerParams,
+    hysteria_obfs_password: Option<&str>,
+) -> Result<Vec<compat_config::model::CompatEndpoint>> {
+    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
+    let mut endpoints = compat_config::render::standard_endpoints(
+        &cfg.public_host,
+        cfg.reality.listen_port,
+        cfg.hysteria2.listen_port,
+        &reality.public_key_hex,
+        &short_id,
+        &reality.handshake_server,
+        hysteria_obfs_password,
+    );
+    for peer in &cfg.peer_endpoints {
+        endpoints.push(
+            peer.to_compat_endpoint()
+                .with_context(|| format!("invalid [[peer_endpoints]] entry {:?}", peer.id))?,
+        );
+    }
+    Ok(endpoints)
+}
+
 /// `vpn-admin user links ID`: out-of-band recovery path (see the
 /// `UserCommands::Links` doc comment). Builds the same
 /// `standard_endpoints()` the subscription service and doctor L4 check
@@ -2260,20 +2539,31 @@ fn cmd_user_links(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
 
     let reality = load_reality_params(cfg)?;
     let hysteria = load_hysteria_params(cfg);
-    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
-    let endpoints = compat_config::render::standard_endpoints(
-        &cfg.public_host,
-        cfg.reality.listen_port,
-        cfg.hysteria2.listen_port,
-        &reality.public_key_hex,
-        &short_id,
-        &reality.handshake_server,
+    // Peers included: this is the recovery path used when the
+    // subscription endpoint itself is unreachable, which is exactly when
+    // an independently-hosted endpoint is most worth handing over.
+    let endpoints = served_endpoints(
+        cfg,
+        &reality,
         hysteria.obfs_password.as_ref().map(|s| s.expose()),
-    );
+    )?;
 
     println!("Out-of-band connection URIs for {id} (subscription service NOT required):");
     println!();
     for endpoint in &endpoints {
+        // A peer this user has no credential for is skipped rather than
+        // erroring out: it must not stop the LOCAL endpoints, which are
+        // the ones this recovery path exists to deliver.
+        if endpoint.origin == compat_config::model::EndpointOrigin::Peer
+            && user.peer_credential(&endpoint.id).is_none()
+        {
+            println!(
+                "{} (peer): skipped — no peer credential set for this user",
+                endpoint.label
+            );
+            println!();
+            continue;
+        }
         let uri = match endpoint.transport {
             compat_config::model::CompatTransport::VlessReality => {
                 compat_config::render::render_vless_reality_uri(user, endpoint)?
@@ -5099,8 +5389,14 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        peer_credentials: Default::default(),
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
+    // Deliberately LOCAL endpoints only (not `served_endpoints`): this
+    // check compares the rendered client short_id against the short_ids
+    // THIS server's REALITY inbound accepts. A peer's short_id is not one
+    // of them and never will be, so including peers here would report a
+    // correctly-configured deployment as incoherent.
     let endpoints = compat_config::render::standard_endpoints(
         &cfg.public_host,
         cfg.reality.listen_port,
@@ -5256,17 +5552,28 @@ fn check_l4_live_subscription_process_state(cfg: &DeploymentConfig, failures: &m
             return;
         }
     };
-    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
     let hysteria = load_hysteria_params(cfg);
-    let expected_endpoints = compat_config::render::standard_endpoints(
-        &cfg.public_host,
-        cfg.reality.listen_port,
-        cfg.hysteria2.listen_port,
-        &reality.public_key_hex,
-        &short_id,
-        &reality.handshake_server,
+    // MUST include peer endpoints: the running service's own
+    // `AppState.endpoints` does, so computing this from the local
+    // listeners alone would report a fingerprint mismatch on every
+    // deployment that has a peer configured — a false positive for
+    // exactly the stale-in-memory-state incident this check exists to
+    // detect, which is worse than not checking at all.
+    let expected_endpoints = match served_endpoints(
+        cfg,
+        &reality,
         hysteria.obfs_password.as_ref().map(|s| s.expose()),
-    );
+    ) {
+        Ok(e) => e,
+        Err(e) => {
+            report_check(
+                CheckStatus::Warn,
+                "L4",
+                format!("skipping live subscription-process check: {e}"),
+            );
+            return;
+        }
+    };
     let expected_fingerprint = compat_config::render::endpoints_fingerprint(&expected_endpoints);
 
     let response = http_get_local_json(
@@ -8173,5 +8480,121 @@ mod public_surface_tests {
             read_firewall_ownership(std::path::Path::new("/nonexistent/firewall-owned.env"))
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod peer_credential_cli_tests {
+    use super::*;
+    use compat_config::deployment::PeerEndpointSection;
+    use compat_config::model::{CompatTransport, PeerCredential};
+
+    fn peer(transport: CompatTransport) -> PeerEndpointSection {
+        PeerEndpointSection {
+            id: "eu2-reality".into(),
+            tag: "Europe 2".into(),
+            host: "vpn2.example.net".into(),
+            port: 8443,
+            transport,
+            server_name: None,
+            reality_public_key: None,
+            reality_short_id: None,
+            reality_fingerprint: "chrome".into(),
+            obfs_password: None,
+            failure_domain: "eu2".into(),
+            region: None,
+            provider: None,
+            asn: None,
+            path: "direct".into(),
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_uuid_is_accepted_for_a_vless_reality_peer() {
+        let c = peer_credential_from_flags(
+            &peer(CompatTransport::VlessReality),
+            Some("22222222-2222-4222-8222-222222222222".into()),
+            None,
+        )
+        .expect("valid");
+        assert!(matches!(c, PeerCredential::VlessReality { .. }));
+    }
+
+    #[test]
+    fn a_password_for_a_vless_reality_peer_is_refused_not_coerced() {
+        // The failure this prevents is nasty: a coerced password would
+        // render a perfectly normal-looking VLESS outbound that can never
+        // authenticate, with nothing pointing back at the typo.
+        let err = peer_credential_from_flags(
+            &peer(CompatTransport::VlessReality),
+            None,
+            Some("some-password".into()),
+        )
+        .expect_err("must refuse");
+        assert!(format!("{err}").contains("--uuid"), "got {err}");
+    }
+
+    #[test]
+    fn a_uuid_for_a_hysteria2_peer_is_refused() {
+        let err = peer_credential_from_flags(
+            &peer(CompatTransport::Hysteria2),
+            Some("22222222-2222-4222-8222-222222222222".into()),
+            None,
+        )
+        .expect_err("must refuse");
+        assert!(format!("{err}").contains("--password"), "got {err}");
+    }
+
+    #[test]
+    fn a_malformed_uuid_is_refused_with_an_actionable_message() {
+        let err = peer_credential_from_flags(
+            &peer(CompatTransport::VlessReality),
+            Some("not-a-uuid".into()),
+            None,
+        )
+        .expect_err("must refuse");
+        let msg = format!("{err}");
+        assert!(msg.contains("UUID") && msg.contains("PEER"), "got {msg}");
+    }
+
+    #[test]
+    fn supplying_no_credential_names_the_flag_the_operator_needs() {
+        // This server must never invent one: it does not administer the
+        // peer, so anything it generated could not authenticate there.
+        let err = peer_credential_from_flags(&peer(CompatTransport::Hysteria2), None, None)
+            .expect_err("must refuse");
+        let msg = format!("{err}");
+        assert!(msg.contains("--password"), "got {msg}");
+        assert!(
+            msg.contains("cannot generate"),
+            "the message must say why this is the operator's job; got {msg}"
+        );
+    }
+
+    #[test]
+    fn an_empty_hysteria2_password_is_refused() {
+        assert!(peer_credential_from_flags(
+            &peer(CompatTransport::Hysteria2),
+            None,
+            Some("   ".into())
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn uuid_shape_check_accepts_a_real_uuid_and_rejects_pasted_junk() {
+        assert!(credentials::is_uuid_v4_shaped(
+            "22222222-2222-4222-8222-222222222222"
+        ));
+        for bad in [
+            "",
+            "22222222222242228222222222222222",
+            "22222222-2222-4222-8222",
+            "zzzzzzzz-2222-4222-8222-222222222222",
+            "a-password-someone-pasted",
+        ] {
+            assert!(!credentials::is_uuid_v4_shaped(bad), "{bad:?} accepted");
+        }
     }
 }
