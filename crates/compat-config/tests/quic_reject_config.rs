@@ -46,6 +46,7 @@ fn test_user() -> CompatUser {
         vision_off_experiment: false,
         created_at: 0,
         expires_at: None,
+        peer_credentials: Default::default(),
     }
 }
 
@@ -70,6 +71,7 @@ fn endpoints() -> Vec<CompatEndpoint> {
                 short_id: "0a1b2c3d".into(),
                 fingerprint: "chrome".into(),
             },
+            ..Default::default()
         },
         CompatEndpoint {
             id: "hysteria2-1".into(),
@@ -81,6 +83,7 @@ fn endpoints() -> Vec<CompatEndpoint> {
             public_parameters: PublicParameters::Hysteria2 {
                 obfs_password: Some("obfs-secret".into()),
             },
+            ..Default::default()
         },
     ]
 }

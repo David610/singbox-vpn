@@ -80,6 +80,7 @@ fn test_user() -> CompatUser {
         vision_off_experiment: false,
         created_at: 0,
         expires_at: None,
+        peer_credentials: Default::default(),
     }
 }
 
@@ -152,6 +153,7 @@ fn build_configs(
             short_id: short_id.to_string(),
             fingerprint: "chrome".into(),
         },
+        ..Default::default()
     };
     let mut client_cfg =
         render::render_singbox_client_subscription(&test_user(), std::slice::from_ref(&endpoint))
@@ -405,6 +407,7 @@ fn server_and_client_configs_agree_on_reality_key_material() {
             short_id: reality.short_ids[0].clone(),
             fingerprint: "chrome".into(),
         },
+        ..Default::default()
     };
     let client_cfg = render::render_singbox_client_subscription(&test_user(), &[endpoint])
         .expect("render client subscription");

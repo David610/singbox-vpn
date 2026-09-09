@@ -73,6 +73,7 @@ fn test_user(hysteria2_password: &str) -> CompatUser {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        peer_credentials: Default::default(),
     }
 }
 
@@ -144,6 +145,7 @@ fn build_configs(
         public_parameters: compat_config::model::PublicParameters::Hysteria2 {
             obfs_password: client_obfs_password.map(|s| s.to_string()),
         },
+        ..Default::default()
     };
     let mut client_cfg = render::render_singbox_client_subscription(
         &test_user(password),

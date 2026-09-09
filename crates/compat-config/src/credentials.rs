@@ -143,6 +143,25 @@ pub fn validate_reality_public_key_shape(public_key: &str) -> Result<(), String>
     Ok(())
 }
 
+/// Whether `value` has the 8-4-4-4-12 hexadecimal shape a VLESS client
+/// id must have.
+///
+/// Shape only: it deliberately does not check the version/variant nibbles.
+/// The credential being validated here was minted by ANOTHER server
+/// (`vpn-admin user peer set`), and rejecting a structurally valid id
+/// because a different implementation set those bits differently would
+/// block a working credential for no security gain. What this does catch
+/// is the case that actually happens: a password, a token, or a truncated
+/// paste being handed over where a UUID belongs.
+pub fn is_uuid_v4_shaped(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8usize, 4, 4, 4, 12])
+            .all(|(g, len)| g.len() == len && g.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 /// A REALITY short_id must be 0-8 hex digits per the sing-box spec; a
 /// real deployment always writes exactly 8 (`generate_short_id`), so an
 /// empty or malformed value on disk indicates corruption, not a

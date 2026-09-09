@@ -1,4 +1,31 @@
-# ADR-0009: Declarative peer endpoints (deferred; contract-only in this pass)
+# ADR-0009: Declarative peer endpoints
+
+> **Status: IMPLEMENTED** (superseding the original "deferred" status).
+> The runtime feature described below as a sketch now exists:
+> `[[peer_endpoints]]` in `deployment.toml`, per-user credentials in
+> `users.json` under `peer_credentials`, and
+> `vpn-admin user peer set|rotate|remove|list`. **Option A was taken**,
+> as this ADR recommended.
+>
+> Two things this ADR made conditional are worth restating plainly,
+> because they did not change when it was implemented:
+>
+> * **There is still no second VPS.** The original reason for deferring
+>   was that implementing against a hypothetical deployment risks getting
+>   credential scoping wrong with no way to validate it. That risk was
+>   addressed by making the credential model per-user and by refusing to
+>   generate peer credentials at all, not by acquiring a server to test
+>   against. Peer support is verified against fixtures and loopback only:
+>   **IMPLEMENTED is not REAL-VPS-VERIFIED.**
+> * **`docs/SUPPORTED_PRODUCT.md`'s "single-VPS, no multi-node control
+>   plane" statement is unaffected.** This is static declarative config on
+>   one server, not a control plane. This server never contacts, controls,
+>   deploys, health-checks, or mints credentials for a peer.
+>
+> The original analysis is preserved below unchanged, because the
+> reasoning behind Option A is the reasoning behind the shipped design.
+> Where it says "not implemented" or "sketch", read it as the record of
+> how the decision was reached.
 
 ## Context
 

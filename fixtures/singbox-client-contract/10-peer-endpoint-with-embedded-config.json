@@ -1,0 +1,148 @@
+{
+  "capabilities": [
+    "vless-reality",
+    "hysteria2"
+  ],
+  "endpoints": [
+    {
+      "flow": "xtls-rprx-vision",
+      "host": "vpn.example.com",
+      "id": "reality-1",
+      "port": 443,
+      "reality": {
+        "fingerprint": "chrome",
+        "public_key": "FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake",
+        "short_id": "0a1b2c3d"
+      },
+      "server_name": "www.example-decoy.com",
+      "tag": "Reality",
+      "transport": "vless-reality",
+      "uuid": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "host": "vpn.example.com",
+      "id": "hysteria2-1",
+      "password": "fake-hysteria2-password-not-a-real-secret",
+      "port": 443,
+      "server_name": "vpn.example.com",
+      "tag": "Hysteria2",
+      "transport": "hysteria2"
+    },
+    {
+      "asn": "operator-label-b",
+      "failure_domain": "eu2",
+      "flow": "xtls-rprx-vision",
+      "host": "vpn2.example.net",
+      "id": "eu2-reality",
+      "path": "direct",
+      "port": 8443,
+      "provider": "provider-b",
+      "reality": {
+        "fingerprint": "chrome",
+        "public_key": "BAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEbake",
+        "short_id": "9f8e7d6c"
+      },
+      "region": "nl",
+      "server_name": "www.example-decoy-two.org",
+      "tag": "Europe 2",
+      "transport": "vless-reality",
+      "uuid": "00000000-0000-4000-8000-000000000002"
+    }
+  ],
+  "experimental_capabilities": [
+    "diag-tcp-only"
+  ],
+  "schema_version": 1,
+  "server": {
+    "minimum_client_version": "0.1.0",
+    "product": "singbox-vpn",
+    "version": "0.0.0-fixture"
+  },
+  "singbox_config": {
+    "outbounds": [
+      {
+        "flow": "xtls-rprx-vision",
+        "server": "vpn.example.com",
+        "server_port": 443,
+        "tag": "Reality",
+        "tls": {
+          "enabled": true,
+          "reality": {
+            "enabled": true,
+            "public_key": "FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake",
+            "short_id": "0a1b2c3d"
+          },
+          "server_name": "www.example-decoy.com",
+          "utls": {
+            "enabled": true,
+            "fingerprint": "chrome"
+          }
+        },
+        "type": "vless",
+        "uuid": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "password": "fake-hysteria2-password-not-a-real-secret",
+        "server": "vpn.example.com",
+        "server_port": 443,
+        "tag": "Hysteria2",
+        "tls": {
+          "enabled": true,
+          "insecure": false,
+          "server_name": "vpn.example.com"
+        },
+        "type": "hysteria2"
+      },
+      {
+        "flow": "xtls-rprx-vision",
+        "server": "vpn2.example.net",
+        "server_port": 8443,
+        "tag": "Europe 2",
+        "tls": {
+          "enabled": true,
+          "reality": {
+            "enabled": true,
+            "public_key": "BAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEbake",
+            "short_id": "9f8e7d6c"
+          },
+          "server_name": "www.example-decoy-two.org",
+          "utls": {
+            "enabled": true,
+            "fingerprint": "chrome"
+          }
+        },
+        "type": "vless",
+        "uuid": "00000000-0000-4000-8000-000000000002"
+      },
+      {
+        "interval": "1m",
+        "outbounds": [
+          "Reality",
+          "Hysteria2",
+          "Europe 2"
+        ],
+        "tag": "auto",
+        "type": "urltest",
+        "url": "https://www.gstatic.com/generate_204"
+      },
+      {
+        "default": "Reality",
+        "outbounds": [
+          "Reality",
+          "Hysteria2",
+          "Europe 2",
+          "auto"
+        ],
+        "tag": "select",
+        "type": "selector"
+      },
+      {
+        "tag": "direct",
+        "type": "direct"
+      }
+    ],
+    "route": {
+      "final": "select"
+    }
+  }
+}

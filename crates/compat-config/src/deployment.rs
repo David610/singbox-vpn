@@ -52,7 +52,217 @@ pub struct DeploymentConfig {
 
     #[serde(default = "default_singbox_binary")]
     pub singbox_binary: PathBuf,
+
+    /// Endpoints on OTHER, independently-operated servers that this
+    /// deployment should also advertise (ADR-0009).
+    ///
+    /// This is not orchestration: this server never contacts, controls,
+    /// deploys, health-checks, or mints credentials for a peer. It only
+    /// repeats what the operator declared, to users the operator has
+    /// given a peer credential.
+    ///
+    /// Optional and absent from every existing file, so
+    /// `DEPLOYMENT_SCHEMA_VERSION` does not move.
+    #[serde(default)]
+    pub peer_endpoints: Vec<PeerEndpointSection>,
 }
+
+/// One `[[peer_endpoints]]` entry.
+///
+/// `extra` catches every key that is not a field here. Unknown keys are
+/// rejected rather than ignored: a mistyped `reality_public_ky` that
+/// silently defaulted to absent would produce an endpoint no client could
+/// use, and a pasted `reality_private_key` that was silently dropped
+/// would leave the operator believing this server needed it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PeerEndpointSection {
+    /// Must not collide with a locally generated id or another peer's.
+    pub id: String,
+    /// Client-visible display name (also the Core outbound tag).
+    pub tag: String,
+    pub host: String,
+    pub port: u16,
+    pub transport: crate::model::CompatTransport,
+    #[serde(default)]
+    pub server_name: Option<String>,
+
+    /// The peer's REALITY **public** key and short id. Public material:
+    /// same treatment as this server's own, which is already published to
+    /// every client. The peer's PRIVATE key is not a field here and is
+    /// actively refused — see [`PeerEndpointSection::validate`].
+    #[serde(default)]
+    pub reality_public_key: Option<String>,
+    #[serde(default)]
+    pub reality_short_id: Option<String>,
+    #[serde(default = "default_peer_fingerprint")]
+    pub reality_fingerprint: String,
+
+    /// Salamander obfuscation password configured on the peer, if any.
+    #[serde(default)]
+    pub obfs_password: Option<String>,
+
+    /// Shared-fate identifier. Required for a peer: the whole point of
+    /// declaring one is that it fails independently of this server, and
+    /// leaving the client to derive that from a hostname would be a
+    /// guess about someone else's infrastructure.
+    pub failure_domain: String,
+
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub asn: Option<String>,
+    #[serde(default = "default_peer_path")]
+    pub path: String,
+
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, toml::Value>,
+}
+
+fn default_peer_fingerprint() -> String {
+    "chrome".to_string()
+}
+
+fn default_peer_path() -> String {
+    "direct".to_string()
+}
+
+impl PeerEndpointSection {
+    fn validate(&self) -> Result<(), CompatError> {
+        // Key-shaped names are reported first, whichever order the keys
+        // happen to be in, so an operator who pasted a private key sees
+        // *that* rather than an incidental complaint about some other
+        // typo in the same block.
+        if let Some(key) = self.extra.keys().find(|k| {
+            let l = k.to_ascii_lowercase();
+            l.contains("private") || l.contains("secret")
+        }) {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: key {key:?} looks like private key material. This \
+                 server has no use for a peer's private key and must never hold one — it \
+                 never leaves the peer server. Remove the key from deployment.toml.",
+                self.id
+            )));
+        }
+        if let Some(key) = self.extra.keys().next() {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: unknown key {key:?}. Unknown keys are refused rather \
+                 than ignored, because a silently-dropped key produces an endpoint no client \
+                 can use.",
+                self.id
+            )));
+        }
+
+        if self.id.trim().is_empty() {
+            return Err(CompatError::Parse("[[peer_endpoints]] id is empty".into()));
+        }
+        if self.tag.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: tag is empty",
+                self.id
+            )));
+        }
+        if self.failure_domain.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: failure_domain is empty. A peer exists to fail \
+                 independently; say which domain it belongs to.",
+                self.id
+            )));
+        }
+        if self.host.trim().is_empty() || self.host.chars().any(|c| c.is_whitespace() || c == '/') {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: host {:?} is not dialable",
+                self.id, self.host
+            )));
+        }
+        if self.port == 0 {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: port 0 is not dialable",
+                self.id
+            )));
+        }
+
+        match self.transport {
+            crate::model::CompatTransport::VlessReality => {
+                let pk = self.reality_public_key.as_deref().unwrap_or_default();
+                crate::credentials::validate_reality_public_key_shape(pk).map_err(|e| {
+                    CompatError::Parse(format!(
+                        "[[peer_endpoints]] {}: reality_public_key: {e}",
+                        self.id
+                    ))
+                })?;
+                let sid = self.reality_short_id.as_deref().unwrap_or_default();
+                if sid.is_empty()
+                    || !sid.len().is_multiple_of(2)
+                    || sid.len() > 16
+                    || !sid.chars().all(|c| c.is_ascii_hexdigit())
+                {
+                    return Err(CompatError::Parse(format!(
+                        "[[peer_endpoints]] {}: reality_short_id {sid:?} is not an even-length \
+                         hex string of at most 16 characters",
+                        self.id
+                    )));
+                }
+            }
+            crate::model::CompatTransport::Hysteria2 => {
+                if self.reality_public_key.is_some() || self.reality_short_id.is_some() {
+                    return Err(CompatError::Parse(format!(
+                        "[[peer_endpoints]] {}: REALITY parameters do not apply to a hysteria2 \
+                         endpoint",
+                        self.id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The runtime endpoint this declaration describes.
+    ///
+    /// Carries no credential: a peer endpoint's credential is per-user
+    /// and lives in `CompatUser::peer_credentials`, resolved when a
+    /// specific user's document is assembled.
+    pub fn to_compat_endpoint(&self) -> Result<crate::model::CompatEndpoint, CompatError> {
+        self.validate()?;
+        let public_parameters = match self.transport {
+            crate::model::CompatTransport::VlessReality => {
+                crate::model::PublicParameters::Reality {
+                    public_key_hex: self.reality_public_key.clone().unwrap_or_default(),
+                    short_id: self.reality_short_id.clone().unwrap_or_default(),
+                    fingerprint: self.reality_fingerprint.clone(),
+                }
+            }
+            crate::model::CompatTransport::Hysteria2 => crate::model::PublicParameters::Hysteria2 {
+                obfs_password: self.obfs_password.clone(),
+            },
+        };
+        Ok(crate::model::CompatEndpoint {
+            id: self.id.clone(),
+            transport: self.transport,
+            host: self.host.clone(),
+            port: self.port,
+            server_name: Some(
+                self.server_name
+                    .clone()
+                    .unwrap_or_else(|| self.host.clone()),
+            ),
+            label: self.tag.clone(),
+            public_parameters,
+            origin: crate::model::EndpointOrigin::Peer,
+            failure_domain: Some(self.failure_domain.clone()),
+            region: self.region.clone(),
+            provider: self.provider.clone(),
+            asn: self.asn.clone(),
+            path: Some(self.path.clone()),
+        })
+    }
+}
+
+/// Endpoint ids this server generates for its own listeners. A peer may
+/// never reuse one: the two would collide in the assembled document, and
+/// the client would have no way to tell which server it was dialling.
+pub const LOCAL_ENDPOINT_IDS: &[&str] = &["reality-1", "hysteria2-1"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UdpProbeSection {
@@ -180,6 +390,26 @@ impl DeploymentConfig {
                 max_supported: DEPLOYMENT_SCHEMA_VERSION,
             });
         }
+        let mut seen_peer_ids: Vec<&str> = Vec::with_capacity(self.peer_endpoints.len());
+        for peer in &self.peer_endpoints {
+            peer.validate()?;
+            if LOCAL_ENDPOINT_IDS.contains(&peer.id.as_str()) {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] id {:?} collides with an endpoint id this server \
+                     generates for its own listeners ({LOCAL_ENDPOINT_IDS:?}). Both would end \
+                     up in one document and a client could not tell them apart.",
+                    peer.id
+                )));
+            }
+            if seen_peer_ids.contains(&peer.id.as_str()) {
+                return Err(CompatError::Parse(format!(
+                    "duplicate [[peer_endpoints]] id {:?}",
+                    peer.id
+                )));
+            }
+            seen_peer_ids.push(&peer.id);
+        }
+
         if self.hysteria2.up_mbps.is_some() != self.hysteria2.down_mbps.is_some() {
             return Err(CompatError::Parse(
                 "[hysteria2] up_mbps and down_mbps must be set together (both, or neither) — \

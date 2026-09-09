@@ -63,6 +63,7 @@ fn user(vision_off: bool) -> CompatUser {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: vision_off,
+        peer_credentials: Default::default(),
     }
 }
 
@@ -112,8 +113,30 @@ fn normalize(mut value: serde_json::Value) -> serde_json::Value {
 }
 
 /// Compare a generated document against its fixture on parsed structure.
+///
+/// These fixtures document the CATALOG ENVELOPE, so `singbox_config` is
+/// stripped from both sides before comparing. Two reasons, neither of
+/// them "it was inconvenient":
+///
+///  * The embedded config is a rendering of the very endpoints listed
+///    beside it, and `ProvisioningDocument::validate` already proves the
+///    two agree (endpoint tags ↔ outbound tags, selector options, and
+///    `route.final`). Pinning a second, byte-level copy of it in six
+///    fixtures would re-test the renderer, which
+///    `render_singbox_client_subscription`'s own suite already covers,
+///    while making every fixture unreadable as contract documentation.
+///  * A client reading these fixtures is learning the catalog shape. The
+///    embedded config is deliberately opaque to it.
+///
+/// The complete document, `singbox_config` included, is pinned exactly
+/// once by `fixture_10_shows_the_complete_document_including_embedded_config`
+/// so the full wire form is still documented and still regression-tested.
 fn assert_matches_fixture(name: &str, generated: &serde_json::Value) {
-    let generated = &normalize(generated.clone());
+    let mut stripped = generated.clone();
+    if let Some(obj) = stripped.as_object_mut() {
+        obj.remove("singbox_config");
+    }
+    let generated = &normalize(stripped);
     let path = fixture_dir().join(name);
     if std::env::var_os("UPDATE_CONTRACT_FIXTURES").is_some() {
         std::fs::write(
@@ -232,13 +255,13 @@ fn fixture_diagnostic_vision_off_matches_generated_document() {
 /// server feature that would let an operator declare one, which this PR
 /// deliberately does not implement.
 fn two_independent_endpoints_document() -> contract::ProvisioningDocument {
-    let endpoint_a = Endpoint {
-        id: "eu1-reality".into(),
-        tag: "Europe 1".into(),
-        host: FAKE_HOST.into(),
-        port: 443,
-        server_name: FAKE_SNI.into(),
-        params: TransportParams::VlessReality {
+    let endpoint_a = Endpoint::new(
+        "eu1-reality",
+        "Europe 1",
+        FAKE_HOST,
+        443,
+        FAKE_SNI,
+        TransportParams::VlessReality {
             uuid: FAKE_UUID.into(),
             flow: Some(contract::VLESS_FLOW_VISION.into()),
             reality: RealityParams {
@@ -247,14 +270,14 @@ fn two_independent_endpoints_document() -> contract::ProvisioningDocument {
                 fingerprint: "chrome".into(),
             },
         },
-    };
-    let endpoint_b = Endpoint {
-        id: "eu2-reality".into(),
-        tag: "Europe 2".into(),
-        host: FAKE_HOST_B.into(),
-        port: 8443,
-        server_name: FAKE_SNI_B.into(),
-        params: TransportParams::VlessReality {
+    );
+    let endpoint_b = Endpoint::new(
+        "eu2-reality",
+        "Europe 2",
+        FAKE_HOST_B,
+        8443,
+        FAKE_SNI_B,
+        TransportParams::VlessReality {
             uuid: FAKE_UUID_B.into(),
             flow: Some(contract::VLESS_FLOW_VISION.into()),
             reality: RealityParams {
@@ -263,7 +286,7 @@ fn two_independent_endpoints_document() -> contract::ProvisioningDocument {
                 fingerprint: "chrome".into(),
             },
         },
-    };
+    );
     contract::ProvisioningDocument::new(
         ServerInfo::current(FIXTURE_SERVER_VERSION),
         vec![Capability::VlessReality],
@@ -375,7 +398,25 @@ fn no_fixture_contains_anything_that_could_be_a_real_secret() {
             continue;
         }
         let raw = std::fs::read_to_string(&path).unwrap();
-        let lowered = raw.to_lowercase();
+
+        // A fixture that embeds a Core config is scanned in two parts.
+        // The config half legitimately contains `"insecure": false` — an
+        // assertion that certificate verification is ON — which this
+        // substring list cannot distinguish from the opt-out it exists to
+        // forbid, so that half is checked structurally instead (and
+        // `fixture_10_never_contains_a_private_key_despite_carrying_a_full_config`
+        // asserts the actual value).
+        let mut parsed: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+        let embedded = parsed
+            .as_object_mut()
+            .and_then(|o| o.remove("singbox_config"));
+        let envelope_text = if embedded.is_some() {
+            parsed.to_string()
+        } else {
+            raw.clone()
+        };
+        let lowered = envelope_text.to_lowercase();
         for forbidden in [
             "private_key",
             "-----begin",
@@ -391,7 +432,28 @@ fn no_fixture_contains_anything_that_could_be_a_real_secret() {
                 path.display()
             );
         }
+        if let Some(config) = &embedded {
+            let config_text = config.to_string().to_lowercase();
+            for forbidden in ["private_key", "-----begin", ".pem", "/etc/", "auto_route"] {
+                assert!(
+                    !config_text.contains(forbidden),
+                    "{} embedded config contains forbidden content {forbidden}",
+                    path.display()
+                );
+            }
+            for outbound in config["outbounds"].as_array().unwrap() {
+                if let Some(insecure) = outbound.pointer("/tls/insecure") {
+                    assert_eq!(
+                        insecure,
+                        &serde_json::json!(false),
+                        "{} opts out of certificate verification",
+                        path.display()
+                    );
+                }
+            }
+        }
         // Every credential in a fixture must announce itself as fake.
+        let lowered = raw.to_lowercase();
         if lowered.contains("password") {
             assert!(
                 lowered.contains("fake-"),
@@ -425,6 +487,7 @@ fn the_published_fixture_set_is_exactly_the_documented_one() {
             "07-error-unsupported-schema-version.json",
             "08-invalid-missing-short-id.json",
             "09-two-independent-endpoints.json",
+            "10-peer-endpoint-with-embedded-config.json",
         ]
     );
 }
@@ -461,4 +524,109 @@ fn fixtures_use_the_documented_fake_credentials() {
         eps[0].public_parameters,
         PublicParameters::Reality { .. }
     ));
+}
+
+// ---------------------------------------------------------------------
+// Fixture 10: the COMPLETE document, embedded config included
+// ---------------------------------------------------------------------
+
+/// Every other fixture in this suite documents the catalog ENVELOPE (see
+/// `assert_matches_fixture`). This one pins the whole wire form exactly
+/// once, including `singbox_config` and an operator-declared peer, so the
+/// complete document a client actually receives is documented and
+/// regression-tested rather than only described in prose.
+///
+/// It is also the fixture that demonstrates the property the client's
+/// single fetch depends on: the catalog and the embedded config are
+/// rendered from ONE endpoint model, so the selector inside the config
+/// can name every endpoint listed beside it.
+fn peer_compat_endpoint() -> CompatEndpoint {
+    CompatEndpoint {
+        id: "eu2-reality".into(),
+        transport: CompatTransport::VlessReality,
+        host: FAKE_HOST_B.into(),
+        port: 8443,
+        server_name: Some(FAKE_SNI_B.into()),
+        label: "Europe 2".into(),
+        public_parameters: PublicParameters::Reality {
+            public_key_hex: FAKE_REALITY_PUBLIC_KEY_B.into(),
+            short_id: FAKE_SHORT_ID_B.into(),
+            fingerprint: "chrome".into(),
+        },
+        origin: compat_config::model::EndpointOrigin::Peer,
+        failure_domain: Some("eu2".into()),
+        region: Some("nl".into()),
+        provider: Some("provider-b".into()),
+        asn: Some("operator-label-b".into()),
+        path: Some("direct".into()),
+    }
+}
+
+#[test]
+fn fixture_10_shows_the_complete_document_including_embedded_config() {
+    let mut user = user(false);
+    user.peer_credentials.insert(
+        "eu2-reality".into(),
+        compat_config::model::PeerCredential::VlessReality {
+            uuid: FAKE_UUID_B.into(),
+        },
+    );
+    let mut endpoints = standard_endpoints(
+        FAKE_HOST,
+        443,
+        443,
+        FAKE_REALITY_PUBLIC_KEY,
+        FAKE_SHORT_ID,
+        FAKE_SNI,
+        None,
+    );
+    endpoints.push(peer_compat_endpoint());
+
+    let doc = provisioning_document_with_mode(&user, &endpoints, DiagnosticMode::None)
+        .expect("valid document");
+    let generated = normalize(serde_json::to_value(&doc).unwrap());
+
+    let name = "10-peer-endpoint-with-embedded-config.json";
+    let path = fixture_dir().join(name);
+    if std::env::var_os("UPDATE_CONTRACT_FIXTURES").is_some() {
+        std::fs::write(
+            &path,
+            format!(
+                "{}
+",
+                serde_json::to_string_pretty(&generated).unwrap()
+            ),
+        )
+        .expect("write fixture");
+    }
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("missing fixture {}: {e}", path.display()));
+    let expected: serde_json::Value =
+        normalize(serde_json::from_str(&raw).expect("fixture is JSON"));
+    assert_eq!(
+        expected, generated,
+        "the complete provisioning document no longer matches {name}. If this is deliberate,          re-run with UPDATE_CONTRACT_FIXTURES=1 and review the diff."
+    );
+}
+
+#[test]
+fn fixture_10_never_contains_a_private_key_despite_carrying_a_full_config() {
+    let raw =
+        std::fs::read_to_string(fixture_dir().join("10-peer-endpoint-with-embedded-config.json"))
+            .expect("fixture exists");
+    let lowered = raw.to_ascii_lowercase();
+    for forbidden in ["private_key", "-----begin", ".pem", "/etc/"] {
+        assert!(
+            !lowered.contains(forbidden),
+            "{forbidden} present in fixture 10"
+        );
+    }
+    // The value the envelope's substring audit deliberately stopped
+    // judging, asserted here on its own terms.
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    for outbound in v["singbox_config"]["outbounds"].as_array().unwrap() {
+        if let Some(insecure) = outbound.pointer("/tls/insecure") {
+            assert_eq!(insecure, &serde_json::json!(false));
+        }
+    }
 }

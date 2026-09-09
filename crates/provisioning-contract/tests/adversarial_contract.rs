@@ -4,13 +4,13 @@ use provisioning_contract::{
 };
 
 fn valid_document() -> ProvisioningDocument {
-    let endpoint = Endpoint {
-        id: "reality-primary".to_string(),
-        tag: "VPN (REALITY)".to_string(),
-        host: "vpn.example.com".to_string(),
-        port: 443,
-        server_name: "www.example.com".to_string(),
-        params: TransportParams::VlessReality {
+    let endpoint = Endpoint::new(
+        "reality-primary",
+        "VPN (REALITY)",
+        "vpn.example.com",
+        443,
+        "www.example.com",
+        TransportParams::VlessReality {
             uuid: "11111111-1111-4111-8111-111111111111".to_string(),
             flow: Some(VLESS_FLOW_VISION.to_string()),
             reality: RealityParams {
@@ -19,7 +19,7 @@ fn valid_document() -> ProvisioningDocument {
                 fingerprint: "chrome".to_string(),
             },
         },
-    };
+    );
 
     ProvisioningDocument::new(
         ServerInfo::current("0.1.2"),

@@ -451,13 +451,26 @@ pub fn render_singbox_client_subscription_with_options(
         )?);
     }
 
-    // Step 2: render sing-box SYNTAX from those contract endpoints. No
-    // credential decisions happen below this line.
+    render_singbox_config_from_contract(&contract_endpoints, profile, compat_mode)
+}
+
+/// Step 2 on its own: render sing-box SYNTAX from an already-decided list
+/// of contract endpoints. **No credential decisions happen in here.**
+///
+/// Extracted so the provisioning document can embed a config rendered
+/// from the very same `Vec<contract::Endpoint>` it publishes as its
+/// catalog, rather than re-deriving a second list that could drift from
+/// the first. One endpoint model, one contract, one embedded config.
+pub fn render_singbox_config_from_contract(
+    contract_endpoints: &[contract::Endpoint],
+    profile: SelectionProfile,
+    compat_mode: CompatibilityMode,
+) -> Result<serde_json::Value, CompatError> {
     let mut outbounds = Vec::new();
     let mut tags = Vec::new();
     let mut reality_tag: Option<String> = None;
     let mut hysteria2_tag: Option<String> = None;
-    for ep in &contract_endpoints {
+    for ep in contract_endpoints {
         let tag = ep.tag.clone();
         tags.push(tag.clone());
         match &ep.params {
@@ -637,6 +650,7 @@ pub fn standard_endpoints(
                 short_id: reality_short_id.into(),
                 fingerprint: "chrome".into(),
             },
+            ..Default::default()
         },
         CompatEndpoint {
             id: "hysteria2-1".into(),
@@ -648,6 +662,7 @@ pub fn standard_endpoints(
             public_parameters: PublicParameters::Hysteria2 {
                 obfs_password: hysteria_obfs_password.map(|s| s.to_string()),
             },
+            ..Default::default()
         },
     ]
 }
@@ -691,6 +706,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            peer_credentials: Default::default(),
         }
     }
 
@@ -707,6 +723,7 @@ mod tests {
                 short_id: "0a1b2c3d".into(),
                 fingerprint: "chrome".into(),
             },
+            ..Default::default()
         }
     }
 
@@ -721,6 +738,7 @@ mod tests {
             public_parameters: PublicParameters::Hysteria2 {
                 obfs_password: None,
             },
+            ..Default::default()
         }
     }
 
