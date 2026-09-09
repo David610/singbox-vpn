@@ -192,6 +192,32 @@ pub enum ContractError {
          this contract must never carry server-private material or client-owned policy"
     )]
     ForbiddenContent { found: String, reason: &'static str },
+
+    #[error("embedded singbox_config is not servable: {reason}")]
+    EmbeddedConfigInvalid { reason: String },
+
+    #[error(
+        "endpoint {endpoint_id} has tag {tag:?} but the embedded singbox_config renders no \
+         outbound with that tag — the client could name an endpoint Core has never heard of"
+    )]
+    EndpointTagMissingOutbound { endpoint_id: String, tag: String },
+
+    #[error(
+        "the embedded singbox_config's {selector:?} group advertises {found:?} but this \
+         document's endpoints require exactly {expected:?} — a mismatch means the client's \
+         catalog and Core's selectable set disagree"
+    )]
+    SelectorOptionsMismatch {
+        selector: String,
+        expected: Vec<String>,
+        found: Vec<String>,
+    },
+
+    #[error(
+        "the embedded singbox_config routes `final` to {found:?} rather than the selector \
+         group {selector:?} — selecting an endpoint would then not change what is routed"
+    )]
+    RouteFinalMismatch { selector: String, found: String },
 }
 
 // ---------------------------------------------------------------------
@@ -310,6 +336,47 @@ impl Transport {
     }
 }
 
+/// How traffic reaches an endpoint.
+///
+/// Only [`PathType::Direct`] is produced today. A relay path is reserved
+/// and NOT implemented; [`PathType::Other`] exists so a document written
+/// by a future server that does implement one round-trips through a
+/// consumer written today rather than failing its parse, exactly like
+/// [`Capability::Other`] and [`Transport::Other`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PathType {
+    Direct,
+    Other(String),
+}
+
+impl PathType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            PathType::Direct => "direct",
+            PathType::Other(s) => s.as_str(),
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "direct" => PathType::Direct,
+            other => PathType::Other(other.to_string()),
+        }
+    }
+}
+
+impl Serialize for PathType {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PathType {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(PathType::from_wire(&String::deserialize(d)?))
+    }
+}
+
 /// Public REALITY parameters. There is intentionally no field here that
 /// could hold the server's REALITY *private* key — that value lives only
 /// in `compat_config::model::RealityServerParams`, which this crate does
@@ -390,11 +457,86 @@ pub struct Endpoint {
     pub port: u16,
     /// TLS SNI / REALITY server name to present.
     pub server_name: String,
+
+    /// Operator-declared shared-fate identifier: endpoints carrying the
+    /// same value are expected to fail together (same machine, same IP,
+    /// same provider). Absent means the CLIENT derives one from the
+    /// normalised host, which is correct for this deployment's own two
+    /// transports on one `public_host`.
+    ///
+    /// Deliberately not derived server-side: the server would have to
+    /// guess for peer endpoints it does not run, and a wrong guess is
+    /// worse than an honest absence the client can handle uniformly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_domain: Option<String>,
+
+    /// Opaque operator labels. The server never reads these for any
+    /// decision — they exist to be displayed and to inform client-side
+    /// diversity heuristics. No network or ASN lookup is ever performed
+    /// to populate them; they are exactly what the operator typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asn: Option<String>,
+
+    /// How traffic reaches this endpoint. Absent is equivalent to
+    /// [`PathType::Direct`] for a v1 consumer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathType>,
+
     #[serde(flatten)]
     pub params: TransportParams,
 }
 
 impl Endpoint {
+    /// An endpoint with no optional metadata — the shape every endpoint
+    /// had before the additive extension, so existing call sites keep
+    /// producing byte-identical documents. Metadata is attached with the
+    /// `with_*` builders.
+    pub fn new(
+        id: impl Into<String>,
+        tag: impl Into<String>,
+        host: impl Into<String>,
+        port: u16,
+        server_name: impl Into<String>,
+        params: TransportParams,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            tag: tag.into(),
+            host: host.into(),
+            port,
+            server_name: server_name.into(),
+            failure_domain: None,
+            region: None,
+            provider: None,
+            asn: None,
+            path: None,
+            params,
+        }
+    }
+
+    /// Attach the operator-declared shared-fate identifier and labels.
+    /// Every argument is optional; `None` leaves the field absent from
+    /// the wire form entirely rather than emitting a null.
+    pub fn with_metadata(
+        mut self,
+        failure_domain: Option<String>,
+        region: Option<String>,
+        provider: Option<String>,
+        asn: Option<String>,
+        path: Option<PathType>,
+    ) -> Self {
+        self.failure_domain = failure_domain;
+        self.region = region;
+        self.provider = provider;
+        self.asn = asn;
+        self.path = path;
+        self
+    }
+
     pub fn transport(&self) -> Transport {
         self.params.transport()
     }
@@ -440,6 +582,27 @@ pub struct ProvisioningDocument {
     #[serde(default)]
     pub experimental_capabilities: Vec<ExperimentalCapability>,
     pub endpoints: Vec<Endpoint>,
+
+    /// The Core-consumable sing-box configuration for exactly the
+    /// endpoint set above, rendered from the SAME model in the SAME
+    /// request.
+    ///
+    /// This exists because Tamara deliberately does not reimplement
+    /// transport parsing in Dart — the pinned Core/ray2sing is
+    /// authoritative for protocol syntax — so the client needs the
+    /// config as an opaque blob it passes through untouched. Embedding
+    /// it rather than having the client fetch it separately is what
+    /// makes the pair atomic: two requests could observe two different
+    /// server states (a credential rotation between them), yielding a
+    /// catalog that misdescribes the running config. One endpoint model
+    /// produces one contract and one embedded config, so they cannot
+    /// drift.
+    ///
+    /// Audited structurally rather than by substring — see
+    /// [`ProvisioningDocument::audit_embedded_config`]. **Never logged:**
+    /// it carries live per-user credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub singbox_config: Option<serde_json::Value>,
 }
 
 /// Substrings that must never appear anywhere in a serialized
@@ -447,6 +610,88 @@ pub struct ProvisioningDocument {
 /// [`ProvisioningDocument::validate`] against the serialized form, so a
 /// field added in the future cannot reintroduce one of these without the
 /// contract tests failing.
+/// The sing-box `selector` group tag the renderer emits, and the one
+/// `route.final` must name. A client changes its endpoint by selecting a
+/// different outbound within THIS group, without restarting Core.
+pub const SELECTOR_GROUP_TAG: &str = "select";
+
+/// The `urltest` group tag, always offered inside the selector as an
+/// explicit opt-in alongside the real endpoint tags.
+pub const AUTO_GROUP_TAG: &str = "auto";
+
+/// Top-level keys permitted in an embedded `singbox_config`. An
+/// allowlist, not a blocklist: a client-owned policy block nobody thought
+/// to forbid by name is rejected because it was never permitted.
+const EMBEDDED_CONFIG_TOP_LEVEL_ALLOWED: &[&str] = &["outbounds", "route"];
+
+/// Keys permitted inside the embedded config's `route`.
+const EMBEDDED_CONFIG_ROUTE_ALLOWED: &[&str] = &["final", "rules"];
+
+/// Object keys that may never appear anywhere in an embedded config,
+/// at any depth.
+const EMBEDDED_CONFIG_FORBIDDEN_KEYS: &[&str] = &["private_key", "privatekey", "private-key"];
+
+/// Substrings that may never appear in any string VALUE of an embedded
+/// config. Unlike the envelope's needles these are unambiguous: no
+/// legitimate client-facing outbound names a server filesystem path or
+/// carries PEM material.
+const EMBEDDED_CONFIG_FORBIDDEN_VALUES: &[&str] =
+    &["-----begin", ".pem", "/etc/", "/var/", "/opt/"];
+
+/// Recursive structural walk of an embedded config value.
+///
+/// Rejects private-key-shaped keys at any depth, a certificate
+/// verification opt-out (`insecure` set to anything but `false`), and
+/// server filesystem/PEM material in any string value.
+fn audit_embedded_value(value: &serde_json::Value) -> Result<(), ContractError> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let lowered = key.to_ascii_lowercase();
+                if EMBEDDED_CONFIG_FORBIDDEN_KEYS
+                    .iter()
+                    .any(|k| lowered.contains(k))
+                {
+                    return Err(ContractError::EmbeddedConfigInvalid {
+                        reason: format!(
+                            "key {key:?} looks like server-private key material, which must \
+                             never reach a client"
+                        ),
+                    });
+                }
+                if lowered == "insecure" && child != &serde_json::Value::Bool(false) {
+                    return Err(ContractError::EmbeddedConfigInvalid {
+                        reason: format!(
+                            "`insecure` must be exactly false (certificate verification on); \
+                             found {child}"
+                        ),
+                    });
+                }
+                audit_embedded_value(child)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                audit_embedded_value(item)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::String(s) => {
+            let lowered = s.to_ascii_lowercase();
+            for needle in EMBEDDED_CONFIG_FORBIDDEN_VALUES {
+                if lowered.contains(needle) {
+                    return Err(ContractError::EmbeddedConfigInvalid {
+                        reason: format!("value contains {needle:?}, which is server-side material"),
+                    });
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 const FORBIDDEN_CONTENT: &[(&str, &str)] = &[
     ("private_key", "server-private key material"),
     ("privatekey", "server-private key material"),
@@ -485,6 +730,7 @@ impl ProvisioningDocument {
             capabilities,
             experimental_capabilities: Vec::new(),
             endpoints,
+            singbox_config: None,
         }
     }
 
@@ -493,6 +739,14 @@ impl ProvisioningDocument {
         experimental: Vec<ExperimentalCapability>,
     ) -> Self {
         self.experimental_capabilities = experimental;
+        self
+    }
+
+    /// Attach the Core-consumable config rendered from this document's
+    /// own endpoint set. The result is NOT validated — the cross-checks
+    /// that prove the two agree run in [`Self::validate`].
+    pub fn with_singbox_config(mut self, config: serde_json::Value) -> Self {
+        self.singbox_config = Some(config);
         self
     }
 
@@ -567,7 +821,9 @@ impl ProvisioningDocument {
             }
         }
 
-        self.audit_serialized()
+        self.audit_serialized()?;
+        self.audit_embedded_config()?;
+        self.cross_validate_embedded_config()
     }
 
     /// Defence in depth behind the type system: serialize and confirm no
@@ -575,11 +831,29 @@ impl ProvisioningDocument {
     /// above cannot express any of these today; this makes a future
     /// field that could an immediate, loud test failure rather than a
     /// silent credential or policy leak.
+    ///
+    /// `singbox_config` is deliberately EXCLUDED here and audited by
+    /// [`Self::audit_embedded_config`] instead. A blunt substring scan is
+    /// the right instrument for a region that should contain no
+    /// configuration at all, and the wrong one for a region that is
+    /// legitimately full of it: the rendered Hysteria2 outbound carries
+    /// `"insecure": false`, a security-POSITIVE assertion that
+    /// certificate verification is on, which a scan for the word
+    /// "insecure" cannot distinguish from the opt-out it exists to
+    /// forbid. The whole document is still audited — each half by the
+    /// instrument that can actually judge it, and the structural half
+    /// catches strictly more than a substring scan could, because it
+    /// understands position and value rather than mere presence.
     fn audit_serialized(&self) -> Result<(), ContractError> {
-        let encoded = serde_json::to_string(self).map_err(|e| ContractError::Invalid {
-            field: "document",
-            reason: format!("could not be serialized: {e}"),
-        })?;
+        let mut envelope =
+            serde_json::to_value(self).map_err(|e| ContractError::Invalid {
+                field: "document",
+                reason: format!("could not be serialized: {e}"),
+            })?;
+        if let Some(obj) = envelope.as_object_mut() {
+            obj.remove("singbox_config");
+        }
+        let encoded = envelope.to_string();
         let lowered = encoded.to_ascii_lowercase();
         for (needle, reason) in FORBIDDEN_CONTENT {
             if lowered.contains(&needle.to_ascii_lowercase()) {
@@ -588,6 +862,134 @@ impl ProvisioningDocument {
                     reason,
                 });
             }
+        }
+        Ok(())
+    }
+
+    /// Structural audit of the embedded Core config.
+    ///
+    /// Positive allowlisting at the top level, then a recursive walk. It
+    /// is strictly stronger than the envelope's blocklist: an allowlist
+    /// rejects a client-owned policy block nobody thought to add a needle
+    /// for, and the walk can reject `"insecure": true` while accepting
+    /// `"insecure": false`.
+    fn audit_embedded_config(&self) -> Result<(), ContractError> {
+        let Some(config) = &self.singbox_config else {
+            return Ok(());
+        };
+        let Some(root) = config.as_object() else {
+            return Err(ContractError::EmbeddedConfigInvalid {
+                reason: "expected a JSON object".to_string(),
+            });
+        };
+        for key in root.keys() {
+            if !EMBEDDED_CONFIG_TOP_LEVEL_ALLOWED.contains(&key.as_str()) {
+                return Err(ContractError::EmbeddedConfigInvalid {
+                    reason: format!(
+                        "top-level key {key:?} is not permitted; this contract renders only \
+                         {EMBEDDED_CONFIG_TOP_LEVEL_ALLOWED:?} and never client-owned policy \
+                         (DNS, TUN, inbounds, logging)"
+                    ),
+                });
+            }
+        }
+        if let Some(route) = root.get("route") {
+            let Some(route) = route.as_object() else {
+                return Err(ContractError::EmbeddedConfigInvalid {
+                    reason: "route must be a JSON object".to_string(),
+                });
+            };
+            for key in route.keys() {
+                if !EMBEDDED_CONFIG_ROUTE_ALLOWED.contains(&key.as_str()) {
+                    return Err(ContractError::EmbeddedConfigInvalid {
+                        reason: format!(
+                            "route key {key:?} is not permitted; only \
+                             {EMBEDDED_CONFIG_ROUTE_ALLOWED:?} are rendered, and routing policy \
+                             beyond them is client-owned"
+                        ),
+                    });
+                }
+            }
+        }
+        audit_embedded_value(config)
+    }
+
+    /// Enforce that the catalog and the embedded config describe the same
+    /// thing (spec invariants A-D). Skipped entirely when no config is
+    /// embedded, so a document that carries only the catalog is unaffected.
+    ///
+    /// This is what makes the single-fetch atomicity guarantee real rather
+    /// than asserted: the server structurally cannot serve a catalog that
+    /// misdescribes the config shipped beside it.
+    fn cross_validate_embedded_config(&self) -> Result<(), ContractError> {
+        let Some(config) = &self.singbox_config else {
+            return Ok(());
+        };
+        let outbounds = config
+            .get("outbounds")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ContractError::EmbeddedConfigInvalid {
+                reason: "missing an `outbounds` array".to_string(),
+            })?;
+
+        let tag_of = |ob: &serde_json::Value| -> Option<String> {
+            ob.get("tag").and_then(|t| t.as_str()).map(str::to_string)
+        };
+        let rendered_tags: Vec<String> = outbounds.iter().filter_map(tag_of).collect();
+
+        // (B) every catalog endpoint is actually renderable by Core.
+        for ep in &self.endpoints {
+            if !rendered_tags.iter().any(|t| t == &ep.tag) {
+                return Err(ContractError::EndpointTagMissingOutbound {
+                    endpoint_id: ep.id.clone(),
+                    tag: ep.tag.clone(),
+                });
+            }
+        }
+
+        // (C) the selector's option set is exactly the endpoint tags plus
+        // the urltest group.
+        let selector = outbounds
+            .iter()
+            .find(|ob| tag_of(ob).as_deref() == Some(SELECTOR_GROUP_TAG))
+            .ok_or_else(|| ContractError::EmbeddedConfigInvalid {
+                reason: format!("no outbound tagged {SELECTOR_GROUP_TAG:?}"),
+            })?;
+        let mut found: Vec<String> = selector
+            .get("outbounds")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ContractError::EmbeddedConfigInvalid {
+                reason: format!("{SELECTOR_GROUP_TAG:?} has no outbounds array"),
+            })?
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        let mut expected: Vec<String> = self.endpoints.iter().map(|e| e.tag.clone()).collect();
+        expected.push(AUTO_GROUP_TAG.to_string());
+        let (mut a, mut b) = (expected.clone(), found.clone());
+        a.sort();
+        b.sort();
+        if a != b {
+            found.sort();
+            expected.sort();
+            return Err(ContractError::SelectorOptionsMismatch {
+                selector: SELECTOR_GROUP_TAG.to_string(),
+                expected,
+                found,
+            });
+        }
+
+        // (D) selecting an endpoint must actually change what is routed.
+        let final_tag = config
+            .get("route")
+            .and_then(|r| r.get("final"))
+            .and_then(|f| f.as_str())
+            .unwrap_or_default();
+        if final_tag != SELECTOR_GROUP_TAG {
+            return Err(ContractError::RouteFinalMismatch {
+                selector: SELECTOR_GROUP_TAG.to_string(),
+                found: final_tag.to_string(),
+            });
         }
         Ok(())
     }
@@ -745,13 +1147,13 @@ mod tests {
     use super::*;
 
     pub(crate) fn reality_endpoint() -> Endpoint {
-        Endpoint {
-            id: "reality-1".into(),
-            tag: "Reality".into(),
-            host: "vpn.example.com".into(),
-            port: 443,
-            server_name: "www.example-decoy.com".into(),
-            params: TransportParams::VlessReality {
+        Endpoint::new(
+            "reality-1",
+            "Reality",
+            "vpn.example.com",
+            443,
+            "www.example-decoy.com",
+            TransportParams::VlessReality {
                 uuid: "11111111-1111-4111-8111-111111111111".into(),
                 flow: Some(VLESS_FLOW_VISION.into()),
                 reality: RealityParams {
@@ -760,21 +1162,21 @@ mod tests {
                     fingerprint: "chrome".into(),
                 },
             },
-        }
+        )
     }
 
     pub(crate) fn hysteria2_endpoint() -> Endpoint {
-        Endpoint {
-            id: "hysteria2-1".into(),
-            tag: "Hysteria2".into(),
-            host: "vpn.example.com".into(),
-            port: 443,
-            server_name: "vpn.example.com".into(),
-            params: TransportParams::Hysteria2 {
+        Endpoint::new(
+            "hysteria2-1",
+            "Hysteria2",
+            "vpn.example.com",
+            443,
+            "vpn.example.com",
+            TransportParams::Hysteria2 {
                 password: "fake-hysteria2-password".into(),
                 obfs: None,
             },
-        }
+        )
     }
 
     fn doc(endpoints: Vec<Endpoint>) -> ProvisioningDocument {
