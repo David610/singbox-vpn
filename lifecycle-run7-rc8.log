@@ -1,0 +1,157 @@
+singbox-vpn destructive lifecycle acceptance gate
+target: root@157.173.27.46
+acceptance scope: PRODUCTION RELEASE v1.0.0-rc.8
+THIS WILL WIPE singbox-vpn STATE ON THE TARGET HOST. 5s to Ctrl-C...
+
+=== 0. connectivity + OS baseline ===
+[PASS] SSH reachable                                          
+[PASS] AlmaLinux 9 confirmed                                  
+[PASS] x86_64 arch confirmed                                  
+
+=== 0a. existing singbox-vpn installation guard ===
+[PASS] no existing singbox-vpn installation detected on target — safe to provision fresh
+
+=== 0b. bootstrap prerequisites (bash, curl, tar) ===
+[PASS] bootstrap prerequisites present (bash, curl, tar)      
+
+=== 1. SSH baseline (before any install) ===
+[PASS] SSH baseline captured (port 22)                        
+
+=== 1b. host baseline (sanitized, no secrets) ===
+[PASS] host baseline captured                                 
+
+=== 2. clean install ===
+[bootstrap] singbox-vpn bootstrap installer starting (repo=David610/singbox-vpn)
+[bootstrap] using pinned version v1.0.0-rc.8 (explicitly requested)
+[bootstrap] downloading singbox-vpn v1.0.0-rc.8 release source archive + checksum manifest...
+singbox-vpn-src.tar.gz: OK
+[bootstrap] source archive checksum verified against release SHA256SUMS.
+[bootstrap] downloading pinned cosign v3.1.3 (amd64) to verify release attestations...
+Verified OK
+[bootstrap] artifact attestation verified for repository David610/singbox-vpn.
+[bootstrap] extracting...
+
+[bootstrap] handing off to deploy/almalinux/install.sh (repo checked out at /tmp/singbox-vpn-install.2YuuNtLJ/singbox-vpn-src)
+
+[install] === [1/18] preflight ===
+[install] acquired installer lock (/run/lock/singbox-vpn-installer.lock) — no other install.sh/update.sh can run concurrently.
+[install] detected OS: AlmaLinux 9.8 (Olive Jaguar) (family=rhel, implementation_coverage=tested)
+[install] detected architecture: amd64 (x86_64)
+[install] disk space OK: 29266MiB free on /
+[install] memory OK: 1705MiB total
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+[install] ERROR: no outbound internet connectivity (failed to reach https://github.com after retries). singbox-vpn needs to download sing-box/binaries during install.
+[install] Useful diagnostics:
+  journalctl -u sing-box -u vpn-subscription --no-pager -n 100
+  vpn doctor
+[install] ERROR: installation failed: stage=preflight function=preflight_check_connectivity line=105 operation=stage-command exit=1 (command text suppressed to protect secrets).
+[bootstrap] install failed (exit 1). Temporary files cleaned up. See errors above.
+[bootstrap] For diagnostics after a partial install: vpn doctor  /  journalctl -u sing-box -u vpn-subscription --no-pager -n 100
+[FAIL][required] install.sh (clean)                            
+
+=== 3. SSH after install (new connection, port 22) ===
+[PASS] SSH still active post-install                          
+
+=== 4-5. acceptance/reboot checks ===
+[BLOCKED] acceptance and reboot checks                        (clean install never established a working baseline)
+
+=== 6. repair / idempotent re-run ===
+[bootstrap] singbox-vpn bootstrap installer starting (repo=David610/singbox-vpn)
+[bootstrap] using pinned version v1.0.0-rc.8 (explicitly requested)
+[bootstrap] downloading singbox-vpn v1.0.0-rc.8 release source archive + checksum manifest...
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+[bootstrap] ERROR: could not download release source archive 'singbox-vpn-src.tar.gz' for v1.0.0-rc.8 from David610/singbox-vpn. Check that this release exists and was published by .github/workflows/release.yml (which includes this asset).
+[bootstrap] install failed (exit 1). Temporary files cleaned up. See errors above.
+[bootstrap] For diagnostics after a partial install: vpn doctor  /  journalctl -u sing-box -u vpn-subscription --no-pager -n 100
+[FAIL][required] install.sh (idempotent re-run) + SSH reconnect 
+
+=== 7. failed/interrupted install cleanup (scratch scenario; ends with singbox-vpn fully removed) ===
+[BLOCKED] interrupted-install cleanup scenario                (no working installation to exercise as a repair)
+
+=== 8. reinstall after interrupted-install cleanup (back to a working baseline for the rest of this run) ===
+[bootstrap] singbox-vpn bootstrap installer starting (repo=David610/singbox-vpn)
+[bootstrap] using pinned version v1.0.0-rc.8 (explicitly requested)
+[bootstrap] downloading singbox-vpn v1.0.0-rc.8 release source archive + checksum manifest...
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+curl: (7) Failed to connect to github.com port 443: Connection refused
+[bootstrap] ERROR: could not download release source archive 'singbox-vpn-src.tar.gz' for v1.0.0-rc.8 from David610/singbox-vpn. Check that this release exists and was published by .github/workflows/release.yml (which includes this asset).
+[bootstrap] install failed (exit 1). Temporary files cleaned up. See errors above.
+[bootstrap] For diagnostics after a partial install: vpn doctor  /  journalctl -u sing-box -u vpn-subscription --no-pager -n 100
+[FAIL][required] install.sh (baseline repair/retry) + SSH reconnect 
+
+=== 9-18. runtime/protocol/user/update/backup/renewal checks ===
+[BLOCKED] stages 9-18                                         (stage 8 did not establish a working baseline; dependent failures are intentionally not counted as separate bugs)
+
+=== 19. uninstall completely (offline singbox-vpn-uninstall) ===
+[PASS] target already clean (no installed uninstaller needed) 
+
+=== 20. SSH after uninstall (new connection, port 22) ===
+[PASS] SSH still active post-uninstall                        
+
+=== 21. reinstall from the normal one-command production path ===
+[BLOCKED] reinstall after uninstall                           (no reusable certificate snapshot; refusing another production ACME issuance)
+
+=== 22-24. backup restore/state/protocol checks ===
+[BLOCKED] stages 22-24                                        (requires both a successful backup and stage-21 reinstall; dependent failures are not counted separately)
+
+=== 25. final uninstall (offline singbox-vpn-uninstall) ===
+[PASS] target already clean at final uninstall                
+
+=== 26. SSH after final uninstall (new connection, port 22) ===
+[PASS] SSH still active post-uninstall                        
+
+=== 27. final uninstall residue audit (vs. host baseline from stage 1b) — singbox-vpn-owned service/config/state/firewall/sysctl residue ===
+[FAIL][required] new singbox-vpn-owned residue introduced beyond pre-install host baseline ( locks(baseline=0,after=1) | full baseline: opt_singbox-vpn=0
+etc_vpn=0
+var_lib_singbox-vpn=0
+user_singbox=0
+user_vpnsub=0
+unit_singbox=0
+unit_vpnsub=0
+nginx_conf=0
+certbot_hook=0
+listeners=0
+locks=0 | full after: opt_singbox-vpn=0
+etc_vpn=0
+var_lib_singbox-vpn=0
+user_singbox=0
+user_vpnsub=0
+unit_singbox=0
+unit_vpnsub=0
+nginx_conf=0
+certbot_hook=0
+listeners=0
+locks=1)
+
+=== manual-only / out-of-scope gates (cannot be automated here — UNVERIFIED, not PASS) ===
+[UNVERIFIED] public/internet reachability from outside the target's network (no independent external controller in this harness)
+[UNVERIFIED] real Hiddify iOS/Android/MagicOS import + connect + sustained traffic (client/device property — out of scope for this host lifecycle gate)
+[UNVERIFIED] real GitHub release A->B update transition        (no --update-to-version given)
+[UNVERIFIED] reboot-triggered client reconnect from a real device (Hiddify/other) after a server-side reboot (requires a second physical client; server recovery is tested above)
+
+=== summary ===
+failing stages: 4
+blocked dependent stages/groups: 5
+unverified items: 4
+NOTE: this run has UNVERIFIED items above — do not treat PASS below as full v1.0 release readiness.
+LIFECYCLE GATE: FAIL

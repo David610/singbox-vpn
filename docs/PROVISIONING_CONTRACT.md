@@ -1,14 +1,18 @@
 # Provisioning contract (schema_version 1)
 
 The versioned, first-party contract between this server (`singbox-vpn`)
-and its primary client, **`singbox-client`**
-(<https://github.com/David610/singbox-client>).
+and its primary client, **Tamara**
+(<https://github.com/David610/tamara>).
 
 Authoritative definition: the Rust model in
 `crates/provisioning-contract/src/lib.rs`. This document explains it;
 where the two disagree, the code wins and this document is the bug.
 Published examples live in
-[`fixtures/singbox-client-contract/`](../fixtures/singbox-client-contract/README.md).
+[`fixtures/singbox-client-contract/`](../fixtures/singbox-client-contract/README.md)
+— a directory name kept from when `singbox-client` was the intended
+primary client. It is deliberately **not** renamed: the name is
+historical, but renaming it would touch every fixture consumer for no
+runtime or test-architecture benefit.
 
 ## Why this exists
 
@@ -23,8 +27,16 @@ explicit and gives them one owner.
 
 | Tier | Client | What it consumes |
 |---|---|---|
-| **PRIMARY, first-party** | `singbox-client` | `GET /v1/provision/{token}` — the contract described here. |
+| **PRIMARY, first-party** | **Tamara** | `GET /v1/provision/{token}` — the contract described here, including the embedded `singbox_config`. |
 | **FALLBACK, third-party** | Hiddify, v2rayNG, NekoBox, raw sing-box | The legacy `GET /sub/{token}` routes: `?format=hiddify`/`?format=uri` share links, or `?format=singbox` native sing-box JSON. |
+
+Tamara consumes this contract by parsing the **envelope only** — endpoint
+ids, tags, hosts, ports, failure domains and operator labels — and
+handing the embedded `singbox_config` to its pinned Hiddify Core
+verbatim. It deliberately does not reimplement VLESS/REALITY/Hysteria2
+parsing in Dart; the pinned Core/ray2sing remains authoritative for
+protocol syntax. That constraint is why the config is embedded rather
+than described field by field.
 
 Both tiers are served from the same endpoint model, so they can never
 disagree about a user's credentials. What differs is representation, and
@@ -34,27 +46,23 @@ what has actually been verified on a device, versus what is only a
 documented assumption. Nothing in this document is verified network
 behaviour; contract tests prove document shape and nothing more.
 
-**Verified against `singbox-client` main as of `d04a8b4`: this client
-does not currently parse `/v1/provision/{token}`.** Its subscription
-importer (`lib/app/utils/auto_conf_utils.dart`) fetches a URL and parses
-it as a raw sing-box config (`{"outbounds": [...]}`); nothing in the
-client source references `schema_version`, `capabilities`, `endpoints`,
-or any field of this contract. Handing a `/v1/provision/{token}` URL to
-this client build will not import a working profile — it will fail to
-find an `outbounds` array. Until `singbox-client` ships a parser for
-this contract, the URL that actually works with it is the **FALLBACK**
-row above: `/sub/{token}?format=singbox` (native sing-box JSON, the
-format `render.rs` also emits, and the format proven against a real
-`sing-box` binary — real REALITY/Hysteria2 handshakes — by
-`crates/compat-config/tests/reality_interop.rs` and
-`hysteria2_interop.rs` in CI). Treat every claim in this document about
-`singbox-client` consuming schema v1 as a **specification for a client
-capability that does not exist in the checked build**, not as a
-description of current behavior. The fixtures under
-`fixtures/singbox-client-contract/` remain valid and worth keeping — a
-future client parser has something correct to build against — but do
-not point a real device at a `/v1/provision/{token}` URL expecting it to
-work today.
+### Historical note: `singbox-client` (superseded)
+
+`singbox-client` (<https://github.com/David610/singbox-client>) was this
+contract's originally-intended primary client and is **no longer part of
+this product**. It is not modified, extended, or treated as a source of
+truth for client behaviour. The note is kept rather than deleted because
+it explains why the FALLBACK routes exist and must keep working:
+
+> Verified against `singbox-client` main as of `d04a8b4`: that client
+> never parsed `/v1/provision/{token}`. Its subscription importer fetched
+> a URL and parsed it as a raw sing-box config (`{"outbounds": [...]}`),
+> referencing none of `schema_version`, `capabilities`, or `endpoints`.
+> The URL that worked with it was `/sub/{token}?format=singbox`.
+
+Those legacy routes remain fully supported for third-party clients (see
+**Backward compatibility** below). Nothing about them changed when
+Tamara became the primary client.
 
 ## The API surface
 
@@ -113,10 +121,45 @@ enumeration).
       "transport": "hysteria2",
       "password": "fake-hysteria2-password-not-a-real-secret",
       "obfs": { "type": "salamander", "password": "fake-salamander-obfs-password" }
+    },
+    {
+      "id": "eu2-reality",
+      "tag": "Europe 2",
+      "host": "vpn2.example.net",
+      "port": 8443,
+      "server_name": "www.example-decoy-two.org",
+      "transport": "vless-reality",
+      "uuid": "00000000-0000-4000-8000-000000000002",
+      "flow": "xtls-rprx-vision",
+      "reality": { "public_key": "BAKE...bake", "short_id": "9f8e7d6c", "fingerprint": "chrome" },
+      "failure_domain": "eu2",
+      "region": "nl",
+      "provider": "provider-b",
+      "path": "direct"
     }
-  ]
+  ],
+  "singbox_config": {
+    "outbounds": [
+      { "type": "vless", "tag": "Reality", "server": "vpn.example.com", "...": "..." },
+      { "type": "hysteria2", "tag": "Hysteria2", "server": "vpn.example.com", "...": "..." },
+      { "type": "vless", "tag": "Europe 2", "server": "vpn2.example.net", "...": "..." },
+      { "type": "urltest", "tag": "auto", "outbounds": ["Reality", "Hysteria2", "Europe 2"] },
+      { "type": "selector", "tag": "select",
+        "outbounds": ["Reality", "Hysteria2", "Europe 2", "auto"], "default": "Reality" },
+      { "type": "direct", "tag": "direct" }
+    ],
+    "route": { "final": "select" }
+  }
 }
 ```
+
+The third endpoint above is an operator-declared **peer** on a second,
+independently-run server: different host, different key, different
+per-user credential, and its own `failure_domain`. The first two carry no
+`failure_domain` because they share this deployment's `public_host` and
+the client derives it. The complete, un-elided form of this document is
+pinned as
+[`fixtures/singbox-client-contract/10-peer-endpoint-with-embedded-config.json`](../fixtures/singbox-client-contract/10-peer-endpoint-with-embedded-config.json).
 
 * `capabilities` — the transports this deployment can serve **right
   now**, derived from real configuration. A transport that is not
@@ -135,13 +178,16 @@ enumeration).
   is present only when Salamander obfuscation is configured.
 * `endpoints[].host`/`port`/credentials are **per-endpoint**, not
   deployment-global — nothing in the schema requires every endpoint to
-  share a host. This server currently only ever emits endpoints on its
-  own host (`standard_endpoints`, one VPS — see
-  `docs/SUPPORTED_PRODUCT.md`), but the format itself already supports a
-  document describing two independently-hosted, independently-keyed
-  endpoints; see `fixtures/singbox-client-contract/09-two-independent-endpoints.json`
-  and `docs/ADR/0009-declarative-peer-endpoints.md` for what a future
-  operator-declared second endpoint would look like (not implemented).
+  share a host. Beyond its own two listeners (`standard_endpoints`, one
+  VPS — see `docs/SUPPORTED_PRODUCT.md`), this server now also emits
+  endpoints an operator declared via `[[peer_endpoints]]`, each with its
+  own host, key and per-user credential. See **Peer endpoints** below,
+  `docs/ADR/0009-declarative-peer-endpoints.md`, and fixtures `09` and
+  `10`. Peer support is implemented and tested against fixtures and
+  loopback only — no real second VPS exists to verify it against.
+* `singbox_config` — the Core-consumable config for exactly the endpoint
+  set above, rendered from the same model in the same request. See **The
+  additive `schema_version` 1 extension**.
 
 ## What the contract never contains
 
@@ -158,6 +204,159 @@ cannot reintroduce one silently:
 The last group is a boundary, not an oversight. The server has no way to
 observe or enforce any of it, so expressing an opinion about it would be
 a claim it cannot keep — see `docs/CLIENT_PROTOCOL_BEHAVIOR.md`.
+
+## The additive `schema_version` 1 extension
+
+`schema_version` remains **1**. There is no "v1.1": no such value exists
+on the wire, and naming one in prose would imply a version a client could
+negotiate. Everything below is optional, absent by default, and skipped
+during serialization when unset — a deployment that configures none of it
+emits a document byte-identical to what it emitted before these fields
+existed.
+
+### Optional endpoint metadata
+
+| Field | Meaning |
+|---|---|
+| `failure_domain` | Operator-declared shared-fate identifier. Endpoints with the same value are expected to fail together. |
+| `region`, `provider`, `asn` | Opaque operator labels. **The server never reads these for any decision** and performs no network or ASN lookup to populate them — they are exactly what the operator typed. |
+| `path` | `direct` today. A relay path is reserved and **not implemented**; an unrecognised value round-trips like any other unknown, so a future one does not break a v1 parser. |
+
+**When `failure_domain` is absent the client derives one from the
+normalised host.** That is correct for this deployment's own endpoints:
+REALITY and Hysteria2 share one `public_host`, and sharing a host is
+exactly the shared-fate relationship that actually holds. The server does
+not derive it, because for a peer endpoint that would mean guessing about
+infrastructure it does not run.
+
+**Documented limitation:** two different DNS names resolving to the same
+machine cannot be known to share a failure domain from syntax alone, and
+will be treated as independent. Correcting that requires the operator to
+declare `failure_domain` explicitly. Neither side resolves names or
+queries ASNs to find out.
+
+### The embedded `singbox_config`
+
+An optional top-level field carrying exactly what
+`render_singbox_client_subscription` emits, rendered from the **same**
+endpoint list published in `endpoints`, in the same request.
+
+It exists because Tamara does not parse transports in Dart and needs the
+Core-consumable config as an opaque blob. Embedding it rather than
+letting the client fetch it separately is what makes the pair atomic: two
+requests can observe two different server states — a credential rotation
+between them — and yield a catalog that misdescribes the running config.
+One endpoint model produces one contract and one config, so they cannot
+drift.
+
+`validate` cross-checks the pair. These are the invariants a client
+relies on when it trusts a single fetch:
+
+* every endpoint's `tag` has a matching outbound `tag` in the config;
+* the `select` group's options are exactly the endpoint tags plus `auto`;
+* `route.final` names the `select` group, so selecting an endpoint
+  actually changes what is routed.
+
+`singbox_config` carries live per-user credentials and is **never
+logged**, at any level.
+
+### How the forbidden-content audit is applied
+
+The audit still covers the **whole** document, but with a different
+instrument for each half, because one instrument cannot judge both.
+
+The envelope keeps the existing case-insensitive substring scan. That is
+the right tool for a region that should contain no configuration at all.
+
+The embedded config gets a **structural** audit instead. The reason is
+concrete rather than theoretical: the rendered Hysteria2 outbound
+contains `"insecure": false` — a security-**positive** assertion that
+certificate verification is on — and a substring scan for `insecure`
+cannot tell that from the opt-out it exists to forbid. The structural
+audit:
+
+* **allowlists** top-level keys to exactly `outbounds` and `route`, so a
+  client-owned policy block nobody thought to forbid by name (`dns`,
+  `inbounds`, `tun`, `log`) is rejected because it was never permitted;
+* permits only `final` and `rules` inside `route`;
+* rejects any key matching `private_key`/`privatekey`/`private-key` at
+  any depth;
+* rejects `insecure` unless its value is exactly `false`;
+* rejects `-----BEGIN`, `.pem`, `/etc/`, `/var/`, `/opt/` in any string
+  value.
+
+This is a change of mechanism, not of guarantee. Positive allowlisting
+plus a value-aware walk catches strictly more than the substring scan
+could, because it understands position and value rather than the mere
+presence of a word.
+
+## Peer endpoints
+
+`[[peer_endpoints]]` in `deployment.toml` lets an operator who
+independently runs a second server declare it here, so users who have a
+credential for it receive it in their document. See
+`docs/ADR/0009-declarative-peer-endpoints.md`.
+
+This is **not** multi-node orchestration, fleet management, remote
+control, credential synchronisation, or health-checking another VPS.
+This server never contacts a peer. It repeats a declaration.
+
+```toml
+[[peer_endpoints]]
+id = "eu2-reality"          # must not collide with reality-1/hysteria2-1
+tag = "Europe 2"            # display name AND the Core outbound tag
+host = "vpn2.example.net"
+port = 8443
+transport = "vless_reality"
+server_name = "www.example-decoy-two.org"
+reality_public_key = "..."  # the peer's PUBLIC key only
+reality_short_id = "..."
+failure_domain = "eu2"      # required for a peer
+region = "nl"               # optional, opaque
+provider = "provider-b"     # optional, opaque
+```
+
+Rules with consequences:
+
+* **The peer's REALITY private key is refused, not ignored.** It has no
+  use here and never leaves the peer server. Any unknown key in the block
+  is refused too: a silently-dropped `reality_public_ky` typo would
+  produce an endpoint nothing can dial, and a silently-dropped private
+  key would leave the operator believing this server needed one.
+* **Credentials are per-user and per-endpoint** (ADR-0009 Option A), held
+  in `users.json` under `peer_credentials`. A shared per-peer credential
+  was rejected: it breaks per-user revocation — disabling a local user
+  would not revoke their peer access — and one device compromise would
+  expose a credential valid for every other user.
+* **This server never generates a peer credential.** It does not
+  administer the peer, so a value it invented could not authenticate
+  there. The operator pastes in what the peer's own `vpn-admin` issued,
+  via `vpn-admin user peer set <user> <endpoint-id> --uuid|--password`.
+* **A peer a user has no credential for is absent from their document**,
+  not present-and-broken — a client cannot distinguish a broken endpoint
+  from a network failure.
+* A credential is never coerced across transports; a `--password` given
+  for a `vless-reality` peer is refused rather than reshaped.
+
+`vpn-admin user peer list` prints endpoint ids and transports only.
+Reading a credential value back out is not an operation the CLI offers.
+
+**With zero peers configured nothing changes**: `users.json` and the
+served document stay byte-identical, `endpoints_fingerprint` does not
+move, and no schema version advances. No operator is pushed into
+multi-VPS mode.
+
+### What is implemented versus what is verified
+
+Peer endpoints are **implemented and tested against fixtures and loopback
+addresses only**. No peer endpoint in this repository has been dialled on
+a real second server, because no second VPS exists.
+
+**IMPLEMENTED is not REAL-VPS-VERIFIED.** Nothing here is evidence about
+behaviour on a real alternate provider, a different ASN, or a censored
+network. See `docs/DEVICE_ACCEPTANCE_TESTS.md` and
+`docs/RUSSIA_PRODUCTION_INVESTIGATION.md`, neither of which is upgraded
+by anything in this change.
 
 ## Validation
 
@@ -181,8 +380,12 @@ something a client can cause. Rules include:
 
 ## Versioning rules
 
-* **Adding** a `capabilities` value, or an **optional** endpoint field,
-  is a compatible change and does **not** bump `schema_version`. Clients
+* **Adding** a `capabilities` value, an **optional** endpoint field, or
+  an **optional top-level field**, is a compatible change and does
+  **not** bump `schema_version`. (The top-level case was made explicit
+  when `singbox_config` and the endpoint metadata fields were added; the
+  rule previously covered only endpoint fields and said nothing about
+  what an additive document-level field meant.) Clients
   must skip capability and `transport` values they do not recognise
   rather than rejecting the document — `Capability::Other` /
   `Transport::Other` exist for exactly this.

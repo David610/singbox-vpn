@@ -650,6 +650,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            peer_credentials: Default::default(),
         }
     }
 
@@ -1237,6 +1238,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            peer_credentials: Default::default(),
         };
         let state = make_state(vec![user]);
         let output = captured_log_output_for_request("trace", &format!("/sub/{token}"), state);
@@ -1341,7 +1343,43 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        let s = String::from_utf8(body.to_vec()).unwrap().to_lowercase();
+        let mut doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // The embedded Core config is audited STRUCTURALLY, not by
+        // substring, because it legitimately contains `"insecure": false`
+        // — an assertion that certificate verification is ON, which a
+        // scan for the word "insecure" cannot tell from the opt-out this
+        // list exists to forbid. Check it on its own terms first, then
+        // run the substring scan over the envelope.
+        let config = doc
+            .as_object_mut()
+            .unwrap()
+            .remove("singbox_config")
+            .expect("the served document embeds a Core config");
+        for outbound in config["outbounds"].as_array().unwrap() {
+            if let Some(insecure) = outbound.pointer("/tls/insecure") {
+                assert_eq!(
+                    insecure,
+                    &serde_json::json!(false),
+                    "a served outbound must never opt out of certificate verification"
+                );
+            }
+        }
+        for key in config.as_object().unwrap().keys() {
+            assert!(
+                matches!(key.as_str(), "outbounds" | "route"),
+                "embedded config carries client-owned policy key {key:?}"
+            );
+        }
+        let config_text = config.to_string().to_lowercase();
+        for forbidden in ["private_key", "-----begin", ".pem", "/etc/", "auto_route"] {
+            assert!(
+                !config_text.contains(forbidden),
+                "{forbidden} present in the embedded config"
+            );
+        }
+
+        let s = doc.to_string().to_lowercase();
         for forbidden in [
             "private_key",
             "-----begin",
@@ -1355,6 +1393,152 @@ mod tests {
             "kill_switch",
         ] {
             assert!(!s.contains(forbidden), "{forbidden} present in {s}");
+        }
+    }
+
+    /// A peer endpoint plus a user who has, or has not, been given a
+    /// credential for it. The peer is deliberately on a different host
+    /// with a different key, so "did the peer credential actually get
+    /// used" is observable rather than inferred.
+    fn state_with_peer(peer_uuid: Option<&str>) -> std::sync::Arc<AppState> {
+        let mut user = user_with_token("goodtoken", true);
+        if let Some(uuid) = peer_uuid {
+            user.peer_credentials.insert(
+                "eu2-reality".to_string(),
+                compat_config::model::PeerCredential::VlessReality {
+                    uuid: uuid.to_string(),
+                },
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        compat_config::store::save_users_atomic(&path, &[user]).unwrap();
+        std::mem::forget(dir);
+
+        let mut endpoints = standard_endpoints(
+            "vpn.example.com",
+            443,
+            443,
+            "FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake",
+            "0a1b2c3d",
+            "www.example-decoy.com",
+            None,
+        );
+        endpoints.push(compat_config::model::CompatEndpoint {
+            id: "eu2-reality".into(),
+            transport: compat_config::CompatTransport::VlessReality,
+            host: "vpn2.example.net".into(),
+            port: 8443,
+            server_name: Some("www.example-decoy-two.org".into()),
+            label: "Europe 2".into(),
+            public_parameters: compat_config::model::PublicParameters::Reality {
+                public_key_hex: "BAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEBAKEbake".into(),
+                short_id: "9f8e7d6c".into(),
+                fingerprint: "chrome".into(),
+            },
+            origin: compat_config::model::EndpointOrigin::Peer,
+            failure_domain: Some("eu2".into()),
+            region: Some("nl".into()),
+            provider: Some("provider-b".into()),
+            asn: None,
+            path: Some("direct".into()),
+        });
+        std::sync::Arc::new(AppState {
+            users_file: path,
+            endpoints,
+            rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+        })
+    }
+
+    #[tokio::test]
+    async fn v1_provision_omits_a_peer_the_user_has_no_credential_for() {
+        let resp = oneshot_with_addr(state_with_peer(None), "/v1/provision/goodtoken").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        let ids: Vec<&str> = v["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            !ids.contains(&"eu2-reality"),
+            "a peer the user cannot authenticate to must be absent, not served broken: {ids:?}"
+        );
+        assert_eq!(ids.len(), 2, "the local endpoints are unaffected");
+    }
+
+    #[tokio::test]
+    async fn v1_provision_serves_a_peer_with_its_own_credential_and_metadata() {
+        let peer_uuid = "22222222-2222-4222-8222-222222222222";
+        let resp =
+            oneshot_with_addr(state_with_peer(Some(peer_uuid)), "/v1/provision/goodtoken").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        let peer = v["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == "eu2-reality")
+            .expect("peer endpoint served");
+        assert_eq!(peer["host"], "vpn2.example.net");
+        assert_eq!(peer["port"], 8443);
+        assert_eq!(peer["failure_domain"], "eu2");
+        assert_eq!(peer["region"], "nl");
+        assert_eq!(peer["provider"], "provider-b");
+        assert_eq!(peer["path"], "direct");
+        assert_eq!(
+            peer["uuid"], peer_uuid,
+            "the peer must carry the peer credential, never this server's local one"
+        );
+        assert_ne!(
+            peer["uuid"], v["endpoints"][0]["uuid"],
+            "peer and local credentials must be independent"
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_provision_embeds_a_config_whose_selector_can_reach_the_peer() {
+        let resp = oneshot_with_addr(
+            state_with_peer(Some("22222222-2222-4222-8222-222222222222")),
+            "/v1/provision/goodtoken",
+        )
+        .await;
+        let v = body_json(resp).await;
+        let config = &v["singbox_config"];
+        let selector = config["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["tag"] == provisioning_contract::SELECTOR_GROUP_TAG)
+            .expect("selector group");
+        let options: Vec<&str> = selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o.as_str().unwrap())
+            .collect();
+        assert!(
+            options.contains(&"Europe 2"),
+            "failover depends on the client being able to select the peer inside Core: {options:?}"
+        );
+        assert_eq!(
+            config["route"]["final"],
+            provisioning_contract::SELECTOR_GROUP_TAG
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_provision_for_a_zero_peer_deployment_emits_no_new_endpoint_keys() {
+        // Constraint: no operator is forced into multi-VPS mode, and an
+        // existing deployment's document does not change shape.
+        let state = make_contract_state(vec![user_with_token("goodtoken", true)], None, true);
+        let resp = oneshot_with_addr(state, "/v1/provision/goodtoken").await;
+        let mut v = body_json(resp).await;
+        v.as_object_mut().unwrap().remove("singbox_config");
+        let text = v.to_string();
+        for absent in ["failure_domain", "region", "provider", "asn", "origin"] {
+            assert!(!text.contains(absent), "{absent} leaked: {text}");
         }
     }
 
