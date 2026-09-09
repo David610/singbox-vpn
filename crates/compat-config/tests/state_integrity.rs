@@ -13,6 +13,7 @@ fn user(id: &str) -> CompatUser {
         created_at: 1_700_000_000,
         expires_at: None,
         vision_off_experiment: false,
+        peer_credentials: Default::default(),
     }
 }
 

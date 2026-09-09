@@ -66,6 +66,7 @@ fn test_user() -> CompatUser {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        peer_credentials: Default::default(),
     }
 }
 
@@ -163,6 +164,7 @@ fn oversized_decoy_certificate_breaks_the_tunnel_even_though_reality_auth_succee
             short_id: short_id.to_string(),
             fingerprint: "chrome".into(),
         },
+        ..Default::default()
     };
     let mut client_cfg =
         render::render_singbox_client_subscription(&test_user(), std::slice::from_ref(&endpoint))

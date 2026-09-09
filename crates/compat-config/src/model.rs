@@ -8,6 +8,7 @@
 
 use crate::secret::SecretString;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +46,36 @@ pub enum PublicParameters {
     },
 }
 
+/// Where an endpoint physically lives, and therefore whose credential a
+/// user authenticates to it with.
+///
+/// [`EndpointOrigin::Local`] endpoints run on THIS deployment and use the
+/// user's own `vless_uuid`/`hysteria2_password`.
+/// [`EndpointOrigin::Peer`] endpoints run on a server this deployment does
+/// not control; the credential comes from
+/// [`CompatUser::peer_credentials`] and was created independently on that
+/// server by its own operator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointOrigin {
+    #[default]
+    Local,
+    Peer,
+}
+
+impl EndpointOrigin {
+    /// Used by `skip_serializing_if` so a local endpoint serializes
+    /// exactly as it did before this field existed. That matters beyond
+    /// tidiness: `render::endpoints_fingerprint` hashes this
+    /// serialization, and a running `vpn-subscription` compares its
+    /// fingerprint against one `vpn-admin` computes. Emitting a new key
+    /// for local endpoints would make every zero-peer deployment report a
+    /// spurious mismatch across the upgrade.
+    pub fn is_local(&self) -> bool {
+        matches!(self, EndpointOrigin::Local)
+    }
+}
+
 /// A single client-facing compatibility listener.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompatEndpoint {
@@ -55,6 +86,58 @@ pub struct CompatEndpoint {
     pub server_name: Option<String>,
     pub label: String,
     pub public_parameters: PublicParameters,
+
+    /// Local unless explicitly declared as a peer. Skipped when local so
+    /// a zero-peer deployment's serialization — and therefore its
+    /// endpoints fingerprint — is byte-identical to before.
+    #[serde(default, skip_serializing_if = "EndpointOrigin::is_local")]
+    pub origin: EndpointOrigin,
+
+    /// Operator-declared shared-fate identifier. Local endpoints leave
+    /// this absent: they all share this deployment's `public_host`, and
+    /// the client derives the domain from the host, which is exactly
+    /// right for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_domain: Option<String>,
+
+    /// Opaque operator labels, passed through to the client untouched.
+    /// Nothing on the server reads them, and no lookup ever populates
+    /// them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asn: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// A user's credential for ONE peer endpoint.
+///
+/// The value was created on the peer server by that server's own
+/// `vpn-admin` and typed in here by the operator who runs both. This
+/// server never generates one: it does not control the peer, so a
+/// generated credential could not authenticate there and would produce a
+/// confidently-wrong provisioning document.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum PeerCredential {
+    VlessReality { uuid: String },
+    Hysteria2 { password: SecretString },
+}
+
+impl PeerCredential {
+    /// The transport this credential is valid for. A credential is never
+    /// coerced across transports — a `--password` handed to a
+    /// `vless-reality` peer is an operator error, not something to
+    /// silently reshape.
+    pub fn transport(&self) -> CompatTransport {
+        match self {
+            PeerCredential::VlessReality { .. } => CompatTransport::VlessReality,
+            PeerCredential::Hysteria2 { .. } => CompatTransport::Hysteria2,
+        }
+    }
 }
 
 /// A compatibility (third-party-client) user. Persisted in
@@ -95,6 +178,25 @@ pub struct CompatUser {
     /// to what it was before this field existed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub vision_off_experiment: bool,
+
+    /// This user's credentials for peer endpoints, keyed by peer endpoint
+    /// id (ADR-0009 Option A: per-user, per-endpoint).
+    ///
+    /// Per-user rather than one shared credential per peer, because a
+    /// shared one breaks per-user revocation — disabling a local user
+    /// would not revoke their access to the peer — and widens blast
+    /// radius: one device compromise would expose a credential that works
+    /// for every other user.
+    ///
+    /// An endpoint absent from this map is one the user cannot
+    /// authenticate to, and is omitted from their provisioning document
+    /// entirely rather than served as a broken option.
+    ///
+    /// Skipped when empty, so `users.json` for a deployment that has no
+    /// peers stays byte-identical to what it was before this field
+    /// existed — the same treatment `vision_off_experiment` gets.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub peer_credentials: BTreeMap<String, PeerCredential>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -104,6 +206,15 @@ fn is_false(b: &bool) -> bool {
 impl CompatUser {
     pub fn is_active(&self, now_unix: i64) -> bool {
         self.enabled && self.expires_at.map(|exp| now_unix < exp).unwrap_or(true)
+    }
+
+    /// This user's credential for `endpoint_id`, if the operator has set
+    /// one. Deliberately returns `None` rather than falling back to the
+    /// user's LOCAL credential: the local `vless_uuid` is meaningless on a
+    /// server this deployment does not control, and offering it would
+    /// produce an endpoint that cannot authenticate.
+    pub fn peer_credential(&self, endpoint_id: &str) -> Option<&PeerCredential> {
+        self.peer_credentials.get(endpoint_id)
     }
 }
 
@@ -145,4 +256,37 @@ pub struct Hysteria2ServerParams {
     /// `Hysteria2Section::bandwidth` in `deployment.rs`.
     pub up_mbps: Option<u32>,
     pub down_mbps: Option<u32>,
+}
+
+impl Default for PublicParameters {
+    fn default() -> Self {
+        PublicParameters::Reality {
+            public_key_hex: String::new(),
+            short_id: String::new(),
+            fingerprint: String::new(),
+        }
+    }
+}
+
+/// Exists so construction sites can spell only the fields they care
+/// about (`..Default::default()`), which keeps adding an optional
+/// metadata field from rippling through every call site and test.
+impl Default for CompatEndpoint {
+    fn default() -> Self {
+        CompatEndpoint {
+            id: String::new(),
+            transport: CompatTransport::VlessReality,
+            host: String::new(),
+            port: 0,
+            server_name: None,
+            label: String::new(),
+            public_parameters: PublicParameters::default(),
+            origin: EndpointOrigin::Local,
+            failure_domain: None,
+            region: None,
+            provider: None,
+            asn: None,
+            path: None,
+        }
+    }
 }

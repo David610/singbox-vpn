@@ -63,6 +63,7 @@ fn user(vision_off: bool) -> CompatUser {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: vision_off,
+        peer_credentials: Default::default(),
     }
 }
 
@@ -112,8 +113,30 @@ fn normalize(mut value: serde_json::Value) -> serde_json::Value {
 }
 
 /// Compare a generated document against its fixture on parsed structure.
+///
+/// These fixtures document the CATALOG ENVELOPE, so `singbox_config` is
+/// stripped from both sides before comparing. Two reasons, neither of
+/// them "it was inconvenient":
+///
+///  * The embedded config is a rendering of the very endpoints listed
+///    beside it, and `ProvisioningDocument::validate` already proves the
+///    two agree (endpoint tags ↔ outbound tags, selector options, and
+///    `route.final`). Pinning a second, byte-level copy of it in six
+///    fixtures would re-test the renderer, which
+///    `render_singbox_client_subscription`'s own suite already covers,
+///    while making every fixture unreadable as contract documentation.
+///  * A client reading these fixtures is learning the catalog shape. The
+///    embedded config is deliberately opaque to it.
+///
+/// The complete document, `singbox_config` included, is pinned exactly
+/// once by `fixture_10_shows_the_complete_document_including_embedded_config`
+/// so the full wire form is still documented and still regression-tested.
 fn assert_matches_fixture(name: &str, generated: &serde_json::Value) {
-    let generated = &normalize(generated.clone());
+    let mut stripped = generated.clone();
+    if let Some(obj) = stripped.as_object_mut() {
+        obj.remove("singbox_config");
+    }
+    let generated = &normalize(stripped);
     let path = fixture_dir().join(name);
     if std::env::var_os("UPDATE_CONTRACT_FIXTURES").is_some() {
         std::fs::write(
@@ -232,13 +255,13 @@ fn fixture_diagnostic_vision_off_matches_generated_document() {
 /// server feature that would let an operator declare one, which this PR
 /// deliberately does not implement.
 fn two_independent_endpoints_document() -> contract::ProvisioningDocument {
-    let endpoint_a = Endpoint {
-        id: "eu1-reality".into(),
-        tag: "Europe 1".into(),
-        host: FAKE_HOST.into(),
-        port: 443,
-        server_name: FAKE_SNI.into(),
-        params: TransportParams::VlessReality {
+    let endpoint_a = Endpoint::new(
+        "eu1-reality",
+        "Europe 1",
+        FAKE_HOST,
+        443,
+        FAKE_SNI,
+        TransportParams::VlessReality {
             uuid: FAKE_UUID.into(),
             flow: Some(contract::VLESS_FLOW_VISION.into()),
             reality: RealityParams {
@@ -247,14 +270,14 @@ fn two_independent_endpoints_document() -> contract::ProvisioningDocument {
                 fingerprint: "chrome".into(),
             },
         },
-    };
-    let endpoint_b = Endpoint {
-        id: "eu2-reality".into(),
-        tag: "Europe 2".into(),
-        host: FAKE_HOST_B.into(),
-        port: 8443,
-        server_name: FAKE_SNI_B.into(),
-        params: TransportParams::VlessReality {
+    );
+    let endpoint_b = Endpoint::new(
+        "eu2-reality",
+        "Europe 2",
+        FAKE_HOST_B,
+        8443,
+        FAKE_SNI_B,
+        TransportParams::VlessReality {
             uuid: FAKE_UUID_B.into(),
             flow: Some(contract::VLESS_FLOW_VISION.into()),
             reality: RealityParams {
@@ -263,7 +286,7 @@ fn two_independent_endpoints_document() -> contract::ProvisioningDocument {
                 fingerprint: "chrome".into(),
             },
         },
-    };
+    );
     contract::ProvisioningDocument::new(
         ServerInfo::current(FIXTURE_SERVER_VERSION),
         vec![Capability::VlessReality],

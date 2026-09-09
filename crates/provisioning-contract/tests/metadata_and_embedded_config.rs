@@ -100,7 +100,11 @@ fn singbox_config_for(tags: &[&str]) -> serde_json::Value {
 
 #[test]
 fn a_document_with_no_new_fields_serializes_without_any_of_their_keys() {
-    let doc = document(vec![reality_endpoint("reality-1", "Reality", "vpn.example.com")]);
+    let doc = document(vec![reality_endpoint(
+        "reality-1",
+        "Reality",
+        "vpn.example.com",
+    )]);
     let json = doc.to_json().expect("valid");
     for absent in [
         "failure_domain",
@@ -126,8 +130,7 @@ fn schema_version_stays_one_with_the_new_fields_populated() {
     let doc = document(vec![ep]).with_singbox_config(singbox_config_for(&["Reality"]));
     doc.validate().expect("valid");
     assert_eq!(
-        doc.schema_version,
-        SCHEMA_VERSION,
+        doc.schema_version, SCHEMA_VERSION,
         "these are additive fields; the wire version must not change"
     );
 }
@@ -174,8 +177,12 @@ fn insecure_false_is_accepted_because_it_asserts_verification_is_on() {
     // scan for the word "insecure" cannot tell it from the opt-out.
     let mut cfg = singbox_config_for(&["Reality"]);
     cfg["outbounds"][0]["tls"]["insecure"] = json!(false);
-    let doc = document(vec![reality_endpoint("reality-1", "Reality", "vpn.example.com")])
-        .with_singbox_config(cfg);
+    let doc = document(vec![reality_endpoint(
+        "reality-1",
+        "Reality",
+        "vpn.example.com",
+    )])
+    .with_singbox_config(cfg);
     doc.validate()
         .expect("insecure:false must be accepted — it is the correct value");
 }
@@ -184,9 +191,15 @@ fn insecure_false_is_accepted_because_it_asserts_verification_is_on() {
 fn insecure_true_is_rejected_anywhere_in_the_embedded_config() {
     let mut cfg = singbox_config_for(&["Reality"]);
     cfg["outbounds"][0]["tls"]["insecure"] = json!(true);
-    let doc = document(vec![reality_endpoint("reality-1", "Reality", "vpn.example.com")])
-        .with_singbox_config(cfg);
-    let err = doc.validate().expect_err("certificate-verification opt-out");
+    let doc = document(vec![reality_endpoint(
+        "reality-1",
+        "Reality",
+        "vpn.example.com",
+    )])
+    .with_singbox_config(cfg);
+    let err = doc
+        .validate()
+        .expect_err("certificate-verification opt-out");
     assert!(
         matches!(err, ContractError::EmbeddedConfigInvalid { .. }),
         "got {err:?}"
@@ -197,8 +210,12 @@ fn insecure_true_is_rejected_anywhere_in_the_embedded_config() {
 fn a_private_key_anywhere_in_the_embedded_config_is_rejected() {
     let mut cfg = singbox_config_for(&["Reality"]);
     cfg["outbounds"][0]["tls"]["reality"]["private_key"] = json!("deadbeef");
-    let doc = document(vec![reality_endpoint("reality-1", "Reality", "vpn.example.com")])
-        .with_singbox_config(cfg);
+    let doc = document(vec![reality_endpoint(
+        "reality-1",
+        "Reality",
+        "vpn.example.com",
+    )])
+    .with_singbox_config(cfg);
     assert!(
         doc.validate().is_err(),
         "a peer or local private key must never reach a client"
@@ -210,8 +227,12 @@ fn client_owned_policy_blocks_are_rejected_by_the_top_level_allowlist() {
     for forbidden_key in ["dns", "inbounds", "experimental", "log"] {
         let mut cfg = singbox_config_for(&["Reality"]);
         cfg[forbidden_key] = json!({});
-        let doc = document(vec![reality_endpoint("reality-1", "Reality", "vpn.example.com")])
-            .with_singbox_config(cfg);
+        let doc = document(vec![reality_endpoint(
+            "reality-1",
+            "Reality",
+            "vpn.example.com",
+        )])
+        .with_singbox_config(cfg);
         let err = doc
             .validate()
             .unwrap_err_or_else_message(&format!("{forbidden_key} must be rejected"));
@@ -226,8 +247,12 @@ fn client_owned_policy_blocks_are_rejected_by_the_top_level_allowlist() {
 fn a_server_filesystem_path_in_the_embedded_config_is_rejected() {
     let mut cfg = singbox_config_for(&["Reality"]);
     cfg["outbounds"][0]["tls"]["certificate_path"] = json!("/etc/vpn/cert.pem");
-    let doc = document(vec![reality_endpoint("reality-1", "Reality", "vpn.example.com")])
-        .with_singbox_config(cfg);
+    let doc = document(vec![reality_endpoint(
+        "reality-1",
+        "Reality",
+        "vpn.example.com",
+    )])
+    .with_singbox_config(cfg);
     assert!(doc.validate().is_err());
 }
 
@@ -239,7 +264,10 @@ fn the_envelope_substring_audit_still_rejects_forbidden_content_outside_the_conf
     ep.region = Some("/etc/secret".into());
     let doc = document(vec![ep]);
     let err = doc.validate().expect_err("envelope audit still applies");
-    assert!(matches!(err, ContractError::ForbiddenContent { .. }), "got {err:?}");
+    assert!(
+        matches!(err, ContractError::ForbiddenContent { .. }),
+        "got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -266,8 +294,12 @@ fn the_selector_must_list_exactly_the_endpoint_tags_plus_auto() {
     let mut cfg = singbox_config_for(&["Europe 1"]);
     // Selector advertises a tag that is not an endpoint in the catalog.
     cfg["outbounds"][2]["outbounds"] = json!(["Europe 1", "Ghost", "auto"]);
-    let doc = document(vec![reality_endpoint("reality-1", "Europe 1", "vpn.example.com")])
-        .with_singbox_config(cfg);
+    let doc = document(vec![reality_endpoint(
+        "reality-1",
+        "Europe 1",
+        "vpn.example.com",
+    )])
+    .with_singbox_config(cfg);
     let err = doc.validate().expect_err("selector/catalog disagreement");
     assert!(
         matches!(err, ContractError::SelectorOptionsMismatch { .. }),
@@ -297,9 +329,15 @@ fn a_selector_missing_an_endpoint_tag_is_rejected() {
 fn route_final_must_name_the_selector_group() {
     let mut cfg = singbox_config_for(&["Europe 1"]);
     cfg["route"]["final"] = json!("direct");
-    let doc = document(vec![reality_endpoint("reality-1", "Europe 1", "vpn.example.com")])
-        .with_singbox_config(cfg);
-    let err = doc.validate().expect_err("route.final must reach the selector");
+    let doc = document(vec![reality_endpoint(
+        "reality-1",
+        "Europe 1",
+        "vpn.example.com",
+    )])
+    .with_singbox_config(cfg);
+    let err = doc
+        .validate()
+        .expect_err("route.final must reach the selector");
     assert!(
         matches!(err, ContractError::RouteFinalMismatch { .. }),
         "got {err:?}"

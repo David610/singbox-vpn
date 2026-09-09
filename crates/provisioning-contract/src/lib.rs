@@ -845,11 +845,10 @@ impl ProvisioningDocument {
     /// catches strictly more than a substring scan could, because it
     /// understands position and value rather than mere presence.
     fn audit_serialized(&self) -> Result<(), ContractError> {
-        let mut envelope =
-            serde_json::to_value(self).map_err(|e| ContractError::Invalid {
-                field: "document",
-                reason: format!("could not be serialized: {e}"),
-            })?;
+        let mut envelope = serde_json::to_value(self).map_err(|e| ContractError::Invalid {
+            field: "document",
+            reason: format!("could not be serialized: {e}"),
+        })?;
         if let Some(obj) = envelope.as_object_mut() {
             obj.remove("singbox_config");
         }
