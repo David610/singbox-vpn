@@ -2481,6 +2481,44 @@ fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     cmd_user_rotate_token(cfg, id, true)
 }
 
+/// Every endpoint `vpn-subscription` serves: this deployment's own two
+/// listeners, plus operator-declared peers.
+///
+/// This exists because `AppState.endpoints` in the running service is
+/// built exactly this way, and anything reproducing that set here has to
+/// match it or produce a false mismatch. Peers are appended after the
+/// local endpoints, in declaration order, which is the order the service
+/// uses.
+///
+/// NOTE: not every caller wants this. The L4 REALITY render-coherence
+/// check deliberately uses `standard_endpoints` alone, because it
+/// compares a rendered client short_id against the short_ids THIS
+/// server's inbound accepts — a peer's short_id is not one of them, and
+/// including peers there would report a real coherence check as broken.
+fn served_endpoints(
+    cfg: &DeploymentConfig,
+    reality: &compat_config::model::RealityServerParams,
+    hysteria_obfs_password: Option<&str>,
+) -> Result<Vec<compat_config::model::CompatEndpoint>> {
+    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
+    let mut endpoints = compat_config::render::standard_endpoints(
+        &cfg.public_host,
+        cfg.reality.listen_port,
+        cfg.hysteria2.listen_port,
+        &reality.public_key_hex,
+        &short_id,
+        &reality.handshake_server,
+        hysteria_obfs_password,
+    );
+    for peer in &cfg.peer_endpoints {
+        endpoints.push(
+            peer.to_compat_endpoint()
+                .with_context(|| format!("invalid [[peer_endpoints]] entry {:?}", peer.id))?,
+        );
+    }
+    Ok(endpoints)
+}
+
 /// `vpn-admin user links ID`: out-of-band recovery path (see the
 /// `UserCommands::Links` doc comment). Builds the same
 /// `standard_endpoints()` the subscription service and doctor L4 check
@@ -2501,20 +2539,31 @@ fn cmd_user_links(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
 
     let reality = load_reality_params(cfg)?;
     let hysteria = load_hysteria_params(cfg);
-    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
-    let endpoints = compat_config::render::standard_endpoints(
-        &cfg.public_host,
-        cfg.reality.listen_port,
-        cfg.hysteria2.listen_port,
-        &reality.public_key_hex,
-        &short_id,
-        &reality.handshake_server,
+    // Peers included: this is the recovery path used when the
+    // subscription endpoint itself is unreachable, which is exactly when
+    // an independently-hosted endpoint is most worth handing over.
+    let endpoints = served_endpoints(
+        cfg,
+        &reality,
         hysteria.obfs_password.as_ref().map(|s| s.expose()),
-    );
+    )?;
 
     println!("Out-of-band connection URIs for {id} (subscription service NOT required):");
     println!();
     for endpoint in &endpoints {
+        // A peer this user has no credential for is skipped rather than
+        // erroring out: it must not stop the LOCAL endpoints, which are
+        // the ones this recovery path exists to deliver.
+        if endpoint.origin == compat_config::model::EndpointOrigin::Peer
+            && user.peer_credential(&endpoint.id).is_none()
+        {
+            println!(
+                "{} (peer): skipped — no peer credential set for this user",
+                endpoint.label
+            );
+            println!();
+            continue;
+        }
         let uri = match endpoint.transport {
             compat_config::model::CompatTransport::VlessReality => {
                 compat_config::render::render_vless_reality_uri(user, endpoint)?
@@ -5343,6 +5392,11 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         peer_credentials: Default::default(),
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
+    // Deliberately LOCAL endpoints only (not `served_endpoints`): this
+    // check compares the rendered client short_id against the short_ids
+    // THIS server's REALITY inbound accepts. A peer's short_id is not one
+    // of them and never will be, so including peers here would report a
+    // correctly-configured deployment as incoherent.
     let endpoints = compat_config::render::standard_endpoints(
         &cfg.public_host,
         cfg.reality.listen_port,
@@ -5498,17 +5552,28 @@ fn check_l4_live_subscription_process_state(cfg: &DeploymentConfig, failures: &m
             return;
         }
     };
-    let short_id = reality.short_ids.first().cloned().unwrap_or_default();
     let hysteria = load_hysteria_params(cfg);
-    let expected_endpoints = compat_config::render::standard_endpoints(
-        &cfg.public_host,
-        cfg.reality.listen_port,
-        cfg.hysteria2.listen_port,
-        &reality.public_key_hex,
-        &short_id,
-        &reality.handshake_server,
+    // MUST include peer endpoints: the running service's own
+    // `AppState.endpoints` does, so computing this from the local
+    // listeners alone would report a fingerprint mismatch on every
+    // deployment that has a peer configured — a false positive for
+    // exactly the stale-in-memory-state incident this check exists to
+    // detect, which is worse than not checking at all.
+    let expected_endpoints = match served_endpoints(
+        cfg,
+        &reality,
         hysteria.obfs_password.as_ref().map(|s| s.expose()),
-    );
+    ) {
+        Ok(e) => e,
+        Err(e) => {
+            report_check(
+                CheckStatus::Warn,
+                "L4",
+                format!("skipping live subscription-process check: {e}"),
+            );
+            return;
+        }
+    };
     let expected_fingerprint = compat_config::render::endpoints_fingerprint(&expected_endpoints);
 
     let response = http_get_local_json(
