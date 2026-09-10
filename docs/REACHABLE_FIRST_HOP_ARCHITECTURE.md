@@ -47,9 +47,9 @@ Current v1 already gives us useful forward-compatible primitives:
 - Tamara treats `path` and `transport` as opaque labels rather than reimplementing protocol parsing;
 - the credential-bearing, Core-consumable `singbox_config` is rendered from the same endpoint set as the envelope.
 
-## 3. Verified Core feasibility
+## 3. Core feasibility and evidence boundary
 
-A local build experiment against the pinned Hiddify Core/sing-box stack established the architectural prerequisite for this phase: a sing-box outbound can use another outbound as its `detour`, and Hiddify Core's config builder preserved that chain.
+sing-box supports outbound chaining via `detour`, and the pinned Tamara/Hiddify surface exposes detour-related configuration. This makes Core-native chaining the preferred mechanism to test. This PR, however, does not contain a dedicated pinned-Core builder/interop fixture proving that the proposed relay -> exit chain survives Tamara's normal config-build path. Treat that preservation as **UNVERIFIED** until such a fixture is added and run.
 
 Conceptually:
 
@@ -63,7 +63,7 @@ client/Core
 
 The relay is therefore a first-hop outbound and the foreign exit remains the inner/ultimate VPN exit. A route such as `E1 via R1` can remain a concrete selectable tag. Phase 2 does **not** require another VPN engine.
 
-The feasibility experiment used a relay transport only to prove `detour` preservation. It is **not** evidence that that transport is suitable for a restricted real network.
+A future feasibility fixture may use a disposable relay transport to prove `detour` preservation. Even a passing local fixture would be evidence only for configuration/orchestration mechanics, **not** that the transport is suitable for a restricted real network.
 
 ## 4. Required properties of a viable first hop
 
@@ -130,7 +130,7 @@ Scores are architectural expectations, **not real-network evidence**.
 | B. TURN-style contracted relay | Only if TURN destination is permitted | yes | often yes | medium/high if operated/contracted | clear if self-operated; provider metadata otherwise | medium/high | needs a Core-compatible client/outbound integration | high | Secondary candidate |
 | C. Operator-controlled HTTPS/reverse-proxy ingress | Only if ingress destination is permitted | **strong** | limited unless explicitly supported | **high** | clear/controllable | medium | strong if represented by a supported outbound/forwarder | medium/high | Strong TCP-first candidate |
 | D. Unauthorized CDN/fronting/piggyback | Uncertain and deliberately fragile | varies | poor/varies | **low** | opaque third party | deceptively high over time | custom/provider-specific | **very high** | **Reject** |
-| E. Core-native `detour` chaining | Does not create reachability itself | depends on first hop | depends on first hop | n/a | preserves existing engine boundary | **low incremental** | **verified feasible locally** | inherits first hop | **Use as implementation mechanism** |
+| E. Core-native `detour` chaining | Does not create reachability itself | depends on first hop | depends on first hop | n/a | preserves existing engine boundary | **low incremental** | native sing-box mechanism; normal Hiddify-builder preservation **UNVERIFIED** | inherits first hop | **Preferred mechanism after dedicated fixture verification** |
 | F. Multiple independent ingress classes | Best chance if at least one class remains permitted | mixed | mixed | high when all are authorized | controllable | **high** | strong with route catalog | lower correlated risk | Post-MVP hardening |
 
 ## 7. Recommended MVP
@@ -155,7 +155,7 @@ Once one authorized first-hop class is proven, add a second independently operat
 ### Why this MVP
 
 - preserves Tamara -> Hiddify Core -> sing-box;
-- uses a Core capability already shown to preserve outbound chaining;
+- uses Core/sing-box's native outbound-chaining mechanism, subject to dedicated pinned-builder verification;
 - keeps credentials and protocol parsing out of Dart;
 - has a clear operator/security/abuse owner;
 - does not depend on exploiting unrelated infrastructure;
@@ -305,7 +305,7 @@ An Internet-reachable relay creates a real abuse surface even for a small truste
 
 ## 13. Operational model
 
-Phase-2 MVP remains operator-declared:
+The proposed Phase-2 MVP state would remain operator-declared. The sketch below is **design-only**, not the current `deployment.toml` / `users.json` schema:
 
 ```text
 deployment.toml
