@@ -599,7 +599,7 @@ pub struct ProvisioningDocument {
     /// drift.
     ///
     /// Audited structurally rather than by substring — see
-    /// [`ProvisioningDocument::audit_embedded_config`]. **Never logged:**
+    /// `ProvisioningDocument::audit_embedded_config`. **Never logged:**
     /// it carries live per-user credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub singbox_config: Option<serde_json::Value>,
