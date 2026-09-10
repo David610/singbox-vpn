@@ -22,6 +22,7 @@ use std::time::Instant;
 pub struct AppState {
     pub users_file: std::path::PathBuf,
     pub endpoints: Vec<CompatEndpoint>,
+    pub access_paths: Vec<contract::AccessPath>,
     pub rate_limiter: Mutex<RateLimiter>,
 }
 
@@ -526,10 +527,11 @@ async fn get_provision(
         "provisioning contract served"
     );
 
-    let doc = match compat_config::contract::provisioning_document_with_mode(
+    let doc = match compat_config::contract::provisioning_document_with_mode_and_access_paths(
         &user,
         &state.endpoints,
         diagnostic,
+        &state.access_paths,
     ) {
         Ok(doc) => doc,
         Err(e) => {
@@ -670,6 +672,7 @@ mod tests {
                 "www.google.com",
                 None,
             ),
+            access_paths: Vec::new(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }
@@ -1286,6 +1289,7 @@ mod tests {
         std::sync::Arc::new(AppState {
             users_file: path,
             endpoints,
+            access_paths: Vec::new(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }
@@ -1446,6 +1450,7 @@ mod tests {
         std::sync::Arc::new(AppState {
             users_file: path,
             endpoints,
+            access_paths: Vec::new(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }

@@ -193,9 +193,23 @@ async fn main() -> Result<()> {
         );
     }
 
+    let access_paths = cfg
+        .access_paths
+        .iter()
+        .map(|path| path.to_contract_access_path())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("invalid [[access_paths]] declaration: {e}"))?;
+    if !access_paths.is_empty() {
+        tracing::info!(
+            access_paths = access_paths.len(),
+            "serving non-secret operator-declared access-path metadata"
+        );
+    }
+
     let state = std::sync::Arc::new(AppState {
         users_file: cfg.users_file(),
         endpoints,
+        access_paths,
         // Sized for the WHOLE deployment, not for one client: behind nginx
         // every request appears to come from 127.0.0.1, so this is one
         // shared bucket (see `RateLimiter`'s doc comment). The previous

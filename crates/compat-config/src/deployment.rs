@@ -53,6 +53,12 @@ pub struct DeploymentConfig {
     #[serde(default = "default_singbox_binary")]
     pub singbox_binary: PathBuf,
 
+    /// Optional non-secret first-hop metadata advertised to first-party
+    /// clients. This is declarative only: it neither deploys nor contacts a
+    /// relay and it deliberately has no credential-bearing fields.
+    #[serde(default)]
+    pub access_paths: Vec<AccessPathSection>,
+
     /// Endpoints on OTHER, independently-operated servers that this
     /// deployment should also advertise (ADR-0009).
     ///
@@ -65,6 +71,112 @@ pub struct DeploymentConfig {
     /// `DEPLOYMENT_SCHEMA_VERSION` does not move.
     #[serde(default)]
     pub peer_endpoints: Vec<PeerEndpointSection>,
+}
+
+/// One `[[access_paths]]` entry. Metadata only — no credentials or raw
+/// proxy configuration are accepted here.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AccessPathSection {
+    pub id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub failure_domain: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, toml::Value>,
+}
+
+impl AccessPathSection {
+    fn validate(&self) -> Result<(), CompatError> {
+        if let Some(key) = self.extra.keys().find(|key| {
+            let key = key.to_ascii_lowercase();
+            [
+                "private",
+                "secret",
+                "password",
+                "token",
+                "credential",
+                "key",
+            ]
+            .iter()
+            .any(|needle| key.contains(needle))
+        }) {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: key {key:?} looks credential-bearing. Access-path                  metadata must never contain relay secrets or proxy configuration.",
+                self.id
+            )));
+        }
+        if let Some(key) = self.extra.keys().next() {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: unknown key {key:?}; unknown keys are refused rather                  than silently ignored",
+                self.id
+            )));
+        }
+        if self.id.trim().is_empty() {
+            return Err(CompatError::Parse("[[access_paths]] id is empty".into()));
+        }
+        if self.kind.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: kind is empty",
+                self.id
+            )));
+        }
+        for (name, value) in [
+            ("failure_domain", self.failure_domain.as_deref()),
+            ("region", self.region.as_deref()),
+            ("provider", self.provider.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: {name} is empty",
+                    self.id
+                )));
+            }
+        }
+        if self.capabilities.is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: capabilities is empty",
+                self.id
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for capability in &self.capabilities {
+            if capability.trim().is_empty() {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: capability is empty",
+                    self.id
+                )));
+            }
+            if !seen.insert(capability.as_str()) {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: duplicate capability {:?}",
+                    self.id, capability
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_contract_access_path(
+        &self,
+    ) -> Result<provisioning_contract::AccessPath, CompatError> {
+        self.validate()?;
+        Ok(provisioning_contract::AccessPath::new(
+            self.id.clone(),
+            provisioning_contract::AccessPathKind::from_wire(&self.kind),
+            self.capabilities.clone(),
+        )
+        .with_metadata(
+            self.failure_domain.clone(),
+            self.region.clone(),
+            self.provider.clone(),
+        ))
+    }
 }
 
 /// One `[[peer_endpoints]]` entry.
@@ -167,6 +279,12 @@ impl PeerEndpointSection {
             return Err(CompatError::Parse(format!(
                 "[[peer_endpoints]] {}: failure_domain is empty. A peer exists to fail \
                  independently; say which domain it belongs to.",
+                self.id
+            )));
+        }
+        if self.path.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: path is empty",
                 self.id
             )));
         }
@@ -390,6 +508,18 @@ impl DeploymentConfig {
                 max_supported: DEPLOYMENT_SCHEMA_VERSION,
             });
         }
+        let mut seen_access_path_ids: Vec<&str> = Vec::with_capacity(self.access_paths.len());
+        for path in &self.access_paths {
+            path.validate()?;
+            if seen_access_path_ids.contains(&path.id.as_str()) {
+                return Err(CompatError::Parse(format!(
+                    "duplicate [[access_paths]] id {:?}",
+                    path.id
+                )));
+            }
+            seen_access_path_ids.push(&path.id);
+        }
+
         let mut seen_peer_ids: Vec<&str> = Vec::with_capacity(self.peer_endpoints.len());
         for peer in &self.peer_endpoints {
             peer.validate()?;
@@ -408,6 +538,20 @@ impl DeploymentConfig {
                 )));
             }
             seen_peer_ids.push(&peer.id);
+
+            // Old schema-version-1 files were allowed to carry opaque path
+            // labels without an access_paths list. Preserve that. Once the
+            // operator opts into access_paths, though, every non-direct peer
+            // path must resolve to one of those declarations.
+            if !self.access_paths.is_empty()
+                && peer.path != "direct"
+                && !self.access_paths.iter().any(|path| path.id == peer.path)
+            {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: path {:?} has no matching [[access_paths]] declaration",
+                    peer.id, peer.path
+                )));
+            }
         }
 
         if self.hysteria2.up_mbps.is_some() != self.hysteria2.down_mbps.is_some() {

@@ -171,6 +171,18 @@ pub enum ContractError {
     #[error("duplicate endpoint id {id:?}")]
     DuplicateEndpointId { id: String },
 
+    #[error("duplicate access path id {id:?}")]
+    DuplicateAccessPathId { id: String },
+
+    #[error(
+        "endpoint {endpoint_id} references access path {path_id:?}, but no matching \
+         `access_paths` entry exists in this document"
+    )]
+    UnknownAccessPathReference {
+        endpoint_id: String,
+        path_id: String,
+    },
+
     #[error(
         "experimental capability {capability:?} appears in `capabilities` — diagnostic and \
          experimental capabilities belong in `experimental_capabilities` and must never take \
@@ -374,6 +386,131 @@ impl Serialize for PathType {
 impl<'de> Deserialize<'de> for PathType {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         Ok(PathType::from_wire(&String::deserialize(d)?))
+    }
+}
+
+/// What kind of first-hop path an endpoint uses.
+///
+/// Unknown values round-trip through `Other` so adding a future path class is
+/// still an additive schema-version-1 change. This is metadata only: protocol
+/// configuration and credentials remain inside the opaque Core config.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AccessPathKind {
+    Direct,
+    Relay,
+    Other(String),
+}
+
+impl AccessPathKind {
+    pub fn as_str(&self) -> &str {
+        match self {
+            AccessPathKind::Direct => "direct",
+            AccessPathKind::Relay => "relay",
+            AccessPathKind::Other(s) => s.as_str(),
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "direct" => AccessPathKind::Direct,
+            "relay" => AccessPathKind::Relay,
+            other => AccessPathKind::Other(other.to_string()),
+        }
+    }
+}
+
+impl Serialize for AccessPathKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AccessPathKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(AccessPathKind::from_wire(&String::deserialize(d)?))
+    }
+}
+
+/// Non-secret metadata describing a route's first hop.
+///
+/// Deliberately incapable of carrying a password, token, UUID, private key,
+/// proxy URI, or transport configuration. Those stay in the credential-bearing
+/// `singbox_config`; this object exists only for client-side shared-fate and
+/// capability reasoning.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessPath {
+    pub id: String,
+    pub kind: AccessPathKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+impl AccessPath {
+    pub fn new(id: impl Into<String>, kind: AccessPathKind, capabilities: Vec<String>) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            failure_domain: None,
+            region: None,
+            provider: None,
+            capabilities,
+        }
+    }
+
+    pub fn with_metadata(
+        mut self,
+        failure_domain: Option<String>,
+        region: Option<String>,
+        provider: Option<String>,
+    ) -> Self {
+        self.failure_domain = failure_domain;
+        self.region = region;
+        self.provider = provider;
+        self
+    }
+
+    fn validate(&self) -> Result<(), ContractError> {
+        non_empty("access_paths[].id", &self.id)?;
+        non_empty("access_paths[].kind", self.kind.as_str())?;
+        if self.capabilities.is_empty() {
+            return Err(ContractError::Invalid {
+                field: "access_paths[].capabilities",
+                reason: format!("access path {:?} declares no capabilities", self.id),
+            });
+        }
+        let mut seen = Vec::with_capacity(self.capabilities.len());
+        for capability in &self.capabilities {
+            non_empty("access_paths[].capabilities[]", capability)?;
+            if seen.contains(&capability.as_str()) {
+                return Err(ContractError::Invalid {
+                    field: "access_paths[].capabilities",
+                    reason: format!(
+                        "access path {:?} repeats capability {:?}",
+                        self.id, capability
+                    ),
+                });
+            }
+            seen.push(capability.as_str());
+        }
+        for (field, value) in [
+            (
+                "access_paths[].failure_domain",
+                self.failure_domain.as_deref(),
+            ),
+            ("access_paths[].region", self.region.as_deref()),
+            ("access_paths[].provider", self.provider.as_deref()),
+        ] {
+            if let Some(value) = value {
+                non_empty(field, value)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -581,6 +718,13 @@ pub struct ProvisioningDocument {
     /// normal production document.
     #[serde(default)]
     pub experimental_capabilities: Vec<ExperimentalCapability>,
+
+    /// Optional, non-secret first-hop metadata. Empty is omitted so a deployment
+    /// with only direct paths serializes exactly as it did before this additive
+    /// schema-version-1 extension.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access_paths: Vec<AccessPath>,
+
     pub endpoints: Vec<Endpoint>,
 
     /// The Core-consumable sing-box configuration for exactly the
@@ -729,6 +873,7 @@ impl ProvisioningDocument {
             server,
             capabilities,
             experimental_capabilities: Vec::new(),
+            access_paths: Vec::new(),
             endpoints,
             singbox_config: None,
         }
@@ -739,6 +884,12 @@ impl ProvisioningDocument {
         experimental: Vec<ExperimentalCapability>,
     ) -> Self {
         self.experimental_capabilities = experimental;
+        self
+    }
+
+    /// Attach non-secret first-hop metadata. Empty remains absent on the wire.
+    pub fn with_access_paths(mut self, access_paths: Vec<AccessPath>) -> Self {
+        self.access_paths = access_paths;
         self
     }
 
@@ -792,6 +943,17 @@ impl ProvisioningDocument {
             }
         }
 
+        let mut seen_path_ids: Vec<&str> = Vec::with_capacity(self.access_paths.len());
+        for path in &self.access_paths {
+            path.validate()?;
+            if seen_path_ids.contains(&path.id.as_str()) {
+                return Err(ContractError::DuplicateAccessPathId {
+                    id: path.id.clone(),
+                });
+            }
+            seen_path_ids.push(&path.id);
+        }
+
         let mut seen_ids: Vec<&str> = Vec::with_capacity(self.endpoints.len());
         for ep in &self.endpoints {
             ep.validate()?;
@@ -799,6 +961,22 @@ impl ProvisioningDocument {
                 return Err(ContractError::DuplicateEndpointId { id: ep.id.clone() });
             }
             seen_ids.push(&ep.id);
+
+            // Preserve the original v1 forward-compatibility guarantee: a
+            // document with no `access_paths` list may still carry an opaque
+            // future `path` value and an older/newer consumer can round-trip it.
+            // Once a document opts into the new list, however, a non-direct path
+            // is a reference and must resolve inside the same atomic document.
+            if !self.access_paths.is_empty() {
+                if let Some(PathType::Other(path_id)) = &ep.path {
+                    if !self.access_paths.iter().any(|path| path.id == *path_id) {
+                        return Err(ContractError::UnknownAccessPathReference {
+                            endpoint_id: ep.id.clone(),
+                            path_id: path_id.clone(),
+                        });
+                    }
+                }
+            }
 
             let cap = Capability::for_transport(&ep.transport());
             if !self.capabilities.contains(&cap) {

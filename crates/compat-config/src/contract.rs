@@ -239,6 +239,19 @@ pub fn provisioning_document_with_mode(
     endpoints: &[CompatEndpoint],
     mode: DiagnosticMode,
 ) -> Result<contract::ProvisioningDocument, CompatError> {
+    provisioning_document_with_mode_and_access_paths(user, endpoints, mode, &[])
+}
+
+/// As `provisioning_document_with_mode`, with additive non-secret first-hop
+/// metadata. The endpoint/config pair is still rendered atomically from the
+/// same endpoint set; access paths only describe how those concrete routes are
+/// reached and never carry credentials.
+pub fn provisioning_document_with_mode_and_access_paths(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    mode: DiagnosticMode,
+    access_paths: &[contract::AccessPath],
+) -> Result<contract::ProvisioningDocument, CompatError> {
     let mut contract_endpoints = Vec::with_capacity(endpoints.len());
     for ep in endpoints {
         if mode == DiagnosticMode::TcpOnly
@@ -312,6 +325,7 @@ pub fn provisioning_document_with_mode(
         contract_endpoints,
     )
     .with_experimental_capabilities(experimental)
+    .with_access_paths(access_paths.to_vec())
     .with_singbox_config(singbox_config);
     doc.validate()?;
     Ok(doc)
