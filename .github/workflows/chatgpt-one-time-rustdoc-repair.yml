@@ -1,0 +1,45 @@
+name: One-time rustdoc repair
+
+on:
+  push:
+    branches:
+      - chatgpt/phase2-reachable-first-hop-design
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: chatgpt/phase2-reachable-first-hop-design
+          fetch-depth: 0
+
+      - name: Repair private intra-doc link
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/compat-config/src/deployment.rs')
+          text = path.read_text()
+          old = '    /// actively refused — see [`PeerEndpointSection::validate`].\n'
+          new = '    /// actively refused — see `PeerEndpointSection::validate`.\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one private rustdoc link, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          rm -- .github/workflows/chatgpt-one-time-rustdoc-repair.yml
+
+      - name: Commit repair and remove one-time workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'ChatGPT repair bot'
+          git config user.email 'noreply@openai.com'
+          git add crates/compat-config/src/deployment.rs .github/workflows/chatgpt-one-time-rustdoc-repair.yml
+          git diff --cached --check
+          git commit -m 'fix: remove private rustdoc intra-doc link'
+          git push origin HEAD:chatgpt/phase2-reachable-first-hop-design
