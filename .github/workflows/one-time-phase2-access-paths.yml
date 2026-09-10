@@ -1,0 +1,832 @@
+name: One-time Phase 2 access paths
+
+on:
+  push:
+    branches:
+      - chatgpt/phase2-access-paths
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: chatgpt/phase2-access-paths
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Implement additive non-secret access path metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              s = p.read_text()
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one {label}, found {count}')
+              p.write_text(s.replace(old, new, 1))
+
+          # ------------------------------------------------------------------
+          # provisioning-contract: additive access_paths model + validation.
+          # ------------------------------------------------------------------
+          path = 'crates/provisioning-contract/src/lib.rs'
+
+          replace_once(path,
+          '''    #[error("duplicate endpoint id {id:?}")]
+    DuplicateEndpointId { id: String },
+
+''',
+          '''    #[error("duplicate endpoint id {id:?}")]
+    DuplicateEndpointId { id: String },
+
+    #[error("duplicate access path id {id:?}")]
+    DuplicateAccessPathId { id: String },
+
+    #[error(
+        "endpoint {endpoint_id} references access path {path_id:?}, but no matching \\
+         `access_paths` entry exists in this document"
+    )]
+    UnknownAccessPathReference { endpoint_id: String, path_id: String },
+
+''', 'access-path contract errors')
+
+          replace_once(path,
+          '''/// Public REALITY parameters. There is intentionally no field here that
+''',
+          '''/// What kind of first-hop path an endpoint uses.
+///
+/// Unknown values round-trip through `Other` so adding a future path class is
+/// still an additive schema-version-1 change. This is metadata only: protocol
+/// configuration and credentials remain inside the opaque Core config.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AccessPathKind {
+    Direct,
+    Relay,
+    Other(String),
+}
+
+impl AccessPathKind {
+    pub fn as_str(&self) -> &str {
+        match self {
+            AccessPathKind::Direct => "direct",
+            AccessPathKind::Relay => "relay",
+            AccessPathKind::Other(s) => s.as_str(),
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "direct" => AccessPathKind::Direct,
+            "relay" => AccessPathKind::Relay,
+            other => AccessPathKind::Other(other.to_string()),
+        }
+    }
+}
+
+impl Serialize for AccessPathKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AccessPathKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(AccessPathKind::from_wire(&String::deserialize(d)?))
+    }
+}
+
+/// Non-secret metadata describing a route's first hop.
+///
+/// Deliberately incapable of carrying a password, token, UUID, private key,
+/// proxy URI, or transport configuration. Those stay in the credential-bearing
+/// `singbox_config`; this object exists only for client-side shared-fate and
+/// capability reasoning.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessPath {
+    pub id: String,
+    pub kind: AccessPathKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+impl AccessPath {
+    pub fn new(
+        id: impl Into<String>,
+        kind: AccessPathKind,
+        capabilities: Vec<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            failure_domain: None,
+            region: None,
+            provider: None,
+            capabilities,
+        }
+    }
+
+    pub fn with_metadata(
+        mut self,
+        failure_domain: Option<String>,
+        region: Option<String>,
+        provider: Option<String>,
+    ) -> Self {
+        self.failure_domain = failure_domain;
+        self.region = region;
+        self.provider = provider;
+        self
+    }
+
+    fn validate(&self) -> Result<(), ContractError> {
+        non_empty("access_paths[].id", &self.id)?;
+        non_empty("access_paths[].kind", self.kind.as_str())?;
+        if self.capabilities.is_empty() {
+            return Err(ContractError::Invalid {
+                field: "access_paths[].capabilities",
+                reason: format!("access path {:?} declares no capabilities", self.id),
+            });
+        }
+        let mut seen = Vec::with_capacity(self.capabilities.len());
+        for capability in &self.capabilities {
+            non_empty("access_paths[].capabilities[]", capability)?;
+            if seen.contains(&capability.as_str()) {
+                return Err(ContractError::Invalid {
+                    field: "access_paths[].capabilities",
+                    reason: format!(
+                        "access path {:?} repeats capability {:?}",
+                        self.id, capability
+                    ),
+                });
+            }
+            seen.push(capability.as_str());
+        }
+        for (field, value) in [
+            ("access_paths[].failure_domain", self.failure_domain.as_deref()),
+            ("access_paths[].region", self.region.as_deref()),
+            ("access_paths[].provider", self.provider.as_deref()),
+        ] {
+            if let Some(value) = value {
+                non_empty(field, value)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Public REALITY parameters. There is intentionally no field here that
+''', 'access-path model insertion point')
+
+          replace_once(path,
+          '''    #[serde(default)]
+    pub experimental_capabilities: Vec<ExperimentalCapability>,
+    pub endpoints: Vec<Endpoint>,
+''',
+          '''    #[serde(default)]
+    pub experimental_capabilities: Vec<ExperimentalCapability>,
+
+    /// Optional, non-secret first-hop metadata. Empty is omitted so a deployment
+    /// with only direct paths serializes exactly as it did before this additive
+    /// schema-version-1 extension.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access_paths: Vec<AccessPath>,
+
+    pub endpoints: Vec<Endpoint>,
+''', 'document access_paths field')
+
+          replace_once(path,
+          '''            capabilities,
+            experimental_capabilities: Vec::new(),
+            endpoints,
+            singbox_config: None,
+''',
+          '''            capabilities,
+            experimental_capabilities: Vec::new(),
+            access_paths: Vec::new(),
+            endpoints,
+            singbox_config: None,
+''', 'document constructor access_paths default')
+
+          replace_once(path,
+          '''    /// Attach the Core-consumable config rendered from this document's
+''',
+          '''    /// Attach non-secret first-hop metadata. Empty remains absent on the wire.
+    pub fn with_access_paths(mut self, access_paths: Vec<AccessPath>) -> Self {
+        self.access_paths = access_paths;
+        self
+    }
+
+    /// Attach the Core-consumable config rendered from this document's
+''', 'with_access_paths builder')
+
+          replace_once(path,
+          '''        let mut seen_ids: Vec<&str> = Vec::with_capacity(self.endpoints.len());
+        for ep in &self.endpoints {
+''',
+          '''        let mut seen_path_ids: Vec<&str> = Vec::with_capacity(self.access_paths.len());
+        for path in &self.access_paths {
+            path.validate()?;
+            if seen_path_ids.contains(&path.id.as_str()) {
+                return Err(ContractError::DuplicateAccessPathId {
+                    id: path.id.clone(),
+                });
+            }
+            seen_path_ids.push(&path.id);
+        }
+
+        let mut seen_ids: Vec<&str> = Vec::with_capacity(self.endpoints.len());
+        for ep in &self.endpoints {
+''', 'access path validation loop')
+
+          replace_once(path,
+          '''            seen_ids.push(&ep.id);
+
+            let cap = Capability::for_transport(&ep.transport());
+''',
+          '''            seen_ids.push(&ep.id);
+
+            // Preserve the original v1 forward-compatibility guarantee: a
+            // document with no `access_paths` list may still carry an opaque
+            // future `path` value and an older/newer consumer can round-trip it.
+            // Once a document opts into the new list, however, a non-direct path
+            // is a reference and must resolve inside the same atomic document.
+            if !self.access_paths.is_empty() {
+                if let Some(PathType::Other(path_id)) = &ep.path {
+                    if !self.access_paths.iter().any(|path| path.id == *path_id) {
+                        return Err(ContractError::UnknownAccessPathReference {
+                            endpoint_id: ep.id.clone(),
+                            path_id: path_id.clone(),
+                        });
+                    }
+                }
+            }
+
+            let cap = Capability::for_transport(&ep.transport());
+''', 'endpoint access path cross-reference validation')
+
+          # ------------------------------------------------------------------
+          # compat-config deployment.toml: static operator metadata only.
+          # ------------------------------------------------------------------
+          path = 'crates/compat-config/src/deployment.rs'
+          replace_once(path,
+          '''    /// Endpoints on OTHER, independently-operated servers that this
+''',
+          '''    /// Optional non-secret first-hop metadata advertised to first-party
+    /// clients. This is declarative only: it neither deploys nor contacts a
+    /// relay and it deliberately has no credential-bearing fields.
+    #[serde(default)]
+    pub access_paths: Vec<AccessPathSection>,
+
+    /// Endpoints on OTHER, independently-operated servers that this
+''', 'deployment access_paths field')
+
+          replace_once(path,
+          '''/// One `[[peer_endpoints]]` entry.
+''',
+          '''/// One `[[access_paths]]` entry. Metadata only — no credentials or raw
+/// proxy configuration are accepted here.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AccessPathSection {
+    pub id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub failure_domain: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, toml::Value>,
+}
+
+impl AccessPathSection {
+    fn validate(&self) -> Result<(), CompatError> {
+        if let Some(key) = self.extra.keys().find(|key| {
+            let key = key.to_ascii_lowercase();
+            ["private", "secret", "password", "token", "credential", "key"]
+                .iter()
+                .any(|needle| key.contains(needle))
+        }) {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: key {key:?} looks credential-bearing. Access-path \
+                 metadata must never contain relay secrets or proxy configuration.",
+                self.id
+            )));
+        }
+        if let Some(key) = self.extra.keys().next() {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: unknown key {key:?}; unknown keys are refused rather \
+                 than silently ignored",
+                self.id
+            )));
+        }
+        if self.id.trim().is_empty() {
+            return Err(CompatError::Parse("[[access_paths]] id is empty".into()));
+        }
+        if self.kind.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: kind is empty",
+                self.id
+            )));
+        }
+        for (name, value) in [
+            ("failure_domain", self.failure_domain.as_deref()),
+            ("region", self.region.as_deref()),
+            ("provider", self.provider.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: {name} is empty",
+                    self.id
+                )));
+            }
+        }
+        if self.capabilities.is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: capabilities is empty",
+                self.id
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for capability in &self.capabilities {
+            if capability.trim().is_empty() {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: capability is empty",
+                    self.id
+                )));
+            }
+            if !seen.insert(capability.as_str()) {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: duplicate capability {:?}",
+                    self.id, capability
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_contract_access_path(
+        &self,
+    ) -> Result<provisioning_contract::AccessPath, CompatError> {
+        self.validate()?;
+        Ok(provisioning_contract::AccessPath::new(
+            self.id.clone(),
+            provisioning_contract::AccessPathKind::from_wire(&self.kind),
+            self.capabilities.clone(),
+        )
+        .with_metadata(
+            self.failure_domain.clone(),
+            self.region.clone(),
+            self.provider.clone(),
+        ))
+    }
+}
+
+/// One `[[peer_endpoints]]` entry.
+''', 'AccessPathSection insertion point')
+
+          replace_once(path,
+          '''        let mut seen_peer_ids: Vec<&str> = Vec::with_capacity(self.peer_endpoints.len());
+        for peer in &self.peer_endpoints {
+''',
+          '''        let mut seen_access_path_ids: Vec<&str> = Vec::with_capacity(self.access_paths.len());
+        for path in &self.access_paths {
+            path.validate()?;
+            if seen_access_path_ids.contains(&path.id.as_str()) {
+                return Err(CompatError::Parse(format!(
+                    "duplicate [[access_paths]] id {:?}",
+                    path.id
+                )));
+            }
+            seen_access_path_ids.push(&path.id);
+        }
+
+        let mut seen_peer_ids: Vec<&str> = Vec::with_capacity(self.peer_endpoints.len());
+        for peer in &self.peer_endpoints {
+''', 'deployment access path validation')
+
+          replace_once(path,
+          '''            seen_peer_ids.push(&peer.id);
+        }
+
+        if self.hysteria2.up_mbps.is_some() != self.hysteria2.down_mbps.is_some() {
+''',
+          '''            seen_peer_ids.push(&peer.id);
+
+            // Old schema-version-1 files were allowed to carry opaque path
+            // labels without an access_paths list. Preserve that. Once the
+            // operator opts into access_paths, though, every non-direct peer
+            // path must resolve to one of those declarations.
+            if !self.access_paths.is_empty()
+                && peer.path != "direct"
+                && !self.access_paths.iter().any(|path| path.id == peer.path)
+            {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: path {:?} has no matching [[access_paths]] declaration",
+                    peer.id, peer.path
+                )));
+            }
+        }
+
+        if self.hysteria2.up_mbps.is_some() != self.hysteria2.down_mbps.is_some() {
+''', 'deployment peer-to-path validation')
+
+          replace_once(path,
+          '''        if self.failure_domain.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: failure_domain is empty. A peer exists to fail \\
+                 independently; say which domain it belongs to.",
+                self.id
+            )));
+        }
+''',
+          '''        if self.failure_domain.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: failure_domain is empty. A peer exists to fail \\
+                 independently; say which domain it belongs to.",
+                self.id
+            )));
+        }
+        if self.path.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: path is empty",
+                self.id
+            )));
+        }
+''', 'peer path non-empty validation')
+
+          # ------------------------------------------------------------------
+          # compat contract assembly: old API remains source-compatible; new API
+          # carries path metadata when the runtime supplies it.
+          # ------------------------------------------------------------------
+          path = 'crates/compat-config/src/contract.rs'
+          replace_once(path,
+          '''pub fn provisioning_document_with_mode(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    mode: DiagnosticMode,
+) -> Result<contract::ProvisioningDocument, CompatError> {
+''',
+          '''pub fn provisioning_document_with_mode(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    mode: DiagnosticMode,
+) -> Result<contract::ProvisioningDocument, CompatError> {
+    provisioning_document_with_mode_and_access_paths(user, endpoints, mode, &[])
+}
+
+/// As `provisioning_document_with_mode`, with additive non-secret first-hop
+/// metadata. The endpoint/config pair is still rendered atomically from the
+/// same endpoint set; access paths only describe how those concrete routes are
+/// reached and never carry credentials.
+pub fn provisioning_document_with_mode_and_access_paths(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    mode: DiagnosticMode,
+    access_paths: &[contract::AccessPath],
+) -> Result<contract::ProvisioningDocument, CompatError> {
+''', 'mode-aware access-path assembly API')
+
+          replace_once(path,
+          '''    )
+    .with_experimental_capabilities(experimental)
+    .with_singbox_config(singbox_config);
+''',
+          '''    )
+    .with_experimental_capabilities(experimental)
+    .with_access_paths(access_paths.to_vec())
+    .with_singbox_config(singbox_config);
+''', 'contract builder access_paths')
+
+          # ------------------------------------------------------------------
+          # subscription service: cache validated static access path metadata at
+          # startup and include it only in the first-party provisioning route.
+          # Legacy /sub renderers stay byte-for-byte unaffected.
+          # ------------------------------------------------------------------
+          path = 'services/subscription/src/lib.rs'
+          replace_once(path,
+          '''pub struct AppState {
+    pub users_file: std::path::PathBuf,
+    pub endpoints: Vec<CompatEndpoint>,
+    pub rate_limiter: Mutex<RateLimiter>,
+}
+''',
+          '''pub struct AppState {
+    pub users_file: std::path::PathBuf,
+    pub endpoints: Vec<CompatEndpoint>,
+    pub access_paths: Vec<contract::AccessPath>,
+    pub rate_limiter: Mutex<RateLimiter>,
+}
+''', 'AppState access paths')
+
+          replace_once(path,
+          '''    let doc = match compat_config::contract::provisioning_document_with_mode(
+        &user,
+        &state.endpoints,
+        diagnostic,
+    ) {
+''',
+          '''    let doc = match compat_config::contract::provisioning_document_with_mode_and_access_paths(
+        &user,
+        &state.endpoints,
+        diagnostic,
+        &state.access_paths,
+    ) {
+''', 'served document access paths')
+
+          path = 'services/subscription/src/main.rs'
+          replace_once(path,
+          '''    let state = std::sync::Arc::new(AppState {
+        users_file: cfg.users_file(),
+        endpoints,
+''',
+          '''    let access_paths = cfg
+        .access_paths
+        .iter()
+        .map(|path| path.to_contract_access_path())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("invalid [[access_paths]] declaration: {e}"))?;
+    if !access_paths.is_empty() {
+        tracing::info!(
+            access_paths = access_paths.len(),
+            "serving non-secret operator-declared access-path metadata"
+        );
+    }
+
+    let state = std::sync::Arc::new(AppState {
+        users_file: cfg.users_file(),
+        endpoints,
+        access_paths,
+''', 'runtime access path materialization')
+
+          # ------------------------------------------------------------------
+          # Tests: contract compatibility/security + deployment plumbing.
+          # ------------------------------------------------------------------
+          Path('crates/provisioning-contract/tests/access_paths.rs').write_text(r'''use provisioning_contract::*;
+
+fn endpoint(path: Option<PathType>) -> Endpoint {
+    Endpoint {
+        id: "reality-1".into(),
+        tag: "Reality".into(),
+        host: "vpn.example.com".into(),
+        port: 443,
+        server_name: "www.example-decoy.com".into(),
+        failure_domain: None,
+        region: None,
+        provider: None,
+        asn: None,
+        path,
+        params: TransportParams::VlessReality {
+            uuid: "00000000-0000-4000-8000-000000000001".into(),
+            flow: Some(VLESS_FLOW_VISION.into()),
+            reality: RealityParams {
+                public_key: "FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake".into(),
+                short_id: "0a1b2c3d".into(),
+                fingerprint: "chrome".into(),
+            },
+        },
+    }
+}
+
+fn doc(path: Option<PathType>) -> ProvisioningDocument {
+    ProvisioningDocument::new(
+        ServerInfo::current("test"),
+        vec![Capability::VlessReality],
+        vec![endpoint(path)],
+    )
+}
+
+fn relay(id: &str) -> AccessPath {
+    AccessPath::new(id, AccessPathKind::Relay, vec!["tcp".into()]).with_metadata(
+        Some(format!("relay:{id}")),
+        Some("test-region".into()),
+        Some("operator".into()),
+    )
+}
+
+#[test]
+fn empty_access_paths_are_absent_and_schema_stays_one() {
+    let doc = doc(None);
+    let json = doc.to_json().unwrap();
+    assert_eq!(doc.schema_version, 1);
+    assert!(!json.contains("access_paths"));
+}
+
+#[test]
+fn relay_metadata_round_trips_without_secrets() {
+    let doc = doc(Some(PathType::Other("relay-r1".into())))
+        .with_access_paths(vec![relay("relay-r1")]);
+    let encoded = doc.to_json().unwrap();
+    assert!(encoded.contains("\"access_paths\""));
+    assert!(encoded.contains("\"kind\": \"relay\""));
+    for forbidden in ["password", "token", "private_key", "proxy_uri"] {
+        assert!(!encoded.to_ascii_lowercase().contains(forbidden));
+    }
+    let back = ProvisioningDocument::from_json(&encoded).unwrap();
+    assert_eq!(back.access_paths, vec![relay("relay-r1")]);
+}
+
+#[test]
+fn duplicate_access_path_ids_are_rejected() {
+    let err = doc(None)
+        .with_access_paths(vec![relay("r1"), relay("r1")])
+        .validate()
+        .unwrap_err();
+    assert!(matches!(err, ContractError::DuplicateAccessPathId { .. }));
+}
+
+#[test]
+fn declared_path_set_rejects_dangling_endpoint_reference() {
+    let err = doc(Some(PathType::Other("missing".into())))
+        .with_access_paths(vec![relay("r1")])
+        .validate()
+        .unwrap_err();
+    assert!(matches!(err, ContractError::UnknownAccessPathReference { .. }));
+}
+
+#[test]
+fn legacy_opaque_path_without_access_paths_remains_forward_compatible() {
+    let doc = doc(Some(PathType::Other("future-path".into())));
+    let back = ProvisioningDocument::from_json(&doc.to_json().unwrap()).unwrap();
+    assert_eq!(back.endpoints[0].path, Some(PathType::Other("future-path".into())));
+}
+
+#[test]
+fn empty_or_duplicate_capabilities_are_rejected() {
+    assert!(AccessPath::new("r1", AccessPathKind::Relay, vec![])
+        .validate_for_test()
+        .is_err());
+    assert!(doc(None)
+        .with_access_paths(vec![AccessPath::new(
+            "r1",
+            AccessPathKind::Relay,
+            vec!["tcp".into(), "tcp".into()],
+        )])
+        .validate()
+        .is_err());
+}
+
+#[test]
+fn unknown_access_path_kind_round_trips() {
+    let path = AccessPath::new(
+        "future",
+        AccessPathKind::Other("future-kind".into()),
+        vec!["tcp".into()],
+    );
+    let doc = doc(None).with_access_paths(vec![path.clone()]);
+    let back = ProvisioningDocument::from_json(&doc.to_json().unwrap()).unwrap();
+    assert_eq!(back.access_paths, vec![path]);
+}
+''')
+
+          # The public contract API intentionally keeps AccessPath::validate
+          # private; fix the one test above to validate through a document.
+          p = Path('crates/provisioning-contract/tests/access_paths.rs')
+          s = p.read_text()
+          s = s.replace('''    assert!(AccessPath::new("r1", AccessPathKind::Relay, vec![])
+        .validate_for_test()
+        .is_err());
+''', '''    assert!(doc(None)
+        .with_access_paths(vec![AccessPath::new("r1", AccessPathKind::Relay, vec![])])
+        .validate()
+        .is_err());
+''')
+          p.write_text(s)
+
+          Path('crates/compat-config/tests/access_paths.rs').write_text(r'''use compat_config::deployment::DeploymentConfig;
+use provisioning_contract::{AccessPathKind, PathType};
+
+const BASE: &str = r#"
+public_host = "vpn.example.com"
+subscription_host = "vpn.example.com"
+
+[reality]
+listen_port = 443
+handshake_server = "www.example-decoy.com"
+handshake_port = 443
+
+[hysteria2]
+listen_port = 443
+
+[subscription]
+listen_port = 8080
+public_port = 443
+"#;
+
+fn load(text: &str) -> Result<DeploymentConfig, compat_config::CompatError> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("deployment.toml");
+    std::fs::write(&path, text).unwrap();
+    DeploymentConfig::load(&path)
+}
+
+fn relay() -> &'static str {
+    r#"
+[[access_paths]]
+id = "relay-r1"
+kind = "relay"
+failure_domain = "relay:r1"
+region = "test-region"
+provider = "operator"
+capabilities = ["tcp"]
+"#
+}
+
+fn peer(path: &str) -> String {
+    format!(r#"
+[[peer_endpoints]]
+id = "eu2-reality"
+tag = "Europe 2"
+host = "vpn2.example.net"
+port = 8443
+transport = "vless_reality"
+server_name = "www.example-decoy-two.org"
+reality_public_key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+reality_short_id = "9f8e7d6c"
+failure_domain = "eu2"
+path = "{path}"
+"#)
+}
+
+#[test]
+fn absent_access_paths_keep_existing_deployment_compatible() {
+    let cfg = load(BASE).unwrap();
+    assert!(cfg.access_paths.is_empty());
+}
+
+#[test]
+fn relay_metadata_maps_to_non_secret_contract_type() {
+    let cfg = load(&format!("{BASE}{}", relay())).unwrap();
+    let path = cfg.access_paths[0].to_contract_access_path().unwrap();
+    assert_eq!(path.id, "relay-r1");
+    assert_eq!(path.kind, AccessPathKind::Relay);
+    assert_eq!(path.failure_domain.as_deref(), Some("relay:r1"));
+    assert_eq!(path.capabilities, vec!["tcp"]);
+}
+
+#[test]
+fn credential_shaped_access_path_keys_fail_closed() {
+    let text = format!("{BASE}{}password = \"must-never-live-here\"\n", relay());
+    let err = load(&text).unwrap_err();
+    assert!(format!("{err}").to_ascii_lowercase().contains("credential"));
+}
+
+#[test]
+fn duplicate_path_ids_are_rejected() {
+    assert!(load(&format!("{BASE}{}{}", relay(), relay())).is_err());
+}
+
+#[test]
+fn opted_in_path_set_rejects_unknown_peer_path() {
+    let err = load(&format!("{BASE}{}{}", relay(), peer("relay-missing"))).unwrap_err();
+    assert!(format!("{err}").contains("no matching [[access_paths]]"));
+}
+
+#[test]
+fn legacy_opaque_peer_path_without_access_paths_still_loads() {
+    let cfg = load(&format!("{BASE}{}", peer("future-path"))).unwrap();
+    let ep = cfg.peer_endpoints[0].to_compat_endpoint().unwrap();
+    assert_eq!(ep.path.as_deref(), Some("future-path"));
+    assert_eq!(PathType::from_wire(ep.path.as_deref().unwrap()), PathType::Other("future-path".into()));
+}
+''')
+          PY
+
+          cargo fmt --all
+          cargo test -p provisioning-contract
+          cargo test -p compat-config
+          cargo test -p subscription
+          git diff --check
+
+      - name: Commit implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            crates/provisioning-contract/src/lib.rs \
+            crates/provisioning-contract/tests/access_paths.rs \
+            crates/compat-config/src/deployment.rs \
+            crates/compat-config/src/contract.rs \
+            crates/compat-config/tests/access_paths.rs \
+            services/subscription/src/lib.rs \
+            services/subscription/src/main.rs
+          git diff --cached --check
+          git commit -m "feat(provisioning): add non-secret access path metadata"
+          git push origin HEAD:chatgpt/phase2-access-paths
