@@ -45,7 +45,7 @@ pub fn contract_endpoint(
 ) -> Result<contract::Endpoint, CompatError> {
     contract_endpoint_opt(user, endpoint, flow, tag_override)?.ok_or_else(|| {
         CompatError::Parse(format!(
-            "user {} has no credential for peer endpoint {:?}; this server cannot mint one              because it does not control that server (see `vpn-admin user peer set`)",
+            "user {} has no credential for peer endpoint {:?}; this server cannot mint one because it does not control that server (see `vpn-admin user peer set`)",
             user.id, endpoint.id
         ))
     })
@@ -84,7 +84,7 @@ pub fn contract_endpoint_opt(
             Some(c) => {
                 if c.transport() != endpoint.transport {
                     return Err(CompatError::Parse(format!(
-                        "user {}: peer credential for {:?} is a {} credential but that endpoint                          is {}; a credential is never coerced across transports",
+                        "user {}: peer credential for {:?} is a {} credential but that endpoint is {}; a credential is never coerced across transports",
                         user.id,
                         endpoint.id,
                         c.transport().as_str(),

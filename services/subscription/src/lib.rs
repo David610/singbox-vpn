@@ -152,8 +152,8 @@ pub struct SubQuery {
     /// These are the LEGACY, pre-contract representations. They remain
     /// supported for existing users and for third-party importers
     /// (Hiddify and friends). The first-party client
-    /// (`singbox-client`) should use `GET /v1/provision/{token}`
-    /// instead — see `get_provision` and `docs/PROVISIONING_CONTRACT.md`.
+    /// (Tamara) uses `GET /v1/provision/{token}` instead — see
+    /// `get_provision` and `docs/PROVISIONING_CONTRACT.md`.
     pub format: Option<String>,
     /// Which transport the `format=singbox` subscription's manual
     /// selector defaults to: `reliability` (default, unchanged — REALITY),
@@ -423,8 +423,8 @@ pub struct ProvisionQuery {
 /// `GET /v1/provision/{token}` — the FIRST-PARTY provisioning contract.
 ///
 /// This route, not a query parameter on `/sub/`, is the documented API
-/// surface for `singbox-client`: the version lives in the path, so it
-/// is part of the URL a client stores, and a future `schema_version = 2`
+/// surface for Tamara: the version lives in the path, so it is part of
+/// the URL a client stores, and a future `schema_version = 2`
 /// gets `/v2/provision/{token}` without renegotiating anything about
 /// this one. `?schema_version=N` exists only so a client can assert the
 /// version it expects and get an explicit error instead of a surprise.

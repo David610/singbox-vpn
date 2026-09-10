@@ -107,13 +107,13 @@ impl AccessPathSection {
             .any(|needle| key.contains(needle))
         }) {
             return Err(CompatError::Parse(format!(
-                "[[access_paths]] {}: key {key:?} looks credential-bearing. Access-path                  metadata must never contain relay secrets or proxy configuration.",
+                "[[access_paths]] {}: key {key:?} looks credential-bearing. Access-path metadata must never contain relay secrets or proxy configuration.",
                 self.id
             )));
         }
         if let Some(key) = self.extra.keys().next() {
             return Err(CompatError::Parse(format!(
-                "[[access_paths]] {}: unknown key {key:?}; unknown keys are refused rather                  than silently ignored",
+                "[[access_paths]] {}: unknown key {key:?}; unknown keys are refused rather than silently ignored",
                 self.id
             )));
         }

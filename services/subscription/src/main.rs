@@ -189,7 +189,7 @@ async fn main() -> Result<()> {
     if !cfg.peer_endpoints.is_empty() {
         tracing::info!(
             peer_endpoints = cfg.peer_endpoints.len(),
-            "serving operator-declared peer endpoints; each is offered only to users who have              a peer credential for it"
+            "serving operator-declared peer endpoints; each is offered only to users who have a peer credential for it"
         );
     }
 
