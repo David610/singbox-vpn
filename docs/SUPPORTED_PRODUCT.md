@@ -10,19 +10,23 @@ scope, this file wins for v1.0 decisions.
 - Server OS: see the **Server support matrix** below.
   AlmaLinux 9 x86_64 is the one CI validates end-to-end with a real
   `sing-box` binary — see `singbox-validate` in `.github/workflows/ci.yml`.
-- Default topology: **one VPS**. No v1.0 multi-node control plane or
-  fleet orchestration.
+- Default topology: **one locally managed VPS**. The provisioning service can
+  additionally advertise **statically declared endpoints on independently
+  managed peer servers**, with per-user peer credentials. This is a resilience
+  extension, not a multi-node control plane: the local deployment does not
+  provision, administer, discover, or synchronize those remote servers.
+  Peer provisioning is fixture/local tested; no real second VPS has been
+  verified yet.
 - Data plane: **upstream, unmodified `sing-box`** (pinned version,
   checksum-verified at install time).
 - Primary transport: **VLESS + REALITY over TCP/443**.
 - Secondary transport: **Hysteria2 over UDP/443**, optional.
 - Clients, in two explicit tiers:
-  - **PRIMARY, first-party: `singbox-client`**
-    (<https://github.com/David610/singbox-client>), a separate
-    repository. It consumes the versioned provisioning contract at
-    `GET /v1/provision/{token}` — see
-    `docs/PROVISIONING_CONTRACT.md`. This is the client the
-    server/client relationship is designed around.
+  - **PRIMARY, first-party: Tamara**
+    (<https://github.com/David610/tamara>), a separate repository. It consumes
+    the versioned provisioning contract at `GET /v1/provision/{token}`,
+    including the endpoint metadata and embedded Core-consumable config — see
+    `docs/PROVISIONING_CONTRACT.md`.
   - **FALLBACK, third-party: Hiddify** (Android/iOS/Linux/MagicOS) and
     other sing-box-compatible importers documented under `docs/clients/`
     (currently Hiddify iOS/Linux/MagicOS, v2rayNG Android). They consume
@@ -30,6 +34,10 @@ scope, this file wins for v1.0 decisions.
     which remain supported. Only device-verified behaviour is claimed
     for them — see `docs/CLIENT_COMPATIBILITY.md` and
     `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+
+  `singbox-client` was the originally intended first-party client and is now
+  historical/superseded. Its name is intentionally retained in fixture paths
+  where renaming would add churn without changing the wire contract.
 
   No custom client software is *required* for the fallback path; the
   server does not run any client software itself for either tier.
@@ -135,20 +143,26 @@ whenever the two differ in phrasing; they must not differ in substance.
 
 ## Explicitly out of scope for v1.0
 
-- **No custom client software in this repository.** The compatibility
-  path never requires running this repo's own Rust daemon on an end-user
-  device. `singbox-client` is the first-party client, but it is a
-  separate repository with its own release cycle — this repository ships
-  only the contract it consumes (`docs/PROVISIONING_CONTRACT.md`) and
-  the fixtures its CI tests against
-  (`fixtures/singbox-client-contract/`).
+- **No custom client software in this repository.** Tamara is the current
+  first-party client, but it is a separate repository with its own release
+  cycle. This repository ships the contract it consumes
+  (`docs/PROVISIONING_CONTRACT.md`) and the historical fixture directory
+  (`fixtures/singbox-client-contract/`). Fallback clients remain independent
+  third-party applications.
 - **No new VPN protocols.** Production transports are exactly
   VLESS+REALITY and Hysteria2 (+ Salamander obfuscation where
   configured). The provisioning contract's transport/capability
   vocabulary is extensible so a future capability is a compatible schema
   change, but nothing — NaiveProxy, AnyTLS, TUIC, Shadowsocks,
   WireGuard, a second REALITY implementation — is in v1.0 scope.
-- **No v1.0 multi-node control plane / fleet manager.** One VPS only.
+- **No v1.0 multi-node control plane / fleet manager.** The deployment manages
+  one local VPS. It may advertise operator-declared peer endpoints, but it
+  does not deploy those peers, log into them, synchronize their credentials,
+  discover them, or control their health. Static peer provisioning is in
+  scope; fleet orchestration is not.
+- **No production reachable-first-hop/relay path yet.** `path` is forward-
+  compatible metadata, but relay semantics are design-only; see
+  `docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md`.
 - **No anonymity or global-adversary guarantee.** This is a private
   circumvention/privacy tool for a small trusted group, not a Tor-class
   anonymity system — see `docs/THREAT_MODEL.md` for the actual threat
@@ -166,10 +180,10 @@ whenever the two differ in phrasing; they must not differ in substance.
   full implementation, history, and design docs (including all of
   `docs/ADR/`) are preserved on the `archive/native-adaptive-stack-2026`
   branch, not deleted.
-- Hiddify and other sing-box-compatible clients use **sing-box's own**
-  `urltest` transport selection. The native stack's scoring engine that
-  used to exist alongside it is gone; do not describe Hiddify traffic as
-  using any Rust adaptive engine.
+- Hiddify and other fallback sing-box-compatible clients use **sing-box's own**
+  transport/group behavior. Tamara has its own client-side resilience policy
+  for recognized provisioning profiles. The removed native Rust scoring engine
+  is not part of either path.
 
 ## Supported code surface (what the installer actually builds/deploys)
 
