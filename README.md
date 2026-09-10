@@ -186,7 +186,8 @@ compromised VPS, access from every country/network, or protection after
 credentials leak. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 The proposed reachable-first-hop work is design-only and is not part of the
-current supported runtime. See
+current supported runtime. No relay/access-path schema or relay runtime is
+shipped by this PR. See
 [docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md](docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md).
 
 ## Documentation
