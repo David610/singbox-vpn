@@ -1,0 +1,68 @@
+name: One-time verified source repair
+
+on:
+  push:
+    branches:
+      - chatgpt/phase2-reachable-first-hop-design
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: chatgpt/phase2-reachable-first-hop-design
+          fetch-depth: 0
+
+      - name: Apply narrowly scoped repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path('apps/admin/src/main.rs')
+          text = main.read_text()
+          old = '/// Turn `--uuid`/`--password` into a [`PeerCredential`] for a declared\n'
+          new = '/// Turn `--uuid`/`--password` into a `PeerCredential` for a declared\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one broken PeerCredential rustdoc link, found {text.count(old)}')
+          main.write_text(text.replace(old, new, 1))
+
+          doc = Path('docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md')
+          text = doc.read_text()
+          replacements = {
+              '''## 3. Verified Core feasibility\n\nA local build experiment against the pinned Hiddify Core/sing-box stack established the architectural prerequisite for this phase: a sing-box outbound can use another outbound as its `detour`, and Hiddify Core's config builder preserved that chain.\n''':
+              '''## 3. Core feasibility and evidence boundary\n\nsing-box supports outbound chaining via `detour`, and the pinned Tamara/Hiddify surface exposes detour-related configuration. This makes Core-native chaining the preferred mechanism to test. This PR, however, does not contain a dedicated pinned-Core builder/interop fixture proving that the proposed relay -> exit chain survives Tamara's normal config-build path. Treat that preservation as **UNVERIFIED** until such a fixture is added and run.\n''',
+              '''The feasibility experiment used a relay transport only to prove `detour` preservation. It is **not** evidence that that transport is suitable for a restricted real network.\n''':
+              '''A future feasibility fixture may use a disposable relay transport to prove `detour` preservation. Even a passing local fixture would be evidence only for configuration/orchestration mechanics, **not** that the transport is suitable for a restricted real network.\n''',
+              '''| E. Core-native `detour` chaining | Does not create reachability itself | depends on first hop | depends on first hop | n/a | preserves existing engine boundary | **low incremental** | **verified feasible locally** | inherits first hop | **Use as implementation mechanism** |\n''':
+              '''| E. Core-native `detour` chaining | Does not create reachability itself | depends on first hop | depends on first hop | n/a | preserves existing engine boundary | **low incremental** | native sing-box mechanism; normal Hiddify-builder preservation **UNVERIFIED** | inherits first hop | **Preferred mechanism after dedicated fixture verification** |\n''',
+              '''- uses a Core capability already shown to preserve outbound chaining;\n''':
+              '''- uses Core/sing-box's native outbound-chaining mechanism, subject to dedicated pinned-builder verification;\n''',
+              '''Phase-2 MVP remains operator-declared:\n''':
+              '''The proposed Phase-2 MVP state would remain operator-declared. The sketch below is **design-only**, not the current `deployment.toml` / `users.json` schema:\n''',
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one design-doc passage to replace, found {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+          doc.write_text(text)
+          PY
+
+          rm -- .github/workflows/chatgpt-one-time-repair.yml
+
+      - name: Commit repaired source and remove one-time workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'ChatGPT repair bot'
+          git config user.email 'noreply@openai.com'
+          git add apps/admin/src/main.rs docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md .github/workflows/chatgpt-one-time-repair.yml
+          git diff --cached --check
+          git commit -m 'fix: repair rustdoc gate and tighten relay evidence claims'
+          git push origin HEAD:chatgpt/phase2-reachable-first-hop-design
