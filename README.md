@@ -187,7 +187,8 @@ credentials leak. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 The proposed reachable-first-hop work is design-only and is not part of the
 current supported runtime. No relay/access-path schema or relay runtime is
-shipped by this PR. See
+shipped by this PR. CI and local tests can validate code/configuration mechanics;
+they do not establish relay reachability or behavior on a censored network. See
 [docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md](docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md).
 
 ## Documentation
