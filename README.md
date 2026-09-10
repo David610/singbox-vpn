@@ -4,7 +4,7 @@
 
 **Your own VPN server, without building your own VPN stack.**
 
-Deploy on a VPS → scan the QR → connect with Hiddify.
+Deploy on a VPS → import the provisioning URL in Tamara → connect.
 
 <br>
 
@@ -18,17 +18,19 @@ Deploy on a VPS → scan the QR → connect with Hiddify.
 
 </div>
 
-### One server is enough.
+### One locally managed server, optional independent peers
 
 ```text
-┌─────────────┐          ┌─────────────┐          ┌─────────────┐
-│     VPS     │          │  QR / URL   │          │   Hiddify   │
-│  sing-box   │ ───────► │ subscription│ ───────► │ phone / PC  │
-└─────────────┘          └─────────────┘          └─────────────┘
+┌────────────────────┐       ┌─────────────────┐       ┌─────────────┐
+│ singbox-vpn VPS    │       │ provisioning    │       │   Tamara    │
+│ + optional static │ ─────► │ URL / contract  │ ─────►│ phone / PC  │
+│ peer endpoints    │       │                 │       │             │
+└────────────────────┘       └─────────────────┘       └─────────────┘
 ```
 
 - **VLESS + REALITY** over TCP/443
 - **Hysteria2** over UDP/443
+- optional operator-declared endpoints on independently managed peer servers
 - automatic TLS
 - user management
 - backup and restore
@@ -45,19 +47,22 @@ output is generated from it.
 
 | Tier | Client | Gets |
 |---|---|---|
-| **Primary** | [singbox-client](https://github.com/David610/singbox-client) — first-party, separate repo | `GET /v1/provision/{token}` — the versioned provisioning contract |
+| **Primary** | [Tamara](https://github.com/David610/tamara) — first-party, separate repo | `GET /v1/provision/{token}` — endpoint metadata plus the embedded Core-consumable config |
 | **Fallback** | Hiddify and other sing-box-compatible importers | `GET /sub/{token}` — share links or native sing-box JSON, unchanged |
 
 Both are rendered from the same endpoint model, so they cannot disagree
 about a user's credentials. The contract, its versioning rules, and the
 cross-repo test fixtures are in
 **[docs/PROVISIONING_CONTRACT.md](docs/PROVISIONING_CONTRACT.md)**.
-Only device-verified behaviour is claimed for the fallback tier — see
+The historical `singbox-client` repository is superseded; its name remains
+only in fixture paths where renaming would add churn without changing the
+contract. Only device-verified behaviour is claimed for fallback clients — see
 [docs/CLIENT_COMPATIBILITY.md](docs/CLIENT_COMPATIBILITY.md).
 
-> Built for small groups of users. Release status: the supported path has
-> an owner-reported smoke pass on a real AlmaLinux 9 VPS with Hiddify on an
-> iPhone. See [Device acceptance tests](docs/DEVICE_ACCEPTANCE_TESTS.md).
+> Built for small groups of users. Static peer-endpoint provisioning is
+> implemented and fixture/local tested, but no real second VPS has been used
+> to verify peer failover yet. See [Provisioning contract](docs/PROVISIONING_CONTRACT.md)
+> and [Device acceptance tests](docs/DEVICE_ACCEPTANCE_TESTS.md).
 
 ## Supported servers
 
@@ -70,15 +75,17 @@ Only device-verified behaviour is claimed for the fallback tier — see
 
 Full matrix and evidence: [docs/SUPPORTED_PRODUCT.md](docs/SUPPORTED_PRODUCT.md).
 
-**Explicitly not supported:** more than one VPS / a multi-node control
-plane, custom VPN protocols beyond VLESS+REALITY and Hysteria2, and
-Tor-class anonymity guarantees.
+**Explicitly not supported:** a multi-node control plane/fleet manager,
+automatic remote peer deployment or credential synchronization, custom VPN
+protocols beyond the supported VLESS+REALITY/Hysteria2 data plane, and
+Tor-class anonymity guarantees. Static independently managed peer endpoints
+are an implemented provisioning extension; they are not a fleet manager.
 
 ## Requirements
 
 - A supported VPS (see above), root or sudo access, public IPv4, ~1 GB RAM.
 - A domain or subdomain pointing to the VPS.
-- [Hiddify](https://hiddify.com).
+- [Tamara](https://github.com/David610/tamara) for the first-party provisioning path, or a documented fallback client such as [Hiddify](https://hiddify.com).
 
 **Bootstrap prerequisites** (must already be on the VPS *before* the
 one-command install below can run at all — the installer sets up
@@ -140,12 +147,18 @@ the trust boundary of `curl | sudo bash`, and every install flag are documented
 in **[docs/INSTALLATION.md](docs/INSTALLATION.md)** and
 **[docs/SUPPLY_CHAIN_SECURITY.md](docs/SUPPLY_CHAIN_SECURITY.md)**.
 
-## Connect with Hiddify
+## Connect
 
-1. Open **New Profile** and scan the printed QR code (or paste the
-   subscription URL).
-2. Select **REALITY** or **Hysteria2** and connect.
-3. Check your public IP changed to the VPS IP.
+### Tamara (primary)
+
+Import the printed `/v1/provision/{token}` URL in Tamara. A recognized
+provisioning profile consumes the endpoint catalog and embedded config; current
+Tamara can keep an Automatic route or pin one concrete endpoint manually.
+
+### Fallback clients
+
+Hiddify and other documented sing-box-compatible clients continue to consume
+`/sub/{token}` share links or sing-box JSON. See [docs/clients/README.md](docs/clients/README.md).
 
 Native YouTube app fails on iOS while Safari works fine? See
 [docs/clients/HIDDIFY_IOS.md](docs/clients/HIDDIFY_IOS.md).
@@ -172,6 +185,10 @@ This project does not guarantee Tor-style anonymity, protection from a
 compromised VPS, access from every country/network, or protection after
 credentials leak. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
+The proposed reachable-first-hop work is design-only and is not part of the
+current supported runtime. See
+[docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md](docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md).
+
 ## Documentation
 
 - [Installation & operations](docs/INSTALLATION.md) — DNS, firewall,
@@ -180,6 +197,7 @@ credentials leak. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
   OS/scope matrix
 - [Provisioning contract](docs/PROVISIONING_CONTRACT.md) — the versioned
   client/server contract and its schema
+- [Reachable first-hop architecture](docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md) — Phase-2 design only
 - [Client setup](docs/clients/README.md)
 - [Device acceptance status](docs/DEVICE_ACCEPTANCE_TESTS.md)
 - [Release policy](docs/RELEASE.md) — RC acceptance and stable-release gates
