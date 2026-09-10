@@ -89,7 +89,7 @@ pub struct PeerEndpointSection {
     /// The peer's REALITY **public** key and short id. Public material:
     /// same treatment as this server's own, which is already published to
     /// every client. The peer's PRIVATE key is not a field here and is
-    /// actively refused — see [`PeerEndpointSection::validate`].
+    /// actively refused — see `PeerEndpointSection::validate`.
     #[serde(default)]
     pub reality_public_key: Option<String>,
     #[serde(default)]
