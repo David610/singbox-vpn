@@ -1,6 +1,6 @@
 # Reachable first-hop architecture — Phase 2 design
 
-**Status:** design only; no production relay has been implemented or verified.  
+**Status:** Phase-2 access-path metadata foundation implemented; production relay/chained routing remains design-only and unverified.
 **Date:** 2026-09-10  
 **Primary client:** [Tamara](https://github.com/David610/tamara)  
 **Evidence boundary:** local/source feasibility only. No real second VPS, Russian ISP, destination allowlist, SNI filter, UDP restriction, or relay-provider outage has been tested.
@@ -174,7 +174,7 @@ Do **not** build a production relay service until a legitimate ingress location/
 
 The existing endpoint `path` field is deliberately opaque. Keep that property. Do not put protocol configuration or credentials into the Dart catalog.
 
-The smallest useful additive v1 extension is an optional top-level metadata list that describes path identities without secrets:
+The additive v1 metadata foundation now implements an optional top-level list that describes path identities without secrets:
 
 ```json
 {
@@ -211,7 +211,7 @@ The smallest useful additive v1 extension is an optional top-level metadata list
 
 A v1 client that ignores `access_paths` still sees endpoint tags and the opaque `path` string. A relay-aware Tamara can use the metadata for shared-fate reasoning. This can therefore remain an additive `schema_version: 1` extension provided validation confirms old consumers ignore the new field as intended.
 
-### Proposed Rust types (design only)
+### Implemented Rust metadata types
 
 ```rust
 pub struct AccessPath {
@@ -224,7 +224,7 @@ pub struct AccessPath {
 }
 ```
 
-`Endpoint.path` remains the reference. Do not add `relay_password`, `relay_uri`, or equivalent fields.
+`Endpoint.path` remains the reference. These Rust metadata types and their validation are now implemented. They do **not** create a relay outbound, provision a relay, or add relay credentials; those runtime mechanics remain Phase-2 follow-up work. Do not add `relay_password`, `relay_uri`, or equivalent fields.
 
 ## 9. Route candidates and failure attribution
 
@@ -305,7 +305,7 @@ An Internet-reachable relay creates a real abuse surface even for a small truste
 
 ## 13. Operational model
 
-The proposed Phase-2 MVP state would remain operator-declared. The sketch below is **design-only**, not the current `deployment.toml` / `users.json` schema:
+The access-path metadata portion is now operator-declared and implemented in `deployment.toml` as optional `[[access_paths]]` entries. Relay credentials/references in `users.json` and actual relay runtime wiring remain **design-only**:
 
 ```text
 deployment.toml
@@ -376,8 +376,8 @@ A second independent relay class increases reliability but also doubles credenti
 
 ## 17. Rollout stages
 
-**Stage 0 — current:** Phase-1 direct multi-endpoint failover only.  
-**Stage 1 — local mechanics:** additive path metadata + Core detour fixtures + `SIMULATED_ALLOWLIST` harness.  
+**Stage 0 — complete locally:** Phase-1 direct multi-endpoint failover.
+**Stage 1 — in progress:** additive non-secret access-path metadata is implemented; Core detour fixtures + `SIMULATED_ALLOWLIST` harness remain.
 **Stage 2 — one authorized real ingress:** manually operated relay, small trusted cohort, explicit evidence ledger.  
 **Stage 3 — diversity:** second independent ingress failure domain if measurements justify it.  
 **Stage 4 — automation:** only then consider operational tooling beyond static declaration.

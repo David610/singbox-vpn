@@ -1,6 +1,6 @@
 //! The versioned, first-party provisioning contract between this server
-//! (`singbox-vpn`) and its primary client, `singbox-client`
-//! (<https://github.com/David610/singbox-client>).
+//! (`singbox-vpn`) and its primary client, Tamara
+//! (<https://github.com/David610/tamara>).
 //!
 //! This crate is the SINGLE canonical model of "what a client needs in
 //! order to dial this deployment". Every client-facing artifact the
@@ -58,7 +58,7 @@ pub const SUPPORTED_SCHEMA_VERSIONS: &[u32] = &[SCHEMA_VERSION];
 /// refuse documents that plainly did not come from this server.
 pub const PRODUCT: &str = "singbox-vpn";
 
-/// Oldest `singbox-client` release able to parse `schema_version = 1`.
+/// Minimum client version advertised by schema-version-1 documents.
 pub const MINIMUM_CLIENT_VERSION: &str = "0.1.0";
 
 /// The only VLESS flow this server ever provisions in production.
@@ -350,11 +350,10 @@ impl Transport {
 
 /// How traffic reaches an endpoint.
 ///
-/// Only [`PathType::Direct`] is produced today. A relay path is reserved
-/// and NOT implemented; [`PathType::Other`] exists so a document written
-/// by a future server that does implement one round-trips through a
-/// consumer written today rather than failing its parse, exactly like
-/// [`Capability::Other`] and [`Transport::Other`].
+/// [`PathType::Direct`] is the default. When a document carries the additive
+/// `access_paths` list, [`PathType::Other`] may name one of those non-secret
+/// path identities. The metadata/reference layer is implemented; actual relay
+/// transport configuration remains inside Core and is not implemented here.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PathType {
     Direct,
