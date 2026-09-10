@@ -22,6 +22,7 @@ use std::time::Instant;
 pub struct AppState {
     pub users_file: std::path::PathBuf,
     pub endpoints: Vec<CompatEndpoint>,
+    pub access_paths: Vec<contract::AccessPath>,
     pub rate_limiter: Mutex<RateLimiter>,
 }
 
@@ -151,8 +152,8 @@ pub struct SubQuery {
     /// These are the LEGACY, pre-contract representations. They remain
     /// supported for existing users and for third-party importers
     /// (Hiddify and friends). The first-party client
-    /// (`singbox-client`) should use `GET /v1/provision/{token}`
-    /// instead — see `get_provision` and `docs/PROVISIONING_CONTRACT.md`.
+    /// (Tamara) uses `GET /v1/provision/{token}` instead — see
+    /// `get_provision` and `docs/PROVISIONING_CONTRACT.md`.
     pub format: Option<String>,
     /// Which transport the `format=singbox` subscription's manual
     /// selector defaults to: `reliability` (default, unchanged — REALITY),
@@ -422,8 +423,8 @@ pub struct ProvisionQuery {
 /// `GET /v1/provision/{token}` — the FIRST-PARTY provisioning contract.
 ///
 /// This route, not a query parameter on `/sub/`, is the documented API
-/// surface for `singbox-client`: the version lives in the path, so it
-/// is part of the URL a client stores, and a future `schema_version = 2`
+/// surface for Tamara: the version lives in the path, so it is part of
+/// the URL a client stores, and a future `schema_version = 2`
 /// gets `/v2/provision/{token}` without renegotiating anything about
 /// this one. `?schema_version=N` exists only so a client can assert the
 /// version it expects and get an explicit error instead of a surprise.
@@ -526,10 +527,11 @@ async fn get_provision(
         "provisioning contract served"
     );
 
-    let doc = match compat_config::contract::provisioning_document_with_mode(
+    let doc = match compat_config::contract::provisioning_document_with_mode_and_access_paths(
         &user,
         &state.endpoints,
         diagnostic,
+        &state.access_paths,
     ) {
         Ok(doc) => doc,
         Err(e) => {
@@ -670,6 +672,7 @@ mod tests {
                 "www.google.com",
                 None,
             ),
+            access_paths: Vec::new(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }
@@ -1286,6 +1289,7 @@ mod tests {
         std::sync::Arc::new(AppState {
             users_file: path,
             endpoints,
+            access_paths: Vec::new(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }
@@ -1446,6 +1450,7 @@ mod tests {
         std::sync::Arc::new(AppState {
             users_file: path,
             endpoints,
+            access_paths: Vec::new(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }

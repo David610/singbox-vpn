@@ -45,7 +45,7 @@ pub fn contract_endpoint(
 ) -> Result<contract::Endpoint, CompatError> {
     contract_endpoint_opt(user, endpoint, flow, tag_override)?.ok_or_else(|| {
         CompatError::Parse(format!(
-            "user {} has no credential for peer endpoint {:?}; this server cannot mint one              because it does not control that server (see `vpn-admin user peer set`)",
+            "user {} has no credential for peer endpoint {:?}; this server cannot mint one because it does not control that server (see `vpn-admin user peer set`)",
             user.id, endpoint.id
         ))
     })
@@ -84,7 +84,7 @@ pub fn contract_endpoint_opt(
             Some(c) => {
                 if c.transport() != endpoint.transport {
                     return Err(CompatError::Parse(format!(
-                        "user {}: peer credential for {:?} is a {} credential but that endpoint                          is {}; a credential is never coerced across transports",
+                        "user {}: peer credential for {:?} is a {} credential but that endpoint is {}; a credential is never coerced across transports",
                         user.id,
                         endpoint.id,
                         c.transport().as_str(),
@@ -239,6 +239,19 @@ pub fn provisioning_document_with_mode(
     endpoints: &[CompatEndpoint],
     mode: DiagnosticMode,
 ) -> Result<contract::ProvisioningDocument, CompatError> {
+    provisioning_document_with_mode_and_access_paths(user, endpoints, mode, &[])
+}
+
+/// As `provisioning_document_with_mode`, with additive non-secret first-hop
+/// metadata. The endpoint/config pair is still rendered atomically from the
+/// same endpoint set; access paths only describe how those concrete routes are
+/// reached and never carry credentials.
+pub fn provisioning_document_with_mode_and_access_paths(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    mode: DiagnosticMode,
+    access_paths: &[contract::AccessPath],
+) -> Result<contract::ProvisioningDocument, CompatError> {
     let mut contract_endpoints = Vec::with_capacity(endpoints.len());
     for ep in endpoints {
         if mode == DiagnosticMode::TcpOnly
@@ -312,6 +325,7 @@ pub fn provisioning_document_with_mode(
         contract_endpoints,
     )
     .with_experimental_capabilities(experimental)
+    .with_access_paths(access_paths.to_vec())
     .with_singbox_config(singbox_config);
     doc.validate()?;
     Ok(doc)
