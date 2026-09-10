@@ -45,6 +45,17 @@ jobs:
               raise SystemExit('unterminated triple-quoted string in staged implementation')
           code = "\n".join(cooked)
           exec(compile(code, 'phase2-access-paths-extracted.py', 'exec'), {})
+
+          # AppState is also constructed in three in-module test helpers. They
+          # deliberately use no relay metadata; make that compatibility intent
+          # explicit rather than weakening the new required state field.
+          p = Path('services/subscription/src/lib.rs')
+          s = p.read_text()
+          needle = '            rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),\n'
+          if s.count(needle) != 3:
+              raise SystemExit(f'expected three AppState test rate limiters, found {s.count(needle)}')
+          s = s.replace(needle, '            access_paths: Vec::new(),\n' + needle)
+          p.write_text(s)
           PY
           cargo fmt --all
           cargo test --locked -p provisioning-contract
