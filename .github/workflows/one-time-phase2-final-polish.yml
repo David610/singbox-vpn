@@ -1,0 +1,100 @@
+name: One-time Phase 2 access-path final polish
+
+on:
+  push:
+    branches:
+      - chatgpt/phase2-access-paths
+
+jobs:
+  polish:
+    if: github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: chatgpt/phase2-access-paths
+          fetch-depth: 0
+      - name: Fix final source wording and product identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text()
+              actual = text.count(old)
+              if actual != count:
+                  raise SystemExit(f'{path}: expected {count} occurrence(s), found {actual}: {old[:100]!r}')
+              p.write_text(text.replace(old, new, count))
+
+          # Remove accidental large whitespace runs inside user/operator-facing
+          # diagnostics introduced by the generated feature patch.
+          path = 'crates/compat-config/src/deployment.rs'
+          replace_exact(
+              path,
+              'Access-path                  metadata must never contain relay secrets or proxy configuration.',
+              'Access-path metadata must never contain relay secrets or proxy configuration.',
+          )
+          replace_exact(
+              path,
+              'unknown key {key:?}; unknown keys are refused rather                  than silently ignored',
+              'unknown key {key:?}; unknown keys are refused rather than silently ignored',
+          )
+
+          path = 'crates/compat-config/src/contract.rs'
+          replace_exact(
+              path,
+              'peer endpoint {:?}; this server cannot mint one              because it does not control that server',
+              'peer endpoint {:?}; this server cannot mint one because it does not control that server',
+          )
+          replace_exact(
+              path,
+              'credential but that endpoint                          is {}; a credential is never coerced across transports',
+              'credential but that endpoint is {}; a credential is never coerced across transports',
+          )
+
+          path = 'services/subscription/src/main.rs'
+          replace_exact(
+              path,
+              'each is offered only to users who have              a peer credential for it',
+              'each is offered only to users who have a peer credential for it',
+          )
+
+          # Tamara is now the first-party client. These were stale comments only;
+          # wire/API behavior is unchanged.
+          path = 'services/subscription/src/lib.rs'
+          replace_exact(
+              path,
+              '/// (`singbox-client`) should use `GET /v1/provision/{token}`\n    /// instead — see `get_provision` and `docs/PROVISIONING_CONTRACT.md`.',
+              '/// (Tamara) uses `GET /v1/provision/{token}` instead — see\n    /// `get_provision` and `docs/PROVISIONING_CONTRACT.md`.',
+          )
+          replace_exact(
+              path,
+              '/// surface for `singbox-client`: the version lives in the path, so it\n/// is part of the URL a client stores, and a future `schema_version = 2`',
+              '/// surface for Tamara: the version lives in the path, so it is part of\n/// the URL a client stores, and a future `schema_version = 2`',
+          )
+          PY
+
+          cargo fmt --all
+          cargo test --locked -p provisioning-contract
+          cargo test --locked -p compat-config
+          cargo test --locked -p subscription
+          git diff --check
+      - name: Commit final polish
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            crates/compat-config/src/deployment.rs \
+            crates/compat-config/src/contract.rs \
+            services/subscription/src/main.rs \
+            services/subscription/src/lib.rs
+          git diff --cached --check
+          git commit -m "chore: polish access-path diagnostics and client identity"
+          git push origin HEAD:chatgpt/phase2-access-paths
