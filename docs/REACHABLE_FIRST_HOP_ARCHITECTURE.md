@@ -1,180 +1,140 @@
-# Reachable first-hop architecture — Phase 2 design
+# Reachable first-hop architecture — Phase 2
 
-**Status:** Phase-2 access-path metadata foundation implemented; production relay/chained routing remains design-only and unverified.
-**Date:** 2026-09-10  
+**Status:** local Stage 1 complete; production first-hop selection and real-network validation deliberately deferred.  
+**Date:** 2026-09-11  
 **Primary client:** [Tamara](https://github.com/David610/tamara)  
-**Evidence boundary:** local/source feasibility only. No real second VPS, Russian ISP, destination allowlist, SNI filter, UDP restriction, or relay-provider outage has been tested.
+**Evidence boundary:** `VERIFIED_UNIT`, `VERIFIED_LOCAL_CORE`, and `SIMULATED_ALLOWLIST` only. No real second VPS, Russian ISP, destination allowlist, SNI filter, UDP restriction, or relay-provider outage is claimed here.
 
-## 1. Problem and threat model
+The detailed local evidence matrix is in [`PHASE2_LOCAL_ACCEPTANCE.md`](PHASE2_LOCAL_ACCEPTANCE.md).
 
-Phase 1 solves a different problem: when the client can reach several foreign VPN endpoints, Tamara can test them and move between concrete outbounds without restarting Core. That does **not** solve a network that refuses packets to arbitrary foreign destination addresses before any VPN handshake can happen.
+## 1. Problem and fundamental limit
 
-This phase considers a stricter network in which one or more of the following may hold:
+Phase 1 handles reachable endpoint failure: Tamara can probe several concrete outbounds and move between them without restarting Core. That cannot solve a stricter network which refuses packets to arbitrary foreign destination addresses before any VPN handshake begins.
 
-- arbitrary foreign destination IPs are unreachable while a smaller set of destinations remains reachable;
-- reachability can differ by mobile operator, fixed ISP, region, time, address family, or transport;
-- the network may additionally inspect SNI/TLS metadata;
-- UDP may be unavailable while TCP remains usable;
-- an allowed address today may disappear tomorrow;
-- an operator may deliberately isolate permitted services so unrelated traffic cannot piggyback on them.
-
-The design does **not** assume that any Russian VPS, cloud provider, CDN, TURN server, domain name, SNI value, or shared address is allowlisted. Reachability is an empirical property that must later be tested on the target networks.
-
-### Fundamental limit
-
-If the restricted network permits **no reachable destination that is legitimately capable of relaying traffic onward**, no VPN protocol can manufacture a route that the network does not provide. REALITY, Hysteria2, TLS camouflage, a different SNI, or a hundred additional foreign VPSs only help after packets can reach their first hop.
-
-The Phase-2 goal is therefore **multiple independent, authorized reachability paths**, not an "unblockable" protocol.
-
-## 2. Existing architecture to preserve
-
-The product keeps one VPN engine:
+Phase 2 therefore models an **authorized reachable first hop**:
 
 ```text
-Tamara
-  -> provisioning envelope + EndpointCatalog
-  -> EndpointSelector / resilience coordinator
-  -> Hiddify Core
-  -> sing-box
+NORMAL
+Tamara -> foreign exit
+
+RESTRICTED / alternative path
+Tamara -> authorized first hop -> foreign exit -> Internet
 ```
 
-The server remains a small self-hosted product, not a fleet-management platform. Static/operator-declared infrastructure comes first.
+The design does not assume that a Russian VPS, cloud provider, CDN, TURN server, domain, SNI value, or shared address is allowlisted. Reachability is an empirical property for the later real-testing stage.
 
-Current v1 already gives us useful forward-compatible primitives:
+If the restricted network permits **no destination that is both reachable and legitimately capable of relaying onward**, no VPN protocol can manufacture a missing path. REALITY, Hysteria2, different SNI values, or more foreign VPSs help only after packets can reach their first hop.
 
-- endpoint `path` is `direct` today, represented by `PathType::Direct | Other(String)`;
-- endpoint `failure_domain`, `region`, `provider`, and `asn` are operator metadata;
-- Tamara treats `path` and `transport` as opaque labels rather than reimplementing protocol parsing;
-- the credential-bearing, Core-consumable `singbox_config` is rendered from the same endpoint set as the envelope.
+The target is therefore **multiple independent, authorized reachability paths**, not an “unblockable” protocol.
 
-## 3. Core feasibility and evidence boundary
+## 2. Architecture boundary
 
-sing-box supports outbound chaining via `detour`, and the pinned Tamara/Hiddify surface exposes detour-related configuration. This makes Core-native chaining the preferred mechanism to test. This PR, however, does not contain a dedicated pinned-Core builder/interop fixture proving that the proposed relay -> exit chain survives Tamara's normal config-build path. Treat that preservation as **UNVERIFIED** until such a fixture is added and run.
-
-Conceptually:
+The product keeps exactly one VPN/protocol engine:
 
 ```text
-client/Core
-   |
-   +-- exit E1 (VLESS+REALITY)
-           |
-           +-- dial via relay R1 outbound
+singbox-vpn provisioning document
+        |
+        v
+Tamara EndpointCatalog + access-path metadata
+        |
+        v
+EndpointSelector / ResilienceCoordinator
+        |
+        v
+concrete Core outbound tag
+        |
+        v
+Hiddify Core -> sing-box
 ```
 
-The relay is therefore a first-hop outbound and the foreign exit remains the inner/ultimate VPN exit. A route such as `E1 via R1` can remain a concrete selectable tag. Phase 2 does **not** require another VPN engine.
+Tamara does not parse or construct relay protocols in Dart. Credential-bearing transport and first-hop configuration stays inside the opaque `singbox_config`. The server remains a small self-hosted product, not a remote fleet-management plane.
 
-A future feasibility fixture may use a disposable relay transport to prove `detour` preservation. Even a passing local fixture would be evidence only for configuration/orchestration mechanics, **not** that the transport is suitable for a restricted real network.
+## 3. Core-native chaining is locally verified
 
-## 4. Required properties of a viable first hop
+sing-box outbound `detour` is the chosen chaining mechanism. The important compatibility question was whether an authenticated first-hop outbound and an exit outbound using `detour` survive **Tamara's normal pinned Hiddify config-build path**, rather than only working in an artificial raw-config test.
 
-A production first hop must be:
+That is now locally verified.
 
-1. **actually reachable** on the target restricted network, demonstrated rather than assumed;
-2. **authorized to relay** the traffic — operated by Tamara/the user or supplied under terms that permit this use;
-3. **authenticated** and never an open proxy;
-4. **replaceable**, because any single address/provider may become unreachable;
-5. **bounded in blast radius**, using scoped/per-user credentials where practical;
-6. **compatible with the existing Core**, preferably through native outbound chaining;
-7. **privacy-minimal**, requiring no destination browsing history in a central control plane;
-8. **operationally observable** at aggregate service-health level without per-user browsing telemetry;
-9. **safe to revoke/rotate** without placing secrets in `EndpointCatalog`;
-10. **explicit about capabilities**, especially TCP/UDP, so the client does not promise a path the relay cannot carry.
+Tamara's dedicated Phase-2 acceptance workflow builds the checksum-pinned Hiddify Core, runs its normal builder, and verifies two independently authenticated loopback first hops:
+
+```text
+Direct:      Core -> E1                         denied by fixture
+Path R1:     Core -> R1(auth) -> E1 -> sink    succeeds
+Path R2:     Core -> R2(auth) -> E1 -> sink    succeeds
+```
+
+The builder preserves each `detour` relationship and the synthetic first-hop credentials. Hidden relay outbounds are not exposed as user-selectable exits. The runtime reaches the same local E1 socket through either R1 or R2 while a direct Core connection to E1 is refused.
+
+This is `VERIFIED_LOCAL_CORE` + `SIMULATED_ALLOWLIST`. It proves configuration/runtime mechanics only. It does **not** prove that a particular real first-hop transport or address remains reachable on a restricted network.
+
+## 4. Required properties of a production first hop
+
+A viable production first hop must be:
+
+1. actually reachable on the intended target networks, demonstrated rather than assumed;
+2. authorized to relay the traffic — operated by the user/Tamara or supplied under compatible terms;
+3. authenticated and never an open proxy;
+4. replaceable, because one address/provider may become unreachable;
+5. bounded in blast radius with scoped/per-user credentials where practical;
+6. compatible with Hiddify Core/sing-box without a second client engine;
+7. privacy-minimal, with no central browsing-history requirement;
+8. observable at aggregate service-health level without destination telemetry;
+9. safely revocable/rotatable without putting secrets in `EndpointCatalog`;
+10. explicit about capabilities such as TCP/UDP.
+
+The production first-hop technology/provider is intentionally **not selected by local tests**. That decision depends on later evidence about reachability, provider policy, throughput, latency, UDP needs, and abuse operations.
 
 ## 5. Candidate architectures
 
-### A. Operator-controlled reachable ingress -> foreign exit
-
-Tamara or the user operates an authenticated relay on infrastructure that later testing shows remains reachable. The foreign exit outbound dials through that first hop.
+### A. Operator-controlled reachable ingress
 
 ```text
 restricted client -> R1 -> E1 -> Internet
 ```
 
-This is the cleanest ownership and abuse boundary. Its weakness is fundamental: operating a domestic VPS does not make it reachable under an allowlist. The project must first prove that a legitimate ingress class can remain reachable.
+This provides the cleanest ownership, privacy and abuse boundary. A domestic or nearby VPS is not automatically reachable under an allowlist, so location alone is not evidence.
 
-### B. TURN-style relay -> foreign exit
+### B. Contracted/self-operated TURN-style relay
 
-A TURN-like service can provide a reachable relay when the network permits the TURN service and the service contract permits this traffic. It can be useful where WebRTC infrastructure is deliberately reachable, but TURN is not a magic bypass: the TURN IP itself must be reachable, authentication/rate limits matter, and arbitrary VPN throughput may conflict with provider limits or terms.
+Potentially useful only when that TURN destination is reachable and the service explicitly permits the traffic. TURN does not create reachability by itself.
 
-This is a candidate only with infrastructure we operate or contract for that purpose.
+### C. Operator-controlled HTTPS/reverse-proxy ingress
 
-### C. Legitimate HTTPS / reverse-proxy ingress
+A legitimate operator-controlled 443-facing ingress may be a strong TCP-first candidate if its application protocol explicitly supports the forwarding required. Generic HTTPS reverse proxying does not automatically provide arbitrary UDP semantics.
 
-An operator-controlled HTTPS-facing ingress can carry a deliberately supported relay protocol or tunnel to the foreign exit. It can blend operationally with normal HTTPS infrastructure without pretending to be an unrelated third party.
+### D. Unauthorized CDN/fronting/piggybacking
 
-This option is attractive for TCP-only reachability and common port 443, but a generic reverse proxy cannot automatically carry arbitrary UDP semantics. The application protocol and provider must explicitly support the required forwarding.
+**NO-GO as a production dependency.** Do not depend on unrelated allowlisted infrastructure, domain-fronting loopholes, or shared addresses that are not authorized for arbitrary relay traffic.
 
-### D. CDN/provider fronting or piggybacking
+### E. Core-native `detour`
 
-Using unrelated allowlisted third-party infrastructure, domain-fronting loopholes, or shared addresses that are not authorized for arbitrary relay traffic is a **NO-GO production dependency**. It is fragile, can violate provider terms, can expose other tenants, and may be specifically countered by dedicated-address isolation.
-
-A contracted provider feature that explicitly permits the relay use can be evaluated under C or B. "It happens to work through someone else's allowed IP" is not an architecture.
-
-### E. sing-box/Hiddify-native chaining
-
-This is the implementation mechanism, not a reachability source by itself. `detour` lets an exit outbound use an authenticated first-hop outbound while Tamara still selects a single concrete route tag. It minimizes custom protocol code and keeps all transport semantics inside Core.
+This is the implementation mechanism, not the reachability source. Its preservation through the pinned normal Hiddify builder is now `VERIFIED_LOCAL_CORE`.
 
 ### F. Multiple independent ingress classes
 
-The robust end-state is not one magic R1. It is two or more legitimately reachable first-hop failure domains when operationally justified, for example an operator-controlled HTTPS-like ingress and a separately operated relay class. Tamara can then treat `(exit, path)` combinations as separate route candidates.
+The robust later end-state can include more than one legitimate first-hop failure domain if real evidence justifies the operational cost.
 
-This adds operational cost, so it is a second step after one relay path has been proven on real networks.
+## 6. Recommended MVP shape
 
-## 6. Comparison matrix
+The architectural MVP remains:
 
-Scores are architectural expectations, **not real-network evidence**.
+**one operator-controlled or explicitly contracted authenticated first hop, represented as a Core-native outbound; the existing foreign exit dials through it with `detour`; direct and relay-pathed concrete routes coexist.**
 
-| Candidate | Reachability under strict destination allowlist | TCP | UDP | Ownership/control | Privacy boundary | Operational burden | Core fit | Sudden-break risk | Production position |
-|---|---|---:|---:|---|---|---|---|---|---|
-| A. Operator-controlled reachable ingress | Only if its destination is demonstrably permitted | strong | transport-dependent | **high** | clear/controllable | medium | **strong** via `detour` | medium/high | **Recommended MVP if reachability can be proven** |
-| B. TURN-style contracted relay | Only if TURN destination is permitted | yes | often yes | medium/high if operated/contracted | clear if self-operated; provider metadata otherwise | medium/high | needs a Core-compatible client/outbound integration | high | Secondary candidate |
-| C. Operator-controlled HTTPS/reverse-proxy ingress | Only if ingress destination is permitted | **strong** | limited unless explicitly supported | **high** | clear/controllable | medium | strong if represented by a supported outbound/forwarder | medium/high | Strong TCP-first candidate |
-| D. Unauthorized CDN/fronting/piggyback | Uncertain and deliberately fragile | varies | poor/varies | **low** | opaque third party | deceptively high over time | custom/provider-specific | **very high** | **Reject** |
-| E. Core-native `detour` chaining | Does not create reachability itself | depends on first hop | depends on first hop | n/a | preserves existing engine boundary | **low incremental** | native sing-box mechanism; normal Hiddify-builder preservation **UNVERIFIED** | inherits first hop | **Preferred mechanism after dedicated fixture verification** |
-| F. Multiple independent ingress classes | Best chance if at least one class remains permitted | mixed | mixed | high when all are authorized | controllable | **high** | strong with route catalog | lower correlated risk | Post-MVP hardening |
-
-## 7. Recommended MVP
-
-### Recommendation
-
-**One operator-controlled, authenticated first-hop ingress, represented as a Core-native outbound, with the existing foreign exit outbound dialed through it using sing-box `detour`; keep direct and relay paths side by side in Tamara.**
-
-The ingress technology should be selected only after a real-network reachability trial. For the local lab, a disposable SOCKS/Shadowsocks-style relay is sufficient to prove mechanics; that does not choose the production transport.
-
-Example candidate set:
+Example route set:
 
 ```text
 E1 / direct
 E1 / relay-R1
+E1 / relay-R2
 E2 / direct
 E2 / relay-R1
 ```
 
-Once one authorized first-hop class is proven, add a second independently operated ingress failure domain only if the marginal reliability justifies the cost.
+The local lab uses authenticated SOCKS5 solely as a disposable mechanism to prove Core/build/selection semantics. It does **not** choose SOCKS5 as the production restricted-network transport.
 
-### Why this MVP
+## 7. Additive schema-v1 access-path model
 
-- preserves Tamara -> Hiddify Core -> sing-box;
-- uses Core/sing-box's native outbound-chaining mechanism, subject to dedicated pinned-builder verification;
-- keeps credentials and protocol parsing out of Dart;
-- has a clear operator/security/abuse owner;
-- does not depend on exploiting unrelated infrastructure;
-- can be simulated locally before any real VPS exists;
-- lets direct paths remain the normal low-latency choice when available.
-
-### What it does not solve
-
-It does not make an arbitrary relay destination allowlisted, hide the fact that the client contacts that relay, guarantee UDP, guarantee nationwide Russian reachability, or protect against a network that removes every usable authorized relay destination.
-
-### Go/no-go prerequisite
-
-Do **not** build a production relay service until a legitimate ingress location/provider has been tested from the intended networks and shown to be reachable often enough to justify productization.
-
-## 8. Additive contract model
-
-The existing endpoint `path` field is deliberately opaque. Keep that property. Do not put protocol configuration or credentials into the Dart catalog.
-
-The additive v1 metadata foundation now implements an optional top-level list that describes path identities without secrets:
+The server implements optional non-secret `access_paths` metadata while preserving `schema_version: 1`:
 
 ```json
 {
@@ -184,8 +144,8 @@ The additive v1 metadata foundation now implements an optional top-level list th
       "id": "relay-r1",
       "kind": "relay",
       "failure_domain": "relay:r1",
-      "region": "example-region",
-      "provider": "operator-declared",
+      "region": "operator-declared-region",
+      "provider": "operator-declared-provider",
       "capabilities": ["tcp"]
     }
   ],
@@ -202,41 +162,28 @@ The additive v1 metadata foundation now implements an optional top-level list th
     }
   ],
   "singbox_config": {
-    "outbounds": ["...credential-bearing relay and exit outbounds..."]
+    "outbounds": ["...credential-bearing first-hop and exit outbounds..."]
   }
 }
 ```
 
-`access_paths` is metadata only. It must contain no password, token, UUID, private key, TLS secret, or raw proxy URI. The actual authenticated relay outbound stays inside the protected/opaque `singbox_config` just like transport credentials do today.
+`access_paths` contains metadata only. It must never contain a password, token, UUID, private key, TLS secret, raw proxy URI, or transport configuration. Deployment parsing rejects credential-shaped and unknown keys rather than silently accepting them.
 
-A v1 client that ignores `access_paths` still sees endpoint tags and the opaque `path` string. A relay-aware Tamara can use the metadata for shared-fate reasoning. This can therefore remain an additive `schema_version: 1` extension provided validation confirms old consumers ignore the new field as intended.
+The endpoint `path` field remains opaque. When a document opts into `access_paths`, a non-direct path must resolve to a declared id. Older schema-v1 documents without `access_paths` retain their previous opaque-path compatibility.
 
-### Implemented Rust metadata types
+Tamara now mirrors this boundary: it can ingest/persist the non-secret path metadata while leaving the credential-bearing `singbox_config` opaque.
 
-```rust
-pub struct AccessPath {
-    pub id: String,
-    pub kind: AccessPathKind,          // Direct/Relay/Other
-    pub failure_domain: Option<String>,
-    pub region: Option<String>,
-    pub provider: Option<String>,
-    pub capabilities: Vec<String>,     // e.g. tcp, udp
-}
-```
+## 8. Route candidates and conservative failure attribution
 
-`Endpoint.path` remains the reference. These Rust metadata types and their validation are now implemented. They do **not** create a relay outbound, provision a relay, or add relay credentials; those runtime mechanics remain Phase-2 follow-up work. Do not add `relay_password`, `relay_uri`, or equivalent fields.
-
-## 9. Route candidates and failure attribution
-
-Phase 1 mostly reasons about endpoint shared fate. A chained route introduces another independent dimension:
+A chained route has two dimensions of shared fate:
 
 ```text
 RouteCandidate {
-    exitEndpointId
-    outboundTag
-    accessPathId
-    exitFailureDomain
-    pathFailureDomain
+  exitEndpointId
+  outboundTag
+  accessPathId
+  exitFailureDomain
+  pathFailureDomain
 }
 ```
 
@@ -249,188 +196,109 @@ E1 / relay-R2     exit-domain=E1   path-domain=R2
 E2 / relay-R1     exit-domain=E2   path-domain=R1
 ```
 
-### Conservative rule
+If Core reports only that `E1 via R1` failed, Tamara knows only that this **route candidate** failed. It does not know whether the cause was R1, E1, the R1->E1 link, DNS, TLS, the access network, or something else. A single chained-route failure therefore must not poison every route sharing R1 or E1.
 
-If Core only reports that `E1 via R1` failed, Tamara knows the **route candidate** failed. It does **not** know whether R1, E1, the link between them, DNS, TLS, or the network caused it. Do not mark every route sharing R1 or E1 failed merely from that observation.
+Local selector/coordinator tests now cover this conservative rule, independent exits, R1->R2 eligibility, anti-failback, Manual semantics, stale generation rejection, and credential-rotation invalidation.
 
-A shared failure domain may be penalized only when there is evidence that actually identifies the shared component, or when all relevant route candidates independently fail and the policy explicitly treats that aggregate as an availability fact rather than a censorship diagnosis.
+User-facing language remains “route unavailable” rather than inventing a censorship/DPI/relay diagnosis.
 
-User-facing language remains "route unavailable", never "relay blocked by Russia" unless a future measurement can genuinely prove that cause.
+## 9. Credential architecture
 
-## 10. Credential architecture
-
-A relay must never be an unauthenticated public forwarder.
+A production relay must never be an unauthenticated public forwarder.
 
 Required properties:
 
-- per-user or narrowly scoped relay credentials where the chosen transport supports them;
-- independent revocation and rotation;
-- no one universal credential across all users;
-- no server private key in a provisioning envelope;
-- no relay secret in `EndpointCatalog`/`access_paths` metadata;
-- no secret in logs, diagnostics, display labels, or `toString()`;
+- per-user or narrowly scoped relay credentials where the selected transport supports them;
+- independent revocation/rotation;
+- no universal credential shared across every user;
+- no server private key in the provisioning envelope;
+- no relay secret in `EndpointCatalog` or `access_paths`;
+- no secret in logs, diagnostics, labels, or `toString()`;
 - a stolen client profile should compromise only that user's/scoped access, not relay administration;
-- operator tooling may associate user -> relay credential, but should not require automatic root access to every relay.
+- operator tooling should not require automatic root access across a relay fleet.
 
-The server-side peer credential pattern from Phase 1 is the precedent: operator-supplied remote credentials are associated per user without turning this deployment into a remote fleet controller.
+The local Core harness uses synthetic test credentials to prove the builder/runtime preserves authenticated detours. Production credential issuance is intentionally deferred until the real-testing stage selects the actual first-hop technology.
 
-## 11. Privacy and component visibility
+## 10. Privacy and component visibility
 
-The architecture cannot make every component blind, so the design states what each can technically observe.
-
-| Component | Can observe | Should not centrally retain by default |
+| Component | Can technically observe | Should not centrally retain by default |
 |---|---|---|
-| Restricted access network | client source, first-hop destination IP/port, timing/volume; possibly SNI/TLS metadata | n/a — outside product control |
-| First-hop relay | client source IP, foreign exit destination, timing/volume; relay authentication identity | browsing domains, DNS queries, user payload contents |
-| Foreign VPN exit | tunnel account, egress destinations/DNS depending on configured resolver, timing/volume | long-term per-user browsing history |
-| Provisioning/control plane | account, declared topology, credential lifecycle | destination domains/IPs, DNS history, packet contents |
-| Tamara client | local route health and current route | persistent censorship labels or browsing telemetry |
+| restricted access network | client source, first-hop IP/port, timing/volume; possibly TLS/SNI metadata | outside product control |
+| first-hop relay | client source, foreign exit destination, timing/volume, relay auth identity | browsing domains, DNS history, packet payloads |
+| foreign exit | tunnel account, egress destinations/DNS depending on resolver, timing/volume | long-term per-user browsing history |
+| provisioning/control plane | account, declared topology, credential lifecycle | destination domains/IPs, DNS history, packet contents |
+| Tamara | local route health/current route | persistent censorship labels or browsing telemetry |
 
-The relay-to-exit design should keep the inner exit transport cryptographically protected end-to-end through the relay, so the first hop forwards an encrypted session rather than terminating the user's final VPN security boundary.
+The intended relay-to-exit design keeps the inner exit transport cryptographically protected through the first hop. Infrastructure monitoring should prefer aggregate service health.
 
-Infrastructure monitoring should prefer aggregate service health. No Phase-2 requirement justifies central logging of a user's browsing destinations.
+## 11. Abuse and operational controls
 
-## 12. Abuse controls
+For a real Internet-reachable first hop, require authentication, per-user revocation, bounded rate/connection limits, provider terms compatible with VPN/relay traffic, service-security logs rather than browsing logs, an incident procedure, and forwarding restrictions appropriate to the selected transport.
 
-An Internet-reachable relay creates a real abuse surface even for a small trusted group. Minimum controls:
+The server remains declarative/static first. It does not automatically SSH into remote relays, discover providers/ASNs, synchronize secrets across a fleet, or become a remote root controller.
 
-- authentication required before forwarding;
-- deny open-recursion/open-proxy behavior;
-- per-user revocation;
-- connection/rate limits sized for the product rather than unlimited anonymous use;
-- bounded logs focused on service security, not browsing history;
-- provider terms explicitly compatible with relay/VPN traffic;
-- documented incident procedure for credential theft and abuse complaints;
-- the relay should forward only the intended route semantics where the selected transport permits that restriction.
+## 12. Local Stage-1 acceptance — complete
 
-## 13. Operational model
+The eight locally testable cases are now covered. The exact evidence mapping lives in [`PHASE2_LOCAL_ACCEPTANCE.md`](PHASE2_LOCAL_ACCEPTANCE.md):
 
-The access-path metadata portion is now operator-declared and implemented in `deployment.toml` as optional `[[access_paths]]` entries. Relay credentials/references in `users.json` and actual relay runtime wiring remain **design-only**:
+1. direct E1 unavailable, R1 route succeeds;
+2. R1-pathed route failure does not invent an E1/shared-component diagnosis;
+3. independent R2 path to E1 succeeds;
+4. exhausted E1 routes do not poison E2;
+5. recovery does not immediately flap away from a healthy incumbent;
+6. Manual relay-pathed route failure never silently falls back;
+7. stale result after network/catalog generation change has no side effect;
+8. credential-only provisioning replacement invalidates old route health through a non-secret generation while secrets stay out of metadata.
 
-```text
-deployment.toml
-  local endpoints
-  peer endpoints
-  declared access paths / relay metadata
+The local harness is deliberately loopback-only and modifies no firewall, host routes, DNS, adapter, TUN, or external infrastructure. It is labeled `SIMULATED_ALLOWLIST`, never `RUSSIA_VERIFIED`.
 
-users.json
-  per-user endpoint credentials
-  per-user relay credentials/references
-```
+## 13. Real-world acceptance — later stage
 
-The provisioning service renders one coherent document/config for a user. It does **not** automatically provision remote VPSs, log into relays as root, discover providers/ASNs, or synchronize secrets across a fleet.
-
-A later control plane can be considered only after static relay operations are proven too costly.
-
-## 14. Local simulation before real infrastructure
-
-The next implementation phase can prove mechanics entirely on one machine:
-
-```text
-Tamara/Core
-   |
-   | simulated policy: exit E1 not directly reachable
-   v
-relay R1  ------------>  exit E1  ------------> local HTTP sink
-```
-
-Required `SIMULATED_ALLOWLIST` cases:
-
-1. direct E1 denied, R1 reachable -> `E1 via R1` succeeds;
-2. R1 unavailable -> relay route fails without blaming E1;
-3. R2 reachable -> `E1 via R2` succeeds;
-4. E1 unavailable -> all routes to E1 fail, but routes to E2 remain candidates;
-5. current relay recovers while another route is healthy -> no immediate flap;
-6. manual relay-pathed route fails -> no silent switch when Manual mode is active;
-7. stale result after network/catalog generation change -> no side effect;
-8. relay credentials rotate -> old route health is invalidated without placing the secret in metadata.
-
-The lab may use loopback relays and firewall/process-level refusal. It must be labeled `SIMULATED_ALLOWLIST`, never `RUSSIA_VERIFIED`.
-
-## 15. Real-world acceptance matrix
-
-No row below is currently PASS.
+No local result promotes any row below to PASS:
 
 | Acceptance item | Current evidence | Required later evidence |
 |---|---|---|
+| production first-hop transport/provider | **UNSELECTED BY DESIGN** | target-network reachability + provider-policy + throughput/latency evidence |
 | second real VPS | **UNVERIFIED** | independent host deployment |
-| second provider / ASN | **UNVERIFIED** | provider/ASN-confirmed deployment and failure test |
-| REALITY remote failover | **UNVERIFIED** | real endpoints + client acceptance |
-| Hysteria2 remote failover | **UNVERIFIED** | real UDP endpoint + client acceptance |
+| second provider / ASN | **UNVERIFIED** | provider/ASN-confirmed deployment and induced failure |
+| REALITY through real first hop | **UNVERIFIED** | chosen ingress + real foreign exit + client acceptance |
+| Hysteria2/UDP through real first hop | **UNVERIFIED** | selected ingress with required UDP semantics |
 | Russian mobile network | **UNVERIFIED** | multiple operators/regions/devices |
 | Russian fixed broadband | **UNVERIFIED** | multiple ISPs/regions |
-| destination-IP allowlist behavior | **UNVERIFIED** | controlled test where direct exit is unreachable but authorized relay is reachable |
-| SNI filtering | **UNVERIFIED** | target-network measurement |
+| destination-IP allowlist behavior | **UNVERIFIED** | controlled target-network test |
+| SNI/DPI filtering | **UNVERIFIED** | target-network measurement |
 | UDP restriction | **UNVERIFIED** | target-network measurement |
-| relay reachability | **UNVERIFIED** | each candidate ingress class tested directly |
-| relay blocking/recovery | **UNVERIFIED** | induced/observed failure and failover |
-| long-duration stability | **UNVERIFIED** | multi-day soak with bounded retries and resource monitoring |
+| relay blocking/recovery | **UNVERIFIED** | real first-hop outage/recovery |
+| DNS/leak behavior on physical devices | **UNVERIFIED** | Windows/Android/iOS acceptance |
+| long-duration stability/performance | **UNVERIFIED** | multi-day soak and resource/latency/throughput evidence |
 
-## 16. Cost and complexity
+These are evidence-stage items, not unfinished local implementation work.
 
-The cheapest credible MVP is one additional small relay host/service plus the existing foreign exit, because Core-native chaining avoids a second client engine. Cost is dominated by relay bandwidth and provider egress, not control-plane compute.
+## 14. Rollout stages
 
-Do not publish a fixed monthly price before a provider/region is selected: bandwidth pricing differs by orders of magnitude and is the deciding variable. The design should therefore measure GB/user/month and relay egress before choosing a provider.
+**Stage 0 — complete locally:** direct multi-endpoint resilience/failover.  
+**Stage 1 — complete locally:** additive non-secret access-path metadata, Tamara ingestion, route-policy semantics, authenticated normal-builder Core detours, and `SIMULATED_ALLOWLIST` acceptance.  
+**Stage 2 — later real testing:** select and operate one authorized ingress only after target-network evidence justifies it.  
+**Stage 3 — later diversity:** add a second independent real ingress failure domain if measurements justify the cost.  
+**Stage 4 — later automation:** only after static real operations demonstrate a need for additional control-plane tooling.
 
-A second independent relay class increases reliability but also doubles credential rotation, monitoring, abuse handling, and provider dependencies. Add it after the first path has demonstrated real value.
+No stage is promoted to real-network support based on unit tests or local simulation.
 
-## 17. Rollout stages
-
-**Stage 0 — complete locally:** Phase-1 direct multi-endpoint failover.
-**Stage 1 — in progress:** additive non-secret access-path metadata is implemented; Core detour fixtures + `SIMULATED_ALLOWLIST` harness remain.
-**Stage 2 — one authorized real ingress:** manually operated relay, small trusted cohort, explicit evidence ledger.  
-**Stage 3 — diversity:** second independent ingress failure domain if measurements justify it.  
-**Stage 4 — automation:** only then consider operational tooling beyond static declaration.
-
-No stage is promoted based only on unit tests or local simulation.
-
-## 18. Explicit non-goals
+## 15. Explicit non-goals
 
 - no claim of being unblockable, undetectable, Russia-proof, or whitelist-proof;
-- no unauthorized domain fronting or piggybacking on unrelated allowed services;
+- no unauthorized domain fronting or piggybacking;
 - no new VPN engine in Tamara;
-- no protocol proliferation merely to increase the feature count;
-- no multi-node root-access fleet manager in the MVP;
+- no protocol implementation in Dart;
+- no fleet-wide root-access manager for the MVP;
 - no central browsing/DNS telemetry;
-- no automatic attribution of a failed route to DPI/censorship/relay/exit without evidence;
+- no automatic attribution of a failed route to DPI, censorship, relay, exit, country, or provider without evidence;
 - no assumption that a domestic VPS is allowlisted.
 
-## 19. Unknowns that require evidence
+## 16. Decision
 
-1. Which legitimately operated/contracted ingress classes remain reachable on the target networks?
-2. Is TCP-only relay capability enough for the intended user experience, or is UDP carriage required at the first hop?
-3. What sustained bandwidth and latency are acceptable on mobile?
-4. Does the target network key primarily on destination IP, SNI, protocol fingerprint, or combinations?
-5. How often do allowed destinations change, and how quickly must path metadata rotate?
-6. Can a relay provider support the expected VPN traffic under its terms and abuse process?
-7. Does a real chained route preserve acceptable DNS/leak behavior on Windows, Android and iOS?
+**Architecture decision:** retain Core-native authenticated first-hop `detour` to the existing foreign exit, represented as a concrete `(exit, path)` route candidate, with direct and relay-pathed candidates coexisting. Keep all first-hop secrets inside protected Core configuration and only non-secret path identity/metadata in the additive provisioning catalog.
 
-## 20. Go / no-go criteria
+**Local plan status:** complete. The pinned normal Hiddify builder/runtime, Tamara metadata boundary, route policy, Manual behavior, stale-operation safety, rotation invalidation, and loopback `SIMULATED_ALLOWLIST` mechanics are covered.
 
-### Build the Phase-2 MVP only if
-
-- at least one authorized ingress class is demonstrably reachable on a meaningful sample of intended restricted networks;
-- its provider permits the traffic;
-- Core can carry the required transport through it without a second VPN engine;
-- per-user/scoped auth and revocation are practical;
-- latency/bandwidth are acceptable;
-- privacy review finds no need for browsing-history telemetry.
-
-### Stop or redesign if
-
-- all legitimate relay destinations are filtered like the foreign exits;
-- the only working path depends on unauthorized third-party piggybacking;
-- acceptable throughput requires an open/unbounded relay;
-- preserving reachability requires disabling TLS verification or exposing credentials;
-- a second client VPN engine becomes necessary merely to express the path;
-- operational cost/abuse burden exceeds the reliability value.
-
-## Decision
-
-**RECOMMENDED MVP:** operator-controlled authenticated reachable ingress + Core-native `detour` to the existing foreign exit, represented as an additional concrete `(exit, path)` route candidate. Keep direct routes and relay routes together; keep the relay's non-secret identity in additive provisioning metadata and all relay credentials inside protected Core configuration.
-
-**WHAT CAN BE TESTED NOW:** config rendering, path metadata, selection semantics, credential isolation, and a loopback `SIMULATED_ALLOWLIST` harness.
-
-**WHAT REQUIRES REAL INFRASTRUCTURE:** whether any first hop is actually reachable under the intended restrictions, cross-provider/ASN diversity, real bandwidth/latency, mobile behavior, and censorship durability.
-
-This design is intentionally a reachability architecture, not a promise that a particular network will permit it.
+**Next stage:** real evidence — choose the actual authorized first-hop technology/provider only after measuring what is genuinely reachable and operationally acceptable on the intended networks.
