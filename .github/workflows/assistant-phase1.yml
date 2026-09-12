@@ -47,7 +47,7 @@ jobs:
           PY
       - name: Apply edits
         run: python3 .github/assistant/apply_phase1.py
-      - name: Complete optional endpoint defaults
+      - name: Complete compatibility fixtures
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -69,12 +69,16 @@ jobs:
                   '''            asn: None,\n            path: Some("direct".into()),\n        });''',
                   '''            asn: None,\n            path: Some("direct".into()),\n            credential_ref: None,\n        });''',
               ),
+              'crates/compat-config/src/deployment.rs': (
+                  '''            "schema_version = {DEPLOYMENT_SCHEMA_VERSION}\\n{}",\n            legacy_toml()''',
+                  '''            "schema_version = {DEPLOYMENT_SCHEMA_VERSION}\\nnode_id = \\\"test-node\\\"\\nrole = \\\"exit\\\"\\n{}",\n            legacy_toml()''',
+              ),
           }
           for name, (old, new) in replacements.items():
               p = Path(name)
               s = p.read_text()
               if s.count(old) != 1:
-                  raise SystemExit(f'{name}: expected exactly one targeted endpoint literal, found {s.count(old)}')
+                  raise SystemExit(f'{name}: expected exactly one targeted compatibility fixture, found {s.count(old)}')
               p.write_text(s.replace(old, new, 1))
           PY
       - name: Format
