@@ -34,6 +34,15 @@ jobs:
           if target not in s:
               raise SystemExit('ambiguous with_metadata call not found')
           s = s.replace(target, target.replace('replace_once', 'replace_first', 1), 1)
+
+          start_marker = '# URI/share-link syntax has no detour.'
+          end_marker = '# ---------------------------------------------------------------------------\n# A deterministic relay rendering integration test'
+          a = s.find(start_marker)
+          b = s.find(end_marker, a)
+          if a < 0 or b < 0:
+              raise SystemExit('URI patch source block not found')
+          fixed = '''# URI/share-link syntax has no detour. Never misrepresent a relayed route as\n# direct; the first-party/Core config remains the supported relay surface.\npath = "crates/compat-config/src/render.rs"\nfor fn_name in ("render_uri_list", "render_vision_off_uri_list"):\n    text = read(path)\n    marker = f"pub fn {fn_name}("\n    start = text.index(marker)\n    loop = text.index("    for ep in endpoints {", start)\n    guard = ''' + '"""' + '''    for ep in endpoints {\n        if ep.path.as_deref().is_some_and(|path| path != "direct") {\n            // Share-link syntax cannot express sing-box detour. Omitting the\n            // route is safer than silently handing a client a direct exit.\n            continue;\n        }\n''' + '"""' + '''\n    text = text[:loop] + guard + text[loop + len("    for ep in endpoints {\\n"):]\n    write(path, text)\n\n'''
+          s = s[:a] + fixed + s[b:]
           p.write_text(s)
           PY
       - name: Apply edits
