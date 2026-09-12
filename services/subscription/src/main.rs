@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use compat_config::deployment::DeploymentConfig;
+use compat_config::deployment::{DeploymentConfig, NodeRole};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use subscription::{standard_endpoints, AppState, RateLimiter};
@@ -169,6 +169,12 @@ async fn main() -> Result<()> {
         &cfg.reality.handshake_server,
         hysteria_obfs_password.as_deref(),
     );
+    if cfg.role == NodeRole::Relay {
+        // A relay node's local VLESS listener is first-hop infrastructure,
+        // not an Internet-exit choice. Hysteria2-over-relay is deliberately
+        // not claimed by the TCP-first MVP.
+        endpoints.retain(|endpoint| endpoint.id == "reality-1");
+    }
 
     // Operator-declared endpoints on servers this deployment does not
     // control (ADR-0009). Appended AFTER the local ones so a client's

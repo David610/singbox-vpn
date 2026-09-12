@@ -559,6 +559,7 @@ fn peer_compat_endpoint() -> CompatEndpoint {
         provider: Some("provider-b".into()),
         asn: Some("operator-label-b".into()),
         path: Some("direct".into()),
+        credential_ref: None,
     }
 }
 

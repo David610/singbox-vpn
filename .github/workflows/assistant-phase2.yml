@@ -1,0 +1,51 @@
+name: assistant phase2 relay hardening
+
+on:
+  push:
+    branches:
+      - feat/relay-hardening-live-vps
+    paths:
+      - .github/assistant/apply_phase2.py
+      - .github/workflows/assistant-phase2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/relay-hardening-live-vps
+          fetch-depth: 0
+      - name: Apply phase2 edits
+        run: python3 .github/assistant/apply_phase2.py
+      - name: Update schema-v2 migration fixture
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/admin/tests/cli.rs')
+          s = p.read_text()
+          old = 'assert!(toml_text.starts_with("schema_version = 1"));'
+          new = 'assert!(toml_text.starts_with(&format!("schema_version = {}", compat_config::deployment::DEPLOYMENT_SCHEMA_VERSION)));'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one stale schema assertion, found {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Format
+        run: cargo fmt --all
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+      - name: Test Rust workspace
+        run: cargo test --workspace
+      - name: Run fast gate
+        run: bash deploy/lib/fast-gate.sh
+      - name: Commit phase2
+        run: |
+          rm -f .github/assistant/apply_phase2.py .github/workflows/assistant-phase2.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: harden relay role and fail-closed ingress"
+          git push origin HEAD:feat/relay-hardening-live-vps

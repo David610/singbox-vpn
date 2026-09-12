@@ -111,6 +111,13 @@ pub struct CompatEndpoint {
     pub asn: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+
+    /// Optional peer-endpoint id whose per-user credential authenticates
+    /// this route. This lets a direct exit and a via-relay alias share the
+    /// one credential issued by that exit instead of duplicating secrets.
+    /// Local endpoints never use this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
 }
 
 /// A user's credential for ONE peer endpoint.
@@ -287,6 +294,7 @@ impl Default for CompatEndpoint {
             provider: None,
             asn: None,
             path: None,
+            credential_ref: None,
         }
     }
 }
