@@ -65,6 +65,10 @@ jobs:
                   '''        asn: Some("operator-label-b".into()),\n        path: Some("direct".into()),\n    }\n}''',
                   '''        asn: Some("operator-label-b".into()),\n        path: Some("direct".into()),\n        credential_ref: None,\n    }\n}''',
               ),
+              'services/subscription/src/lib.rs': (
+                  '''            asn: None,\n            path: Some("direct".into()),\n        });''',
+                  '''            asn: None,\n            path: Some("direct".into()),\n            credential_ref: None,\n        });''',
+              ),
           }
           for name, (old, new) in replacements.items():
               p = Path(name)
