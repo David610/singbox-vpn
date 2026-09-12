@@ -81,6 +81,47 @@ jobs:
                   raise SystemExit(f'{name}: expected exactly one targeted compatibility fixture, found {s.count(old)}')
               p.write_text(s.replace(old, new, 1))
           PY
+      - name: Finish relay profile integration
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Use a shape-valid, deliberately synthetic X25519 public key in
+          # the deterministic relay fixture. The previous placeholder decoded
+          # to 33 bytes and correctly failed validation before testing detour.
+          p = Path('crates/compat-config/tests/relay_detour.rs')
+          s = p.read_text()
+          for old in (
+              'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake',
+              'RURUFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake',
+          ):
+              s = s.replace(old, 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8')
+          p.write_text(s)
+
+          # Preserve the caller's requested reliability/performance/auto
+          # profile on the new access-path-aware provisioning path rather
+          # than accidentally hardcoding the default.
+          p = Path('crates/compat-config/src/contract.rs')
+          s = p.read_text()
+          old = '''pub fn provisioning_document_with_mode_and_access_paths(\n    user: &CompatUser,\n    endpoints: &[CompatEndpoint],\n    mode: DiagnosticMode,\n    access_paths: &[contract::AccessPath],\n) -> Result<contract::ProvisioningDocument, CompatError> {\n    let mut contract_endpoints = Vec::with_capacity(endpoints.len());'''
+          new = '''pub fn provisioning_document_with_mode_and_access_paths(\n    user: &CompatUser,\n    endpoints: &[CompatEndpoint],\n    mode: DiagnosticMode,\n    access_paths: &[contract::AccessPath],\n) -> Result<contract::ProvisioningDocument, CompatError> {\n    provisioning_document_with_mode_and_access_paths_and_profile(\n        user,\n        endpoints,\n        mode,\n        access_paths,\n        crate::render::SelectionProfile::default(),\n    )\n}\n\n/// Access-path-aware provisioning while preserving the caller's explicit\n/// selection profile. This is the subscription service's production path.\npub fn provisioning_document_with_mode_and_access_paths_and_profile(\n    user: &CompatUser,\n    endpoints: &[CompatEndpoint],\n    mode: DiagnosticMode,\n    access_paths: &[contract::AccessPath],\n    profile: crate::render::SelectionProfile,\n) -> Result<contract::ProvisioningDocument, CompatError> {\n    let mut contract_endpoints = Vec::with_capacity(endpoints.len());'''
+          if s.count(old) != 1:
+              raise SystemExit('access-path provisioning function shape changed')
+          s = s.replace(old, new, 1)
+          needle = '        crate::render::SelectionProfile::default(),\n        match mode {'
+          if s.count(needle) != 1:
+              raise SystemExit('expected one hardcoded selection profile in access-path renderer')
+          s = s.replace(needle, '        profile,\n        match mode {', 1)
+          p.write_text(s)
+
+          p = Path('services/subscription/src/lib.rs')
+          s = p.read_text()
+          old = '''            match compat_config::contract::provisioning_document_with_mode_and_access_paths(\n                &user,\n                &state.endpoints,\n                mode,\n                &state.access_paths,\n            ) {'''
+          new = '''            match compat_config::contract::provisioning_document_with_mode_and_access_paths_and_profile(\n                &user,\n                &state.endpoints,\n                mode,\n                &state.access_paths,\n                profile,\n            ) {'''
+          if s.count(old) != 1:
+              raise SystemExit('subscription access-path provisioning call shape changed')
+          p.write_text(s.replace(old, new, 1))
+          PY
       - name: Format
         run: cargo fmt --all
       - name: Check workspace
