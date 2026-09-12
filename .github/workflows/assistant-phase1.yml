@@ -19,6 +19,23 @@ jobs:
         with:
           ref: feat/relay-hardening-live-vps
           fetch-depth: 0
+      - name: Repair patch helper
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/assistant/apply_phase1.py')
+          s = p.read_text()
+          needle = '''def replace_once(path, old, new):\n    text = read(path)\n    n = text.count(old)\n    if n != 1:\n        raise SystemExit(f"{path}: expected exactly one match, found {n} for:\\n{old[:300]}")\n    write(path, text.replace(old, new, 1))\n'''
+          replacement = needle + '''\ndef replace_first(path, old, new):\n    text = read(path)\n    n = text.count(old)\n    if n < 1:\n        raise SystemExit(f"{path}: expected at least one match for:\\n{old[:300]}")\n    write(path, text.replace(old, new, 1))\n'''
+          if needle not in s:
+              raise SystemExit('replace_once helper shape changed')
+          s = s.replace(needle, replacement, 1)
+          target = '''replace_once(path,\n''' + "'''    pub fn with_metadata(\n        mut self,\n        failure_domain: Option<String>,'''"
+          if target not in s:
+              raise SystemExit('ambiguous with_metadata call not found')
+          s = s.replace(target, target.replace('replace_once', 'replace_first', 1), 1)
+          p.write_text(s)
+          PY
       - name: Apply edits
         run: python3 .github/assistant/apply_phase1.py
       - name: Format
