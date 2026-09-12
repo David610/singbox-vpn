@@ -86,9 +86,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # Use a shape-valid, deliberately synthetic X25519 public key in
-          # the deterministic relay fixture. The previous placeholder decoded
-          # to 33 bytes and correctly failed validation before testing detour.
+          # Shape-valid, deliberately synthetic X25519 test key.
           p = Path('crates/compat-config/tests/relay_detour.rs')
           s = p.read_text()
           for old in (
@@ -98,29 +96,36 @@ jobs:
               s = s.replace(old, 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8')
           p.write_text(s)
 
-          # Preserve the caller's requested reliability/performance/auto
-          # profile on the new access-path-aware provisioning path rather
-          # than accidentally hardcoding the default.
+          # Add an options-aware access-path provisioning entry point so the
+          # relay path preserves both selection profile and compatibility mode
+          # (including quic-reject). Existing wrappers retain their old defaults.
           p = Path('crates/compat-config/src/contract.rs')
           s = p.read_text()
           old = '''pub fn provisioning_document_with_mode_and_access_paths(\n    user: &CompatUser,\n    endpoints: &[CompatEndpoint],\n    mode: DiagnosticMode,\n    access_paths: &[contract::AccessPath],\n) -> Result<contract::ProvisioningDocument, CompatError> {\n    let mut contract_endpoints = Vec::with_capacity(endpoints.len());'''
-          new = '''pub fn provisioning_document_with_mode_and_access_paths(\n    user: &CompatUser,\n    endpoints: &[CompatEndpoint],\n    mode: DiagnosticMode,\n    access_paths: &[contract::AccessPath],\n) -> Result<contract::ProvisioningDocument, CompatError> {\n    provisioning_document_with_mode_and_access_paths_and_profile(\n        user,\n        endpoints,\n        mode,\n        access_paths,\n        crate::render::SelectionProfile::default(),\n    )\n}\n\n/// Access-path-aware provisioning while preserving the caller's explicit\n/// selection profile. This is the subscription service's production path.\npub fn provisioning_document_with_mode_and_access_paths_and_profile(\n    user: &CompatUser,\n    endpoints: &[CompatEndpoint],\n    mode: DiagnosticMode,\n    access_paths: &[contract::AccessPath],\n    profile: crate::render::SelectionProfile,\n) -> Result<contract::ProvisioningDocument, CompatError> {\n    let mut contract_endpoints = Vec::with_capacity(endpoints.len());'''
+          new = '''pub fn provisioning_document_with_mode_and_access_paths(\n    user: &CompatUser,\n    endpoints: &[CompatEndpoint],\n    mode: DiagnosticMode,\n    access_paths: &[contract::AccessPath],\n) -> Result<contract::ProvisioningDocument, CompatError> {\n    let compat_mode = match mode {\n        DiagnosticMode::TcpOnly => crate::render::CompatibilityMode::TcpOnly,\n        DiagnosticMode::VisionOff => crate::render::CompatibilityMode::VisionOff,\n        DiagnosticMode::None => crate::render::CompatibilityMode::Normal,\n    };\n    provisioning_document_with_mode_and_access_paths_and_options(\n        user,\n        endpoints,\n        mode,\n        access_paths,\n        crate::render::SelectionProfile::default(),\n        compat_mode,\n    )\n}\n\n/// Access-path-aware provisioning while preserving the caller's complete\n/// rendering request. This is used by relay-aware subscriptions.\npub fn provisioning_document_with_mode_and_access_paths_and_options(\n    user: &CompatUser,\n    endpoints: &[CompatEndpoint],\n    mode: DiagnosticMode,\n    access_paths: &[contract::AccessPath],\n    profile: crate::render::SelectionProfile,\n    compat_mode: crate::render::CompatibilityMode,\n) -> Result<contract::ProvisioningDocument, CompatError> {\n    let mut contract_endpoints = Vec::with_capacity(endpoints.len());'''
           if s.count(old) != 1:
               raise SystemExit('access-path provisioning function shape changed')
           s = s.replace(old, new, 1)
-          needle = '        crate::render::SelectionProfile::default(),\n        match mode {'
-          if s.count(needle) != 1:
-              raise SystemExit('expected one hardcoded selection profile in access-path renderer')
-          s = s.replace(needle, '        profile,\n        match mode {', 1)
-          p.write_text(s)
+          old = '''        access_paths,\n        crate::render::SelectionProfile::default(),\n        match mode {\n            DiagnosticMode::TcpOnly => crate::render::CompatibilityMode::TcpOnly,\n            DiagnosticMode::VisionOff | DiagnosticMode::None => {\n                crate::render::CompatibilityMode::Normal\n            }\n        },\n    )?;'''
+          new = '''        access_paths,\n        profile,\n        compat_mode,\n    )?;'''
+          if s.count(old) != 1:
+              raise SystemExit('access-path renderer option block changed')
+          p.write_text(s.replace(old, new, 1))
 
+          # Preserve legacy /sub output byte-for-byte when the deployment has
+          # no access paths. Only relay-aware deployments use the new document
+          # path; this avoids regressing existing single-node subscriptions.
           p = Path('services/subscription/src/lib.rs')
           s = p.read_text()
-          old = '''            match compat_config::contract::provisioning_document_with_mode_and_access_paths(\n                &user,\n                &state.endpoints,\n                mode,\n                &state.access_paths,\n            ) {'''
-          new = '''            match compat_config::contract::provisioning_document_with_mode_and_access_paths_and_profile(\n                &user,\n                &state.endpoints,\n                mode,\n                &state.access_paths,\n                profile,\n            ) {'''
-          if s.count(old) != 1:
-              raise SystemExit('subscription access-path provisioning call shape changed')
-          p.write_text(s.replace(old, new, 1))
+          start_marker = '''        "singbox" => {\n            let mode = match compat_mode {'''
+          start = s.find(start_marker)
+          end_marker = '''        ,\n        "uri" | "hiddify" => {'''
+          end = s.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('generated singbox subscription branch not found')
+          replacement = '''        "singbox" => {\n            if state.access_paths.is_empty() {\n                match render::render_singbox_client_subscription_with_options(\n                    &user,\n                    &state.endpoints,\n                    profile,\n                    compat_mode,\n                ) {\n                    Ok(doc) => match serde_json::to_string_pretty(&doc) {\n                        Ok(body) => (StatusCode::OK, [("content-type", "application/json")], body).into_response(),\n                        Err(e) => {\n                            tracing::error!(error = %e, "failed to serialize singbox subscription");\n                            (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()\n                        }\n                    },\n                    Err(e) => {\n                        tracing::error!(error = %e, "failed to render singbox subscription");\n                        (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()\n                    }\n                }\n            } else {\n                let mode = match compat_mode {\n                    render::CompatibilityMode::TcpOnly => compat_config::contract::DiagnosticMode::TcpOnly,\n                    render::CompatibilityMode::VisionOff => compat_config::contract::DiagnosticMode::VisionOff,\n                    _ => compat_config::contract::DiagnosticMode::None,\n                };\n                match compat_config::contract::provisioning_document_with_mode_and_access_paths_and_options(\n                    &user,\n                    &state.endpoints,\n                    mode,\n                    &state.access_paths,\n                    profile,\n                    compat_mode,\n                ) {\n                    Ok(doc) => match doc.singbox_config {\n                        Some(config) => match serde_json::to_string_pretty(&config) {\n                            Ok(body) => (StatusCode::OK, [("content-type", "application/json")], body).into_response(),\n                            Err(e) => {\n                                tracing::error!(error = %e, "failed to serialize relay-aware singbox subscription");\n                                (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()\n                            }\n                        },\n                        None => (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response(),\n                    },\n                    Err(e) => {\n                        tracing::error!(error = %e, "failed to render relay-aware singbox subscription");\n                        (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()\n                    }\n                }\n            }\n        }'''
+          s = s[:start] + replacement + s[end:]
+          p.write_text(s)
           PY
       - name: Format
         run: cargo fmt --all
