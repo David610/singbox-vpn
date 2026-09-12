@@ -51,12 +51,21 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path('crates/compat-config/src/model.rs')
           s = p.read_text()
           old = '''            asn: None,\n            path: None,\n        }\n    }\n}'''
           new = '''            asn: None,\n            path: None,\n            credential_ref: None,\n        }\n    }\n}'''
           if s.count(old) != 1:
               raise SystemExit(f'expected one CompatEndpoint::default initializer, found {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('apps/admin/src/main.rs')
+          s = p.read_text()
+          old = '''            asn: None,\n            path: "direct".into(),\n            extra: Default::default(),'''
+          new = '''            asn: None,\n            path: "direct".into(),\n            credential_ref: None,\n            extra: Default::default(),'''
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one PeerEndpointSection test initializer, found {s.count(old)}')
           p.write_text(s.replace(old, new, 1))
           PY
       - name: Format
