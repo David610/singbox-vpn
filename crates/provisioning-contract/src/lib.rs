@@ -440,6 +440,11 @@ impl<'de> Deserialize<'de> for AccessPathKind {
 pub struct AccessPath {
     pub id: String,
     pub kind: AccessPathKind,
+    /// Endpoint id of the authenticated first hop used by this path.
+    /// This is a non-secret reference only: credentials stay in the
+    /// embedded Core configuration and never enter access-path metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_endpoint_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_domain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -455,11 +460,17 @@ impl AccessPath {
         Self {
             id: id.into(),
             kind,
+            via_endpoint_id: None,
             failure_domain: None,
             region: None,
             provider: None,
             capabilities,
         }
+    }
+
+    pub fn with_via_endpoint_id(mut self, endpoint_id: impl Into<String>) -> Self {
+        self.via_endpoint_id = Some(endpoint_id.into());
+        self
     }
 
     pub fn with_metadata(
@@ -477,6 +488,9 @@ impl AccessPath {
     fn validate(&self) -> Result<(), ContractError> {
         non_empty("access_paths[].id", &self.id)?;
         non_empty("access_paths[].kind", self.kind.as_str())?;
+        if let Some(via) = &self.via_endpoint_id {
+            non_empty("access_paths[].via_endpoint_id", via)?;
+        }
         if self.capabilities.is_empty() {
             return Err(ContractError::Invalid {
                 field: "access_paths[].capabilities",

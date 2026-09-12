@@ -286,26 +286,62 @@ async fn get_subscription(
         };
 
     match format {
-        "singbox" => match render::render_singbox_client_subscription_with_options(
-            &user,
-            &state.endpoints,
-            profile,
-            compat_mode,
-        ) {
-            Ok(doc) => match serde_json::to_string_pretty(&doc) {
-                Ok(body) => {
-                    (StatusCode::OK, [("content-type", "application/json")], body).into_response()
+        "singbox" => {
+            if state.access_paths.is_empty() {
+                match render::render_singbox_client_subscription_with_options(
+                    &user,
+                    &state.endpoints,
+                    profile,
+                    compat_mode,
+                ) {
+                    Ok(doc) => match serde_json::to_string_pretty(&doc) {
+                        Ok(body) => (StatusCode::OK, [("content-type", "application/json")], body)
+                            .into_response(),
+                        Err(e) => {
+                            tracing::error!(error = %e, "failed to serialize singbox subscription");
+                            (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to render singbox subscription");
+                        (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+                    }
                 }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to serialize singbox subscription");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+            } else {
+                let mode = match compat_mode {
+                    render::CompatibilityMode::TcpOnly => {
+                        compat_config::contract::DiagnosticMode::TcpOnly
+                    }
+                    render::CompatibilityMode::VisionOff => {
+                        compat_config::contract::DiagnosticMode::VisionOff
+                    }
+                    _ => compat_config::contract::DiagnosticMode::None,
+                };
+                match compat_config::contract::provisioning_document_with_mode_and_access_paths_and_options(
+                    &user,
+                    &state.endpoints,
+                    mode,
+                    &state.access_paths,
+                    profile,
+                    compat_mode,
+                ) {
+                    Ok(doc) => match doc.singbox_config {
+                        Some(config) => match serde_json::to_string_pretty(&config) {
+                            Ok(body) => (StatusCode::OK, [("content-type", "application/json")], body).into_response(),
+                            Err(e) => {
+                                tracing::error!(error = %e, "failed to serialize relay-aware singbox subscription");
+                                (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+                            }
+                        },
+                        None => (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response(),
+                    },
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to render relay-aware singbox subscription");
+                        (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+                    }
                 }
-            },
-            Err(e) => {
-                tracing::error!(error = %e, "failed to render singbox subscription");
-                (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
             }
-        },
+        }
         "uri" | "hiddify" => {
             if compat_mode == render::CompatibilityMode::QuicReject {
                 // `quic-reject` IS a `route.rules` entry — there is no
@@ -1446,6 +1482,7 @@ mod tests {
             provider: Some("provider-b".into()),
             asn: None,
             path: Some("direct".into()),
+            credential_ref: None,
         });
         std::sync::Arc::new(AppState {
             users_file: path,

@@ -79,21 +79,27 @@ pub fn contract_endpoint_opt(
     // with a single answer.
     let credential = match endpoint.origin {
         EndpointOrigin::Local => None,
-        EndpointOrigin::Peer => match user.peer_credential(&endpoint.id) {
-            None => return Ok(None),
-            Some(c) => {
-                if c.transport() != endpoint.transport {
-                    return Err(CompatError::Parse(format!(
+        EndpointOrigin::Peer => {
+            let credential_id = endpoint
+                .credential_ref
+                .as_deref()
+                .unwrap_or(endpoint.id.as_str());
+            match user.peer_credential(credential_id) {
+                None => return Ok(None),
+                Some(c) => {
+                    if c.transport() != endpoint.transport {
+                        return Err(CompatError::Parse(format!(
                         "user {}: peer credential for {:?} is a {} credential but that endpoint is {}; a credential is never coerced across transports",
                         user.id,
                         endpoint.id,
                         c.transport().as_str(),
                         endpoint.transport.as_str()
                     )));
+                    }
+                    Some(c)
                 }
-                Some(c)
             }
-        },
+        }
     };
 
     let params = match &endpoint.public_parameters {
@@ -252,6 +258,31 @@ pub fn provisioning_document_with_mode_and_access_paths(
     mode: DiagnosticMode,
     access_paths: &[contract::AccessPath],
 ) -> Result<contract::ProvisioningDocument, CompatError> {
+    let compat_mode = match mode {
+        DiagnosticMode::TcpOnly => crate::render::CompatibilityMode::TcpOnly,
+        DiagnosticMode::VisionOff => crate::render::CompatibilityMode::VisionOff,
+        DiagnosticMode::None => crate::render::CompatibilityMode::Normal,
+    };
+    provisioning_document_with_mode_and_access_paths_and_options(
+        user,
+        endpoints,
+        mode,
+        access_paths,
+        crate::render::SelectionProfile::default(),
+        compat_mode,
+    )
+}
+
+/// Access-path-aware provisioning while preserving the caller's complete
+/// rendering request. This is used by relay-aware subscriptions.
+pub fn provisioning_document_with_mode_and_access_paths_and_options(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    mode: DiagnosticMode,
+    access_paths: &[contract::AccessPath],
+    profile: crate::render::SelectionProfile,
+    compat_mode: crate::render::CompatibilityMode,
+) -> Result<contract::ProvisioningDocument, CompatError> {
     let mut contract_endpoints = Vec::with_capacity(endpoints.len());
     for ep in endpoints {
         if mode == DiagnosticMode::TcpOnly
@@ -277,8 +308,19 @@ pub fn provisioning_document_with_mode_and_access_paths(
         }
     }
 
+    let infrastructure_ids: std::collections::BTreeSet<String> = access_paths
+        .iter()
+        .filter(|path| matches!(path.kind, contract::AccessPathKind::Relay))
+        .filter_map(|path| path.via_endpoint_id.clone())
+        .collect();
+    let selectable_endpoints: Vec<contract::Endpoint> = contract_endpoints
+        .iter()
+        .filter(|endpoint| !infrastructure_ids.contains(&endpoint.id))
+        .cloned()
+        .collect();
+
     let mut capabilities: Vec<contract::Capability> = Vec::new();
-    for ep in &contract_endpoints {
+    for ep in &selectable_endpoints {
         let cap = contract::Capability::for_transport(&ep.transport());
         if !capabilities.contains(&cap) {
             capabilities.push(cap);
@@ -308,21 +350,22 @@ pub fn provisioning_document_with_mode_and_access_paths(
     // hands to Core cannot describe different things. `validate()` then
     // cross-checks them anyway — a guarantee worth having twice, since it
     // is the whole basis for a client trusting one fetch.
-    let singbox_config = crate::render::render_singbox_config_from_contract(
+    let selectable_ids: Vec<String> = selectable_endpoints
+        .iter()
+        .map(|endpoint| endpoint.id.clone())
+        .collect();
+    let singbox_config = crate::render::render_singbox_config_from_contract_with_access_paths(
         &contract_endpoints,
-        crate::render::SelectionProfile::default(),
-        match mode {
-            DiagnosticMode::TcpOnly => crate::render::CompatibilityMode::TcpOnly,
-            DiagnosticMode::VisionOff | DiagnosticMode::None => {
-                crate::render::CompatibilityMode::Normal
-            }
-        },
+        &selectable_ids,
+        access_paths,
+        profile,
+        compat_mode,
     )?;
 
     let doc = contract::ProvisioningDocument::new(
         contract::ServerInfo::current(SERVER_VERSION),
         capabilities,
-        contract_endpoints,
+        selectable_endpoints,
     )
     .with_experimental_capabilities(experimental)
     .with_access_paths(access_paths.to_vec())

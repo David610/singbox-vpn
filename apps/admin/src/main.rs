@@ -8506,6 +8506,7 @@ mod peer_credential_cli_tests {
             provider: None,
             asn: None,
             path: "direct".into(),
+            credential_ref: None,
             extra: Default::default(),
         }
     }
