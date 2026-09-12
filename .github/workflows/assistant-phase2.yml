@@ -21,6 +21,18 @@ jobs:
           fetch-depth: 0
       - name: Apply phase2 edits
         run: python3 .github/assistant/apply_phase2.py
+      - name: Update schema-v2 migration fixture
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/admin/tests/cli.rs')
+          s = p.read_text()
+          old = 'assert!(toml_text.starts_with("schema_version = 1"));'
+          new = 'assert!(toml_text.starts_with(&format!("schema_version = {}", compat_config::deployment::DEPLOYMENT_SCHEMA_VERSION)));'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one stale schema assertion, found {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
       - name: Format
         run: cargo fmt --all
       - name: Check workspace
