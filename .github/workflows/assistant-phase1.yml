@@ -52,21 +52,67 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path('crates/compat-config/src/model.rs')
-          s = p.read_text()
-          old = '''            asn: None,\n            path: None,\n        }\n    }\n}'''
-          new = '''            asn: None,\n            path: None,\n            credential_ref: None,\n        }\n    }\n}'''
-          if s.count(old) != 1:
-              raise SystemExit(f'expected one CompatEndpoint::default initializer, found {s.count(old)}')
-          p.write_text(s.replace(old, new, 1))
+          def add_optional_field_to_literals(text: str, type_name: str, field_name: str) -> tuple[str, int]:
+              marker = type_name + ' {'
+              cursor = 0
+              added = 0
+              while True:
+                  start = text.find(marker, cursor)
+                  if start < 0:
+                      break
+                  brace = text.find('{', start)
+                  depth = 0
+                  i = brace
+                  in_string = False
+                  escaped = False
+                  while i < len(text):
+                      ch = text[i]
+                      if in_string:
+                          if escaped:
+                              escaped = False
+                          elif ch == '\\':
+                              escaped = True
+                          elif ch == '"':
+                              in_string = False
+                      else:
+                          if ch == '"':
+                              in_string = True
+                          elif ch == '{':
+                              depth += 1
+                          elif ch == '}':
+                              depth -= 1
+                              if depth == 0:
+                                  break
+                      i += 1
+                  if i >= len(text):
+                      raise SystemExit(f'unbalanced {type_name} literal near {start}')
+                  block = text[start:i+1]
+                  # Struct declarations contain `pub <field>:` and already have
+                  # the field. Existing/new literals which spell it are left alone.
+                  if f'{field_name}:' not in block:
+                      line_start = text.rfind('\n', 0, i) + 1
+                      close_indent = text[line_start:i]
+                      field_indent = close_indent + '    '
+                      insertion = f'{field_indent}{field_name}: None,\n'
+                      text = text[:line_start] + insertion + text[line_start:]
+                      delta = len(insertion)
+                      i += delta
+                      added += 1
+                  cursor = i + 1
+              return text, added
 
-          p = Path('apps/admin/src/main.rs')
-          s = p.read_text()
-          old = '''            asn: None,\n            path: "direct".into(),\n            extra: Default::default(),'''
-          new = '''            asn: None,\n            path: "direct".into(),\n            credential_ref: None,\n            extra: Default::default(),'''
-          if s.count(old) != 1:
-              raise SystemExit(f'expected one PeerEndpointSection test initializer, found {s.count(old)}')
-          p.write_text(s.replace(old, new, 1))
+          total = 0
+          for p in Path('.').rglob('*.rs'):
+              s = p.read_text()
+              original = s
+              s, n1 = add_optional_field_to_literals(s, 'CompatEndpoint', 'credential_ref')
+              s, n2 = add_optional_field_to_literals(s, 'PeerEndpointSection', 'credential_ref')
+              if s != original:
+                  p.write_text(s)
+              total += n1 + n2
+          if total == 0:
+              raise SystemExit('expected at least one pre-existing endpoint literal to require credential_ref=None')
+          print(f'patched {total} endpoint literal(s) with credential_ref=None')
           PY
       - name: Format
         run: cargo fmt --all
