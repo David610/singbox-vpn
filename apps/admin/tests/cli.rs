@@ -1596,6 +1596,7 @@ fn render_config_require_applied_succeeds_on_true_noop() {
 /// `render_and_apply_singbox_config`'s doc comment). Asserting on this
 /// count directly, rather than on stdout wording alone, is what proves
 /// a "no-op" claim is true and not just printed.
+#[cfg(unix)]
 fn count_reload_or_restart_calls(log_path: &Path) -> usize {
     std::fs::read_to_string(log_path)
         .unwrap_or_default()
@@ -2903,7 +2904,18 @@ fn config_migrate_is_idempotent_and_validate_reports_ok_afterward() {
         .stdout(predicates::str::contains("already current"));
 
     let toml_text = std::fs::read_to_string(&cfg_path).unwrap();
-    assert!(toml_text.starts_with("schema_version = 1"));
+    // schema v1 no longer exists: v2 (DEPLOYMENT_SCHEMA_VERSION) is the
+    // current on-disk schema, so the migration marker must assert the
+    // same constant the migration itself stamps.
+    assert!(toml_text.starts_with(&format!(
+        "schema_version = {}\n",
+        compat_config::deployment::DEPLOYMENT_SCHEMA_VERSION
+    )));
+    // The legacy file was an ordinary exit: migration derives the stable
+    // node id from public_host and must never invent a relay role.
+    assert!(toml_text.contains(r#"node_id = "vpn""#));
+    assert!(toml_text.contains(r#"role = "exit""#));
+    assert!(!toml_text.contains(r#"role = "relay""#));
     // operator settings preserved
     assert!(toml_text.contains(r#"public_host = "vpn.example.com""#));
 }

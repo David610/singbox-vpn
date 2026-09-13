@@ -91,6 +91,35 @@ done
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/state-schema.sh"
 # shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/node-identity.sh"
+
+# Role/identity safety for every update/repair: snapshot deployment.toml
+# (and its role/node_id) under the state lock before anything mutates,
+# refuse to continue if a migration changed either, and put the exact
+# pre-update file back on rollback. An update must never turn a relay into
+# an exit, an exit into a relay, or rename a node.
+snapshot_deployment_identity() {
+  PRE_UPDATE_ROLE="$(deployment_effective_role "$DEPLOYMENT_TOML")"
+  PRE_UPDATE_NODE_ID="$(deployment_top_level_value "$DEPLOYMENT_TOML" node_id)"
+  cp -a "$DEPLOYMENT_TOML" "$BACKUP_DIR/deployment.toml"
+  log "deployment identity before update: node_id=${PRE_UPDATE_NODE_ID:-<unset, legacy>} role=$PRE_UPDATE_ROLE"
+}
+
+assert_deployment_identity_unchanged() {
+  local reason
+  if ! reason="$(deployment_identity_unchanged "$DEPLOYMENT_TOML" "$PRE_UPDATE_ROLE" "$PRE_UPDATE_NODE_ID")"; then
+    die "$reason during update — refusing to continue with a changed node identity/role. Rolling back."
+  fi
+}
+
+restore_deployment_toml_snapshot() {
+  [ -f "$BACKUP_DIR/deployment.toml" ] || return 0
+  if ! cmp -s "$BACKUP_DIR/deployment.toml" "$DEPLOYMENT_TOML" 2>/dev/null; then
+    cp -a "$BACKUP_DIR/deployment.toml" "$DEPLOYMENT_TOML.rollback" \
+      && mv -f "$DEPLOYMENT_TOML.rollback" "$DEPLOYMENT_TOML"
+  fi
+}
+# shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/binary-version-check.sh"
 
 # Production updates perform the same kinds of GitHub/SagerNet fetches as a
@@ -342,6 +371,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   flock -x 201
   [ -f /etc/vpn/compat/sing-box/config.json ] \
     && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
+  snapshot_deployment_identity
 
   mutation_started=0
   committed=0
@@ -365,6 +395,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
       rm -f "$SYSTEMD_DIR/$u.update-new"
     done
     systemctl daemon-reload || failed=1
+    restore_deployment_toml_snapshot || failed=1
     for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
       if [ -f "$BACKUP_DIR/$f" ]; then
         install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
@@ -439,6 +470,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
       die "persistent state is INVALID/unsupported — see output above. Rolling back to the previous working binaries/config."
       ;;
   esac
+  assert_deployment_identity_unchanged
 
   log "rendering current authoritative users/REALITY state with new tooling..."
   SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
@@ -717,6 +749,11 @@ if [ -f "$DEPLOYMENT_TOML" ]; then
   case "$precheck_rc" in
     0 | 2)
       log "pre-switch schema compatibility check: $TARGET_VERSION's vpn-admin can read the current persistent state (status $precheck_rc)."
+      if [ "$(deployment_effective_role "$DEPLOYMENT_TOML")" = "relay" ] \
+          && ! admin_output_declares_relay_enforcement "$precheck_output"; then
+        echo "$precheck_output" >&2
+        die "this node is a RELAY, and $TARGET_VERSION's vpn-admin does not declare fail-closed relay forwarding. Switching to it (update, repair or downgrade) could render this relay as an unrestricted exit. Nothing live has been changed."
+      fi
       ;;
     *)
       echo "$precheck_output" >&2
@@ -773,6 +810,7 @@ exec 201>/run/lock/singbox-vpn.lock
 flock -x 201
 [ -f /etc/vpn/compat/sing-box/config.json ] \
   && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
+snapshot_deployment_identity
 
 mutation_started=0
 committed=0
@@ -822,6 +860,11 @@ rollback_update() {
   fi
 
   systemctl daemon-reload || failed=1
+
+  # deployment.toml IS rewound when this transaction migrated it: the
+  # restored (older) binaries may not understand the migrated schema, and
+  # a node's role/identity must come back exactly as it was.
+  restore_deployment_toml_snapshot || failed=1
 
   # Never rewind users.json or REALITY material — authoritative, may
   # have changed while staging/download ran. Render with the restored
@@ -933,6 +976,7 @@ case "$schema_rc" in
     die "persistent state is INVALID/unsupported — see output above. Rolling back to $CURRENT_VERSION."
     ;;
 esac
+assert_deployment_identity_unchanged
 lifecycle_gate_abort_hook after_switch
 
 log "rendering current authoritative users/REALITY state with new tooling (credentials are never rotated by an update)..."
@@ -1004,6 +1048,8 @@ cat > "$INSTALL_STATE_MANIFEST.tmp" <<EOF
   "sing_box_sha256_pinned": "$pinned_singbox_sha256",
   "arch": "$ARCH",
   "installed_at_unix": $(date +%s),
+  "node_id": "$(deployment_top_level_value "$DEPLOYMENT_TOML" node_id)",
+  "role": "$(deployment_effective_role "$DEPLOYMENT_TOML")",
   "public_host": "$public_host",
   "subscription_host": "$subscription_host",
   "firewall_backend": "$firewall_backend",

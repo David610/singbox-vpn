@@ -18,6 +18,39 @@ use std::path::{Path, PathBuf};
 /// `validate`) rather than silently reinterpreting it.
 pub const DEPLOYMENT_SCHEMA_VERSION: u32 = 2;
 
+/// Printed by `vpn-admin config validate` from every build that renders
+/// relays fail-closed. `update.sh` refuses to switch a relay node to a
+/// `vpn-admin` that does not print it: a build that parses `role` but
+/// predates relay enforcement would otherwise render the relay as an
+/// unrestricted exit after an update or rollback. Kept in sync with
+/// `deploy/lib/node-identity.sh` by `deploy/lib/tests/test-node-identity.sh`.
+pub const RELAY_ENFORCEMENT_CAPABILITY: &str = "capability: relay-fail-closed-forwarding";
+
+/// Endpoint id of this deployment's own VLESS+REALITY listener. On a relay
+/// node this is the authenticated first hop, never a final exit.
+pub const LOCAL_REALITY_ENDPOINT_ID: &str = "reality-1";
+/// Endpoint id of this deployment's own Hysteria2 listener.
+pub const LOCAL_HYSTERIA2_ENDPOINT_ID: &str = "hysteria2-1";
+
+/// `[[access_paths]] kind` value whose routes are executable through a
+/// Core-native `detour` first hop.
+pub const RELAY_ACCESS_PATH_KIND: &str = "relay";
+
+/// Longest accepted `node_id`: one DNS label, so an operator can reuse it
+/// as a hostname label or metrics dimension without re-validating it.
+pub const NODE_ID_MAX_LEN: usize = 63;
+
+/// Core outbound tags the client renderer emits itself. A peer endpoint's
+/// `tag` becomes a Core outbound tag, so it must never collide with one.
+pub const RESERVED_ENDPOINT_TAGS: &[&str] = &["Reality", "Hysteria2", "auto", "select", "direct"];
+
+/// What a node is allowed to do with authenticated client traffic.
+///
+/// `Exit` is the historical single-server behaviour and the default for
+/// every file that predates roles. `Relay` accepts authenticated
+/// first-hop traffic and may forward it ONLY to the exits this file
+/// declares; it is never an Internet exit (see
+/// `server::render_server_config_for_deployment`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeRole {
@@ -33,6 +66,127 @@ impl NodeRole {
             NodeRole::Relay => "relay",
         }
     }
+
+    /// Strict parser for operator input (installer flags, CLI). Unknown
+    /// values are refused, never mapped to the permissive default.
+    pub fn parse(value: &str) -> Result<Self, CompatError> {
+        match value {
+            "exit" => Ok(NodeRole::Exit),
+            "relay" => Ok(NodeRole::Relay),
+            other => Err(CompatError::Parse(format!(
+                "invalid node role {other:?} (expected \"exit\" or \"relay\")"
+            ))),
+        }
+    }
+}
+
+/// A concrete destination a relay node is allowed to dial on behalf of an
+/// authenticated first-hop user. Derived only from declared peer exits;
+/// never from user input or traffic.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RelayTarget {
+    pub host: String,
+    pub port: u16,
+}
+
+/// Validate a `node_id`: 1..=63 ASCII letters, digits, `-`, `_`, `.`,
+/// starting with a letter or digit.
+pub fn validate_node_id(node_id: &str) -> Result<(), CompatError> {
+    if node_id.is_empty() {
+        return Err(CompatError::Parse("node_id is empty".into()));
+    }
+    if node_id.len() > NODE_ID_MAX_LEN {
+        return Err(CompatError::Parse(format!(
+            "node_id {node_id:?} is longer than {NODE_ID_MAX_LEN} characters"
+        )));
+    }
+    if !node_id
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(CompatError::Parse(format!(
+            "node_id {node_id:?} must start with an ASCII letter or digit"
+        )));
+    }
+    if !node_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(CompatError::Parse(format!(
+            "node_id {node_id:?} contains unsupported characters (allowed: ASCII letters, digits, '-', '_', '.')"
+        )));
+    }
+    Ok(())
+}
+
+/// The documented default node identity for a host: the first DNS label of
+/// `public_host`, with unsupported characters replaced by `-`, trimmed and
+/// truncated to `NODE_ID_MAX_LEN`. `legacy-node` when nothing usable
+/// remains. The installer implements the same rule for fresh installs and
+/// `deploy/lib/tests/test-node-identity.sh` holds the two in agreement.
+pub fn default_node_id_for_host(public_host: &str) -> String {
+    let first = public_host.split('.').next().unwrap_or(public_host);
+    let mapped: String = first
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut id: String = mapped
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .chars()
+        .take(NODE_ID_MAX_LEN)
+        .collect();
+    while id.ends_with(['-', '_']) {
+        id.pop();
+    }
+    if id.is_empty() {
+        "legacy-node".to_string()
+    } else {
+        id
+    }
+}
+
+/// A relay target host must be something a Core `domain`/`ip_cidr` route
+/// rule can match exactly: an IP literal that names one concrete host, or
+/// a lowercase DNS name.
+fn validate_relay_target_host(host: &str) -> Result<(), String> {
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let unusable = ip.is_unspecified()
+            || ip.is_multicast()
+            || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast());
+        return if unusable {
+            Err(format!(
+                "{host:?} is not a single concrete host (unspecified/multicast/broadcast)"
+            ))
+        } else {
+            Ok(())
+        };
+    }
+    if host.len() > 253 || host.ends_with('.') {
+        return Err(format!("{host:?} is not a valid DNS name"));
+    }
+    for label in host.split('.') {
+        let valid = !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !valid {
+            return Err(format!(
+                "{host:?} is not a lowercase DNS name or IP literal; relay forwarding rules match \
+                 the destination exactly, so it must be written exactly as clients dial it"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -555,12 +709,14 @@ impl DeploymentConfig {
 
     /// Structural checks that TOML deserialization alone can't express
     /// (field-value-shape defaults, not schema shape).
+    ///
+    /// Every relay-related rule here fails closed: a declaration this
+    /// binary cannot turn into an exact, restricted forwarding policy and an
+    /// exact Core `detour` chain is refused at load time, before anything
+    /// is rendered, served or applied.
     pub fn validate(&self) -> Result<(), CompatError> {
         // Fail closed on a schema newer than this binary understands —
-        // see DEPLOYMENT_SCHEMA_VERSION's doc comment. A version <=
-        // current (including the legacy default of 0) is always safe to
-        // load: nothing about the shape has changed since versioning was
-        // introduced, so there is nothing to reinterpret.
+        // see DEPLOYMENT_SCHEMA_VERSION's doc comment.
         if self.schema_version > DEPLOYMENT_SCHEMA_VERSION {
             return Err(CompatError::UnsupportedSchema {
                 what: "deployment.toml",
@@ -568,23 +724,15 @@ impl DeploymentConfig {
                 max_supported: DEPLOYMENT_SCHEMA_VERSION,
             });
         }
-        if self.schema_version >= 2 {
-            if self.node_id.trim().is_empty() {
-                return Err(CompatError::Parse(
-                    "schema-v2 deployment.toml requires a non-empty node_id".into(),
-                ));
-            }
-            if !self
-                .node_id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-            {
-                return Err(CompatError::Parse(format!(
-                    "node_id {:?} contains unsupported characters (allowed: ASCII letters, digits, '-', '_', '.')",
-                    self.node_id
-                )));
-            }
+        if self.schema_version >= 2 && self.node_id.trim().is_empty() {
+            return Err(CompatError::Parse(
+                "schema-v2 deployment.toml requires a non-empty node_id".into(),
+            ));
         }
+        if !self.node_id.is_empty() {
+            validate_node_id(&self.node_id)?;
+        }
+
         let mut seen_access_path_ids: Vec<&str> = Vec::with_capacity(self.access_paths.len());
         for path in &self.access_paths {
             path.validate()?;
@@ -598,6 +746,7 @@ impl DeploymentConfig {
         }
 
         let mut seen_peer_ids: Vec<&str> = Vec::with_capacity(self.peer_endpoints.len());
+        let mut seen_tags: Vec<&str> = Vec::with_capacity(self.peer_endpoints.len());
         for peer in &self.peer_endpoints {
             peer.validate()?;
             if LOCAL_ENDPOINT_IDS.contains(&peer.id.as_str()) {
@@ -615,6 +764,16 @@ impl DeploymentConfig {
                 )));
             }
             seen_peer_ids.push(&peer.id);
+            if RESERVED_ENDPOINT_TAGS.contains(&peer.tag.as_str())
+                || seen_tags.contains(&peer.tag.as_str())
+            {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: tag {:?} is reserved or already used by another \
+                     endpoint; tags become Core outbound tags and must be unique",
+                    peer.id, peer.tag
+                )));
+            }
+            seen_tags.push(&peer.tag);
 
             // Old schema-version-1 files were allowed to carry opaque path
             // labels without an access_paths list. Preserve that. Once the
@@ -631,82 +790,10 @@ impl DeploymentConfig {
             }
         }
 
-        // Route aliases may reuse a credential issued for another peer
-        // endpoint, but only when that target exists and speaks the same
-        // transport. Otherwise the generated profile would be confidently
-        // undialable.
-        for peer in &self.peer_endpoints {
-            if let Some(credential_ref) = &peer.credential_ref {
-                let target = self
-                    .peer_endpoints
-                    .iter()
-                    .find(|candidate| candidate.id == *credential_ref)
-                    .ok_or_else(|| {
-                        CompatError::Parse(format!(
-                            "[[peer_endpoints]] {}: credential_ref {:?} does not name a declared peer endpoint",
-                            peer.id, credential_ref
-                        ))
-                    })?;
-                if target.transport != peer.transport {
-                    return Err(CompatError::Parse(format!(
-                        "[[peer_endpoints]] {}: credential_ref {:?} is {}, but this alias is {}; credentials cannot cross transports",
-                        peer.id,
-                        credential_ref,
-                        target.transport.as_str(),
-                        peer.transport.as_str()
-                    )));
-                }
-            }
-
-            if peer.path != "direct" {
-                if let Some(path) = self.access_paths.iter().find(|path| path.id == peer.path) {
-                    if path.kind == "relay" {
-                        if peer.transport != crate::model::CompatTransport::VlessReality {
-                            return Err(CompatError::Parse(format!(
-                                "[[peer_endpoints]] {}: relay path {:?} is TCP/VLESS-only in the current MVP; hysteria2-over-relay is not implemented",
-                                peer.id, peer.path
-                            )));
-                        }
-                        let via = path.via_endpoint_id.as_deref().ok_or_else(|| {
-                            CompatError::Parse(format!(
-                                "[[peer_endpoints]] {}: relay path {:?} has no via_endpoint_id; refusing to silently render it as a direct route",
-                                peer.id, peer.path
-                            ))
-                        })?;
-                        if via == peer.id {
-                            return Err(CompatError::Parse(format!(
-                                "[[peer_endpoints]] {}: relay path {:?} points back to itself",
-                                peer.id, peer.path
-                            )));
-                        }
-                        if via != "reality-1" {
-                            let first_hop = self
-                                .peer_endpoints
-                                .iter()
-                                .find(|candidate| candidate.id == via)
-                                .ok_or_else(|| {
-                                    CompatError::Parse(format!(
-                                        "[[access_paths]] {}: via_endpoint_id {:?} is neither local reality-1 nor a declared peer endpoint",
-                                        path.id, via
-                                    ))
-                                })?;
-                            if first_hop.transport != crate::model::CompatTransport::VlessReality {
-                                return Err(CompatError::Parse(format!(
-                                    "[[access_paths]] {}: via_endpoint_id {:?} is not VLESS+REALITY; relay chaining is TCP/VLESS-only in this MVP",
-                                    path.id, via
-                                )));
-                            }
-                        }
-                        if path.capabilities.iter().any(|cap| cap == "udp") {
-                            return Err(CompatError::Parse(format!(
-                                "[[access_paths]] {}: capability 'udp' is not implemented for the relay MVP; advertise only capabilities actually proven",
-                                path.id
-                            )));
-                        }
-                    }
-                }
-            }
-        }
+        self.validate_access_path_first_hops()?;
+        self.validate_credential_refs()?;
+        self.validate_relay_routes()?;
+        self.validate_role()?;
 
         if self.hysteria2.up_mbps.is_some() != self.hysteria2.down_mbps.is_some() {
             return Err(CompatError::Parse(
@@ -716,6 +803,276 @@ impl DeploymentConfig {
             ));
         }
         Ok(())
+    }
+
+    fn relay_path(&self, id: &str) -> Option<&AccessPathSection> {
+        self.access_paths
+            .iter()
+            .find(|path| path.id == id && path.kind == RELAY_ACCESS_PATH_KIND)
+    }
+
+    /// Every declared `via_endpoint_id` must name a real, TCP-capable first
+    /// hop, even on a path no route uses yet: a dangling or UDP first hop
+    /// is a malformed pairing, not metadata.
+    fn validate_access_path_first_hops(&self) -> Result<(), CompatError> {
+        for path in &self.access_paths {
+            let Some(via) = path.via_endpoint_id.as_deref() else {
+                continue;
+            };
+            if path.kind != RELAY_ACCESS_PATH_KIND {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: via_endpoint_id is only meaningful for kind = \"relay\" \
+                     (found kind {:?})",
+                    path.id, path.kind
+                )));
+            }
+            if via == LOCAL_HYSTERIA2_ENDPOINT_ID {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: via_endpoint_id {via:?} is the local Hysteria2 listener; \
+                     relay chaining is TCP/VLESS+REALITY-only and UDP relay is not implemented",
+                    path.id
+                )));
+            }
+            if via == LOCAL_REALITY_ENDPOINT_ID {
+                if self.role != NodeRole::Relay {
+                    return Err(CompatError::Parse(format!(
+                        "[[access_paths]] {}: via_endpoint_id {via:?} makes this node's own \
+                         listener a relay first hop, which requires role = \"relay\" (this node \
+                         is {:?}). An exit must never be advertised as relay infrastructure.",
+                        path.id,
+                        self.role.as_str()
+                    )));
+                }
+            } else {
+                let first_hop = self
+                    .peer_endpoints
+                    .iter()
+                    .find(|candidate| candidate.id == via)
+                    .ok_or_else(|| {
+                        CompatError::Parse(format!(
+                            "[[access_paths]] {}: via_endpoint_id {via:?} is neither local {LOCAL_REALITY_ENDPOINT_ID} nor a declared peer endpoint",
+                            path.id
+                        ))
+                    })?;
+                if first_hop.transport != crate::model::CompatTransport::VlessReality {
+                    return Err(CompatError::Parse(format!(
+                        "[[access_paths]] {}: via_endpoint_id {via:?} is not VLESS+REALITY; relay chaining is TCP/VLESS-only in this MVP",
+                        path.id
+                    )));
+                }
+                if first_hop.path != "direct" || first_hop.credential_ref.is_some() {
+                    return Err(CompatError::Parse(format!(
+                        "[[access_paths]] {}: first hop {via:?} must itself be a direct endpoint \
+                         with its own credential; chains longer than two hops are not supported",
+                        path.id
+                    )));
+                }
+            }
+            if let Some(capability) = path
+                .capabilities
+                .iter()
+                .find(|capability| capability.as_str() != "tcp")
+            {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: capability {capability:?} is not implemented for relay \
+                     paths (only \"tcp\"); advertise only capabilities actually enforced",
+                    path.id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// A route alias may reuse a credential only when it names the direct
+    /// endpoint of the SAME exit server: the credential was issued by that
+    /// server and authenticates nowhere else.
+    fn validate_credential_refs(&self) -> Result<(), CompatError> {
+        for peer in &self.peer_endpoints {
+            let Some(credential_ref) = &peer.credential_ref else {
+                continue;
+            };
+            if *credential_ref == peer.id {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: credential_ref points at itself",
+                    peer.id
+                )));
+            }
+            let target = self
+                .peer_endpoints
+                .iter()
+                .find(|candidate| candidate.id == *credential_ref)
+                .ok_or_else(|| {
+                    CompatError::Parse(format!(
+                        "[[peer_endpoints]] {}: credential_ref {:?} does not name a declared peer endpoint",
+                        peer.id, credential_ref
+                    ))
+                })?;
+            if target.transport != peer.transport {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: credential_ref {:?} is {}, but this alias is {}; credentials cannot cross transports",
+                    peer.id,
+                    credential_ref,
+                    target.transport.as_str(),
+                    peer.transport.as_str()
+                )));
+            }
+            if target.credential_ref.is_some() || target.path != "direct" {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: credential_ref {:?} must name a direct endpoint that \
+                     owns its credential, not another alias",
+                    peer.id, credential_ref
+                )));
+            }
+            if target.host != peer.host
+                || target.port != peer.port
+                || target.reality_public_key != peer.reality_public_key
+            {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: credential_ref {:?} names a different server \
+                     (host/port/REALITY public key differ); a credential issued by one exit \
+                     cannot authenticate to another",
+                    peer.id, credential_ref
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Routes that use a relay path: VLESS+REALITY only, never through
+    /// themselves, and — when this node is the first hop — to a target a
+    /// forwarding rule can match exactly.
+    fn validate_relay_routes(&self) -> Result<(), CompatError> {
+        for peer in &self.peer_endpoints {
+            if peer.path == "direct" {
+                continue;
+            }
+            let Some(path) = self.relay_path(&peer.path) else {
+                continue;
+            };
+            if peer.transport != crate::model::CompatTransport::VlessReality {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: relay path {:?} is TCP/VLESS-only in the current MVP; hysteria2-over-relay is not implemented",
+                    peer.id, peer.path
+                )));
+            }
+            let via = path.via_endpoint_id.as_deref().ok_or_else(|| {
+                CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: relay path {:?} has no via_endpoint_id; refusing to silently render it as a direct route",
+                    peer.id, peer.path
+                ))
+            })?;
+            if via == peer.id {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: relay path {:?} points back to itself",
+                    peer.id, peer.path
+                )));
+            }
+            if via == LOCAL_REALITY_ENDPOINT_ID {
+                validate_relay_target_host(&peer.host).map_err(|reason| {
+                    CompatError::Parse(format!(
+                        "[[peer_endpoints]] {}: invalid relay destination: {reason}",
+                        peer.id
+                    ))
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A relay must declare its own listener as first-hop infrastructure.
+    /// Without that declaration the subscription service would advertise
+    /// `reality-1` as an ordinary exit that the server then refuses to
+    /// forward — a confidently broken route instead of an explicit one.
+    fn validate_role(&self) -> Result<(), CompatError> {
+        if self.role == NodeRole::Relay
+            && !self.access_paths.iter().any(|path| {
+                path.kind == RELAY_ACCESS_PATH_KIND
+                    && path.via_endpoint_id.as_deref() == Some(LOCAL_REALITY_ENDPOINT_ID)
+            })
+        {
+            return Err(CompatError::Parse(format!(
+                "role = \"relay\" requires an [[access_paths]] entry with kind = \"relay\" and \
+                 via_endpoint_id = \"{LOCAL_REALITY_ENDPOINT_ID}\". It marks this node's own \
+                 listener as first-hop infrastructure so it is never offered as a final exit."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Concrete destinations this node may dial when it is a relay: the
+    /// host/port of every declared peer route whose relay path uses this
+    /// node's own `reality-1` as its first hop. Sorted and de-duplicated.
+    ///
+    /// Empty for an exit, and empty for a relay that is not paired with any
+    /// exit yet — the role-aware server renderer treats that as reject-all.
+    pub fn relay_targets(&self) -> Vec<RelayTarget> {
+        if self.role != NodeRole::Relay {
+            return Vec::new();
+        }
+        let mut targets: Vec<RelayTarget> = self
+            .peer_endpoints
+            .iter()
+            .filter(|peer| {
+                self.relay_path(&peer.path).is_some_and(|path| {
+                    path.via_endpoint_id.as_deref() == Some(LOCAL_REALITY_ENDPOINT_ID)
+                })
+            })
+            .map(|peer| RelayTarget {
+                host: peer.host.clone(),
+                port: peer.port,
+            })
+            .collect();
+        targets.sort();
+        targets.dedup();
+        targets
+    }
+
+    /// The exact endpoint set `vpn-subscription` serves and `vpn-admin`
+    /// reproduces: this node's own listeners, then declared peers in
+    /// declaration order.
+    ///
+    /// A relay's Hysteria2 listener is not offered: relay chaining is
+    /// TCP-only, and a relay's listeners never reach the Internet. Its
+    /// `reality-1` stays in the set because it is the first hop the relay
+    /// routes detour through; the access-path declaration `validate_role`
+    /// requires is what keeps it out of every selectable catalog.
+    pub fn served_endpoints(
+        &self,
+        reality_public_key_hex: &str,
+        reality_short_id: &str,
+        hysteria_obfs_password: Option<&str>,
+    ) -> Result<Vec<crate::model::CompatEndpoint>, CompatError> {
+        let mut endpoints = crate::render::standard_endpoints(
+            &self.public_host,
+            self.reality.listen_port,
+            self.hysteria2.listen_port,
+            reality_public_key_hex,
+            reality_short_id,
+            &self.reality.handshake_server,
+            hysteria_obfs_password,
+        );
+        if self.role == NodeRole::Relay {
+            endpoints.retain(|endpoint| endpoint.id == LOCAL_REALITY_ENDPOINT_ID);
+        }
+        for peer in &self.peer_endpoints {
+            endpoints.push(peer.to_compat_endpoint().map_err(|e| {
+                CompatError::Parse(format!(
+                    "invalid [[peer_endpoints]] entry {:?}: {e}",
+                    peer.id
+                ))
+            })?);
+        }
+        Ok(endpoints)
+    }
+
+    /// Contract form of every declared access path, validated.
+    pub fn contract_access_paths(
+        &self,
+    ) -> Result<Vec<provisioning_contract::AccessPath>, CompatError> {
+        self.access_paths
+            .iter()
+            .map(AccessPathSection::to_contract_access_path)
+            .collect()
     }
 
     /// Return the effective UDP probe configuration, falling back to
@@ -781,101 +1138,81 @@ pub enum DeploymentMigrationOutcome {
     Migrated { backup_path: PathBuf },
 }
 
-/// Idempotent text-level migration: insert an explicit `schema_version =
-/// N` marker as the very first line if none is present yet. Deliberately
-/// a textual patch, not a full parse+reserialize round trip — TOML
-/// reserialization would reorder keys and drop comments, and this file
-/// "explicitly invites hand-editing" (see docs/ALMALINUX_DEPLOYMENT.md);
-/// operator formatting must survive byte-for-byte. Returns `None` if the
-/// file already has an explicit `schema_version` key anywhere (nothing
-/// to do).
-fn derived_legacy_node_id(original: &str) -> String {
-    let host = original
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            trimmed
-                .strip_prefix("public_host")
-                .and_then(|rest| rest.split_once('=').map(|(_, value)| value))
-                .map(|value| value.trim().trim_matches('"'))
-        })
-        .unwrap_or("legacy-node");
-    let first = host.split('.').next().unwrap_or(host);
-    let mut id: String = first
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    while id.starts_with('-') {
-        id.remove(0);
+/// The bare key a top-level `key = value` TOML line assigns, if any.
+fn top_level_key(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') || trimmed.starts_with('[') {
+        return None;
     }
-    while id.ends_with('-') {
-        id.pop();
-    }
-    if id.is_empty() {
-        "legacy-node".to_string()
-    } else {
-        id
-    }
+    let (key, _) = trimmed.split_once('=')?;
+    Some(key.trim())
 }
 
+/// Idempotent text-level migration to `DEPLOYMENT_SCHEMA_VERSION`:
+/// stamp `schema_version`, and add `node_id`/`role` if the file does not
+/// declare them yet. Deliberately a textual patch, not a parse+reserialize
+/// round trip — TOML reserialization would reorder keys and drop comments,
+/// and this file explicitly invites hand-editing
+/// (docs/ALMALINUX_DEPLOYMENT.md); operator formatting must survive.
+///
+/// Only the top-level region (everything before the first `[table]`
+/// header) is inspected, so a key of the same name inside a table can
+/// never be mistaken for the top-level one. An existing `role` is never
+/// rewritten; a file with no `role` predates roles and was an ordinary
+/// exit, so that is what is stamped — migration never invents a relay.
+/// `node_id` defaults to [`default_node_id_for_host`] of `public_host`.
+///
+/// Returns `None` if the file is already current (nothing to do).
 pub fn migrate_deployment_toml_text(original: &str) -> Option<String> {
-    let explicit_version = original.lines().find_map(|line| {
-        let trimmed = line.trim_start();
-        let rest = trimmed.strip_prefix("schema_version")?;
-        let (_, value) = rest.split_once('=')?;
-        value.trim().parse::<u32>().ok()
-    });
-    let has_node_id = original
+    let top_level: Vec<&str> = original
         .lines()
-        .any(|line| line.trim_start().starts_with("node_id"));
-    let has_role = original
-        .lines()
-        .any(|line| line.trim_start().starts_with("role"));
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .collect();
+    let value_of = |wanted: &str| {
+        top_level.iter().find_map(|line| {
+            (top_level_key(line)? == wanted)
+                .then(|| line.split_once('=').map(|(_, value)| value.trim()))
+                .flatten()
+        })
+    };
+    let explicit_version = value_of("schema_version").and_then(|value| value.parse::<u32>().ok());
+    let has_node_id = value_of("node_id").is_some();
+    let has_role = value_of("role").is_some();
     if explicit_version == Some(DEPLOYMENT_SCHEMA_VERSION) && has_node_id && has_role {
         return None;
     }
 
-    let mut body = String::new();
-    let mut wrote_version = false;
-    for line in original.lines() {
-        if line.trim_start().starts_with("schema_version") {
-            if !wrote_version {
-                body.push_str(&format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n"));
-                wrote_version = true;
-            }
-        } else {
-            body.push_str(line);
-            body.push('\n');
-        }
-    }
-    if !wrote_version {
-        body = format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{body}");
-    }
-
     let mut identity = String::new();
     if !has_node_id {
-        identity.push_str(&format!(
-            "node_id = {:?}\n",
-            derived_legacy_node_id(original)
-        ));
+        let host = value_of("public_host")
+            .map(|value| value.trim_matches('"'))
+            .unwrap_or_default();
+        identity.push_str(&format!("node_id = {:?}\n", default_node_id_for_host(host)));
     }
     if !has_role {
-        // Every deployment before role support was an ordinary unrestricted
-        // exit. Migration must never invent a relay.
         identity.push_str("role = \"exit\"\n");
     }
-    if !identity.is_empty() {
-        body = body.replacen(
-            &format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n"),
-            &format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{identity}"),
-            1,
-        );
+
+    let header = format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{identity}");
+    let mut body = String::new();
+    let mut wrote_header = false;
+    let mut in_top_level = true;
+    for line in original.lines() {
+        if line.trim_start().starts_with('[') {
+            in_top_level = false;
+        }
+        if in_top_level && top_level_key(line) == Some("schema_version") {
+            if !wrote_header {
+                body.push_str(&header);
+                wrote_header = true;
+            }
+            continue;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    if !wrote_header {
+        body = format!("{header}{body}");
     }
     Some(body)
 }
@@ -919,24 +1256,36 @@ pub fn migrate_deployment_toml(path: &Path) -> Result<DeploymentMigrationOutcome
     // Every field except schema_version itself must be unchanged —
     // compare via a schema_version-normalized JSON projection rather
     // than requiring DeploymentConfig: PartialEq.
+    // Role is compared, never normalized away: a migration that changed
+    // it (an exit becoming a relay, or a relay silently becoming an
+    // unrestricted exit) must be impossible. `node_id` may only be ADDED.
+    if migrated_cfg.role != original_cfg.role {
+        return Err(CompatError::Parse(format!(
+            "migration would change role from {:?} to {:?} — refusing to apply",
+            original_cfg.role.as_str(),
+            migrated_cfg.role.as_str()
+        )));
+    }
     let mut original_normalized =
         serde_json::to_value(&original_cfg).map_err(|e| CompatError::Parse(e.to_string()))?;
     let mut migrated_normalized =
         serde_json::to_value(&migrated_cfg).map_err(|e| CompatError::Parse(e.to_string()))?;
-    if let Some(obj) = original_normalized.as_object_mut() {
+    for obj in [
+        original_normalized.as_object_mut(),
+        migrated_normalized.as_object_mut(),
+    ]
+    .into_iter()
+    .flatten()
+    {
         obj.remove("schema_version");
-        obj.remove("node_id");
-        obj.remove("role");
-    }
-    if let Some(obj) = migrated_normalized.as_object_mut() {
-        obj.remove("schema_version");
-        obj.remove("node_id");
-        obj.remove("role");
+        if original_cfg.node_id.is_empty() {
+            obj.remove("node_id");
+        }
     }
     if original_normalized != migrated_normalized {
         return Err(CompatError::Parse(
-            "migration would change a value other than schema_version — refusing to apply \
-             (this is a bug in migrate_deployment_toml_text)"
+            "migration would change an operator value other than schema_version/new node \
+             identity — refusing to apply (this is a bug in migrate_deployment_toml_text)"
                 .to_string(),
         ));
     }

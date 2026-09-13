@@ -185,10 +185,12 @@ This project does not guarantee Tor-style anonymity, protection from a
 compromised VPS, access from every country/network, or protection after
 credentials leak. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
-The proposed reachable-first-hop work is design-only and is not part of the
-current supported runtime. No relay/access-path schema or relay runtime is
-shipped by this PR. CI and local tests can validate code/configuration mechanics;
-they do not establish relay reachability or behavior on a censored network. See
+Relay (two-hop) mode is implemented as a fail-closed node role and a Core
+`detour` route, and is tested in CI with real sing-box processes on loopback
+([docs/TWO_HOP_SYSTEM_TESTS.md](docs/TWO_HOP_SYSTEM_TESTS.md)). It is not yet a
+supported production path: CI and local tests validate code/configuration
+mechanics only and do not establish relay reachability, provider separation,
+or behavior on a censored network. See
 [docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md](docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md).
 
 ## Documentation

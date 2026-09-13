@@ -6,6 +6,53 @@ This file describes implementation history; `docs/archive/PRODUCTION_ACCEPTANCE_
 is a dated historical audit snapshot. Neither may upgrade ledger evidence.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
+## Privacy+ two-hop development gate (2026-09-13)
+
+Server-side implementation for a locally testable two-hop route
+(`client -> relay -> exit -> Internet`). Evidence: CODE-VERIFIED /
+CI-VERIFIED, including loopback system tests with real sing-box processes.
+No real VPS, provider-separation, device, or network evidence is claimed.
+Details and the S1-S15 matrix: `docs/TWO_HOP_SYSTEM_TESTS.md`.
+
+- **Node identity/role.** `deployment.toml` schema v2 carries explicit
+  `node_id` and `role = "exit" | "relay"`. Fresh installs write schema v2
+  (the template previously still wrote `schema_version = 1`); `install.sh
+  --role/--node-id` sets them; repair/update/migration never change them;
+  `vpn-admin config validate` now reports any schema below current as
+  MIGRATION_REQUIRED (v1 files were previously reported CURRENT and never
+  migrated). Absent role = exit (backward compatible).
+- **Fail-closed relay rendering.** One canonical production renderer,
+  `server::render_server_config_for_deployment`, derives policy from the
+  role. Exit output is byte-identical to the previous document. A relay
+  forwards only to declared exits and ends in `reject`; an unpaired relay
+  rejects everything except its own loopback self-test port. Previously
+  every `vpn-admin` render site used the role-agnostic renderer, so a
+  `role = "relay"` node rendered as an unrestricted exit; the intended fix
+  existed only in the un-applied `.github/assistant/apply_phase2.py`
+  (removed).
+- **Validation.** Relay declarations fail closed at load: relay role without
+  a `reality-1` ingress path, exit declaring its own listener as relay
+  infrastructure, dangling `via_endpoint_id`, UDP/Hysteria2 first hops or
+  routes, chains longer than two hops, `credential_ref` to a missing, aliased,
+  cross-transport or different server, duplicate/reserved Core tags, and
+  relay destinations that no exact route rule can match.
+- **Provisioning.** The relay's served endpoint set is canonical
+  (`DeploymentConfig::served_endpoints`, shared by the subscription service
+  and `doctor`); via routes are Core `detour` chains with a hidden first hop;
+  share-link formats and `vpn-admin user links` omit via routes and the
+  first hop instead of emitting direct links; "nothing routable" is an
+  explicit HTTP 503 `no_selectable_route`.
+- **Lifecycle.** `update.sh` snapshots deployment.toml under the state lock,
+  refuses a migration that changes role/node_id, restores the pre-update
+  deployment.toml on rollback, and refuses to switch a relay to a
+  `vpn-admin` that does not declare relay enforcement. `vpn-admin restore`
+  refuses a backup from a different role or node.
+- **Observability.** `vpn-admin status` shows node id, role and relay
+  pairing counts; `doctor` checks the rendered relay policy. Nothing
+  per-user or per-destination is added.
+- **Release.** Releases publish a CycloneDX SBOM and license inventory
+  (`deploy/lib/generate-sbom.sh`), attested and covered by SHA256SUMS.
+
 ## Phase-2 access-path metadata update (2026-09-10)
 
 - Optional, non-secret `access_paths` metadata is now implemented in the
@@ -22,7 +69,8 @@ Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 - **Not implemented by this checkpoint:** a real relay outbound, Core `detour`
   chain, per-user relay credential lifecycle, Tamara `(exit, access-path)` route
   selection, or the `SIMULATED_ALLOWLIST` harness. No real VPS/restricted-network
-  evidence is claimed.
+  evidence is claimed. *(Superseded on the server side by the 2026-09-13
+  entry above; Tamara route selection remains client-side work.)*
 
 ## Release readiness update (2026-09-07)
 

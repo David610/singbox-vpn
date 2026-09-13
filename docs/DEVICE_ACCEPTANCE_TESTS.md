@@ -477,3 +477,15 @@ DEVICE-VERIFIED status was created by this pass.
 
 This entry does not alter the YouTube/TikTok/streaming matrix or any other
 device row above — every cell there remains exactly as it was.
+
+### 2026-09-13 — Privacy+ two-hop development gate (automated evidence only)
+
+| Claim | Scope | Status | Evidence | Date | Commit | Environment |
+|---|---|---|---|---|---|---|
+| A `role = "relay"` node renders a sing-box config that forwards only to declared exits and rejects all other destinations; an unpaired relay rejects everything except its loopback self-test port | Server config rendering + live loopback forwarding | CI-VERIFIED (local system test) | `crates/compat-config/tests/relay_role_policy.rs`; `two_hop_system.rs` S3, S12, S13; CI "Two-hop relay system tests S1-S15" | 2026-09-13 | branch `feat/privacy-plus-dev-gate` | Real sing-box 1.13.19 processes on 127.0.0.0/8, one Linux host |
+| Provisioned "exit via relay" route is a Core `detour` chain that works end to end and fails without the relay; direct route independent | Provisioning + live loopback traffic | CI-VERIFIED (local system test) | `two_hop_system.rs` S1, S2, S6, S7 | 2026-09-13 | branch `feat/privacy-plus-dev-gate` | Loopback only |
+| First-hop, exit and subscription credentials are independent; revocation/expiry/rotation take effect through the production render/apply path | Credential lifecycle | CI-VERIFIED (local system test) | `two_hop_system.rs` S4, S5, S8–S10; `relay_role_policy.rs` rotation tests | 2026-09-13 | branch `feat/privacy-plus-dev-gate` | Loopback only |
+| Relay role/identity survive repair, migration, crash restart, update rollback and restore | Lifecycle | CODE-VERIFIED / CI-VERIFIED | `two_hop_system.rs` S14, S15; `apps/admin/tests/relay_cli.rs`; `deploy/lib/tests/test-node-identity.sh` | 2026-09-13 | branch `feat/privacy-plus-dev-gate` | Fixtures and loopback; no real host update |
+| Unpaired relay passes a real `doctor --protocol` first-hop handshake self-test | Protocol self-test | CI-VERIFIED | CI step "vpn-admin doctor --protocol against a real live UNPAIRED RELAY" | 2026-09-13 | branch `feat/privacy-plus-dev-gate` | CI runner loopback |
+| Relay forwarding on a real second VPS; provider/ASN separation; what the relay and exit can observe (packet captures) | Real infrastructure | UNVERIFIED | No real VPS used in this phase | — | — | Required: two real VPSs, separate providers |
+| Reachability of a relay from Russian mobile/fixed networks; IPv4/IPv6/DNS leaks, handover, YouTube/Telegram/calls, latency/throughput over the two-hop route | Network/device behaviour | UNVERIFIED | No device or restricted network used in this phase | — | — | Required: real devices on target networks |

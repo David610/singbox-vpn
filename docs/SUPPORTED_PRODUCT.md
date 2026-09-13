@@ -160,9 +160,14 @@ whenever the two differ in phrasing; they must not differ in substance.
   does not deploy those peers, log into them, synchronize their credentials,
   discover them, or control their health. Static peer provisioning is in
   scope; fleet orchestration is not.
-- **No production reachable-first-hop/relay path yet.** `path` is forward-
-  compatible metadata, but relay semantics are design-only; see
-  `docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md`.
+- **Relay (two-hop) routes are implemented but not yet a supported
+  production path.** A node installed with `--role relay` forwards only to
+  exits declared in its `deployment.toml` (fail closed, reject-all until
+  paired), and the provisioning contract expresses "exit via relay" as a
+  Core `detour` chain. This is CODE-VERIFIED/CI-VERIFIED including loopback
+  system tests (`docs/TWO_HOP_SYSTEM_TESTS.md`); real second-VPS behaviour,
+  provider separation, reachability from restricted networks and device
+  behaviour are UNVERIFIED. See `docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md`.
 - **No anonymity or global-adversary guarantee.** This is a private
   circumvention/privacy tool for a small trusted group, not a Tor-class
   anonymity system — see `docs/THREAT_MODEL.md` for the actual threat

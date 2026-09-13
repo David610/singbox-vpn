@@ -281,9 +281,15 @@ echo
 echo "--- static: every published source/binary archive receives GitHub provenance ---"
 # Actions are pinned to immutable full commit SHAs. The human-readable
 # trailing comment may move from v2 to v4.x as Dependabot upgrades the
-# action, so test the security invariant (immutable pin + two archive
-# classes) rather than freezing a mutable major-version label in this test.
-if [ "$(grep -cE 'uses: actions/attest-build-provenance@[0-9a-f]{40} # v[0-9][^[:space:]]*' .github/workflows/release.yml)" -eq 2 ] \
+# action, so test the security invariant (immutable pin + every attested
+# release subject) rather than freezing a mutable major-version label or a
+# step count in this test. The SBOM/license inventory (SEC-005) is a third
+# attested subject; see deploy/lib/tests/test-release-sbom.sh.
+attest_steps="$(grep -cE 'uses: actions/attest-build-provenance@[0-9a-f]{40} # v[0-9][^[:space:]]*' .github/workflows/release.yml)"
+unpinned_attest="$(grep -E 'uses: actions/attest-build-provenance@' .github/workflows/release.yml | grep -cvE '@[0-9a-f]{40} ' || true)"
+if [ "$attest_steps" -ge 2 ] && [ "$unpinned_attest" -eq 0 ] \
+  && grep -qE 'subject-path: singbox-vpn-x86_64-unknown-linux-gnu\.tar\.gz$' .github/workflows/release.yml \
+  && grep -qE 'subject-path: singbox-vpn-src\.tar\.gz$' .github/workflows/release.yml \
   && grep -q 'attestations: write' .github/workflows/release.yml \
   && grep -q 'id-token: write' .github/workflows/release.yml; then
   ok "release build attests both binary and source archives with narrowly-scoped OIDC/attestation permissions"

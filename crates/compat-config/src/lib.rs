@@ -35,6 +35,16 @@ pub enum CompatError {
     WrongTransportForEndpoint,
     #[error("user not found")]
     UserNotFound,
+    /// Nothing selectable remains for this user once relay first-hop
+    /// infrastructure is reserved: an unpaired relay, or a user who has no
+    /// credential for any declared exit. Deliberately distinct from a
+    /// render bug so the service can answer with an explicit, non-2xx
+    /// "no route" instead of silently handing out the first hop as an exit.
+    #[error(
+        "no selectable endpoints remain after reserving relay first-hop infrastructure; pair an \
+         exit and give this user a credential for it before provisioning"
+    )]
+    NoSelectableRoute,
     /// A generated provisioning document failed the first-party
     /// contract's own validation — see `provisioning_contract`. This is
     /// always a server-side bug or a corrupt/incomplete deployment

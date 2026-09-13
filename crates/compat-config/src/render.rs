@@ -14,7 +14,7 @@
 //! that consumes contract endpoints, never a second place that shapes
 //! credentials.
 
-use crate::contract::{contract_endpoint, VlessFlow};
+use crate::contract::{contract_endpoint, contract_endpoint_opt, VlessFlow};
 use crate::model::{CompatEndpoint, CompatTransport, CompatUser, PublicParameters};
 use crate::CompatError;
 use provisioning_contract as contract;
@@ -126,18 +126,65 @@ pub fn render_vision_off_uri_list(
     user: &CompatUser,
     endpoints: &[CompatEndpoint],
 ) -> Result<String, CompatError> {
+    render_share_links(user, endpoints, true)
+}
+
+/// The endpoints a share-link (`vless://`/`hysteria2://`) list may
+/// represent at all: direct routes only, and never relay first-hop
+/// infrastructure.
+///
+/// Share-link syntax cannot express a Core `detour`, so a relay route is
+/// OMITTED rather than emitted as a link that would dial the exit
+/// directly (a silent downgrade from "via relay" to "direct"). A relay
+/// node's own `reality-1` is omitted because it is never an Internet exit.
+/// Clients that need relay routes use `format=singbox` or `/v1/provision`.
+pub fn share_link_endpoints(
+    endpoints: &[CompatEndpoint],
+    access_paths: &[contract::AccessPath],
+) -> Vec<CompatEndpoint> {
+    let infrastructure_ids = crate::contract::infrastructure_endpoint_ids(access_paths);
+    endpoints
+        .iter()
+        .filter(|ep| ep.path.as_deref().is_none_or(|path| path == "direct"))
+        .filter(|ep| !infrastructure_ids.contains(&ep.id))
+        .cloned()
+        .collect()
+}
+
+/// One share link per representable endpoint. A peer endpoint this user
+/// has no credential for is omitted, exactly as in the provisioning
+/// document — never rendered with a placeholder or the local credential.
+fn render_share_links(
+    user: &CompatUser,
+    endpoints: &[CompatEndpoint],
+    vision_off: bool,
+) -> Result<String, CompatError> {
     let mut lines = Vec::with_capacity(endpoints.len());
     for ep in endpoints {
         if ep.path.as_deref().is_some_and(|path| path != "direct") {
-            // Share-link syntax cannot express sing-box detour. Omitting the
-            // route is safer than silently handing a client a direct exit.
             continue;
         }
         let uri = match ep.transport {
-            crate::model::CompatTransport::VlessReality => {
-                render_vless_reality_uri_vision_off(user, ep)?
+            CompatTransport::VlessReality => {
+                let (flow, tag) = if vision_off {
+                    (
+                        VlessFlow::VisionOff,
+                        Some(format!("{}{VISION_OFF_LABEL_SUFFIX}", ep.label)),
+                    )
+                } else {
+                    (VlessFlow::Vision, None)
+                };
+                match contract_endpoint_opt(user, ep, flow, tag.as_deref())? {
+                    Some(built) => render_vless_reality_uri_from_contract(&built)?,
+                    None => continue,
+                }
             }
-            crate::model::CompatTransport::Hysteria2 => render_hysteria2_uri(user, ep)?,
+            CompatTransport::Hysteria2 => {
+                match contract_endpoint_opt(user, ep, VlessFlow::default(), None)? {
+                    Some(built) => render_hysteria2_uri_from_contract(&built)?,
+                    None => continue,
+                }
+            }
         };
         lines.push(uri);
     }
@@ -187,20 +234,7 @@ pub fn render_uri_list(
     user: &CompatUser,
     endpoints: &[CompatEndpoint],
 ) -> Result<String, CompatError> {
-    let mut lines = Vec::with_capacity(endpoints.len());
-    for ep in endpoints {
-        if ep.path.as_deref().is_some_and(|path| path != "direct") {
-            // Share-link syntax cannot express sing-box detour. Omitting the
-            // route is safer than silently handing a client a direct exit.
-            continue;
-        }
-        let uri = match ep.transport {
-            crate::model::CompatTransport::VlessReality => render_vless_reality_uri(user, ep)?,
-            crate::model::CompatTransport::Hysteria2 => render_hysteria2_uri(user, ep)?,
-        };
-        lines.push(uri);
-    }
-    Ok(lines.join("\n"))
+    render_share_links(user, endpoints, false)
 }
 
 /// Which endpoint the manual `select` outbound defaults to. This picks
@@ -521,14 +555,7 @@ pub fn render_singbox_config_from_contract_with_access_paths(
         }
     }
 
-    let mut infrastructure_ids: BTreeSet<&str> = BTreeSet::new();
-    for path in access_paths {
-        if matches!(path.kind, contract::AccessPathKind::Relay) {
-            if let Some(via) = path.via_endpoint_id.as_deref() {
-                infrastructure_ids.insert(via);
-            }
-        }
-    }
+    let infrastructure_ids = crate::contract::infrastructure_endpoint_ids(access_paths);
 
     let mut outbounds = Vec::new();
     let mut tags = Vec::new();
@@ -537,7 +564,7 @@ pub fn render_singbox_config_from_contract_with_access_paths(
 
     for ep in all_endpoints {
         let is_selectable = selectable.contains(ep.id.as_str());
-        let is_infrastructure = infrastructure_ids.contains(ep.id.as_str());
+        let is_infrastructure = infrastructure_ids.contains(&ep.id);
         if !is_selectable && !is_infrastructure {
             continue;
         }
@@ -662,10 +689,7 @@ pub fn render_singbox_config_from_contract_with_access_paths(
     }
 
     if tags.is_empty() {
-        return Err(CompatError::Parse(
-            "no selectable endpoints remain after reserving relay first-hop infrastructure; pair/configure an exit before provisioning users"
-                .to_string(),
-        ));
+        return Err(CompatError::NoSelectableRoute);
     }
 
     outbounds.push(json!({

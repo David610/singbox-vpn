@@ -3,6 +3,7 @@
 //! for Xray later does not require rewriting user management or
 //! subscription logic — only a new backend impl of this trait.
 
+use crate::deployment::{DeploymentConfig, NodeRole};
 use crate::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
 use crate::CompatError;
 use serde_json::json;
@@ -15,10 +16,120 @@ pub struct ServerPorts {
     pub hysteria2_port: u16,
 }
 
-/// Render the full sing-box server config (both inbounds) from the
-/// authoritative user store. Only `is_active` users are included —
-/// disabled/expired users are silently excluded, which is how
-/// revocation actually takes effect (spec §29).
+impl ServerPorts {
+    pub fn for_deployment(deployment: &DeploymentConfig) -> Self {
+        ServerPorts {
+            vless_reality_port: deployment.reality.listen_port,
+            hysteria2_port: deployment.hysteria2.listen_port,
+        }
+    }
+}
+
+/// THE production server renderer. Every command that writes, validates,
+/// or compares a live sing-box server config goes through this function
+/// (`apps/admin/tests/relay_cli.rs::production_code_never_bypasses_the_role_aware_renderer`
+/// enforces it), so no mutating path can render a relay as an exit.
+///
+/// The forwarding policy is derived from `deployment.role` alone:
+///
+/// * `Exit` — byte-for-byte the historical single-server document (no
+///   `route` section, `direct` egress). Upgrading an exit therefore never
+///   changes its config or restarts sing-box.
+/// * `Relay` — the same authenticated inbounds, plus a `route.rules` list
+///   that forwards ONLY to the exits declared in `deployment.toml`
+///   ([`DeploymentConfig::relay_targets`]) and ends in an unconditional
+///   `reject`. There is no generic fallback to `direct`: an unpaired relay
+///   rejects everything, and any destination not declared — another
+///   Internet host, another port on the exit host, UDP, Hysteria2 traffic —
+///   is refused. The one extra allowed destination is this node's own
+///   loopback subscription health endpoint over VLESS+REALITY, which the
+///   post-install/post-update protocol self-test uses to prove a real
+///   first-hop handshake; it is local infrastructure, not an Internet exit.
+///
+/// Policy uses only routing facts the relay must already know (declared
+/// exit host/port). No sniffing, no destination logging.
+pub fn render_server_config_for_deployment(
+    deployment: &DeploymentConfig,
+    users: &[CompatUser],
+    reality: &RealityServerParams,
+    hysteria: &Hysteria2ServerParams,
+    now_unix: i64,
+) -> Result<serde_json::Value, CompatError> {
+    // Re-validate: a DeploymentConfig can be built in memory without
+    // `load`, and a relay policy must never be derived from a
+    // declaration that would not load.
+    deployment.validate()?;
+    let mut config = render_singbox_server_config(
+        users,
+        reality,
+        hysteria,
+        ServerPorts::for_deployment(deployment),
+        now_unix,
+    );
+    if deployment.role == NodeRole::Exit {
+        return Ok(config);
+    }
+
+    let reality_inbound = "vless-reality-in";
+    let mut rules = vec![json!({
+        "inbound": [reality_inbound],
+        "network": "tcp",
+        "ip_cidr": ["127.0.0.1/32"],
+        "port": deployment.subscription.listen_port,
+        "action": "route",
+        "outbound": "direct",
+    })];
+    for target in deployment.relay_targets() {
+        let mut rule = json!({
+            "inbound": [reality_inbound],
+            "network": "tcp",
+            "port": target.port,
+            "action": "route",
+            "outbound": "direct",
+        });
+        match target.host.parse::<std::net::IpAddr>() {
+            Ok(ip) => {
+                let prefix = if ip.is_ipv4() { 32 } else { 128 };
+                rule["ip_cidr"] = json!([format!("{ip}/{prefix}")]);
+            }
+            Err(_) => rule["domain"] = json!([target.host]),
+        }
+        rules.push(rule);
+    }
+    // Scoped to every inbound the document actually contains, computed
+    // from the document itself, so an inbound added later is covered
+    // without anyone remembering to add it here.
+    let all_inbounds: Vec<serde_json::Value> = config["inbounds"]
+        .as_array()
+        .map(|inbounds| {
+            inbounds
+                .iter()
+                .map(|inbound| inbound["tag"].clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    if all_inbounds.is_empty() {
+        return Err(CompatError::Parse(
+            "relay config has no inbounds to restrict — refusing to render".into(),
+        ));
+    }
+    rules.push(json!({
+        "inbound": all_inbounds,
+        "action": "reject",
+        "method": "default",
+    }));
+    config["route"] = json!({ "rules": rules });
+    Ok(config)
+}
+
+/// Transport-level document builder: both inbounds for the active users
+/// plus unrestricted `direct` egress, with NO role policy. Only
+/// [`render_server_config_for_deployment`] and transport interop tests may
+/// call this; production code must not (see that function's doc comment).
+///
+/// Only `is_active` users are included — disabled/expired users are
+/// silently excluded, which is how revocation actually takes effect
+/// (spec §29).
 pub fn render_singbox_server_config(
     users: &[CompatUser],
     reality: &RealityServerParams,

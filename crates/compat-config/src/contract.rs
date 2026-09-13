@@ -15,6 +15,21 @@ use crate::model::{CompatEndpoint, CompatUser, EndpointOrigin, PeerCredential, P
 use crate::CompatError;
 use provisioning_contract as contract;
 
+/// Endpoint ids that relay access paths use as their authenticated first
+/// hop. Such an endpoint is infrastructure: it may be dialled as a Core
+/// `detour`, but it is never a selectable exit, never a share link, and
+/// never counted as a capability. This is the ONE definition every
+/// client-facing renderer uses.
+pub fn infrastructure_endpoint_ids(
+    access_paths: &[contract::AccessPath],
+) -> std::collections::BTreeSet<String> {
+    access_paths
+        .iter()
+        .filter(|path| matches!(path.kind, contract::AccessPathKind::Relay))
+        .filter_map(|path| path.via_endpoint_id.clone())
+        .collect()
+}
+
 /// The server version reported in `server.version`. Tracks this crate's
 /// package version, which is the workspace release version.
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -308,16 +323,15 @@ pub fn provisioning_document_with_mode_and_access_paths_and_options(
         }
     }
 
-    let infrastructure_ids: std::collections::BTreeSet<String> = access_paths
-        .iter()
-        .filter(|path| matches!(path.kind, contract::AccessPathKind::Relay))
-        .filter_map(|path| path.via_endpoint_id.clone())
-        .collect();
+    let infrastructure_ids = infrastructure_endpoint_ids(access_paths);
     let selectable_endpoints: Vec<contract::Endpoint> = contract_endpoints
         .iter()
         .filter(|endpoint| !infrastructure_ids.contains(&endpoint.id))
         .cloned()
         .collect();
+    if selectable_endpoints.is_empty() && !infrastructure_ids.is_empty() {
+        return Err(CompatError::NoSelectableRoute);
+    }
 
     let mut capabilities: Vec<contract::Capability> = Vec::new();
     for ep in &selectable_endpoints {

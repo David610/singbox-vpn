@@ -17,8 +17,8 @@ use compat_config::model::{CompatUser, Hysteria2ServerParams, RealityServerParam
 use compat_config::render::render_singbox_client_subscription;
 use compat_config::secret::SecretString;
 use compat_config::server::{
-    apply_config_atomically, config_backup_path, render_singbox_server_config,
-    CompatibilityBackend, ServerPorts, SingBoxBackend,
+    apply_config_atomically, config_backup_path, render_server_config_for_deployment,
+    CompatibilityBackend, SingBoxBackend,
 };
 use compat_config::{credentials, store};
 use serde_json::json;
@@ -807,13 +807,10 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     };
     let users = store::load_users(&cfg.users_file())?;
     let hysteria = load_hysteria_params(cfg);
-    let ports = ServerPorts {
-        vless_reality_port: cfg.reality.listen_port,
-        hysteria2_port: cfg.hysteria2.listen_port,
-    };
     let now = UnixSeconds::now().0 as i64;
     let candidate_doc =
-        render_singbox_server_config(&users, &candidate_reality, &hysteria, ports, now);
+        render_server_config_for_deployment(cfg, &users, &candidate_reality, &hysteria, now)
+            .context("rendering the candidate server config; live state was not changed")?;
 
     let backend = SingBoxBackend {
         binary_path: cfg.singbox_binary.clone(),
@@ -1146,13 +1143,10 @@ fn cmd_hysteria_obfs_rotate(cfg: &DeploymentConfig) -> Result<()> {
     let mut candidate_hysteria = load_hysteria_params(cfg);
     candidate_hysteria.obfs_password = Some(SecretString::new(candidate_password.clone()));
     let users = store::load_users(&cfg.users_file())?;
-    let ports = ServerPorts {
-        vless_reality_port: cfg.reality.listen_port,
-        hysteria2_port: cfg.hysteria2.listen_port,
-    };
     let now = UnixSeconds::now().0 as i64;
     let candidate_doc =
-        render_singbox_server_config(&users, &reality, &candidate_hysteria, ports, now);
+        render_server_config_for_deployment(cfg, &users, &reality, &candidate_hysteria, now)
+            .context("rendering the candidate server config; live state was not changed")?;
 
     let backend = SingBoxBackend {
         binary_path: cfg.singbox_binary.clone(),
@@ -1528,12 +1522,9 @@ fn render_and_apply_singbox_config(
         }
     };
     let hysteria = load_hysteria_params(cfg);
-    let ports = ServerPorts {
-        vless_reality_port: cfg.reality.listen_port,
-        hysteria2_port: cfg.hysteria2.listen_port,
-    };
     let now = UnixSeconds::now().0 as i64;
-    let doc = render_singbox_server_config(users, &reality, &hysteria, ports, now);
+    let doc = render_server_config_for_deployment(cfg, users, &reality, &hysteria, now)
+        .context("rendering the role-aware sing-box server config")?;
     let candidate_fingerprint = rendered_config_fingerprint(&doc)?;
 
     let target = cfg.singbox_config_file();
@@ -1661,7 +1652,7 @@ fn render_and_apply_singbox_config(
     // verdict (see `run_reality_client_selftest`'s doc comment) and must
     // not turn an environmental limitation into a false failure here.
     let handshake_verification =
-        verify_reality_handshake_or_warn(cfg, users, &reality, ports.vless_reality_port);
+        verify_reality_handshake_or_warn(cfg, users, &reality, cfg.reality.listen_port);
     if let HandshakeVerification::Ran(RealitySelfTestOutcome::HandshakeRejected) =
         &handshake_verification
     {
@@ -1780,14 +1771,31 @@ fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) ->
     let mut invalid = false;
     let mut migration_required = false;
 
+    let deployment_text =
+        std::fs::read_to_string(config_path).with_context(|| format!("reading {config_path:?}"))?;
     if cfg.schema_version == 0 {
         println!("deployment.toml ({config_path:?}): LEGACY (no schema_version marker)");
         migration_required = true;
+    } else if compat_config::deployment::migrate_deployment_toml_text(&deployment_text).is_some() {
+        println!(
+            "deployment.toml ({config_path:?}): OUTDATED (schema_version {}, current is \
+             {DEPLOYMENT_SCHEMA_VERSION}; node identity/role not yet explicit)",
+            cfg.schema_version
+        );
+        migration_required = true;
     } else {
         println!(
-            "deployment.toml ({config_path:?}): CURRENT (schema_version {DEPLOYMENT_SCHEMA_VERSION})"
+            "deployment.toml ({config_path:?}): CURRENT (schema_version {DEPLOYMENT_SCHEMA_VERSION}, node_id {:?}, role {})",
+            cfg.node_id,
+            cfg.role.as_str()
         );
     }
+
+    println!(
+        "{} (node role: {})",
+        compat_config::deployment::RELAY_ENFORCEMENT_CAPABILITY,
+        cfg.role.as_str()
+    );
 
     let users_path = cfg.users_file();
     match store::detect_users_schema(&users_path) {
@@ -2501,22 +2509,7 @@ fn served_endpoints(
     hysteria_obfs_password: Option<&str>,
 ) -> Result<Vec<compat_config::model::CompatEndpoint>> {
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
-    let mut endpoints = compat_config::render::standard_endpoints(
-        &cfg.public_host,
-        cfg.reality.listen_port,
-        cfg.hysteria2.listen_port,
-        &reality.public_key_hex,
-        &short_id,
-        &reality.handshake_server,
-        hysteria_obfs_password,
-    );
-    for peer in &cfg.peer_endpoints {
-        endpoints.push(
-            peer.to_compat_endpoint()
-                .with_context(|| format!("invalid [[peer_endpoints]] entry {:?}", peer.id))?,
-        );
-    }
-    Ok(endpoints)
+    Ok(cfg.served_endpoints(&reality.public_key_hex, &short_id, hysteria_obfs_password)?)
 }
 
 /// `vpn-admin user links ID`: out-of-band recovery path (see the
@@ -2547,29 +2540,51 @@ fn cmd_user_links(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
         &reality,
         hysteria.obfs_password.as_ref().map(|s| s.expose()),
     )?;
+    let access_paths = cfg.contract_access_paths()?;
+    let infrastructure = compat_config::contract::infrastructure_endpoint_ids(&access_paths);
+    // Same representability rules as the subscription service's share-link
+    // formats (`render::share_link_endpoints`): a relay route or a relay's
+    // own first hop is never printed as a link that would dial directly.
+    let shareable = compat_config::render::share_link_endpoints(&endpoints, &access_paths);
 
     println!("Out-of-band connection URIs for {id} (subscription service NOT required):");
     println!();
     for endpoint in &endpoints {
-        // A peer this user has no credential for is skipped rather than
-        // erroring out: it must not stop the LOCAL endpoints, which are
-        // the ones this recovery path exists to deliver.
-        if endpoint.origin == compat_config::model::EndpointOrigin::Peer
-            && user.peer_credential(&endpoint.id).is_none()
+        if infrastructure.contains(&endpoint.id) {
+            continue;
+        }
+        if !shareable
+            .iter()
+            .any(|candidate| candidate.id == endpoint.id)
         {
+            println!(
+                "{}: omitted — this route needs a relay first hop, which share-link syntax cannot \
+                 express (use the provisioning/sing-box subscription instead)",
+                endpoint.label
+            );
+            println!();
+            continue;
+        }
+        let flow = compat_config::contract::VlessFlow::Vision;
+        let Some(built) =
+            compat_config::contract::contract_endpoint_opt(user, endpoint, flow, None)?
+        else {
+            // A peer this user has no credential for is skipped rather than
+            // erroring out: it must not stop the LOCAL endpoints, which are
+            // the ones this recovery path exists to deliver.
             println!(
                 "{} (peer): skipped — no peer credential set for this user",
                 endpoint.label
             );
             println!();
             continue;
-        }
+        };
         let uri = match endpoint.transport {
             compat_config::model::CompatTransport::VlessReality => {
-                compat_config::render::render_vless_reality_uri(user, endpoint)?
+                compat_config::render::render_vless_reality_uri_from_contract(&built)?
             }
             compat_config::model::CompatTransport::Hysteria2 => {
-                compat_config::render::render_hysteria2_uri(user, endpoint)?
+                compat_config::render::render_hysteria2_uri_from_contract(&built)?
             }
         };
         println!("{}:", endpoint.label);
@@ -2790,6 +2805,8 @@ fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
 
     println!("singbox-vpn status");
     println!();
+    print_node_identity(cfg);
+    println!();
     let singbox = CompatibilityServiceManager::new("sing-box");
     println!("sing-box              {}", service_state_label(&singbox));
     let subscription = CompatibilityServiceManager::new("vpn-subscription");
@@ -2831,6 +2848,96 @@ fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Node identity, role and relay pairing for `status`. Aggregate and
+/// non-secret only: counts and declared ids, never credentials, never
+/// anything derived from traffic.
+fn print_node_identity(cfg: &DeploymentConfig) {
+    use compat_config::deployment::NodeRole;
+    let node_id = if cfg.node_id.is_empty() {
+        "(not set — run `vpn-admin config migrate`)"
+    } else {
+        cfg.node_id.as_str()
+    };
+    println!("Node:                  {node_id}");
+    println!("Role:                  {}", cfg.role.as_str());
+    let direct_peers = cfg
+        .peer_endpoints
+        .iter()
+        .filter(|peer| peer.path == "direct")
+        .count();
+    let relay_routes = cfg.peer_endpoints.len() - direct_peers;
+    println!(
+        "Declared routes:       {direct_peers} direct peer route(s), {relay_routes} relay route(s)"
+    );
+    if cfg.role == NodeRole::Relay {
+        let targets = cfg.relay_targets();
+        if targets.is_empty() {
+            println!(
+                "Relay pairing:         UNPAIRED — forwarding is reject-all until an exit is declared"
+            );
+        } else {
+            println!(
+                "Relay pairing:         {} declared exit target(s); every other destination is rejected",
+                targets.len()
+            );
+        }
+    }
+}
+
+/// `doctor`'s relay policy check: proves the document this node renders
+/// (and therefore what `render-config` would apply) forwards only to the
+/// declared exits and ends in a reject. Reports aggregate counts only.
+fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures: &mut u32) {
+    use compat_config::deployment::NodeRole;
+    let rules = doc["route"]["rules"].as_array();
+    match cfg.role {
+        NodeRole::Exit => {
+            if rules.is_some() {
+                report_check(
+                    CheckStatus::Fail,
+                    "L2",
+                    "exit node renders relay forwarding rules — role/renderer mismatch",
+                );
+                *failures += 1;
+            }
+        }
+        NodeRole::Relay => {
+            let targets = cfg.relay_targets();
+            let fail_closed = rules.is_some_and(|rules| {
+                rules.last().is_some_and(|last| last["action"] == "reject")
+                    && rules.len() == targets.len() + 2
+            });
+            if fail_closed {
+                report_check(
+                    CheckStatus::Ok,
+                    "L2",
+                    format!(
+                        "relay forwarding policy is fail-closed: {} declared exit target(s) allowed, \
+                         everything else rejected",
+                        targets.len()
+                    ),
+                );
+            } else {
+                report_check(
+                    CheckStatus::Fail,
+                    "L2",
+                    "relay forwarding policy is NOT fail-closed in the rendered config — refusing \
+                     to treat this relay as safe",
+                );
+                *failures += 1;
+            }
+            if targets.is_empty() {
+                report_check(
+                    CheckStatus::Warn,
+                    "L2",
+                    "relay is UNPAIRED: no exit is declared, so every forwarded connection is rejected \
+                     and subscriptions answer 503 no_selectable_route",
+                );
+            }
+        }
+    }
 }
 
 /// A human-readable service state summary — `active`/`inactive`/
@@ -5365,12 +5472,21 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         }
     };
     let hysteria = load_hysteria_params(cfg);
-    let ports = ServerPorts {
-        vless_reality_port: cfg.reality.listen_port,
-        hysteria2_port: cfg.hysteria2.listen_port,
-    };
     let now = UnixSeconds::now().0 as i64;
-    let fresh_server_doc = render_singbox_server_config(&users, &reality, &hysteria, ports, now);
+    let fresh_server_doc =
+        match render_server_config_for_deployment(cfg, &users, &reality, &hysteria, now) {
+            Ok(doc) => doc,
+            Err(e) => {
+                report_check(
+                    CheckStatus::Fail,
+                    "L4",
+                    format!("cannot render the role-aware server config for this deployment: {e}"),
+                );
+                *failures += 1;
+                return;
+            }
+        };
+    report_relay_policy(cfg, &fresh_server_doc, failures);
 
     // The EXACT same function `services/subscription`'s live process
     // calls to build its own `AppState.endpoints` — not a hand-rolled
@@ -7120,6 +7236,45 @@ fn extract_validated_backup(archive_path: &std::path::Path, dir: &std::path::Pat
     Ok(())
 }
 
+/// A backup's users are first-hop credentials on a relay and exit
+/// credentials on an exit. Restoring one role's users onto the other role
+/// would silently change what those credentials can reach — a relay's
+/// users becoming unrestricted exit users is exactly the escalation relay
+/// mode exists to prevent — so a role or node-identity mismatch is refused
+/// before any live state is touched. Backups taken before roles existed
+/// carry no role and were exits.
+fn refuse_cross_node_restore(
+    cfg: &DeploymentConfig,
+    archived_deployment: &std::path::Path,
+) -> Result<()> {
+    if !archived_deployment.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(archived_deployment)
+        .context("reading the backup's deployment.toml")?;
+    let archived: DeploymentConfig = toml::from_str(&text)
+        .context("the backup's deployment.toml does not parse — refusing to restore")?;
+    if archived.role != cfg.role {
+        bail!(
+            "refusing restore: the backup was taken on a node with role {}, but this node's role \
+             is {}. Restoring it would change what the restored credentials can reach. Restore \
+             onto a node installed with the same --role.",
+            archived.role.as_str(),
+            cfg.role.as_str()
+        );
+    }
+    if !archived.node_id.is_empty() && !cfg.node_id.is_empty() && archived.node_id != cfg.node_id {
+        bail!(
+            "refusing restore: the backup belongs to node {:?} but this node is {:?}. Reinstall \
+             with --node-id {} to rebuild that node.",
+            archived.node_id,
+            cfg.node_id,
+            archived.node_id
+        );
+    }
+    Ok(())
+}
+
 fn cmd_restore(
     cfg: &DeploymentConfig,
     config_path: &std::path::Path,
@@ -7173,6 +7328,7 @@ fn cmd_restore(
             "restored REALITY private/public keys do not form one X25519 keypair — refusing to \
              install a split keyset",
         )?;
+    refuse_cross_node_restore(cfg, &staging.path().join("deployment.toml"))?;
     let hy_cert = staging.path().join("hysteria/cert.pem");
     let hy_key = staging.path().join("hysteria/key.pem");
     if hy_cert.exists() != hy_key.exists() {

@@ -185,7 +185,7 @@ pinned as
   `docs/ADR/0009-declarative-peer-endpoints.md`, and fixtures `09` and
   `10`. Peer support is implemented and tested against fixtures and
   loopback only — no real second VPS exists to verify it against.
-* `access_paths` — optional non-secret first-hop metadata. Omitted when empty; when present, non-direct `endpoints[].path` values must resolve to an id in this list. It contains no relay credentials or proxy configuration.
+* `access_paths` — optional non-secret first-hop metadata. Omitted when empty; when present, non-direct `endpoints[].path` values must resolve to an id in this list. It contains no relay credentials or proxy configuration. Relay paths are executable — see **Relay routes**.
 * `singbox_config` — the Core-consumable config for exactly the endpoint
   set above, rendered from the same model in the same request. See **The
   additive `schema_version` 1 extension**.
@@ -221,7 +221,7 @@ existed.
 |---|---|
 | `failure_domain` | Operator-declared shared-fate identifier. Endpoints with the same value are expected to fail together. |
 | `region`, `provider`, `asn` | Opaque operator labels. **The server never reads these for any decision** and performs no network or ASN lookup to populate them — they are exactly what the operator typed. |
-| `path` | `direct` by default. When top-level `access_paths` is present, a non-direct value references an `access_paths[].id`. The metadata/reference mechanism is implemented; actual relay routing is not. |
+| `path` | `direct` by default. When top-level `access_paths` is present, a non-direct value references an `access_paths[].id`. A `relay` path is rendered in `singbox_config` as a Core `detour` chain through the path's `via_endpoint_id` first hop (see **Relay routes** below). |
 
 **When `failure_domain` is absent the client derives one from the
 normalised host.** That is correct for this deployment's own endpoints:
@@ -260,9 +260,34 @@ v1 forward-compatibility rule remains: an opaque future `path` value can still
 round-trip without being reinterpreted.
 
 **Implementation status:** this metadata and validation layer is implemented and
-tested. A production relay outbound, Core `detour` chain, relay credential
-lifecycle, and real-network reachability are not implemented or verified by this
-contract change.
+tested, and relay paths are executable (below). Real-network reachability is
+not verified by the contract or its tests.
+
+### Relay routes
+
+A `kind = "relay"` access path with `via_endpoint_id` is executable:
+
+- the endpoint named by `via_endpoint_id` is **first-hop infrastructure**. It
+  appears in `singbox_config` only as a dialer; it is never in `endpoints`,
+  never in the `select`/`auto` groups and never counted in `capabilities`;
+- every endpoint whose `path` is that access path is rendered as the exit
+  outbound with `"detour": "<first-hop tag>"` and `"network": "tcp"`. Relay
+  paths are VLESS+REALITY/TCP only; UDP or Hysteria2 over a relay is refused;
+- the exit route authenticates with the exit's own credential (the first hop
+  with the relay's), resolved through the deployment's `credential_ref`, so a
+  direct route and a via route to the same exit share one exit credential;
+- a malformed or metadata-only relay path referenced by an endpoint is an
+  error, never a silently direct route;
+- if nothing selectable remains for a user (unpaired relay, or no credential for
+  any declared exit), `GET /v1/provision/{token}` and `GET /sub/{token}` answer
+  **HTTP 503** with `{"error": "no_selectable_route", ...}` — never the first hop
+  as an exit;
+- share-link formats (`format=uri`/`hiddify`) cannot express `detour`: they omit
+  via routes and first-hop endpoints rather than emitting a direct link.
+
+A node serving relay routes is a `role = "relay"` deployment whose own
+`reality-1` is the first hop; its server-side forwarding policy is described in
+`docs/TWO_HOP_SYSTEM_TESTS.md`.
 
 ### The embedded `singbox_config`
 
