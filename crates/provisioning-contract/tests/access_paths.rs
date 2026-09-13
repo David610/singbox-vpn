@@ -109,6 +109,69 @@ fn empty_or_duplicate_capabilities_are_rejected() {
         .is_err());
 }
 
+/// A relay catalog (one direct and one relayed route to the same exit)
+/// with the embedded config shape the server renders; `auto` is the one
+/// automatic group.
+fn relayed_doc(auto_members: &[&str], via_detour: Option<&str>) -> ProvisioningDocument {
+    let mut direct = endpoint(Some(PathType::Direct));
+    direct.id = "de1-direct".into();
+    direct.tag = "Direct".into();
+    let mut via = endpoint(Some(PathType::Other("relay-ru1".into())));
+    via.id = "de1-via-ru1".into();
+    via.tag = "Via".into();
+    let mut via_outbound =
+        serde_json::json!({"type": "vless", "tag": "Via", "server": "vpn.example.com"});
+    if let Some(detour) = via_detour {
+        via_outbound["detour"] = serde_json::json!(detour);
+    }
+    ProvisioningDocument::new(
+        ServerInfo::current("test"),
+        vec![Capability::VlessReality],
+        vec![direct, via],
+    )
+    .with_access_paths(vec![relay("relay-ru1").with_via_endpoint_id("reality-1")])
+    .with_singbox_config(serde_json::json!({
+        "outbounds": [
+            {"type": "vless", "tag": "Reality", "server": "ru1.example.com"},
+            {"type": "vless", "tag": "Direct", "server": "vpn.example.com"},
+            via_outbound,
+            {"type": "urltest", "tag": "auto", "outbounds": auto_members},
+            {"type": "selector", "tag": "select", "outbounds": ["Direct", "Via", "auto"], "default": "Via"},
+            {"type": "direct", "tag": "direct"}
+        ],
+        "route": {"final": "select"}
+    }))
+}
+
+#[test]
+fn relayed_catalog_with_privacy_only_automatic_group_is_servable() {
+    relayed_doc(&["Via"], Some("Reality")).validate().unwrap();
+}
+
+#[test]
+fn automatic_group_mixing_direct_and_relayed_routes_is_rejected() {
+    let err = relayed_doc(&["Direct", "Via"], Some("Reality"))
+        .validate()
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            ContractError::AutomaticGroupCrossesPrivacyClass { group, member }
+                if group == "auto" && member == "Direct"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn relayed_endpoint_rendered_without_detour_is_rejected() {
+    let err = relayed_doc(&["Via"], None).validate().unwrap_err();
+    assert!(
+        matches!(&err, ContractError::RelayedEndpointNotChained { tag } if tag == "Via"),
+        "{err}"
+    );
+}
+
 #[test]
 fn unknown_access_path_kind_round_trips() {
     let path = AccessPath::new(

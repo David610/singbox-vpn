@@ -58,6 +58,8 @@ const RELAY_IP: &str = "127.0.0.2";
 const EXIT_IP: &str = "127.0.0.3";
 const TARGET_IP: &str = "127.0.0.4";
 const UNDECLARED_IP: &str = "127.0.0.5";
+/// Source address of every socket the client device opens itself.
+const CLIENT_IP: &str = "127.0.0.6";
 const DIRECT_TAG: &str = "Germany · Direct";
 const VIA_TAG: &str = "Germany · via Russia";
 const NEGATIVE_TIMEOUT: Duration = Duration::from_secs(6);
@@ -130,6 +132,64 @@ fn spawn_http_target(bind: &str) -> HttpTarget {
 impl HttpTarget {
     fn hits(&self) -> usize {
         self.hits.load(Ordering::SeqCst)
+    }
+}
+
+/// Transparent TCP forwarder in front of the exit's REALITY listener that
+/// records the source address of every connection — the loopback stand-in
+/// for the exit-side packet capture of the real two-VPS acceptance (D3).
+/// Client sockets dial from [`CLIENT_IP`] (see `Lab::run_client`); the relay
+/// dials from its default loopback source, so `from_client` counts exactly
+/// the connections the client device opened straight to the exit.
+struct Tap {
+    port: u16,
+    sources: Arc<Mutex<Vec<std::net::IpAddr>>>,
+}
+
+fn spawn_tcp_tap(bind_ip: &str, upstream_port: u16) -> Tap {
+    let listener = TcpListener::bind(format!("{bind_ip}:0")).expect("bind tap");
+    let port = listener.local_addr().unwrap().port();
+    let sources = Arc::new(Mutex::new(Vec::new()));
+    let recorded = sources.clone();
+    let upstream = format!("{bind_ip}:{upstream_port}");
+    std::thread::spawn(move || {
+        for client in listener.incoming() {
+            let Ok(client) = client else { continue };
+            if let Ok(peer) = client.peer_addr() {
+                recorded.lock().unwrap().push(peer.ip());
+            }
+            let Ok(server) = TcpStream::connect(&upstream) else {
+                continue;
+            };
+            let (mut c_read, mut s_write) =
+                (client.try_clone().unwrap(), server.try_clone().unwrap());
+            let (mut s_read, mut c_write) = (server, client);
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut c_read, &mut s_write);
+                let _ = s_write.shutdown(std::net::Shutdown::Write);
+            });
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut s_read, &mut c_write);
+                let _ = c_write.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    });
+    Tap { port, sources }
+}
+
+impl Tap {
+    fn from_client(&self) -> usize {
+        let client: std::net::IpAddr = CLIENT_IP.parse().unwrap();
+        self.sources
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|ip| **ip == client)
+            .count()
+    }
+
+    fn total(&self) -> usize {
+        self.sources.lock().unwrap().len()
     }
 }
 
@@ -444,6 +504,8 @@ struct Lab {
     relay_user: CompatUser,
     /// Credential B lives here: issued by the exit for the same person.
     exit_user: CompatUser,
+    /// In front of the exit; both declared peers point at it.
+    exit_tap: Tap,
     clients: Vec<Proc>,
 }
 
@@ -458,6 +520,7 @@ impl Lab {
             undeclared: spawn_http_target(&format!("{UNDECLARED_IP}:0")),
             relay_user: user("alice", &uuid(0xa1), Some(&uuid(0xb1))),
             exit_user: user("alice-at-exit", &uuid(0xb1), None),
+            exit_tap: spawn_tcp_tap(EXIT_IP, exit.reality_port),
             exit,
             relay,
             decoy,
@@ -517,7 +580,7 @@ reality_short_id = "{sid}"
 failure_domain = "exit:de1"
 path = "{path}"
 {credential_ref}"#,
-                    port = self.exit.reality_port,
+                    port = self.exit_tap.port,
                     sni = self.decoy.hostname,
                     pbk = self.exit.reality.public_key_hex,
                     sid = self.exit.reality.short_ids[0],
@@ -549,13 +612,41 @@ path = "{path}"
     /// A client-owned wrapper around a Core config: a SOCKS inbound and the
     /// selected route. Returns the SOCKS port.
     fn client(&mut self, core: &serde_json::Value, selected_tag: &str) -> u16 {
-        let socks = free_port();
         let mut config = core.clone();
+        config["route"]["final"] = serde_json::json!(selected_tag);
+        self.run_client(config)
+    }
+
+    /// A client running the served Core config as served: `route.final`
+    /// stays the selector and every group, the automatic one included,
+    /// runs. `choice` is the user's pick in the selector (applied as its
+    /// start-up selection); `None` keeps the served default.
+    fn served_client(&mut self, core: &serde_json::Value, choice: Option<&str>) -> u16 {
+        let mut config = core.clone();
+        if let Some(choice) = choice {
+            for outbound in config["outbounds"].as_array_mut().unwrap() {
+                if outbound["tag"] == "select" {
+                    outbound["default"] = serde_json::json!(choice);
+                }
+            }
+        }
+        self.run_client(config)
+    }
+
+    fn run_client(&mut self, mut config: serde_json::Value) -> u16 {
+        let socks = free_port();
+        // The device's own address: every outbound that opens a socket
+        // itself (no `detour`) dials from CLIENT_IP, as a real device dials
+        // from its public IP. Routing and groups are untouched.
+        for outbound in config["outbounds"].as_array_mut().unwrap() {
+            if outbound.get("server").is_some() && outbound.get("detour").is_none() {
+                outbound["inet4_bind_address"] = serde_json::json!(CLIENT_IP);
+            }
+        }
         config["log"] = serde_json::json!({"level": "warn"});
         config["inbounds"] = serde_json::json!([
             {"type": "mixed", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": socks}
         ]);
-        config["route"]["final"] = serde_json::json!(selected_tag);
         let dir = self.relay.dir.path().join(format!("client-{socks}"));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("client.json");
@@ -1033,7 +1124,7 @@ fn s13_relay_reaches_only_the_declared_exit_target() {
     let text = std::fs::read_to_string(&lab.relay.deployment_path)
         .unwrap()
         .replacen(
-            &format!("host = \"{EXIT_IP}\"\nport = {}", lab.exit.reality_port),
+            &format!("host = \"{EXIT_IP}\"\nport = {}", lab.exit_tap.port),
             &format!("host = \"{TARGET_IP}\"\nport = {}", declared.port),
             2,
         )
@@ -1210,6 +1301,122 @@ fn s15_crash_restart_never_passes_through_an_unrestricted_state() {
 }
 
 // ----------------------------------------------------------------------
+// S16–S17: the served profile as a real client runs it (D3)
+//
+// S1–S15 pin `route.final` to one route tag, which bypasses every group
+// the served profile contains. The real two-VPS acceptance found that the
+// automatic `urltest` group dialled "Germany · Direct" from the client
+// device even while Privacy+ was selected, telling the exit the client's
+// address. These scenarios run the profile unmodified and count
+// client-to-exit connections at `Lab::exit_tap`.
+// ----------------------------------------------------------------------
+
+/// Longer than Core start-up plus the automatic group's initial probe
+/// round; the 1-minute interval itself is exercised on the real hosts.
+const IDLE_WINDOW: Duration = Duration::from_secs(8);
+
+fn wait_for_tap(tap: &Tap, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if tap.from_client() > 0 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+#[test]
+fn s16_privacy_plus_client_never_connects_to_the_exit_directly() {
+    let (mut lab, _serial) = lab!();
+    let core = lab.provisioned_config(&lab.relay_user.clone()).unwrap();
+    assert!(
+        core["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["type"] == "urltest"),
+        "the served automatic group is part of what is exercised"
+    );
+
+    let explicit = lab.served_client(&core, Some(VIA_TAG));
+    let default = lab.served_client(&core, None);
+    let automatic = lab.served_client(&core, Some("auto"));
+    for (socks, what) in [
+        (explicit, "explicit Privacy+"),
+        (default, "served default"),
+        (automatic, "automatic Privacy+"),
+    ] {
+        assert!(
+            reaches(socks, TARGET_IP, lab.target.port),
+            "S16: {what} works through the served selector"
+        );
+    }
+    std::thread::sleep(IDLE_WINDOW);
+    assert!(
+        lab.exit_tap.total() > 0,
+        "the tap sees the exit's traffic: the relay's connections pass through it"
+    );
+    assert_eq!(
+        lab.exit_tap.from_client(),
+        0,
+        "S16: a Privacy+ client opened a direct connection to the exit"
+    );
+
+    // Control: the pre-fix group shape, Direct and Privacy+ in one
+    // automatic group, is caught by the same instrument.
+    let mut mixed = core.clone();
+    for outbound in mixed["outbounds"].as_array_mut().unwrap() {
+        if outbound["type"] == "urltest" {
+            outbound["outbounds"] = serde_json::json!([DIRECT_TAG, VIA_TAG]);
+        }
+    }
+    lab.served_client(&mixed, Some(VIA_TAG));
+    assert!(
+        wait_for_tap(&lab.exit_tap, Duration::from_secs(20)),
+        "control: a mixed automatic group must be visible as a direct exit connection"
+    );
+}
+
+#[test]
+fn s17_relay_down_privacy_plus_fails_closed_while_direct_stays_explicit() {
+    let (mut lab, _serial) = lab!();
+    let core = lab.provisioned_config(&lab.relay_user.clone()).unwrap();
+    let explicit = lab.served_client(&core, Some(VIA_TAG));
+    let automatic = lab.served_client(&core, Some("auto"));
+    assert!(reaches(explicit, TARGET_IP, lab.target.port));
+    assert!(reaches(automatic, TARGET_IP, lab.target.port));
+
+    lab.relay.stop();
+    let hits = lab.target.hits();
+    assert!(
+        refused(explicit, TARGET_IP, lab.target.port),
+        "S17: explicit Privacy+ must fail without the relay"
+    );
+    assert!(
+        refused(automatic, TARGET_IP, lab.target.port),
+        "S17: automatic Privacy+ must fail without the relay"
+    );
+    std::thread::sleep(IDLE_WINDOW);
+    assert_eq!(lab.target.hits(), hits, "S17: nothing reached the target");
+    assert_eq!(
+        lab.exit_tap.from_client(),
+        0,
+        "S17: no Privacy+ client fell back to, or probed, the direct route"
+    );
+
+    let direct = lab.served_client(&core, Some(DIRECT_TAG));
+    assert!(
+        reaches(direct, TARGET_IP, lab.target.port),
+        "S17: an explicitly chosen Direct route works without the relay"
+    );
+    assert!(
+        lab.exit_tap.from_client() > 0,
+        "S17: and it really is the direct connection"
+    );
+}
+
+// ----------------------------------------------------------------------
 // Privacy: what the relay and exit write to their logs
 // ----------------------------------------------------------------------
 
@@ -1245,4 +1452,150 @@ fn relay_and_exit_logs_carry_no_credentials_and_no_rejected_destinations() {
             "{name} log at the production level recorded a tunnelled destination:\n{log}"
         );
     }
+}
+
+/// D4 (real two-VPS acceptance): sing-box reports a rejected VLESS login as
+/// `process connection from <client address>: unknown UUID: <presented
+/// value>` at ERROR severity. With the production log level that line went
+/// to journald/syslog, so revoked — and, after a disable/re-enable, currently
+/// valid — credentials and client addresses were persisted on disk.
+#[test]
+fn rejected_and_revoked_credentials_never_reach_relay_or_exit_logs() {
+    let (mut lab, _serial) = lab!();
+    let old_core = lab.provisioned_config(&lab.relay_user.clone()).unwrap();
+
+    // Revoke A at the relay and B at the exit by rotating both.
+    let revoked_a = lab.relay_user.vless_uuid.clone();
+    let revoked_b = lab.exit_user.vless_uuid.clone();
+    let mut relay_user = lab.relay_user.clone();
+    relay_user.vless_uuid = uuid(0xa7);
+    relay_user.peer_credentials.insert(
+        "de1-direct".into(),
+        PeerCredential::VlessReality { uuid: uuid(0xb7) },
+    );
+    let mut exit_user = lab.exit_user.clone();
+    exit_user.vless_uuid = uuid(0xb7);
+    lab.relay
+        .apply(&lab.sb, std::slice::from_ref(&relay_user))
+        .unwrap();
+    lab.exit
+        .apply(&lab.sb, std::slice::from_ref(&exit_user))
+        .unwrap();
+    lab.relay.start(&lab.sb);
+    lab.exit.start(&lab.sb);
+    let core = lab.provisioned_config(&relay_user).unwrap();
+
+    let invalid_at_relay = uuid(0xee);
+    let invalid_at_exit = uuid(0xef);
+    let mut random_first_hop = core.clone();
+    set_outbound_uuid(
+        &mut random_first_hop,
+        |o| o["uuid"] == uuid(0xa7),
+        &invalid_at_relay,
+    );
+    let mut revoked_exit = core.clone();
+    set_outbound_uuid(&mut revoked_exit, |o| o["tag"] == VIA_TAG, &revoked_b);
+    let mut random_direct = core.clone();
+    set_outbound_uuid(
+        &mut random_direct,
+        |o| o["tag"] == DIRECT_TAG,
+        &invalid_at_exit,
+    );
+
+    let rejected = [
+        (
+            lab.client(&old_core, VIA_TAG),
+            "revoked credential A at the relay",
+        ),
+        (
+            lab.client(&random_first_hop, VIA_TAG),
+            "random credential at the relay",
+        ),
+        (
+            lab.client(&revoked_exit, VIA_TAG),
+            "revoked credential B at the exit",
+        ),
+        (
+            lab.client(&random_direct, DIRECT_TAG),
+            "random credential at the exit",
+        ),
+    ];
+    for (socks, what) in rejected {
+        assert!(
+            refused(socks, TARGET_IP, lab.target.port),
+            "{what} must be rejected"
+        );
+    }
+    let current = lab.client(&core, VIA_TAG);
+    assert!(
+        reaches(current, TARGET_IP, lab.target.port),
+        "the rotated credentials work"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+
+    for (name, log) in [
+        ("relay", lab.relay.log_text()),
+        ("exit", lab.exit.log_text()),
+    ] {
+        for (value, what) in [
+            (revoked_a.as_str(), "revoked credential A"),
+            (revoked_b.as_str(), "revoked credential B"),
+            (invalid_at_relay.as_str(), "presented credential"),
+            (invalid_at_exit.as_str(), "presented credential"),
+            (relay_user.vless_uuid.as_str(), "current credential A"),
+            (exit_user.vless_uuid.as_str(), "current credential B"),
+            (
+                lab.relay.reality.private_key_hex.expose(),
+                "REALITY private key",
+            ),
+            (
+                lab.exit.reality.private_key_hex.expose(),
+                "REALITY private key",
+            ),
+            ("synthetic-hy2-alice", "Hysteria2 password"),
+            ("synthetic-token-hash-alice", "subscription token hash"),
+        ] {
+            assert!(
+                !log.contains(value),
+                "{name} log persisted a {what}:\n{log}"
+            );
+        }
+        for marker in ["unknown UUID", "process connection from"] {
+            assert!(
+                !log.contains(marker),
+                "{name} log recorded a per-connection event ({marker:?}):\n{log}"
+            );
+        }
+    }
+}
+
+/// The other half of D4: silencing per-connection Core events must not make
+/// a broken node undiagnosable. A start failure still reaches the service
+/// log with a non-zero exit status, which is what systemd, the watchdog and
+/// `journalctl -u sing-box` surface.
+#[test]
+fn core_start_failure_stays_visible_with_production_logging() {
+    let (mut lab, _serial) = lab!();
+    lab.relay.stop();
+    let squatter = TcpListener::bind(format!("[::]:{}", lab.relay.reality_port))
+        .expect("occupy the relay's REALITY port");
+    let mut child = lab.sb.run_logged(&lab.relay.config_path(), &lab.relay.log);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "sing-box kept running on a busy port"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    drop(squatter);
+    assert!(!status.success(), "a start failure exits non-zero");
+    let log = lab.relay.log_text();
+    assert!(
+        log.contains("FATAL") && log.contains("start service"),
+        "the start failure is reported:\n{log}"
+    );
 }
