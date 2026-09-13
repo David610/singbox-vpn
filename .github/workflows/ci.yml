@@ -60,6 +60,14 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
+      # The release SBOM/license inventory generator against the real
+      # workspace on every change, so a dependency without license metadata
+      # fails here instead of at release time (SEC-005).
+      - name: Release SBOM and license inventory (dry run)
+        run: |
+          set -euo pipefail
+          bash deploy/lib/generate-sbom.sh --version ci-dry-run --output-dir "$RUNNER_TEMP/sbom"
+          python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); assert b["bomFormat"]=="CycloneDX" and len(b["components"])>10' "$RUNNER_TEMP/sbom/singbox-vpn-sbom.cdx.json"
 
   # Pre-tag release-infrastructure validation (v1.0.0-rc.4 process fix):
   # release.yml's production build only ever runs on a tag push or
@@ -406,6 +414,38 @@ jobs:
           fi
           echo "all $total_ok real-binary interop tests executed and passed"
 
+      # LOCAL SYSTEM evidence for the two-hop Privacy+ route (S1-S15 plus the
+      # relay/exit log privacy check): real sing-box client, relay and exit
+      # processes on distinct loopback addresses, documents from the
+      # production renderers, applied through the production atomic apply
+      # path. Loopback only — this is not real-VPS, provider-separation,
+      # device or network evidence (docs/TWO_HOP_SYSTEM_TESTS.md).
+      - name: Two-hop relay system tests S1-S15 (real sing-box, loopback)
+        env:
+          SING_BOX_BIN: /usr/local/bin/sing-box
+          SINGBOX_VPN_REQUIRE_REAL_INTEROP: "1"
+        run: |
+          set -euo pipefail
+          cargo test --locked -p compat-config --test two_hop_system --test relay_role_policy \
+            -- --nocapture 2>&1 | tee two-hop.log
+          # 16 two_hop_system (S1-S15 + log privacy) + relay_role_policy's
+          # real `sing-box check` of the relay route; update deliberately.
+          for name in s01_direct_route s02_relay_route s03_relay_is_not s04_wrong_relay s05_wrong_exit \
+              s06_exit_unavailable s07_relay_unavailable s08_disabled_user s09_expired_user \
+              s10_credential_rotation s11_malformed s12_unpaired_relay s13_relay_reaches_only \
+              s14_reload_and_repair s15_crash_restart relay_and_exit_logs_carry_no_credentials \
+              every_rendered_relay_route_rule_is_accepted_by_real_sing_box; do
+            if ! grep -Eq "^test ${name}[a-z_]* \.\.\. ok$" two-hop.log; then
+              echo "::error::system test ${name}* did not run and pass"
+              exit 1
+            fi
+          done
+          if grep -q "^skipping" two-hop.log; then
+            echo "::error::a two-hop system test skipped despite SINGBOX_VPN_REQUIRE_REAL_INTEROP=1"
+            exit 1
+          fi
+          echo "all two-hop local system tests executed and passed"
+
       # The reality_interop.rs suite above proves crate-level config
       # RENDERING is protocol-correct; it never runs `vpn-admin` itself. This
       # step closes that gap: it runs the actual `vpn-admin doctor --protocol`
@@ -490,3 +530,70 @@ jobs:
             exit 1
           fi
           echo "vpn-admin doctor --protocol proved a real REALITY handshake end-to-end."
+
+      # Same live protocol self-test against an UNPAIRED RELAY node: the
+      # relay's fail-closed route must still admit the loopback self-test
+      # (so install/update acceptance keeps working on relays) while the
+      # rendered config rejects everything else.
+      - name: vpn-admin doctor --protocol against a real live UNPAIRED RELAY
+        run: |
+          set -euo pipefail
+          ADMIN=./target/release/vpn-admin
+          SUB=./target/release/subscription
+          STATE="$RUNNER_TEMP/vpn-relay-selftest"
+          mkdir -p "$STATE/hysteria"
+          openssl s_server -accept 28998 -cert "$RUNNER_TEMP/decoy-cert.pem" \
+            -key "$RUNNER_TEMP/decoy-key.pem" -tls1_3 -quiet -naccept 100 \
+            > /dev/null 2>&1 &
+          echo $! > "$RUNNER_TEMP/relay-decoy.pid"
+          openssl req -x509 -newkey ed25519 -days 1 -nodes \
+            -keyout "$STATE/hysteria/key.pem" -out "$STATE/hysteria/cert.pem" \
+            -subj "/CN=relay.ci-test.example.com"
+          CFG="$RUNNER_TEMP/relay-selftest-deployment.toml"
+          cat > "$CFG" <<EOF
+          schema_version = 2
+          node_id = "ci-relay"
+          role = "relay"
+          public_host = "127.0.0.1"
+          subscription_host = "127.0.0.1"
+          state_dir = "$STATE"
+          singbox_binary = "/usr/local/bin/sing-box"
+
+          [reality]
+          listen_port = 28447
+          handshake_server = "localhost"
+          handshake_port = 28998
+
+          [hysteria2]
+          listen_port = 28448
+
+          [subscription]
+          listen_port = 29102
+
+          [[access_paths]]
+          id = "relay-ingress"
+          kind = "relay"
+          via_endpoint_id = "reality-1"
+          capabilities = ["tcp"]
+          EOF
+          SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" init
+          SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" user create --name ci-relay-test
+          "$ADMIN" --config "$CFG" render-config
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["route"]["rules"]; assert r[-1]["action"]=="reject" and len(r)==2, r' "$STATE/sing-box/config.json"
+          /usr/local/bin/sing-box run -c "$STATE/sing-box/config.json" > "$RUNNER_TEMP/relay-singbox.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/relay-singbox.pid"
+          sleep 1
+          "$SUB" --config "$CFG" > "$RUNNER_TEMP/relay-subscription.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/relay-subscription.pid"
+          sleep 1
+          set +e
+          "$ADMIN" --config "$CFG" doctor --protocol > "$RUNNER_TEMP/relay-doctor.log" 2>&1
+          set -e
+          cat "$RUNNER_TEMP/relay-doctor.log"
+          kill "$(cat "$RUNNER_TEMP/relay-singbox.pid")" "$(cat "$RUNNER_TEMP/relay-subscription.pid")" \
+               "$(cat "$RUNNER_TEMP/relay-decoy.pid")" "$(cat "$RUNNER_TEMP/decoy.pid")" 2>/dev/null || true
+          grep -q "^\[OK\]   \[L5-6\] protocol self-test:" "$RUNNER_TEMP/relay-doctor.log" \
+            || { echo "::error::relay protocol self-test did not pass"; cat "$RUNNER_TEMP/relay-singbox.log"; exit 1; }
+          grep -q "relay forwarding policy is fail-closed" "$RUNNER_TEMP/relay-doctor.log" \
+            || { echo "::error::doctor did not confirm the relay policy"; exit 1; }
+          echo "unpaired relay: fail-closed policy rendered, real first-hop handshake self-test passed."

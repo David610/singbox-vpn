@@ -2,10 +2,19 @@
 # template. Safe to hand-edit afterwards; install.sh never overwrites an
 # existing file. See docs/ALMALINUX_DEPLOYMENT.md.
 
-# Current on-disk deployment schema. Fresh installs must start current;
-# schema_version = 0 is reserved for legacy pre-versioning deployments and
-# is handled only by `vpn-admin config migrate` on repair/update.
-schema_version = 1
+# Current on-disk deployment schema (DEPLOYMENT_SCHEMA_VERSION in
+# crates/compat-config/src/deployment.rs). Fresh installs must start
+# current; older files are upgraded only by `vpn-admin config migrate` on
+# repair/update. deploy/lib/tests/test-node-identity.sh fails if this
+# template and the Rust constant ever disagree.
+schema_version = 2
+
+# Stable node identity and role. Neither is ever rewritten by repair,
+# update or migration. role = "exit" is an ordinary VPN exit; role =
+# "relay" accepts authenticated first-hop traffic and forwards it ONLY to
+# exits declared below ([[peer_endpoints]] on a relay access path).
+node_id = "{{NODE_ID}}"
+role = "{{NODE_ROLE}}"
 
 public_host = "{{PUBLIC_HOST}}"
 subscription_host = "{{SUBSCRIPTION_HOST}}"

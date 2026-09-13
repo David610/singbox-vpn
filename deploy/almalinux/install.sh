@@ -139,6 +139,8 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/state-schema.sh"
 # shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/node-identity.sh"
+# shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/binary-version-check.sh"
 
 # Best-effort, non-fatal diagnostics printed AFTER preflight_curl_retry has
@@ -227,6 +229,13 @@ IS_FRESH_INSTALL=0
 # flag, so a stray exported env var from a previous run can never
 # silently turn a real install into a no-op.
 DRY_RUN=0
+# Node role and identity (docs/INSTALLATION.md "Node role and identity").
+# Empty means "not supplied": a fresh install then defaults to an exit
+# with the documented default node_id, and a repair keeps whatever the
+# existing deployment.toml already says. Environment equivalents exist
+# for automation; the flags win.
+NODE_ROLE="${SINGBOX_VPN_ROLE:-}"
+NODE_ID="${SINGBOX_VPN_NODE_ID:-}"
 print_install_help() {
   cat <<'USAGE'
 singbox-vpn installer (deploy/almalinux/install.sh).
@@ -243,6 +252,18 @@ Optional flags (all have environment-variable equivalents):
                                     Required in non-interactive mode — there
                                     is no safe default.
   --subscription-port PORT         same as SUBSCRIPTION_PORT (default 8443)
+  --role exit|relay                same as SINGBOX_VPN_ROLE (default: exit).
+                                    exit: an ordinary VPN exit. relay: accepts
+                                    authenticated first-hop traffic and
+                                    forwards it ONLY to exits declared in
+                                    deployment.toml; until one is paired the
+                                    relay forwards nothing. Fixed at install
+                                    time: a repair/update never changes it.
+  --node-id ID                     same as SINGBOX_VPN_NODE_ID; stable node
+                                    identity (1-63 of A-Z a-z 0-9 . _ -).
+                                    Default: the first DNS label of the
+                                    public hostname. Never changed by a
+                                    repair/update.
   --ssh-port PORT                  same as SINGBOX_VPN_SSH_PORT; explicitly declares
                                     the port sshd listens on when singbox-vpn cannot
                                     positively auto-detect it. Required
@@ -287,6 +308,10 @@ parse_cli_args() {
       --reality-handshake-server=*) REALITY_HANDSHAKE_SERVER="${1#*=}"; shift ;;
       --subscription-port) SUBSCRIPTION_PORT="$2"; shift 2 ;;
       --subscription-port=*) SUBSCRIPTION_PORT="${1#*=}"; shift ;;
+      --role) NODE_ROLE="${2:-}"; shift 2 ;;
+      --role=*) NODE_ROLE="${1#*=}"; shift ;;
+      --node-id) NODE_ID="${2:-}"; shift 2 ;;
+      --node-id=*) NODE_ID="${1#*=}"; shift ;;
       --ssh-port) SINGBOX_VPN_SSH_PORT="$2"; shift 2 ;;
       --ssh-port=*) SINGBOX_VPN_SSH_PORT="${1#*=}"; shift ;;
       --non-interactive) NONINTERACTIVE=1; shift ;;
@@ -296,6 +321,14 @@ parse_cli_args() {
       *) die "unknown argument: $1 (see --help)" ;;
     esac
   done
+  # Fail on a bad role/node-id before ANY host mutation (including a
+  # --dry-run report that would otherwise look ready).
+  if [ -n "$NODE_ROLE" ] && ! node_role_is_valid "$NODE_ROLE"; then
+    die "invalid --role '$NODE_ROLE' (expected exactly 'exit' or 'relay')"
+  fi
+  if [ -n "$NODE_ID" ] && ! node_id_is_valid "$NODE_ID"; then
+    die "invalid --node-id '$NODE_ID' (1-63 characters of A-Z a-z 0-9 . _ -, starting with a letter or digit)"
+  fi
 }
 
 # ---------------------------------------------------------------------
@@ -732,6 +765,7 @@ preflight_stage() {
   # ---------------------------------------------------------------
   install_idn_support
   resolve_host_config
+  resolve_node_identity
   resolve_reality_handshake_server
   # Write the install-state manifest NOW (acceptance="installing"), not
   # only at the very end — a fatal failure at ANY later stage still
@@ -1255,6 +1289,37 @@ resolve_host_config() {
     esac
   fi
   export PUBLIC_HOST SUBSCRIPTION_HOST
+}
+
+# Decide this run's node role and identity. A fresh install takes the
+# operator's --role/--node-id (or the documented defaults). A repair/
+# upgrade of an existing deployment keeps what deployment.toml already
+# says and REFUSES a conflicting flag: converting an exit into a relay (or
+# worse, a relay into an unrestricted exit) or renaming a live node is
+# never an implicit side effect of re-running the installer.
+resolve_node_identity() {
+  if [ -f "$DEPLOYMENT_TOML" ]; then
+    local existing_role existing_node derived
+    existing_role="$(deployment_effective_role "$DEPLOYMENT_TOML")"
+    existing_node="$(deployment_top_level_value "$DEPLOYMENT_TOML" node_id)"
+    node_role_is_valid "$existing_role" \
+      || die "existing $DEPLOYMENT_TOML declares an invalid role '$existing_role' — refusing to repair it; fix the file (exit or relay) first."
+    if [ -n "$NODE_ROLE" ] && [ "$NODE_ROLE" != "$existing_role" ]; then
+      die "this deployment is already installed with role '$existing_role'; --role '$NODE_ROLE' would convert it in place. Refusing: a role change is never a repair side effect. Reinstall the node deliberately if a different role is really intended."
+    fi
+    derived="${existing_node:-$(default_node_id_for_host "$PUBLIC_HOST")}"
+    if [ -n "$NODE_ID" ] && [ "$NODE_ID" != "$derived" ]; then
+      die "this deployment's node_id is '$derived'; --node-id '$NODE_ID' would rename a live node. Refusing."
+    fi
+    NODE_ROLE="$existing_role"
+    NODE_ID="$derived"
+  else
+    NODE_ROLE="${NODE_ROLE:-exit}"
+    NODE_ID="${NODE_ID:-$(default_node_id_for_host "$PUBLIC_HOST")}"
+  fi
+  node_id_is_valid "$NODE_ID" || die "derived node_id '$NODE_ID' is invalid — pass --node-id explicitly."
+  export NODE_ROLE NODE_ID
+  log "node identity: node_id=$NODE_ID role=$NODE_ROLE"
 }
 
 host_config_stage() {
@@ -2188,13 +2253,27 @@ render_deployment_toml() {
   : "${SUBSCRIPTION_PORT:=8443}"
   : "${REALITY_HANDSHAKE_SERVER:?Set REALITY_HANDSHAKE_SERVER to a TLS 1.3 decoy hostname you control or have explicitly selected. There is no universal safe default; the installer performs a real sing-box protocol acceptance test.}"
   preflight_validate_hostname "$REALITY_HANDSHAKE_SERVER" "REALITY_HANDSHAKE_SERVER" || die "invalid REALITY_HANDSHAKE_SERVER."
+  : "${NODE_ROLE:?internal: resolve_node_identity must run before render_deployment_toml}"
+  : "${NODE_ID:?internal: resolve_node_identity must run before render_deployment_toml}"
+  node_role_is_valid "$NODE_ROLE" || die "invalid node role '$NODE_ROLE'."
+  node_id_is_valid "$NODE_ID" || die "invalid node_id '$NODE_ID'."
+  local rendered="$DEPLOYMENT_TOML.tmp.$$"
   sed -e "s/{{PUBLIC_HOST}}/$PUBLIC_HOST/" \
       -e "s/{{SUBSCRIPTION_HOST}}/$SUBSCRIPTION_HOST/" \
       -e "s/{{SUBSCRIPTION_PORT}}/$SUBSCRIPTION_PORT/" \
       -e "s/{{REALITY_HANDSHAKE_SERVER}}/$REALITY_HANDSHAKE_SERVER/" \
-      "$REPO_ROOT/deploy/almalinux/templates/deployment.toml.template" >"$DEPLOYMENT_TOML"
-  chmod 0644 "$DEPLOYMENT_TOML"
-  log "wrote $DEPLOYMENT_TOML"
+      -e "s/{{NODE_ID}}/$NODE_ID/" \
+      -e "s/{{NODE_ROLE}}/$NODE_ROLE/" \
+      "$REPO_ROOT/deploy/almalinux/templates/deployment.toml.template" >"$rendered"
+  if [ "$NODE_ROLE" = "relay" ]; then
+    # A relay's own listener is first-hop infrastructure from the very
+    # first render: validation refuses a relay without this declaration,
+    # and the renderer turns an unpaired relay into reject-all.
+    cat "$REPO_ROOT/deploy/almalinux/templates/relay-ingress.toml.template" >>"$rendered"
+  fi
+  chmod 0644 "$rendered"
+  mv -f "$rendered" "$DEPLOYMENT_TOML"
+  log "wrote $DEPLOYMENT_TOML (node_id=$NODE_ID role=$NODE_ROLE)"
 }
 
 init_reality_keys() {
@@ -2751,6 +2830,50 @@ verify_subscription_through_nginx() {
   log "subscription profile fetched and verified through nginx/TLS at https://$host:$port/sub/... (current REALITY key material confirmed, TLS hostname/expiry verified by curl without -k)."
 }
 
+# Relay variant of verify_subscription_through_nginx. A relay's own
+# listener must never be served as an exit, so the only acceptable
+# answers through the real HTTPS path are: 503 no_selectable_route (the
+# normal state of a freshly installed, not-yet-paired relay whose first
+# user has no exit credential yet), or 200 for a paired user whose body
+# does not advertise this relay's own REALITY key or host.
+verify_relay_subscription_fail_closed_through_nginx() {
+  local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
+  local port="${SUBSCRIPTION_PORT:-8443}"
+  [ -n "$SUBSCRIPTION_URL" ] || die "[FAIL] no subscription URL is available for the initial user — cannot verify the relay subscription path."
+  local pubkey body_file http_code curl_err err_out
+  pubkey="$(cat "$STATE_DIR/reality/public.key" 2>/dev/null || true)"
+  [ -n "$pubkey" ] || die "[FAIL] REALITY public key not found under $STATE_DIR/reality."
+  body_file="$(mktemp)"
+  curl_err="$(mktemp)"
+  if ! http_code="$(curl -sS --max-time 15 --resolve "${host}:${port}:127.0.0.1" \
+      -o "$body_file" -w '%{http_code}' "$SUBSCRIPTION_URL" 2>"$curl_err")"; then
+    err_out="$(cat "$curl_err")"
+    rm -f "$body_file" "$curl_err"
+    die "[FAIL] local HTTPS subscription request through nginx failed (connection/TLS error): $err_out"
+  fi
+  rm -f "$curl_err"
+  if grep -q "pbk=${pubkey}" "$body_file" || grep -q "@${PUBLIC_HOST}:" "$body_file"; then
+    rm -f "$body_file"
+    die "[FAIL] the relay's subscription advertises the relay's OWN listener as a client route — a relay must never be served as an exit. Refusing to accept installation."
+  fi
+  case "$http_code" in
+    503)
+      grep -q 'no_selectable_route' "$body_file" \
+        || { rm -f "$body_file"; die "[FAIL] relay subscription returned 503 without the explicit no_selectable_route body."; }
+      log "relay subscription through nginx/TLS is fail-closed: HTTP 503 no_selectable_route (no exit is paired for this user yet)."
+      ;;
+    200)
+      log "relay subscription through nginx/TLS serves only paired exit routes (the relay's own listener is not advertised)."
+      ;;
+    *)
+      rm -f "$body_file"
+      die "[FAIL] relay subscription through nginx returned HTTP $http_code (expected 503 no_selectable_route or 200 with paired routes)."
+      ;;
+  esac
+  rm -f "$body_file"
+  SUBSCRIPTION_FETCH_OK=1
+}
+
 acceptance_stage() {
   stage 17 "first user + acceptance test"
   ensure_first_user
@@ -2792,6 +2915,8 @@ $fail_lines"
   # and internal subscription-process coherence for that case.
   if [ "$PRIOR_ACCEPTANCE_STATE" = "accepted" ]; then
     log "repair of an already-accepted installation — skipping the subscription-through-nginx re-fetch (no new token was minted; doctor --protocol above already re-verified the live handshake/coherence)."
+  elif [ "$NODE_ROLE" = "relay" ]; then
+    verify_relay_subscription_fail_closed_through_nginx
   else
     verify_subscription_through_nginx
   fi
@@ -2851,6 +2976,8 @@ write_install_state_manifest() {
   "sing_box_sha256_pinned": "$pinned_singbox_sha256",
   "arch": "$ARCH",
   "installed_at_unix": $(date +%s),
+  "node_id": "${NODE_ID:-}",
+  "role": "${NODE_ROLE:-}",
   "public_host": "$PUBLIC_HOST",
   "subscription_host": "${SUBSCRIPTION_HOST:-$PUBLIC_HOST}",
   "firewall_backend": "$FIREWALL_BACKEND",
@@ -2894,6 +3021,8 @@ print_status() {
  singbox-vpn installation complete
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Server
+  Node:    ${NODE_ID}
+  Role:    ${NODE_ROLE}
   Address: ${PUBLIC_HOST}
   Status:  running
 
@@ -2903,7 +3032,8 @@ SERVER-SIDE VERIFIED
   ✓ REALITY protocol self-test (real sing-box handshake)
   ✓ subscription backend healthy
   ✓ subscription HTTPS/TLS (nginx, real cert/hostname verified)
-  $([ "$SUBSCRIPTION_FETCH_OK" -eq 1 ] && echo "✓ subscription profile fetched through nginx and matches current server state" || echo "- subscription profile re-fetch skipped this run (repair of an already-accepted install; not re-minting a token)")
+  $(if [ "$SUBSCRIPTION_FETCH_OK" -ne 1 ]; then echo "- subscription profile re-fetch skipped this run (repair of an already-accepted install; not re-minting a token)"; elif [ "$NODE_ROLE" = "relay" ]; then printf '%s
+  %s' "✓ relay subscription is fail-closed: the relay's own listener is never served as an exit" "✓ relay forwarding policy rendered fail-closed (only declared exits reachable; reject-all until paired)"; else echo "✓ subscription profile fetched through nginx and matches current server state"; fi)
   ✓ firewall configured$([ "$FIREWALL_OK" -eq 1 ] || echo " (unconfirmed — see stage 13 output)")
 BANNER
   if [ -n "$FIRST_USER_QR_OUTPUT" ]; then

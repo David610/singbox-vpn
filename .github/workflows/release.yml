@@ -343,6 +343,43 @@ jobs:
           tar -czf "${out}.tar.gz" "$out"
           sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
 
+      # SEC-005: SBOM + license inventory for THIS release candidate — the
+      # same checkout and committed Cargo.lock (`cargo metadata --locked`)
+      # the binaries above were built from. Fails closed on any runtime
+      # dependency without license metadata. See deploy/lib/generate-sbom.sh.
+      - name: Generate SBOM and license inventory
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          bash deploy/lib/generate-sbom.sh --version "$RELEASE_TAG" --output-dir .
+          for f in singbox-vpn-sbom.cdx.json singbox-vpn-licenses.json; do
+            test -s "$f"
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Attest SBOM and license inventory provenance
+        id: attest-sbom
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            singbox-vpn-sbom.cdx.json
+            singbox-vpn-licenses.json
+
+      - name: Publish SBOM attestation bundle
+        run: cp "${{ steps.attest-sbom.outputs.bundle-path }}" "singbox-vpn-sbom.sigstore.json"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: singbox-vpn-sbom
+          path: |
+            singbox-vpn-sbom.cdx.json
+            singbox-vpn-sbom.cdx.json.sha256
+            singbox-vpn-licenses.json
+            singbox-vpn-licenses.json.sha256
+            singbox-vpn-sbom.sigstore.json
+          if-no-files-found: error
+
       - name: Attest binary archive provenance
         id: attest-binary
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -497,8 +534,13 @@ jobs:
 
       - name: Build combined checksum file
         run: |
+          set -euo pipefail
           cd dist
-          cat ./*.tar.gz.sha256 > SHA256SUMS
+          # The SBOM/license inventory are release assets like the archives:
+          # refuse to publish without them, and cover them by SHA256SUMS.
+          test -s singbox-vpn-sbom.cdx.json
+          test -s singbox-vpn-licenses.json
+          cat ./*.tar.gz.sha256 ./singbox-vpn-sbom.cdx.json.sha256 ./singbox-vpn-licenses.json.sha256 > SHA256SUMS
           sha256sum -c SHA256SUMS
 
       - name: Publish release
@@ -509,6 +551,8 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sigstore.json
+            dist/singbox-vpn-sbom.cdx.json
+            dist/singbox-vpn-licenses.json
             dist/SHA256SUMS
           generate_release_notes: true
 

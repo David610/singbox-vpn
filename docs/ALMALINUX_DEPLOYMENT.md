@@ -473,6 +473,82 @@ roll back the complete transaction on failure. A no-argument update is rejected
 so an operator cannot change versions accidentally. `--dev-rebuild` is the
 explicit source-build path for development only.
 
+## Relay nodes (two-hop routes)
+
+A node is an **exit** (default) or a **relay**, fixed at install time:
+
+```bash
+sudo ./install.sh --role relay --node-id ru1 --domain ru1.example.com --reality-handshake-server <decoy>
+```
+
+`deployment.toml` then carries `role = "relay"`, `node_id = "ru1"` and a
+`[[access_paths]] id = "relay-ingress"` entry that marks this node's own
+VLESS+REALITY listener as first-hop infrastructure. An **unpaired** relay
+forwards nothing: its sing-box config ends in `reject`, and subscriptions
+answer HTTP 503 `no_selectable_route`. Install acceptance checks exactly that.
+
+To pair an exit `de1.example.com` (installed separately as an ordinary exit):
+
+1. Create the user on the exit (`vpn user create` there) and note that user's
+   VLESS UUID (credential B). The exit never needs anything from the relay.
+2. On the relay, declare the exit twice in `deployment.toml` — a direct route
+   and the via route that reuses its credential:
+
+   ```toml
+   [[peer_endpoints]]
+   id = "de1-direct"
+   tag = "Germany · Direct"
+   host = "de1.example.com"
+   port = 443
+   transport = "vless_reality"
+   server_name = "<exit decoy>"
+   reality_public_key = "<exit public key>"
+   reality_short_id = "<exit short id>"
+   failure_domain = "exit:de1"
+
+   [[peer_endpoints]]
+   id = "de1-via-ru1"
+   tag = "Germany · via Russia"
+   host = "de1.example.com"
+   port = 443
+   transport = "vless_reality"
+   server_name = "<exit decoy>"
+   reality_public_key = "<exit public key>"
+   reality_short_id = "<exit short id>"
+   failure_domain = "exit:de1"
+   path = "relay-ingress"
+   credential_ref = "de1-direct"
+   ```
+
+3. `sudo vpn user peer set <relay-user-id> de1-direct --uuid <B>`, then
+   `sudo vpn render-config` and `sudo systemctl restart vpn-subscription`.
+
+The relay now forwards only to `de1.example.com:443` (the exact host string
+declared — a DNS name and its IP are different destinations) and serves the
+user both routes. Host names must be lowercase. Share-link subscriptions
+(`format=hiddify`) contain only the direct route; the via route needs the
+provisioning contract or `format=singbox`.
+
+Operational rules:
+
+- `vpn status` shows the node id, role and number of paired exits; `vpn doctor`
+  checks that the rendered relay policy ends in `reject`.
+- Re-running the installer, `update.sh`, `update.sh --repair` and
+  `vpn-admin config migrate` never change `role` or `node_id`; a conflicting
+  `--role`/`--node-id` is refused. `update.sh` also refuses to move a relay to a
+  release whose `vpn-admin` does not declare relay enforcement, and restores the
+  pre-update `deployment.toml` on rollback.
+- `vpn restore` refuses a backup taken on a node with a different role or
+  `node_id`.
+- Disabling a relay user makes the relay reject their first-hop credential (the
+  via route stops) and their subscription URL 404s. An already-imported direct
+  route does not pass through the relay and keeps working until credential B is
+  disabled or rotated on the exit.
+
+Evidence for relay behaviour is automated/loopback only
+([TWO_HOP_SYSTEM_TESTS.md](TWO_HOP_SYSTEM_TESTS.md)); real multi-VPS behaviour
+is UNVERIFIED.
+
 ## Backup
 
 Create a backup before a major change:

@@ -335,6 +335,7 @@ async fn get_subscription(
                         },
                         None => (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response(),
                     },
+                    Err(compat_config::CompatError::NoSelectableRoute) => no_selectable_route_response(),
                     Err(e) => {
                         tracing::error!(error = %e, "failed to render relay-aware singbox subscription");
                         (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
@@ -377,8 +378,14 @@ async fn get_subscription(
                 )
                     .into_response();
             }
+            // Direct routes only, never relay first-hop infrastructure: see
+            // `render::share_link_endpoints`. A relay route is omitted, not
+            // downgraded to a link that dials the exit directly.
+            let share_endpoints =
+                render::share_link_endpoints(&state.endpoints, &state.access_paths);
             if compat_mode == render::CompatibilityMode::VisionOff {
-                return match render::render_vision_off_uri_list(&user, &state.endpoints) {
+                return match render::render_vision_off_uri_list(&user, &share_endpoints) {
+                    Ok(body) if body.is_empty() => no_selectable_route_response(),
                     Ok(body) => (
                         StatusCode::OK,
                         [("content-type", "text/plain; charset=utf-8")],
@@ -391,7 +398,8 @@ async fn get_subscription(
                     }
                 };
             }
-            match render::render_uri_list(&user, &state.endpoints) {
+            match render::render_uri_list(&user, &share_endpoints) {
+                Ok(body) if body.is_empty() => no_selectable_route_response(),
                 Ok(body) => (
                     StatusCode::OK,
                     [("content-type", "text/plain; charset=utf-8")],
@@ -406,6 +414,25 @@ async fn get_subscription(
         }
         _ => (StatusCode::BAD_REQUEST, "unknown format").into_response(),
     }
+}
+
+/// A valid, active token whose user has nothing selectable to route
+/// through: an unpaired relay, or a user without a credential for any
+/// declared exit. Explicit 503 instead of a 200 carrying the relay's own
+/// first hop as if it were an exit, and instead of a generic 500 that
+/// looks like a server bug. Same body for both causes; neither reveals
+/// anything beyond what the token holder already knows.
+fn no_selectable_route_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "error": "no_selectable_route",
+            "message": "no exit route is available for this subscription yet",
+        })
+        .to_string(),
+    )
+        .into_response()
 }
 
 async fn health() -> &'static str {
@@ -570,6 +597,9 @@ async fn get_provision(
         &state.access_paths,
     ) {
         Ok(doc) => doc,
+        Err(compat_config::CompatError::NoSelectableRoute) => {
+            return no_selectable_route_response()
+        }
         Err(e) => {
             // A document that fails its own contract validation is a
             // server-side defect or a broken deployment state. Serving a
@@ -1814,5 +1844,246 @@ mod rate_limit_regression {
              ({} entries) — unbounded memory growth",
             limiter.bucket_count()
         );
+    }
+}
+
+/// Relay deployments through the real router: which routes a relay serves,
+/// and that it answers "no route" explicitly instead of ever serving its own
+/// first hop as an exit.
+#[cfg(test)]
+mod relay_subscription_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use compat_config::deployment::DeploymentConfig;
+    use compat_config::model::PeerCredential;
+    use compat_config::secret::SecretString;
+
+    const EXIT_KEY: &str = "zo060cy2M-x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk";
+    const RELAY_KEY: &str = "pOCSkrZRwni5dyxWn1-puxPZBrRqtoyd-dwrRAn4ogk";
+    const RELAY_UUID: &str = "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1";
+    const EXIT_UUID: &str = "b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1";
+
+    fn relay_deployment(paired: bool) -> DeploymentConfig {
+        let mut text = String::from(
+            r#"schema_version = 2
+node_id = "ru1"
+role = "relay"
+public_host = "ru1.example.test"
+subscription_host = "ru1.example.test"
+
+[reality]
+listen_port = 443
+handshake_server = "www.example.com"
+
+[hysteria2]
+listen_port = 443
+
+[subscription]
+listen_port = 9100
+
+[[access_paths]]
+id = "via-ru1"
+kind = "relay"
+via_endpoint_id = "reality-1"
+capabilities = ["tcp"]
+"#,
+        );
+        if paired {
+            for (id, tag, path, credential_ref) in [
+                ("de1-direct", "Germany · Direct", "direct", ""),
+                (
+                    "de1-via-ru1",
+                    "Germany · via Russia",
+                    "via-ru1",
+                    "credential_ref = \"de1-direct\"\n",
+                ),
+            ] {
+                text.push_str(&format!(
+                    "\n[[peer_endpoints]]\nid = \"{id}\"\ntag = \"{tag}\"\nhost = \"de1.example.test\"\nport = 443\ntransport = \"vless_reality\"\nserver_name = \"www.example.com\"\nreality_public_key = \"{EXIT_KEY}\"\nreality_short_id = \"0a1b2c3d\"\nfailure_domain = \"exit:de1\"\npath = \"{path}\"\n{credential_ref}"
+                ));
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        std::fs::write(&path, text).unwrap();
+        DeploymentConfig::load(&path).unwrap()
+    }
+
+    fn relay_user(token: &str, with_exit_credential: bool, enabled: bool) -> CompatUser {
+        let mut peer_credentials = std::collections::BTreeMap::new();
+        if with_exit_credential {
+            peer_credentials.insert(
+                "de1-direct".to_string(),
+                PeerCredential::VlessReality {
+                    uuid: EXIT_UUID.into(),
+                },
+            );
+        }
+        CompatUser {
+            id: format!("user-{token}"),
+            name: token.into(),
+            enabled,
+            vless_uuid: RELAY_UUID.into(),
+            hysteria2_password: SecretString::new("relay-hy2"),
+            subscription_token_hash_hex: credentials::hash_token(token),
+            created_at: 0,
+            expires_at: None,
+            vision_off_experiment: false,
+            peer_credentials,
+        }
+    }
+
+    fn state(cfg: &DeploymentConfig, users: Vec<CompatUser>) -> std::sync::Arc<AppState> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        compat_config::store::save_users_atomic(&path, &users).unwrap();
+        std::mem::forget(dir);
+        std::sync::Arc::new(AppState {
+            users_file: path,
+            endpoints: cfg.served_endpoints(RELAY_KEY, "11223344", None).unwrap(),
+            access_paths: cfg.contract_access_paths().unwrap(),
+            rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+        })
+    }
+
+    async fn get(state: std::sync::Arc<AppState>, uri: &str) -> (StatusCode, String) {
+        use tower::Service;
+        let mut app =
+            build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let mut svc = app.call(addr).await.unwrap();
+        let resp = svc
+            .call(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn provisioning_on_a_paired_relay_serves_direct_and_via_routes_only() {
+        let cfg = relay_deployment(true);
+        let (status, body) = get(
+            state(&cfg, vec![relay_user("tok", true, true)]),
+            "/v1/provision/tok",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let tags: Vec<&str> = doc["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["tag"].as_str().unwrap())
+            .collect();
+        assert_eq!(tags, vec!["Germany · Direct", "Germany · via Russia"]);
+        let outbounds = doc["singbox_config"]["outbounds"].as_array().unwrap();
+        let first_hop = outbounds
+            .iter()
+            .find(|o| o["server"] == "ru1.example.test")
+            .unwrap();
+        let via = outbounds
+            .iter()
+            .find(|o| o["tag"] == "Germany · via Russia")
+            .unwrap();
+        assert_eq!(via["detour"], first_hop["tag"]);
+        assert!(!outbounds.iter().any(|o| o["type"] == "hysteria2"));
+        let metadata = serde_json::to_string(&doc["access_paths"]).unwrap();
+        assert!(!metadata.contains(RELAY_UUID) && !metadata.contains(EXIT_UUID));
+    }
+
+    #[tokio::test]
+    async fn every_format_answers_no_route_for_an_unpaired_relay() {
+        let cfg = relay_deployment(false);
+        let st = state(&cfg, vec![relay_user("tok", false, true)]);
+        for uri in [
+            "/v1/provision/tok",
+            "/sub/tok",
+            "/sub/tok?format=singbox",
+            "/sub/tok?format=uri",
+            "/sub/tok?format=hiddify",
+            "/sub/tok?format=hiddify&compat=vision-off",
+        ] {
+            let (status, body) = get(st.clone(), uri).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}: {body}");
+            assert!(body.contains("no_selectable_route"), "{uri}: {body}");
+            assert!(
+                !body.contains("ru1.example.test"),
+                "{uri} served the first hop: {body}"
+            );
+            assert!(
+                !body.contains(RELAY_UUID),
+                "{uri} leaked credential A: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_relay_user_without_an_exit_credential_gets_no_route_not_the_first_hop() {
+        let cfg = relay_deployment(true);
+        let st = state(&cfg, vec![relay_user("tok", false, true)]);
+        for uri in ["/v1/provision/tok", "/sub/tok", "/sub/tok?format=hiddify"] {
+            let (status, body) = get(st.clone(), uri).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn share_links_on_a_relay_contain_only_the_direct_exit_route() {
+        let cfg = relay_deployment(true);
+        let (status, body) = get(
+            state(&cfg, vec![relay_user("tok", true, true)]),
+            "/sub/tok?format=hiddify",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let links: Vec<&str> = body.lines().collect();
+        assert_eq!(links.len(), 1, "{body}");
+        assert!(links[0].starts_with(&format!("vless://{EXIT_UUID}@de1.example.test:443")));
+        assert!(!body.contains("ru1.example.test"));
+        assert!(!body.contains(RELAY_UUID));
+    }
+
+    #[tokio::test]
+    async fn native_singbox_format_on_a_relay_uses_the_detour_chain() {
+        let cfg = relay_deployment(true);
+        let (status, body) =
+            get(state(&cfg, vec![relay_user("tok", true, true)]), "/sub/tok").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let config: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let via = outbounds
+            .iter()
+            .find(|o| o["tag"] == "Germany · via Russia")
+            .unwrap();
+        assert!(via["detour"].is_string());
+        let selector = outbounds.iter().find(|o| o["tag"] == "select").unwrap();
+        assert!(!selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .contains(&via["detour"]));
+    }
+
+    #[tokio::test]
+    async fn disabled_relay_user_is_a_generic_404_on_every_route() {
+        let cfg = relay_deployment(true);
+        let st = state(&cfg, vec![relay_user("tok", true, false)]);
+        for uri in ["/v1/provision/tok", "/sub/tok", "/sub/tok?format=hiddify"] {
+            assert_eq!(get(st.clone(), uri).await.0, StatusCode::NOT_FOUND, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn live_fingerprint_matches_the_canonical_relay_endpoint_set() {
+        let cfg = relay_deployment(true);
+        let (_, body) = get(state(&cfg, vec![]), "/internal/state-fingerprint").await;
+        let expected = compat_config::render::endpoints_fingerprint(
+            &cfg.served_endpoints(RELAY_KEY, "11223344", None).unwrap(),
+        );
+        assert!(body.contains(&expected));
     }
 }

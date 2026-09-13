@@ -118,6 +118,11 @@ Installer options (passed through to deploy/almalinux/install.sh):
                                     default is ever chosen automatically
   --subscription-port PORT         public HTTPS port for the subscription
                                     endpoint (default 8443)
+  --role exit|relay                node role (default: exit). A relay
+                                    forwards only to exits declared in
+                                    deployment.toml and nothing until paired
+  --node-id ID                     stable node identity (default: first DNS
+                                    label of the public hostname)
   --non-interactive                never prompt; fail fast instead
 
 By default this installer resolves the latest STABLE tagged release and
@@ -134,7 +139,7 @@ SINGBOX_VPN_CHANNEL=dev and SINGBOX_VPN_ALLOW_UNVERIFIED_DEV=1 to explicitly tra
 production VPS installs; this downloads UNVERIFIED branch source with no
 checksum check — this is the ONLY way to install unpinned branch source.
 
-Environment overrides: SINGBOX_VPN_VERSION, SINGBOX_VPN_REPO, SINGBOX_VPN_REF, SINGBOX_VPN_CHANNEL, SINGBOX_VPN_ALLOW_UNVERIFIED_DEV, PUBLIC_HOST, SUBSCRIPTION_HOST, REALITY_HANDSHAKE_SERVER
+Environment overrides: SINGBOX_VPN_VERSION, SINGBOX_VPN_REPO, SINGBOX_VPN_REF, SINGBOX_VPN_CHANNEL, SINGBOX_VPN_ALLOW_UNVERIFIED_DEV, PUBLIC_HOST, SUBSCRIPTION_HOST, REALITY_HANDSHAKE_SERVER, SINGBOX_VPN_ROLE, SINGBOX_VPN_NODE_ID
 USAGE
       exit 0 ;;
     *)

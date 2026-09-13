@@ -1,0 +1,12 @@
+
+# Relay ingress (role = "relay"). Declares this node's own VLESS+REALITY
+# listener ("reality-1") as first-hop infrastructure: it is never offered
+# to clients as an exit, and sing-box forwards nothing until an exit is
+# paired. To pair an exit, add a direct [[peer_endpoints]] entry for it and
+# a second entry with path = "relay-ingress" and credential_ref pointing
+# at the first (see docs/ALMALINUX_DEPLOYMENT.md "Relay nodes").
+[[access_paths]]
+id = "relay-ingress"
+kind = "relay"
+via_endpoint_id = "reality-1"
+capabilities = ["tcp"]
