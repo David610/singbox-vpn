@@ -37,7 +37,9 @@
 
 mod common;
 
-use common::{free_port, spawn_local_tls13_decoy, DecoyCertSize, LocalDecoy, SingBox};
+use common::{
+    free_port, spawn_local_tls13_decoy, wait_until_serving, DecoyCertSize, LocalDecoy, SingBox,
+};
 use compat_config::contract::{
     contract_endpoint, provisioning_document_with_mode_and_access_paths, DiagnosticMode, VlessFlow,
 };
@@ -64,6 +66,7 @@ const CLIENT_IP: &str = "127.0.0.6";
 const DIRECT_TAG: &str = "Germany · Direct";
 const VIA_TAG: &str = "Germany · via Russia";
 const NEGATIVE_TIMEOUT: Duration = Duration::from_secs(6);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Real processes and fixed loopback addresses: run scenarios one at a time
 // so timing never depends on how many sing-box processes share the CPU.
@@ -192,35 +195,6 @@ impl Tap {
     fn all_connections(&self) -> usize {
         self.sources.lock().unwrap().len()
     }
-}
-
-/// True if a TCP socket is in LISTEN state on `port` (any address). Read
-/// from /proc instead of probing with connect(): a connect-and-drop probe
-/// against a REALITY listener produces exactly the "processed invalid
-/// connection" noise the privacy assertions below must not see.
-fn listening(port: u16) -> bool {
-    let needle = format!(":{port:04X} ");
-    ["/proc/net/tcp", "/proc/net/tcp6"].iter().any(|file| {
-        std::fs::read_to_string(file).is_ok_and(|text| {
-            text.lines().skip(1).any(|line| {
-                let fields: Vec<&str> = line.split_whitespace().collect();
-                fields.len() > 3
-                    && format!("{} ", fields[1]).ends_with(&needle)
-                    && fields[3] == "0A"
-            })
-        })
-    })
-}
-
-fn wait_listening(port: u16) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if listening(port) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    false
 }
 
 /// SOCKS5 CONNECT + HTTP GET with a bounded timeout. True only for an
@@ -443,11 +417,14 @@ listen_port = {sub_port}
     fn start(&mut self, sb: &SingBox) {
         self.process.kill();
         self.process = Proc(Some(sb.run_logged(&self.config_path(), &self.log)));
-        assert!(
-            wait_listening(self.reality_port),
-            "sing-box did not start:\n{}",
-            common::read_log(&self.log)
-        );
+        let config = self.config_path();
+        let child = self.process.0.as_mut().unwrap();
+        if let Err(why) = wait_until_serving(child, &config, STARTUP_TIMEOUT) {
+            panic!(
+                "sing-box did not start: {why}\n{}",
+                common::read_log(&self.log)
+            );
+        }
     }
 
     fn stop(&mut self) {
@@ -658,10 +635,13 @@ path = "{path}"
             "client config rejected: {}",
             String::from_utf8_lossy(&check.stderr)
         );
-        self.clients.push(Proc(Some(
-            self.sb.run_logged(&path, &dir.join("client.log")),
-        )));
-        assert!(wait_listening(socks), "client did not start");
+        let log = dir.join("client.log");
+        self.clients
+            .push(Proc(Some(self.sb.run_logged(&path, &log))));
+        let child = self.clients.last_mut().unwrap().0.as_mut().unwrap();
+        if let Err(why) = wait_until_serving(child, &path, STARTUP_TIMEOUT) {
+            panic!("client did not start: {why}\n{}", common::read_log(&log));
+        }
         socks
     }
 
@@ -1620,5 +1600,67 @@ fn core_start_failure_stays_visible_with_production_logging() {
     assert!(
         log.contains("FATAL") && log.contains("start service"),
         "the start failure is reported:\n{log}"
+    );
+}
+
+// ----------------------------------------------------------------------
+// Harness self-tests: the port race behind the intermittent "route never
+// comes up" failures (common::free_port, common::wait_until_serving)
+// ----------------------------------------------------------------------
+
+#[test]
+fn harness_ports_are_unique_and_outside_the_ephemeral_range() {
+    let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap();
+    let bounds: Vec<u16> = range
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let mut handed_out = std::collections::HashSet::new();
+    for _ in 0..500 {
+        let port = free_port();
+        assert!(
+            !(bounds[0]..=bounds[1]).contains(&port),
+            "port {port} lies in the ephemeral range {range}, where a port-0 bind can take it"
+        );
+        assert!(handed_out.insert(port), "port {port} was handed out twice");
+    }
+}
+
+/// The collision exactly as it happened: another socket (the exit tap)
+/// holds the port on one loopback address, sing-box exits on "address
+/// already in use", and a port-level LISTEN check still saw the port open.
+#[test]
+fn harness_readiness_is_owned_by_the_started_process() {
+    let _serial = serial();
+    let Some(sb) = prerequisites() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let config = dir.path().join("config.json");
+    let doc = serde_json::json!({
+        "log": {"level": "fatal"},
+        "inbounds": [{"type": "mixed", "tag": "in", "listen": "0.0.0.0", "listen_port": port}],
+        "outbounds": [{"type": "direct", "tag": "direct"}]
+    });
+    std::fs::write(&config, serde_json::to_vec(&doc).unwrap()).unwrap();
+
+    let squatter = TcpListener::bind((EXIT_IP, port)).unwrap();
+    let mut blocked = Proc(Some(
+        sb.run_logged(&config, &dir.path().join("blocked.log")),
+    ));
+    let verdict = wait_until_serving(blocked.0.as_mut().unwrap(), &config, STARTUP_TIMEOUT);
+    assert!(
+        verdict.is_err(),
+        "a sing-box that could not bind its inbound was reported ready"
+    );
+    drop(squatter);
+
+    let mut serving = Proc(Some(
+        sb.run_logged(&config, &dir.path().join("serving.log")),
+    ));
+    assert_eq!(
+        wait_until_serving(serving.0.as_mut().unwrap(), &config, STARTUP_TIMEOUT),
+        Ok(()),
+        "{}",
+        common::read_log(&dir.path().join("serving.log"))
     );
 }

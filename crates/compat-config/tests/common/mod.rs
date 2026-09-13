@@ -279,17 +279,165 @@ pub fn wait_for_log_line(
     false
 }
 
-/// A TCP port not bound on ANY local IPv4 address at the time of the call.
+/// A port for a process the harness is about to start: unused on the TCP and
+/// UDP wildcards, outside the kernel's ephemeral port range, and never handed
+/// out twice by one test process.
 ///
-/// Probing on the wildcard matters: the two-hop lab binds sockets on several
-/// loopback addresses (exit tap on 127.0.0.3, client sockets on 127.0.0.6),
-/// and a probe on 127.0.0.1 alone can return a port already bound on one of
-/// those, which a later `[::]`/`0.0.0.0` listener (sing-box inbounds, the TLS
-/// decoy) then fails to bind. The kernel refuses a wildcard bind that
-/// conflicts with any specific-address binding, so this probe cannot.
+/// "Bind port 0, read the number, drop the socket" returned a port the kernel
+/// was free to assign again immediately — to the next such probe (the exit and
+/// the relay were given the same port) or to a harness socket bound to port 0
+/// on a specific loopback address (the exit tap, an HTTP target). The sing-box
+/// that later bound it exited with "address already in use" while the other
+/// socket held the port, and the scenario failed much later as a route that
+/// never came up. Port-0 binds and outgoing connections both draw from the
+/// ephemeral range, so a port chosen outside it can only be claimed by the
+/// process it was handed to.
 pub fn free_port() -> u16 {
-    let listener = TcpListener::bind("0.0.0.0:0").unwrap();
-    listener.local_addr().unwrap().port()
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static CURSOR: AtomicU32 = AtomicU32::new(u32::MAX);
+    let (low, high) = harness_port_range();
+    let span = high - low + 1;
+    // Different test processes start at different offsets.
+    let _ = CURSOR.compare_exchange(
+        u32::MAX,
+        std::process::id() % span,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    );
+    for _ in 0..span {
+        let port = (low + CURSOR.fetch_add(1, Ordering::SeqCst) % span) as u16;
+        if port_unused(port) {
+            return port;
+        }
+    }
+    panic!("no unused port left in the harness range {low}-{high}");
+}
+
+/// The widest block of ports above 10000 that the kernel never assigns on its
+/// own (Linux: `ip_local_port_range`; elsewhere the Linux default is assumed,
+/// which lies outside the BSD/macOS ephemeral range too).
+fn harness_port_range() -> (u32, u32) {
+    let (ephemeral_low, ephemeral_high) =
+        std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .ok()
+            .and_then(|text| {
+                let mut bounds = text.split_whitespace().map(str::parse::<u32>);
+                Some((bounds.next()?.ok()?, bounds.next()?.ok()?))
+            })
+            .unwrap_or((32768, 60999));
+    let below: (u32, u32) = (10_000, ephemeral_low.saturating_sub(1));
+    let above: (u32, u32) = (ephemeral_high + 1, 65_535);
+    let (low, high) = if below.1.saturating_sub(below.0) >= above.1.saturating_sub(above.0) {
+        below
+    } else {
+        above
+    };
+    assert!(
+        high >= low + 999,
+        "ephemeral port range {ephemeral_low}-{ephemeral_high} leaves no block for harness ports"
+    );
+    (low, high)
+}
+
+fn port_unused(port: u16) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
+    let free = |bound: std::io::Result<()>| !matches!(bound, Err(e) if e.kind() == std::io::ErrorKind::AddrInUse);
+    free(TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).map(drop))
+        && free(TcpListener::bind((Ipv6Addr::UNSPECIFIED, port)).map(drop))
+        && free(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).map(drop))
+        && free(UdpSocket::bind((Ipv6Addr::UNSPECIFIED, port)).map(drop))
+}
+
+/// Blocks until `child` itself holds a socket on every inbound port of the
+/// sing-box config it runs (UDP for QUIC inbounds, a LISTEN socket otherwise).
+/// Fails as soon as the process exits, or after `timeout`.
+///
+/// Ownership is read from `/proc`: "some socket listens on that port" is not
+/// the prerequisite a scenario depends on — another process can hold the port
+/// while this sing-box has already exited on a bind error. Nothing connects to
+/// the port either: a connect-and-drop probe against a REALITY listener
+/// produces exactly the "processed invalid connection" noise the privacy
+/// assertions must not see.
+pub fn wait_until_serving(
+    child: &mut std::process::Child,
+    config: &std::path::Path,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let text = std::fs::read_to_string(config).map_err(|e| format!("read {config:?}: {e}"))?;
+    let doc: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse {config:?}: {e}"))?;
+    let inbounds: Vec<(u16, bool)> = doc["inbounds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|inbound| {
+            let port = u16::try_from(inbound["listen_port"].as_u64()?).ok()?;
+            let udp = matches!(
+                inbound["type"].as_str(),
+                Some("hysteria2" | "hysteria" | "tuic")
+            );
+            Some((port, udp))
+        })
+        .collect();
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!("process exited ({status}) before serving"));
+        }
+        let owned = socket_inodes(child.id());
+        let missing: Vec<u16> = inbounds
+            .iter()
+            .filter(|(port, udp)| !socket_bound(&owned, *port, *udp))
+            .map(|(port, _)| *port)
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("not serving on {missing:?} after {timeout:?}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+fn socket_inodes(pid: u32) -> std::collections::HashSet<String> {
+    std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+        .filter_map(|target| {
+            let target = target.to_str()?;
+            Some(
+                target
+                    .strip_prefix("socket:[")?
+                    .strip_suffix(']')?
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+/// `/proc/net/{tcp,udp}{,6}` rows: local address in column 1, TCP state in
+/// column 3 (`0A` = LISTEN), socket inode in column 9.
+fn socket_bound(owned: &std::collections::HashSet<String>, port: u16, udp: bool) -> bool {
+    let suffix = format!(":{port:04X}");
+    let tables = if udp {
+        ["/proc/net/udp", "/proc/net/udp6"]
+    } else {
+        ["/proc/net/tcp", "/proc/net/tcp6"]
+    };
+    tables.iter().any(|table| {
+        std::fs::read_to_string(table).is_ok_and(|text| {
+            text.lines().skip(1).any(|row| {
+                let columns: Vec<&str> = row.split_whitespace().collect();
+                columns.len() > 9
+                    && columns[1].ends_with(&suffix)
+                    && (udp || columns[3] == "0A")
+                    && owned.contains(columns[9])
+            })
+        })
+    })
 }
 
 pub fn wait_for_port(port: u16, timeout: std::time::Duration) -> bool {
