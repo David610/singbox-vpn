@@ -701,6 +701,28 @@ path = "{path}"
     }
 }
 
+/// A failed scenario prints every sing-box log of its lab before the temp
+/// directories disappear. Logs hold synthetic per-run credentials only; the
+/// servers log at the production level, the clients at `warn`.
+impl Drop for Lab {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        self.clients.clear();
+        eprintln!("--- relay sing-box log ---\n{}", self.relay.log_text());
+        eprintln!("--- exit sing-box log ---\n{}", self.exit.log_text());
+        if let Ok(entries) = std::fs::read_dir(self.relay.dir.path()) {
+            for entry in entries.flatten() {
+                let log = entry.path().join("client.log");
+                if let Ok(text) = std::fs::read_to_string(&log) {
+                    eprintln!("--- {} ---\n{text}", entry.file_name().to_string_lossy());
+                }
+            }
+        }
+    }
+}
+
 fn set_outbound_uuid(
     core: &mut serde_json::Value,
     pick: impl Fn(&serde_json::Value) -> bool,
