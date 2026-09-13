@@ -8117,48 +8117,33 @@ mod udp_probe_tests {
         assert!(cert_expiry_days(&dir.path().join("does-not-exist.pem")).is_none());
     }
 
+    /// A synthetic, already-expired certificate with fixed dates
+    /// (notBefore 2020-01-01T00:00:00Z, notAfter 2020-01-02T00:00:00Z),
+    /// generated once for this test; its private key was never kept.
+    ///
+    /// A checked-in fixture rather than `openssl x509 -req -days -1`: OpenSSL
+    /// 3.5 (AlmaLinux 9.8) rejects a negative validity with "end date before
+    /// start date", which failed this test inside `update.sh --repair` on a
+    /// supported host (real two-VPS acceptance defect D5).
+    const EXPIRED_CERT_PEM: &str = include_str!("testdata/expired-2020-01-02.pem");
+    const EXPIRED_CERT_NOT_AFTER_UNIX: i64 = 1_577_923_200;
+
     #[test]
     fn cert_expiry_days_reports_negative_days_for_an_already_expired_cert() {
         let dir = tempfile::tempdir().unwrap();
-        let csr_path = dir.path().join("expired.csr");
-        let key_path = dir.path().join("expired.key");
         let cert_path = dir.path().join("expired.pem");
-        // `req -x509 -days` rejects negative values outright — build a CSR
-        // first, then self-sign it via `x509 -req -days -1`, which backdates
-        // notAfter to yesterday and so reliably produces an already-expired
-        // certificate regardless of what "today" is when this test runs.
-        let status = std::process::Command::new("openssl")
-            .args([
-                "req",
-                "-newkey",
-                "rsa:2048",
-                "-nodes",
-                "-subj",
-                "/CN=expired.example.com",
-                "-keyout",
-            ])
-            .arg(&key_path)
-            .arg("-out")
-            .arg(&csr_path)
-            .status()
-            .expect("openssl must be available to run this test");
-        assert!(status.success(), "openssl failed to generate a test CSR");
-        let status = std::process::Command::new("openssl")
-            .args(["x509", "-req", "-in"])
-            .arg(&csr_path)
-            .args(["-signkey"])
-            .arg(&key_path)
-            .args(["-days", "-1", "-out"])
-            .arg(&cert_path)
-            .status()
-            .expect("openssl must be available to run this test");
-        assert!(status.success(), "openssl failed to self-sign a test cert");
+        std::fs::write(&cert_path, EXPIRED_CERT_PEM).unwrap();
 
         let result = cert_expiry_days(&cert_path).expect("file exists, must return Some");
         let days = result.expect("valid cert, openssl/date parsing must succeed");
+        let expected = (EXPIRED_CERT_NOT_AFTER_UNIX - UnixSeconds::now().0 as i64) / 86400;
         assert!(
             days < 0,
-            "cert self-signed with -days -1 must report negative days remaining, got {days}"
+            "an expired cert must report negative days, got {days}"
+        );
+        assert!(
+            (days - expected).abs() <= 1,
+            "days must be computed from the certificate's own notAfter: expected about {expected}, got {days}"
         );
     }
 
