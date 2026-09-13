@@ -30,10 +30,35 @@ impl Default for CompatibilityServiceManager {
     }
 }
 
+/// Environment variable naming the exact service-manager executable.
+///
+/// Unset in production, where `systemctl` is resolved from `PATH`. Set by
+/// the CLI test harness and by `update.sh`'s isolated test phase to a
+/// guard, so code under test cannot reach the host's real `sing-box` and
+/// `vpn-subscription` units (real two-VPS acceptance defect D6). While it
+/// is set there is no fallback: a missing or failing guard means "systemd
+/// not available", never the real `systemctl`.
+pub const SYSTEMCTL_OVERRIDE_ENV: &str = "SINGBOX_VPN_SYSTEMCTL";
+
+/// What unit tests of this binary get when nothing overrides it: a path
+/// that cannot exist, so a unit test that forgets `with_systemctl_binary`
+/// sees "systemd not available" instead of the host.
+#[cfg(test)]
+const DEFAULT_SYSTEMCTL: &str = "/nonexistent/singbox-vpn-unit-test-has-no-systemctl";
+#[cfg(not(test))]
+const DEFAULT_SYSTEMCTL: &str = "systemctl";
+
+fn systemctl_binary_from(override_value: Option<std::ffi::OsString>) -> PathBuf {
+    match override_value {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => PathBuf::from(DEFAULT_SYSTEMCTL),
+    }
+}
+
 impl CompatibilityServiceManager {
     pub fn new(service_name: impl Into<String>) -> Self {
         Self {
-            systemctl_binary: PathBuf::from("systemctl"),
+            systemctl_binary: systemctl_binary_from(std::env::var_os(SYSTEMCTL_OVERRIDE_ENV)),
             service_name: service_name.into(),
             settle: Duration::from_millis(300),
         }
@@ -469,5 +494,27 @@ exit 1
         let mgr = CompatibilityServiceManager::new("sing-box")
             .with_systemctl_binary(PathBuf::from("/nonexistent/systemctl"));
         assert!(!mgr.is_unit_installed());
+    }
+
+    #[test]
+    fn override_names_the_exact_service_manager_and_never_falls_back_to_path() {
+        let missing = std::ffi::OsString::from("/nonexistent/guard/systemctl");
+        let binary = systemctl_binary_from(Some(missing.clone()));
+        assert_eq!(binary, PathBuf::from(&missing));
+        let mgr = CompatibilityServiceManager::new("sing-box").with_systemctl_binary(binary);
+        assert!(
+            !mgr.is_available() && !mgr.is_unit_installed(),
+            "a missing guard means unavailable, not the host's systemctl"
+        );
+    }
+
+    #[test]
+    fn unit_tests_never_default_to_the_host_systemctl() {
+        assert_eq!(
+            systemctl_binary_from(None),
+            PathBuf::from(DEFAULT_SYSTEMCTL)
+        );
+        assert!(!std::path::Path::new(DEFAULT_SYSTEMCTL).exists());
+        assert_ne!(DEFAULT_SYSTEMCTL, "systemctl");
     }
 }

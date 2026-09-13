@@ -7,6 +7,8 @@
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 
+mod support;
+
 const REALITY_PRIVATE: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
 const REALITY_PUBLIC: &str = "pOCSkrZRwni5dyxWn1-puxPZBrRqtoyd-dwrRAn4ogk";
 const EXIT_PUBLIC: &str = "zo060cy2M-x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk";
@@ -96,7 +98,7 @@ listen_port = 9100
 }
 
 fn admin(dir: &Path, cfg: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("vpn-admin").unwrap();
+    let mut cmd = support::vpn_admin();
     cmd.arg("--config").arg(cfg);
     cmd.current_dir(dir);
     cmd.env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1");

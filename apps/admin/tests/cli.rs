@@ -8,6 +8,8 @@
 use assert_cmd::Command;
 use std::path::Path;
 
+mod support;
+
 const REALITY_PRIVATE_A: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
 const REALITY_PUBLIC_A: &str = "pOCSkrZRwni5dyxWn1-puxPZBrRqtoyd-dwrRAn4ogk";
 const REALITY_PRIVATE_B: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
@@ -225,7 +227,7 @@ exit 1
 }
 
 fn admin(dir: &Path, cfg_path: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("vpn-admin").unwrap();
+    let mut cmd = support::vpn_admin();
     cmd.arg("--config").arg(cfg_path);
     cmd.current_dir(dir);
     cmd.env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1");
@@ -234,8 +236,7 @@ fn admin(dir: &Path, cfg_path: &Path) -> Command {
 
 #[test]
 fn release_binary_exposes_package_version() {
-    Command::cargo_bin("vpn-admin")
-        .unwrap()
+    support::vpn_admin()
         .arg("--version")
         .assert()
         .success()
@@ -336,7 +337,7 @@ fn spawn_subscription_binary(cfg_path: &Path) -> std::process::Child {
                 .get_program()
                 .into()
         });
-    std::process::Command::new(program)
+    support::guarded_process(program)
         .arg("--config")
         .arg(cfg_path)
         .spawn()
@@ -357,7 +358,7 @@ fn concurrent_user_creates_do_not_lose_an_update() {
     let lock_path = dir.path().join("singbox-vpn-test.lock");
 
     let spawn_create = |name: &str| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_vpn-admin"))
+        support::vpn_admin_process()
             .arg("--config")
             .arg(&cfg_path)
             .args(["user", "create", "--name", name])
@@ -1086,6 +1087,7 @@ fn each_credential_mutation_states_its_own_blast_radius() {
         admin(dir.path(), &cfg_path)
             .args(args)
             .env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
             .env("SYSTEMCTL_LOG", &log_path)
             .assert()
     };
@@ -1204,6 +1206,7 @@ fn reality_rotate_scopes_blast_radius_to_reality_only() {
     .unwrap();
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .arg("init")
         .assert()
@@ -1211,6 +1214,7 @@ fn reality_rotate_scopes_blast_radius_to_reality_only() {
 
     let output = admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .args(["init", "--rotate"])
         .assert()
@@ -1260,6 +1264,7 @@ fn reality_rotate_reports_not_run_when_no_active_user_exists() {
     // No `user create` call at all — zero users exist when rotation runs.
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .arg("init")
         .assert()
@@ -1267,6 +1272,7 @@ fn reality_rotate_reports_not_run_when_no_active_user_exists() {
 
     let output = admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .args(["init", "--rotate"])
         .assert()
@@ -1485,6 +1491,7 @@ fn render_config_never_claims_handshake_passed_when_selftest_could_not_run() {
     .unwrap();
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .arg("init")
         .assert()
@@ -1492,6 +1499,7 @@ fn render_config_never_claims_handshake_passed_when_selftest_could_not_run() {
 
     let output = admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .arg("render-config")
         .assert()
@@ -1565,6 +1573,7 @@ fn render_config_require_applied_succeeds_on_true_noop() {
     .unwrap();
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .arg("init")
         .assert()
@@ -1573,6 +1582,7 @@ fn render_config_require_applied_succeeds_on_true_noop() {
     // First render-config actually applies the initial config.
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .args(["render-config", "--require-applied"])
         .assert()
@@ -1582,6 +1592,7 @@ fn render_config_require_applied_succeeds_on_true_noop() {
     // not a failure, even with --require-applied.
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .args(["render-config", "--require-applied"])
         .assert()
@@ -1668,6 +1679,7 @@ fn render_config_noop_reconcile_does_not_restart_singbox() {
     .unwrap();
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .arg("init")
         .assert()
@@ -1675,6 +1687,7 @@ fn render_config_noop_reconcile_does_not_restart_singbox() {
 
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .args(["render-config", "--require-applied"])
         .assert()
@@ -1691,6 +1704,7 @@ fn render_config_noop_reconcile_does_not_restart_singbox() {
     // has expired and no credential changed.
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .args(["render-config", "--require-applied"])
         .assert()
@@ -1730,6 +1744,7 @@ fn render_config_repeated_timer_execution_is_idempotent() {
     .unwrap();
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .arg("init")
         .assert()
@@ -1738,6 +1753,7 @@ fn render_config_repeated_timer_execution_is_idempotent() {
     for tick in 1..=4 {
         admin(dir.path(), &cfg_path)
             .env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
             .env("SYSTEMCTL_LOG", &log_path)
             .args(["render-config", "--require-applied"])
             .assert()
@@ -1773,12 +1789,14 @@ fn render_config_applies_and_restarts_when_a_user_actually_changed() {
     .unwrap();
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .arg("init")
         .assert()
         .success();
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .args(["render-config", "--require-applied"])
         .assert()
@@ -1789,6 +1807,7 @@ fn render_config_applies_and_restarts_when_a_user_actually_changed() {
     // (removing an expired user's authorization) or `user create` do.
     admin(dir.path(), &cfg_path)
         .env("PATH", &augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .args(["user", "create", "--name", "alice"])
         .assert()
@@ -1848,12 +1867,14 @@ fn user_create_reload_failure_restores_previous_working_config() {
     .unwrap();
     admin(dir.path(), &cfg_path)
         .env("PATH", &good_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &good_systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .arg("init")
         .assert()
         .success();
     admin(dir.path(), &cfg_path)
         .env("PATH", &good_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &good_systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .args(["render-config", "--require-applied"])
         .assert()
@@ -1878,6 +1899,7 @@ fn user_create_reload_failure_restores_previous_working_config() {
     .unwrap();
     admin(dir.path(), &cfg_path)
         .env("PATH", &bad_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &bad_systemctl)
         .env("SYSTEMCTL_LOG", dir.path().join("systemctl-bad.log"))
         .args(["user", "create", "--name", "bob"])
         .assert()
@@ -2486,7 +2508,7 @@ fn backup_refuses_to_clobber_a_preexisting_destination() {
 fn authorization_mutation_is_fail_closed_without_live_singbox() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_deployment_toml(dir.path());
-    let mut command = Command::cargo_bin("vpn-admin").unwrap();
+    let mut command = support::vpn_admin();
     command
         .arg("--config")
         .arg(&cfg_path)
@@ -2650,6 +2672,7 @@ fn restore_of_differing_reality_key_restarts_subscription_service_too() {
         .arg("restore")
         .arg(&backup_path)
         .env("PATH", augmented_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
         .env("SYSTEMCTL_LOG", &log_path)
         .assert()
         .success();
@@ -3111,4 +3134,127 @@ fn backup_then_restore_round_trips_the_current_versioned_users_envelope() {
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("erin"));
+}
+
+// ----------------------------------------------------------------------
+// D6 (real two-VPS acceptance): `update.sh --repair` runs this suite on the
+// live host as root. Tests without a fake `systemctl` restarted the real
+// relay until systemd's start limit tripped. These pin the isolation that
+// `tests/support` provides.
+// ----------------------------------------------------------------------
+
+/// A `systemctl` that behaves like a healthy host with the units installed
+/// and records every call, placed FIRST in `PATH` — what a test running on
+/// a live server would find.
+#[cfg(unix)]
+fn host_like_systemctl(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("host-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = dir.join("host-systemctl.log");
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> \"{}\"\ncase \"$1\" in show) echo loaded ;; esac\nexit 0\n",
+        log.display()
+    );
+    std::fs::write(bin.join("systemctl"), script).unwrap();
+    std::fs::set_permissions(
+        bin.join("systemctl"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    (bin, log)
+}
+
+#[cfg(unix)]
+fn path_with_first(dir: &Path) -> std::ffi::OsString {
+    std::env::join_paths(
+        std::iter::once(dir.to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_tests_cannot_reach_the_hosts_systemctl() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let (host_bin, host_log) = host_like_systemctl(dir.path());
+    for args in [
+        &["init"][..],
+        &["user", "create", "--name", "guarded"][..],
+        &["render-config"][..],
+        &["reality", "rotate"][..],
+    ] {
+        // Success or failure of each command is irrelevant here; only
+        // whether anything reached the host's service manager.
+        admin(dir.path(), &cfg_path)
+            .env("PATH", path_with_first(&host_bin))
+            .args(args)
+            .output()
+            .unwrap();
+    }
+    assert!(
+        !host_log.exists(),
+        "a guarded vpn-admin reached the host's systemctl:\n{}",
+        std::fs::read_to_string(&host_log).unwrap_or_default()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_fake_systemctl_fails_closed_instead_of_using_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let (host_bin, host_log) = host_like_systemctl(dir.path());
+    let run = |args: &[&str]| {
+        admin(dir.path(), &cfg_path)
+            .env("PATH", path_with_first(&host_bin))
+            .env(
+                "SINGBOX_VPN_SYSTEMCTL",
+                dir.path().join("forgot-to-create-the-fake"),
+            )
+            .args(args)
+            .assert()
+    };
+    run(&["init"]).success();
+    run(&["user", "create", "--name", "no-fake"]);
+    assert!(
+        !host_log.exists(),
+        "a missing SINGBOX_VPN_SYSTEMCTL target fell back to the host's systemctl"
+    );
+}
+
+#[test]
+fn every_binary_invocation_is_guarded() {
+    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let needles = [
+        concat!("cargo", "_bin(\"vpn-admin\")"),
+        concat!("cargo", "_bin(\"vpn\")"),
+        concat!("CARGO_BIN", "_EXE_vpn"),
+    ];
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(&tests_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "rs") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            for needle in needles {
+                if text.contains(needle) {
+                    offenders.push(format!("{} uses {needle}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "start vpn-admin only through tests/support (host isolation):\n{}",
+        offenders.join("\n")
+    );
+    let support = std::fs::read_to_string(tests_dir.join("support/mod.rs")).unwrap();
+    assert!(support.contains("SINGBOX_VPN_SYSTEMCTL"));
 }

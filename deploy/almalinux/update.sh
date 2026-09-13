@@ -121,6 +121,8 @@ restore_deployment_toml_snapshot() {
 }
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/binary-version-check.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/test-isolation.sh"
 
 # Production updates perform the same kinds of GitHub/SagerNet fetches as a
 # fresh install. A real lifecycle run reproduced a transient TCP connection
@@ -332,9 +334,29 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   command -v cargo >/dev/null 2>&1 \
     || die "cargo not found. --dev-rebuild requires a Rust toolchain. (A normal production update does not need this — use --version/--latest instead.)"
 
-  log "running tests before touching installed state..."
-  ( cd "$REPO_ROOT" && cargo test --workspace --locked -p admin -p subscription -p compat-config ) \
-    || die "tests failed; installed state was not changed."
+  # The suite runs on this live host, so it runs isolated from the host's
+  # service manager (deploy/lib/test-isolation.sh, defect D6), and what the
+  # updater then says about live services is observed, not assumed.
+  log "running tests before touching installed state (isolated: no systemd/D-Bus access, host-control tools guarded)..."
+  test_guard_dir="$(mktemp -d /tmp/singbox-vpn-test-isolation.XXXXXX)"
+  services_before_tests="$(host_service_fingerprint)"
+  tests_rc=0
+  run_isolated_from_host "$test_guard_dir" \
+    bash -c 'cd "$1" && cargo test --workspace --locked -p admin -p subscription -p compat-config' \
+    isolated-cargo-test "$REPO_ROOT" || tests_rc=$?
+  services_after_tests="$(host_service_fingerprint)"
+  refused_host_control="$(cat "$test_guard_dir/refused-host-control.log" 2>/dev/null || true)"
+  rm -rf "$test_guard_dir"
+  if [ "$services_before_tests" != "$services_after_tests" ]; then
+    die "live services CHANGED while the test phase ran (before: $(echo "$services_before_tests" | tr '\n' ';') after: $(echo "$services_after_tests" | tr '\n' ';')). Nothing was installed — binaries, systemd units and config are unchanged — but sing-box/vpn-subscription were restarted during the test phase. Check 'systemctl status sing-box vpn-subscription' before retrying."
+  fi
+  if [ -n "$refused_host_control" ]; then
+    die "the test phase attempted to control this host; the isolation guard refused every attempt: $(echo "$refused_host_control" | tr '\n' ';') Nothing was installed and live services were not restarted (identical MainPID/NRestarts before and after). This is a test defect — report it."
+  fi
+  if [ "$tests_rc" -ne 0 ]; then
+    die "tests failed (exit $tests_rc). Nothing was installed — binaries, systemd units and config are unchanged — and live services were not restarted (identical MainPID/NRestarts before and after the test phase)."
+  fi
+  log "tests passed; live services untouched during the test phase."
   log "building new binaries..."
   # --locked matches every CI build/test job: without it, this could
   # silently resolve a different dependency set than the one committed
@@ -476,7 +498,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
     "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
 
-  log "restarting services..."
+  log "deliberate service activation (apply stage, not the test phase): restarting vpn-subscription once..."
   systemctl restart vpn-subscription
   singbox_config_changed=1
   if [ -f "$BACKUP_DIR/config.json" ] && [ -f /etc/vpn/compat/sing-box/config.json ] \
