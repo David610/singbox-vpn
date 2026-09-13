@@ -385,7 +385,9 @@ Rules with consequences:
 * **This server never generates a peer credential.** It does not
   administer the peer, so a value it invented could not authenticate
   there. The operator pastes in what the peer's own `vpn-admin` issued,
-  via `vpn-admin user peer set <user> <endpoint-id> --uuid|--password`.
+  via `vpn-admin user peer set <user> <endpoint-id> --credential-stdin`
+  (stdin or a hidden prompt; the legacy `--uuid|--password` arguments are
+  visible in process listings and shell history).
 * **A peer a user has no credential for is absent from their document**,
   not present-and-broken — a client cannot distinguish a broken endpoint
   from a network failure.

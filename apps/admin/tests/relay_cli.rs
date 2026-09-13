@@ -120,12 +120,7 @@ fn provision(dir: &Path, cfg: &Path, shape: Shape) -> (String, String) {
             .assert()
             .success(),
     );
-    let lines: Vec<&str> = out.lines().collect();
-    let start = lines
-        .iter()
-        .position(|l| *l == "{")
-        .expect("JSON object in output");
-    let id = serde_json::from_str::<serde_json::Value>(&lines[start..].join("\n")).unwrap()["id"]
+    let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -137,9 +132,9 @@ fn provision(dir: &Path, cfg: &Path, shape: Shape) -> (String, String) {
                 "set",
                 &id,
                 "de1-direct",
-                "--uuid",
-                EXIT_UUID,
+                "--credential-stdin",
             ])
+            .write_stdin(format!("{EXIT_UUID}\n"))
             .assert()
             .success();
     }
@@ -163,6 +158,9 @@ fn production_code_never_bypasses_the_role_aware_renderer() {
     for dir in ["apps/admin/src", "services/subscription/src"] {
         for entry in std::fs::read_dir(workspace.join(dir)).unwrap() {
             let path = entry.unwrap().path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
             let text = std::fs::read_to_string(&path).unwrap();
             assert!(
                 !text.contains("render_singbox_server_config("),
@@ -503,4 +501,178 @@ fn relay_backup_restores_onto_the_same_relay_and_keeps_its_restrictions() {
         users.contains(EXIT_UUID),
         "restore keeps the operator-supplied exit credential"
     );
+}
+
+// ----------------------------------------------------------------------
+// O5 (real two-VPS acceptance): `user peer set|rotate --uuid <secret>`
+// exposes the exit credential in process listings and shell history.
+// ----------------------------------------------------------------------
+
+fn create_user(dir: &Path, cfg: &Path) -> String {
+    admin(dir, cfg).arg("init").assert().success();
+    let out = stdout(
+        &admin(dir, cfg)
+            .args(["user", "create", "--name", "carol", "--json"])
+            .assert()
+            .success(),
+    );
+    serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn stored_peer_uuid(dir: &Path) -> Option<String> {
+    let users: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("state/users/users.json")).unwrap())
+            .unwrap();
+    let text = users["users"][0]["peer_credentials"]["de1-direct"].to_string();
+    [EXIT_UUID, ROTATED_EXIT_UUID]
+        .into_iter()
+        .find(|candidate| text.contains(candidate))
+        .map(str::to_string)
+}
+
+const ROTATED_EXIT_UUID: &str = "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2";
+
+#[test]
+fn peer_credential_from_stdin_never_appears_in_the_process_arguments() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_deployment(dir.path(), Shape::PairedRelay);
+    let id = create_user(dir.path(), &cfg);
+
+    let mut child = support::vpn_admin_process()
+        .arg("--config")
+        .arg(&cfg)
+        .args([
+            "user",
+            "peer",
+            "set",
+            &id,
+            "de1-direct",
+            "--credential-stdin",
+        ])
+        .current_dir(dir.path())
+        .env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1")
+        .env("SINGBOX_VPN_LOCK_PATH", dir.path().join("state.lock"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // While it waits for the credential, its argv is what `ps` shows.
+    let cmdline_path = format!("/proc/{}/cmdline", child.id());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let argv = loop {
+        let raw = std::fs::read(&cmdline_path).unwrap_or_default();
+        let argv = String::from_utf8_lossy(&raw).replace('\0', " ");
+        if argv.contains("--credential-stdin") {
+            break argv;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "vpn-admin did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert!(
+        !argv.contains(EXIT_UUID),
+        "credential visible in argv: {argv}"
+    );
+
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{EXIT_UUID}\n").as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!printed.contains(EXIT_UUID), "credential echoed: {printed}");
+    assert_eq!(stored_peer_uuid(dir.path()).as_deref(), Some(EXIT_UUID));
+}
+
+#[test]
+fn peer_credential_rotation_accepts_stdin_and_refuses_empty_or_invalid_input_without_echo() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_deployment(dir.path(), Shape::PairedRelay);
+    let id = create_user(dir.path(), &cfg);
+    let peer = |verb: &str, input: &str| {
+        admin(dir.path(), &cfg)
+            .args([
+                "user",
+                "peer",
+                verb,
+                &id,
+                "de1-direct",
+                "--credential-stdin",
+            ])
+            .write_stdin(input.to_string())
+            .assert()
+    };
+
+    peer("set", &format!("{EXIT_UUID}\n")).success();
+    peer("rotate", &format!("{ROTATED_EXIT_UUID}\n")).success();
+    assert_eq!(
+        stored_peer_uuid(dir.path()).as_deref(),
+        Some(ROTATED_EXIT_UUID)
+    );
+
+    peer("rotate", "").failure();
+    let near_miss = "b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3bZ";
+    let refused = peer("rotate", &format!("{near_miss}\n")).failure();
+    let stderr = String::from_utf8_lossy(&refused.get_output().stderr).to_string();
+    assert!(
+        !stderr.contains(near_miss),
+        "rejected value echoed: {stderr}"
+    );
+    assert_eq!(
+        stored_peer_uuid(dir.path()).as_deref(),
+        Some(ROTATED_EXIT_UUID),
+        "refused input changes nothing"
+    );
+
+    admin(dir.path(), &cfg)
+        .args([
+            "user",
+            "peer",
+            "rotate",
+            &id,
+            "de1-direct",
+            "--credential-stdin",
+            "--uuid",
+            EXIT_UUID,
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn legacy_uuid_argument_still_works_and_warns_about_exposure() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_deployment(dir.path(), Shape::PairedRelay);
+    let id = create_user(dir.path(), &cfg);
+    let assert = admin(dir.path(), &cfg)
+        .args([
+            "user",
+            "peer",
+            "set",
+            &id,
+            "de1-direct",
+            "--uuid",
+            EXIT_UUID,
+        ])
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(stderr.contains("--credential-stdin"), "{stderr}");
+    assert!(!stderr.contains(EXIT_UUID));
+    assert_eq!(stored_peer_uuid(dir.path()).as_deref(), Some(EXIT_UUID));
 }

@@ -244,29 +244,46 @@ enum ConfigCommands {
 enum PeerCommands {
     /// Set (or replace) this user's credential for a peer endpoint.
     ///
-    /// Exactly one of `--uuid` / `--password` must be given, and it must
-    /// match the peer endpoint's declared transport: `--uuid` for
-    /// `vless-reality`, `--password` for `hysteria2`. A mismatch is
-    /// refused rather than coerced — silently reshaping it would produce
-    /// a profile that looks dialable and cannot authenticate.
+    /// Prefer `--credential-stdin`: the credential is read from standard
+    /// input (or a hidden prompt on a terminal), so it never appears in
+    /// process listings, shell history or command-line captures. The value
+    /// is interpreted by the endpoint's declared transport (VLESS client id
+    /// for `vless-reality`, password for `hysteria2`).
+    ///
+    /// `--uuid` / `--password` remain for compatibility and are UNSAFE for
+    /// production automation: a command-line argument is readable by every
+    /// local user via /proc and is kept in shell history. Whichever form is
+    /// used, it must match the transport; a mismatch is refused rather than
+    /// coerced — silently reshaping it would produce a profile that looks
+    /// dialable and cannot authenticate.
     Set {
         user_id: String,
         /// Peer endpoint id, as declared in `[[peer_endpoints]]`.
         endpoint_id: String,
-        /// VLESS client id issued to this user ON THE PEER SERVER.
+        /// Read the credential issued ON THE PEER SERVER from stdin (one
+        /// line) instead of the command line.
+        #[arg(long, conflicts_with_all = ["uuid", "password"])]
+        credential_stdin: bool,
+        /// VLESS client id issued to this user ON THE PEER SERVER. Visible
+        /// in process listings and shell history — prefer --credential-stdin.
         #[arg(long, conflicts_with = "password")]
         uuid: Option<String>,
         /// Hysteria2 password issued to this user ON THE PEER SERVER.
+        /// Visible in process listings and shell history — prefer
+        /// --credential-stdin.
         #[arg(long)]
         password: Option<String>,
     },
     /// Replace an existing peer credential (after rotating it on the peer
     /// server). Refuses if this user has no credential for that endpoint
     /// yet — use `set` for that, so a typo in the endpoint id cannot
-    /// silently create a second, unused entry.
+    /// silently create a second, unused entry. Takes the same credential
+    /// options as `set`; prefer `--credential-stdin`.
     Rotate {
         user_id: String,
         endpoint_id: String,
+        #[arg(long, conflicts_with_all = ["uuid", "password"])]
+        credential_stdin: bool,
         #[arg(long, conflicts_with = "password")]
         uuid: Option<String>,
         #[arg(long)]
@@ -512,15 +529,23 @@ fn main() -> Result<()> {
         Commands::User(UserCommands::Peer(PeerCommands::Set {
             user_id,
             endpoint_id,
+            credential_stdin,
             uuid,
             password,
-        })) => cmd_user_peer_set(&cfg, &user_id, &endpoint_id, uuid, password, false),
+        })) => {
+            let source = PeerCredentialSource::from_flags(credential_stdin, uuid, password);
+            cmd_user_peer_set(&cfg, &user_id, &endpoint_id, source, false)
+        }
         Commands::User(UserCommands::Peer(PeerCommands::Rotate {
             user_id,
             endpoint_id,
+            credential_stdin,
             uuid,
             password,
-        })) => cmd_user_peer_set(&cfg, &user_id, &endpoint_id, uuid, password, true),
+        })) => {
+            let source = PeerCredentialSource::from_flags(credential_stdin, uuid, password);
+            cmd_user_peer_set(&cfg, &user_id, &endpoint_id, source, true)
+        }
         Commands::User(UserCommands::Peer(PeerCommands::Remove {
             user_id,
             endpoint_id,
@@ -2359,10 +2384,14 @@ fn peer_credential_from_flags(
         (CompatTransport::VlessReality, Some(uuid), None) => {
             let uuid = uuid.trim().to_string();
             if !credentials::is_uuid_v4_shaped(&uuid) {
+                // The rejected value is not echoed: a near-miss paste is
+                // still most of a credential.
                 anyhow::bail!(
-                    "peer endpoint {:?} is vless-reality, and {uuid:?} is not an 8-4-4-4-12 hex \
-                     UUID. Paste the client id the PEER server issued for this user.",
-                    peer.id
+                    "peer endpoint {:?} is vless-reality, and the supplied value ({} characters, \
+                     not shown) is not an 8-4-4-4-12 hex UUID. Paste the client id the PEER \
+                     server issued for this user.",
+                    peer.id,
+                    uuid.chars().count()
                 );
             }
             Ok(PeerCredential::VlessReality { uuid })
@@ -2420,15 +2449,118 @@ fn find_peer_endpoint<'a>(
 /// nothing about this deployment's own listeners changes, so there is
 /// nothing to apply. It affects only what this user's next subscription
 /// fetch returns.
+/// Where `user peer set|rotate` takes the peer credential from.
+enum PeerCredentialSource {
+    /// `--credential-stdin`: never in argv (real two-VPS acceptance O5).
+    Stdin,
+    /// Legacy `--uuid` / `--password` command-line values.
+    Arguments {
+        uuid: Option<String>,
+        password: Option<String>,
+    },
+}
+
+impl PeerCredentialSource {
+    fn from_flags(credential_stdin: bool, uuid: Option<String>, password: Option<String>) -> Self {
+        if credential_stdin {
+            Self::Stdin
+        } else {
+            Self::Arguments { uuid, password }
+        }
+    }
+}
+
+/// One line from stdin with the trailing newline removed. On a terminal the
+/// prompt goes to stderr and echo is switched off while typing, so the value
+/// is not shown on screen either.
+fn read_peer_credential_from_stdin() -> Result<String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if stdin.is_terminal() {
+        eprint!("Credential issued by the peer server (input hidden): ");
+        std::io::stderr().flush().ok();
+        #[cfg(unix)]
+        {
+            let _echo_off = TerminalEchoOff::new(libc::STDIN_FILENO);
+            stdin.lock().read_line(&mut line)?;
+        }
+        #[cfg(not(unix))]
+        stdin.lock().read_line(&mut line)?;
+        eprintln!();
+    } else {
+        stdin.lock().read_line(&mut line)?;
+    }
+    let value = line.trim_end_matches(['\r', '\n']).to_string();
+    if value.trim().is_empty() {
+        bail!("--credential-stdin: no credential was provided on standard input");
+    }
+    Ok(value)
+}
+
+/// Restores the terminal's echo flag when dropped.
+#[cfg(unix)]
+struct TerminalEchoOff {
+    fd: libc::c_int,
+    original: Option<libc::termios>,
+}
+
+#[cfg(unix)]
+impl TerminalEchoOff {
+    fn new(fd: libc::c_int) -> Self {
+        // SAFETY: tcgetattr/tcsetattr on a descriptor this process owns,
+        // with a zeroed termios that tcgetattr fully initialises.
+        let mut term: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(fd, &mut term) } != 0 {
+            return Self { fd, original: None };
+        }
+        let original = term;
+        term.c_lflag &= !libc::ECHO;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
+            return Self { fd, original: None };
+        }
+        Self {
+            fd,
+            original: Some(original),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalEchoOff {
+    fn drop(&mut self) {
+        if let Some(original) = &self.original {
+            unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, original) };
+        }
+    }
+}
+
 fn cmd_user_peer_set(
     cfg: &DeploymentConfig,
     id: &str,
     endpoint_id: &str,
-    uuid: Option<String>,
-    password: Option<String>,
+    source: PeerCredentialSource,
     require_existing: bool,
 ) -> Result<()> {
     let peer = find_peer_endpoint(cfg, endpoint_id)?;
+    let (uuid, password) = match source {
+        PeerCredentialSource::Stdin => {
+            let value = read_peer_credential_from_stdin()?;
+            match peer.transport {
+                compat_config::model::CompatTransport::VlessReality => (Some(value), None),
+                compat_config::model::CompatTransport::Hysteria2 => (None, Some(value)),
+            }
+        }
+        PeerCredentialSource::Arguments { uuid, password } => {
+            if uuid.is_some() || password.is_some() {
+                eprintln!(
+                    "note: a credential passed as --uuid/--password is visible in process \
+                     listings and shell history; use --credential-stdin for automation."
+                );
+            }
+            (uuid, password)
+        }
+    };
     let credential = peer_credential_from_flags(peer, uuid, password)?;
 
     let mut users = store::load_users(&cfg.users_file())?;

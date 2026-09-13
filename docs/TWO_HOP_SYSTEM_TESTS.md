@@ -37,7 +37,7 @@ client ── "Germany · via Russia" ─► RELAY (role = relay) ──► EXIT
 Credential scopes are independent: the subscription bearer token (relay),
 credential **A** (the relay user's VLESS UUID, authenticates the first hop)
 and credential **B** (issued by the exit, recorded on the relay as
-`user peer set … de1-direct --uuid B`, reused by the via route through
+`user peer set … de1-direct --credential-stdin`, reused by the via route through
 `credential_ref`). The relay's server config never contains B, and neither
 node ever holds the other's private key.
 
