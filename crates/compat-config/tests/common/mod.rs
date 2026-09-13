@@ -279,8 +279,16 @@ pub fn wait_for_log_line(
     false
 }
 
+/// A TCP port not bound on ANY local IPv4 address at the time of the call.
+///
+/// Probing on the wildcard matters: the two-hop lab binds sockets on several
+/// loopback addresses (exit tap on 127.0.0.3, client sockets on 127.0.0.6),
+/// and a probe on 127.0.0.1 alone can return a port already bound on one of
+/// those, which a later `[::]`/`0.0.0.0` listener (sing-box inbounds, the TLS
+/// decoy) then fails to bind. The kernel refuses a wildcard bind that
+/// conflicts with any specific-address binding, so this probe cannot.
 pub fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = TcpListener::bind("0.0.0.0:0").unwrap();
     listener.local_addr().unwrap().port()
 }
 
