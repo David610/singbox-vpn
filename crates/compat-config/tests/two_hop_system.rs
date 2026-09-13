@@ -1,4 +1,4 @@
-//! LOCAL SYSTEM TESTS (S1–S15) for the two-hop Privacy+ route.
+//! LOCAL SYSTEM TESTS (S1–S17) for the two-hop Privacy+ route.
 //!
 //! Evidence class: local automated system evidence (CI-VERIFIED when the
 //! `singbox-validate` job runs it). Real sing-box processes, loopback only.
@@ -10,9 +10,9 @@
 //! Topology (distinct loopback addresses, deterministic roles):
 //!
 //! ```text
-//! client (sing-box, SOCKS on 127.0.0.1)
-//!   ├─ "Germany · Direct"      ──────────────────────► exit 127.0.0.3 ─► target 127.0.0.4
-//!   └─ "Germany · via Russia"  ─► relay 127.0.0.2 ────► exit 127.0.0.3 ─► target 127.0.0.4
+//! client (sing-box, SOCKS on 127.0.0.1, dials from 127.0.0.6)
+//!   ├─ "Germany · Direct"      ─────────────────────► tap ─► exit 127.0.0.3 ─► target 127.0.0.4
+//!   └─ "Germany · via Russia"  ─► relay 127.0.0.2 ───► tap ─► exit 127.0.0.3 ─► target 127.0.0.4
 //! undeclared destinations: 127.0.0.5, other ports on 127.0.0.3/127.0.0.4
 //! ```
 //!
@@ -21,7 +21,8 @@
 //! (`DeploymentConfig::served_endpoints` + `provisioning_document_*`), and
 //! every applied config goes through `apply_config_atomically` validated by
 //! the real `sing-box check`. The only test-side additions are
-//! client-owned: a SOCKS inbound and the selected route tag.
+//! client-owned: a SOCKS inbound, the selected route, and the device's
+//! source address. The tap in front of the exit records connection sources.
 //!
 //! The scenario functions take a [`Lab`] describing addresses, not
 //! hard-coded processes, so the same scenario list is the checklist for
@@ -139,7 +140,7 @@ impl HttpTarget {
 /// records the source address of every connection — the loopback stand-in
 /// for the exit-side packet capture of the real two-VPS acceptance (D3).
 /// Client sockets dial from [`CLIENT_IP`] (see `Lab::run_client`); the relay
-/// dials from its default loopback source, so `from_client` counts exactly
+/// dials from its default loopback source, so `client_connections` counts exactly
 /// the connections the client device opened straight to the exit.
 struct Tap {
     port: u16,
@@ -178,7 +179,7 @@ fn spawn_tcp_tap(bind_ip: &str, upstream_port: u16) -> Tap {
 }
 
 impl Tap {
-    fn from_client(&self) -> usize {
+    fn client_connections(&self) -> usize {
         let client: std::net::IpAddr = CLIENT_IP.parse().unwrap();
         self.sources
             .lock()
@@ -188,7 +189,7 @@ impl Tap {
             .count()
     }
 
-    fn total(&self) -> usize {
+    fn all_connections(&self) -> usize {
         self.sources.lock().unwrap().len()
     }
 }
@@ -1318,7 +1319,7 @@ const IDLE_WINDOW: Duration = Duration::from_secs(8);
 fn wait_for_tap(tap: &Tap, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if tap.from_client() > 0 {
+        if tap.client_connections() > 0 {
             return true;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -1354,11 +1355,11 @@ fn s16_privacy_plus_client_never_connects_to_the_exit_directly() {
     }
     std::thread::sleep(IDLE_WINDOW);
     assert!(
-        lab.exit_tap.total() > 0,
+        lab.exit_tap.all_connections() > 0,
         "the tap sees the exit's traffic: the relay's connections pass through it"
     );
     assert_eq!(
-        lab.exit_tap.from_client(),
+        lab.exit_tap.client_connections(),
         0,
         "S16: a Privacy+ client opened a direct connection to the exit"
     );
@@ -1400,7 +1401,7 @@ fn s17_relay_down_privacy_plus_fails_closed_while_direct_stays_explicit() {
     std::thread::sleep(IDLE_WINDOW);
     assert_eq!(lab.target.hits(), hits, "S17: nothing reached the target");
     assert_eq!(
-        lab.exit_tap.from_client(),
+        lab.exit_tap.client_connections(),
         0,
         "S17: no Privacy+ client fell back to, or probed, the direct route"
     );
@@ -1411,7 +1412,7 @@ fn s17_relay_down_privacy_plus_fails_closed_while_direct_stays_explicit() {
         "S17: an explicitly chosen Direct route works without the relay"
     );
     assert!(
-        lab.exit_tap.from_client() > 0,
+        lab.exit_tap.client_connections() > 0,
         "S17: and it really is the direct connection"
     );
 }
