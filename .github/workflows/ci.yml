@@ -420,7 +420,7 @@ jobs:
       # production renderers, applied through the production atomic apply
       # path. Loopback only — this is not real-VPS, provider-separation,
       # device or network evidence (docs/TWO_HOP_SYSTEM_TESTS.md).
-      - name: Two-hop relay system tests S1-S15 (real sing-box, loopback)
+      - name: Two-hop relay system tests S1-S17 (real sing-box, loopback)
         env:
           SING_BOX_BIN: /usr/local/bin/sing-box
           SINGBOX_VPN_REQUIRE_REAL_INTEROP: "1"
@@ -428,12 +428,15 @@ jobs:
           set -euo pipefail
           cargo test --locked -p compat-config --test two_hop_system --test relay_role_policy \
             -- --nocapture 2>&1 | tee two-hop.log
-          # 16 two_hop_system (S1-S15 + log privacy) + relay_role_policy's
+          # 20 two_hop_system (S1-S17, log privacy, rejected-credential log
+          # privacy, start-failure visibility) + relay_role_policy's
           # real `sing-box check` of the relay route; update deliberately.
           for name in s01_direct_route s02_relay_route s03_relay_is_not s04_wrong_relay s05_wrong_exit \
               s06_exit_unavailable s07_relay_unavailable s08_disabled_user s09_expired_user \
               s10_credential_rotation s11_malformed s12_unpaired_relay s13_relay_reaches_only \
-              s14_reload_and_repair s15_crash_restart relay_and_exit_logs_carry_no_credentials \
+              s14_reload_and_repair s15_crash_restart s16_privacy_plus_client_never_connects \
+              s17_relay_down_privacy_plus_fails_closed relay_and_exit_logs_carry_no_credentials \
+              rejected_and_revoked_credentials_never_reach core_start_failure_stays_visible \
               every_rendered_relay_route_rule_is_accepted_by_real_sing_box; do
             if ! grep -Eq "^test ${name}[a-z_]* \.\.\. ok$" two-hop.log; then
               echo "::error::system test ${name}* did not run and pass"
