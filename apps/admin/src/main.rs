@@ -6826,12 +6826,16 @@ fn run_reality_client_selftest(
 /// invalid connection`, while the client — run with this self-test's exact
 /// production log level — logged nothing matching either string.
 ///
-/// The SERVER's own log is the reliable signal (confirmed: it logs
-/// `processed invalid connection` at ERROR severity, so it survives the
-/// production default `"log": {"level": "warn"}`, matching `journalctl -u
-/// sing-box` output an operator would see directly), so `journal_hit`
-/// (a cross-check of that log during this self-test's own connection
-/// attempt) also counts. This is still only corroborating evidence, not
+/// The SERVER's own log is the reliable signal (it logs `processed invalid
+/// connection` at ERROR severity), so `journal_hit` (a cross-check of that
+/// log during this self-test's own connection attempt) also counts. Since
+/// D4 the production server config logs at `fatal`
+/// (`compat_config::server::server_log_options`), because the same ERROR
+/// class carries presented credentials and client addresses; on such a
+/// node the journal holds no per-connection lines, `journal_hit` stays
+/// `false`, and a silent failure is reported as Inconclusive rather than
+/// HandshakeRejected. A server run at a raised level for an investigation
+/// still gets the cross-check. This is still only corroborating evidence, not
 /// proof of cause: unrelated scanner traffic hitting the same port during
 /// the self-test's brief window could in principle produce a false-positive
 /// correlation, and — per the HandshakeRejected message in

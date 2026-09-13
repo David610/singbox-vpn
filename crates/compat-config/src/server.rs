@@ -32,9 +32,9 @@ impl ServerPorts {
 ///
 /// The forwarding policy is derived from `deployment.role` alone:
 ///
-/// * `Exit` — byte-for-byte the historical single-server document (no
-///   `route` section, `direct` egress). Upgrading an exit therefore never
-///   changes its config or restarts sing-box.
+/// * `Exit` — the single-server document (no `route` section, `direct`
+///   egress). Role policy adds nothing to it; the only change an upgrade
+///   from a pre-D4 build makes is [`server_log_options`].
 /// * `Relay` — the same authenticated inbounds, plus a `route.rules` list
 ///   that forwards ONLY to the exits declared in `deployment.toml`
 ///   ([`DeploymentConfig::relay_targets`]) and ends in an unconditional
@@ -215,7 +215,7 @@ pub fn render_singbox_server_config(
     }
 
     json!({
-        "log": { "level": "warn", "timestamp": true },
+        "log": server_log_options(),
         "inbounds": [
             {
                 "type": "vless",
@@ -243,6 +243,28 @@ pub fn render_singbox_server_config(
             { "type": "direct", "tag": "direct" }
         ]
     })
+}
+
+/// Core logging for every server document: start-up/fatal failures only.
+///
+/// sing-box reports per-connection events at ERROR and WARN, and those
+/// lines carry what this product must never persist: a rejected VLESS
+/// login is logged as `process connection from <client address>: unknown
+/// UUID: <presented credential>`, and dial failures name tunnelled
+/// destinations. Under systemd that output is journald/syslog on disk, so
+/// with `warn` revoked — and, after a disable/re-enable, currently valid —
+/// credentials were recoverable from ordinary server logs (real two-VPS
+/// acceptance defect D4). There is no per-message filter in sing-box, so
+/// the level is the boundary: nothing per-connection is emitted at all,
+/// rather than logged and scrubbed later.
+///
+/// Service health stays diagnosable without those lines: a start failure
+/// is still printed as `FATAL ... start service: ...` with a non-zero exit
+/// status (the CLI reports it independently of this setting), which is
+/// what `systemctl status`, `journalctl -u sing-box`, the watchdog and
+/// `vpn-admin doctor` surface.
+pub fn server_log_options() -> serde_json::Value {
+    json!({ "level": "fatal", "timestamp": true })
 }
 
 /// Confirms the rendered config never contains anything it shouldn't
@@ -566,6 +588,25 @@ mod tests {
         assert_eq!(cfg["inbounds"][1], cfg_off["inbounds"][1]);
         assert_eq!(cfg["outbounds"], cfg_off["outbounds"]);
         assert_eq!(cfg["log"], cfg_off["log"]);
+    }
+
+    #[test]
+    fn server_documents_emit_no_per_connection_core_log_lines() {
+        let cfg = render_singbox_server_config(
+            &users(),
+            &reality(),
+            &hysteria(),
+            ServerPorts {
+                vless_reality_port: 443,
+                hysteria2_port: 443,
+            },
+            1000,
+        );
+        assert_eq!(cfg["log"]["level"], "fatal");
+        assert!(
+            cfg["log"].get("output").is_none(),
+            "no separate log file that could collect what journald no longer does"
+        );
     }
 
     #[test]
