@@ -738,7 +738,7 @@ mod tests {
         let probe = dir.path().join("umask-probe");
         std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
+            .create_new(true)
             .mode(0o640)
             .open(&probe)
             .unwrap();
