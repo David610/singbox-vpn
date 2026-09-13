@@ -56,16 +56,20 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), CompatEr
     Ok(())
 }
 
+/// Mode set on the open handle, not only requested at creation, so the
+/// process umask cannot narrow it (defect D1).
 #[cfg(unix)]
 fn write_file_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), CompatError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(mode)
         .open(path)
+        .map_err(|e| CompatError::Io(e.to_string()))?;
+    f.set_permissions(std::fs::Permissions::from_mode(mode))
         .map_err(|e| CompatError::Io(e.to_string()))?;
     f.write_all(bytes)
         .map_err(|e| CompatError::Io(e.to_string()))?;

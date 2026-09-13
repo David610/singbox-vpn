@@ -520,8 +520,13 @@ To pair an exit `de1.example.com` (installed separately as an ordinary exit):
    credential_ref = "de1-direct"
    ```
 
-3. `sudo vpn user peer set <relay-user-id> de1-direct --uuid <B>`, then
-   `sudo vpn render-config` and `sudo systemctl restart vpn-subscription`.
+3. Record credential B without putting it on the command line (where it is
+   visible in process listings and shell history):
+   `sudo vpn user peer set <relay-user-id> de1-direct --credential-stdin`,
+   then paste B at the hidden prompt, or pipe it in from a root-only file
+   (`< /root/b.uuid`). Then `sudo vpn render-config` and
+   `sudo systemctl restart vpn-subscription`. The legacy `--uuid <B>` form
+   still works but is unsafe for production automation.
 
 The relay now forwards only to `de1.example.com:443` (the exact host string
 declared — a DNS name and its IP are different destinations) and serves the

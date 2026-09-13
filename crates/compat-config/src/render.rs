@@ -559,6 +559,7 @@ pub fn render_singbox_config_from_contract_with_access_paths(
 
     let mut outbounds = Vec::new();
     let mut tags = Vec::new();
+    let mut relayed_tags = Vec::new();
     let mut reality_tag: Option<String> = None;
     let mut hysteria2_tag: Option<String> = None;
 
@@ -683,6 +684,7 @@ pub fn render_singbox_config_from_contract_with_access_paths(
                 }
                 outbound["network"] = json!("tcp");
                 outbound["detour"] = json!(via.tag);
+                relayed_tags.push(tag.clone());
             }
         }
         outbounds.push(outbound);
@@ -692,10 +694,23 @@ pub fn render_singbox_config_from_contract_with_access_paths(
         return Err(CompatError::NoSelectableRoute);
     }
 
+    // A `urltest` group dials every member itself — when Core starts and on
+    // every interval — no matter which selector option is in use. A direct
+    // route inside it would make a Privacy+ client connect from its own IP
+    // straight to the exit that must never learn that IP (real two-VPS
+    // acceptance defect D3). So once a profile carries relayed routes, the
+    // automatic group and the default choice stay inside that privacy
+    // class; direct routes remain available only as explicit selections.
+    let privacy_profile = !relayed_tags.is_empty();
+    let auto_members = if privacy_profile {
+        relayed_tags.clone()
+    } else {
+        tags.clone()
+    };
     outbounds.push(json!({
         "type": "urltest",
         "tag": "auto",
-        "outbounds": tags.clone(),
+        "outbounds": auto_members,
         "url": "https://www.gstatic.com/generate_204",
         "interval": "1m",
     }));
@@ -703,6 +718,8 @@ pub fn render_singbox_config_from_contract_with_access_paths(
     let mut selector_options = tags.clone();
     selector_options.push("auto".to_string());
     let default_tag = match profile {
+        SelectionProfile::Auto => "auto".to_string(),
+        _ if privacy_profile => relayed_tags[0].clone(),
         SelectionProfile::Reliability => reality_tag
             .or_else(|| tags.first().cloned())
             .unwrap_or_else(|| "auto".to_string()),
@@ -710,7 +727,6 @@ pub fn render_singbox_config_from_contract_with_access_paths(
             .or(reality_tag)
             .or_else(|| tags.first().cloned())
             .unwrap_or_else(|| "auto".to_string()),
-        SelectionProfile::Auto => "auto".to_string(),
     };
     outbounds.push(json!({
         "type": "selector",

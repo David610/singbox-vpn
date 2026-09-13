@@ -222,15 +222,19 @@ fn tmp_sibling_path(path: &Path) -> std::path::PathBuf {
     tmp
 }
 
+/// Mode set on the open handle, not only requested at creation, so the
+/// process umask cannot narrow it (defect D1).
 #[cfg(unix)]
 fn write_file_mode_0640(path: &Path, bytes: &[u8]) -> Result<(), CompatError> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o640)
         .open(path)
+        .map_err(|e| CompatError::Io(e.to_string()))?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o640))
         .map_err(|e| CompatError::Io(e.to_string()))?;
     f.write_all(bytes)
         .map_err(|e| CompatError::Io(e.to_string()))?;

@@ -244,29 +244,46 @@ enum ConfigCommands {
 enum PeerCommands {
     /// Set (or replace) this user's credential for a peer endpoint.
     ///
-    /// Exactly one of `--uuid` / `--password` must be given, and it must
-    /// match the peer endpoint's declared transport: `--uuid` for
-    /// `vless-reality`, `--password` for `hysteria2`. A mismatch is
-    /// refused rather than coerced — silently reshaping it would produce
-    /// a profile that looks dialable and cannot authenticate.
+    /// Prefer `--credential-stdin`: the credential is read from standard
+    /// input (or a hidden prompt on a terminal), so it never appears in
+    /// process listings, shell history or command-line captures. The value
+    /// is interpreted by the endpoint's declared transport (VLESS client id
+    /// for `vless-reality`, password for `hysteria2`).
+    ///
+    /// `--uuid` / `--password` remain for compatibility and are UNSAFE for
+    /// production automation: a command-line argument is readable by every
+    /// local user via /proc and is kept in shell history. Whichever form is
+    /// used, it must match the transport; a mismatch is refused rather than
+    /// coerced — silently reshaping it would produce a profile that looks
+    /// dialable and cannot authenticate.
     Set {
         user_id: String,
         /// Peer endpoint id, as declared in `[[peer_endpoints]]`.
         endpoint_id: String,
-        /// VLESS client id issued to this user ON THE PEER SERVER.
+        /// Read the credential issued ON THE PEER SERVER from stdin (one
+        /// line) instead of the command line.
+        #[arg(long, conflicts_with_all = ["uuid", "password"])]
+        credential_stdin: bool,
+        /// VLESS client id issued to this user ON THE PEER SERVER. Visible
+        /// in process listings and shell history — prefer --credential-stdin.
         #[arg(long, conflicts_with = "password")]
         uuid: Option<String>,
         /// Hysteria2 password issued to this user ON THE PEER SERVER.
+        /// Visible in process listings and shell history — prefer
+        /// --credential-stdin.
         #[arg(long)]
         password: Option<String>,
     },
     /// Replace an existing peer credential (after rotating it on the peer
     /// server). Refuses if this user has no credential for that endpoint
     /// yet — use `set` for that, so a typo in the endpoint id cannot
-    /// silently create a second, unused entry.
+    /// silently create a second, unused entry. Takes the same credential
+    /// options as `set`; prefer `--credential-stdin`.
     Rotate {
         user_id: String,
         endpoint_id: String,
+        #[arg(long, conflicts_with_all = ["uuid", "password"])]
+        credential_stdin: bool,
         #[arg(long, conflicts_with = "password")]
         uuid: Option<String>,
         #[arg(long)]
@@ -512,15 +529,23 @@ fn main() -> Result<()> {
         Commands::User(UserCommands::Peer(PeerCommands::Set {
             user_id,
             endpoint_id,
+            credential_stdin,
             uuid,
             password,
-        })) => cmd_user_peer_set(&cfg, &user_id, &endpoint_id, uuid, password, false),
+        })) => {
+            let source = PeerCredentialSource::from_flags(credential_stdin, uuid, password);
+            cmd_user_peer_set(&cfg, &user_id, &endpoint_id, source, false)
+        }
         Commands::User(UserCommands::Peer(PeerCommands::Rotate {
             user_id,
             endpoint_id,
+            credential_stdin,
             uuid,
             password,
-        })) => cmd_user_peer_set(&cfg, &user_id, &endpoint_id, uuid, password, true),
+        })) => {
+            let source = PeerCredentialSource::from_flags(credential_stdin, uuid, password);
+            cmd_user_peer_set(&cfg, &user_id, &endpoint_id, source, true)
+        }
         Commands::User(UserCommands::Peer(PeerCommands::Remove {
             user_id,
             endpoint_id,
@@ -2040,6 +2065,68 @@ fn print_qr(data: &str) -> Result<()> {
     Ok(())
 }
 
+/// The real stdout of a `--json` command, kept aside while fd 1 points at
+/// stderr for the rest of the run.
+///
+/// `user create --json` is documented as pipeable into `jq`, but the apply
+/// path it shares with every mutation prints human progress (config
+/// written, reload notices, warnings) with `println!`, and child processes
+/// inherit stdout too — so the JSON arrived after prose lines (real
+/// two-VPS acceptance defect D2). Redirecting at the descriptor makes the
+/// guarantee structural: whatever else writes to stdout during the run
+/// lands on stderr, and only the final document is written here.
+struct MachineStdout {
+    #[cfg(unix)]
+    real_stdout: std::fs::File,
+}
+
+impl MachineStdout {
+    #[cfg(unix)]
+    fn divert_human_output_to_stderr() -> Result<Self> {
+        use std::io::Write;
+        use std::os::fd::FromRawFd;
+        std::io::stdout().flush().context("flushing stdout")?;
+        // SAFETY: plain descriptor duplication on the process's own
+        // standard streams; the duplicate is owned by the returned File.
+        let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
+        if saved < 0 {
+            bail!("duplicating stdout: {}", std::io::Error::last_os_error());
+        }
+        let real_stdout = unsafe { std::fs::File::from_raw_fd(saved) };
+        if unsafe { libc::dup2(libc::STDERR_FILENO, libc::STDOUT_FILENO) } < 0 {
+            bail!(
+                "pointing stdout at stderr: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        Ok(Self { real_stdout })
+    }
+
+    #[cfg(not(unix))]
+    fn divert_human_output_to_stderr() -> Result<Self> {
+        Ok(Self {})
+    }
+
+    fn write_document(mut self, document: &serde_json::Value) -> Result<()> {
+        use std::io::Write;
+        let text = serde_json::to_string_pretty(document)?;
+        #[cfg(unix)]
+        {
+            std::io::stdout()
+                .flush()
+                .context("flushing diverted output")?;
+            writeln!(self.real_stdout, "{text}").context("writing JSON to stdout")?;
+            self.real_stdout.flush().context("flushing JSON")?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = &mut self;
+            println!("{text}");
+        }
+        Ok(())
+    }
+}
+
 fn cmd_user_create(
     cfg: &DeploymentConfig,
     name: &str,
@@ -2047,6 +2134,11 @@ fn cmd_user_create(
     qr: bool,
     json: bool,
 ) -> Result<()> {
+    let machine_stdout = if json {
+        Some(MachineStdout::divert_human_output_to_stderr()?)
+    } else {
+        None
+    };
     let mut users = store::load_users(&cfg.users_file())?;
     let previous_users = users.clone();
     // 128-bit CSPRNG id (spec: do not reuse the 32-bit REALITY short_id
@@ -2073,7 +2165,7 @@ fn cmd_user_create(
     apply_users_and_save(cfg, &previous_users, &users)?;
 
     let url = subscription_url(cfg, &token);
-    if json {
+    if let Some(machine_stdout) = machine_stdout {
         let out = serde_json::json!({
             "id": id,
             "name": name,
@@ -2092,8 +2184,7 @@ fn cmd_user_create(
             // property weakened; see subscription_url_quic_reject.
             "subscription_url_quic_reject": subscription_url_quic_reject(cfg, &token),
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
+        return machine_stdout.write_document(&out);
     }
 
     println!("User ID:");
@@ -2293,10 +2384,14 @@ fn peer_credential_from_flags(
         (CompatTransport::VlessReality, Some(uuid), None) => {
             let uuid = uuid.trim().to_string();
             if !credentials::is_uuid_v4_shaped(&uuid) {
+                // The rejected value is not echoed: a near-miss paste is
+                // still most of a credential.
                 anyhow::bail!(
-                    "peer endpoint {:?} is vless-reality, and {uuid:?} is not an 8-4-4-4-12 hex \
-                     UUID. Paste the client id the PEER server issued for this user.",
-                    peer.id
+                    "peer endpoint {:?} is vless-reality, and the supplied value ({} characters, \
+                     not shown) is not an 8-4-4-4-12 hex UUID. Paste the client id the PEER \
+                     server issued for this user.",
+                    peer.id,
+                    uuid.chars().count()
                 );
             }
             Ok(PeerCredential::VlessReality { uuid })
@@ -2354,15 +2449,118 @@ fn find_peer_endpoint<'a>(
 /// nothing about this deployment's own listeners changes, so there is
 /// nothing to apply. It affects only what this user's next subscription
 /// fetch returns.
+/// Where `user peer set|rotate` takes the peer credential from.
+enum PeerCredentialSource {
+    /// `--credential-stdin`: never in argv (real two-VPS acceptance O5).
+    Stdin,
+    /// Legacy `--uuid` / `--password` command-line values.
+    Arguments {
+        uuid: Option<String>,
+        password: Option<String>,
+    },
+}
+
+impl PeerCredentialSource {
+    fn from_flags(credential_stdin: bool, uuid: Option<String>, password: Option<String>) -> Self {
+        if credential_stdin {
+            Self::Stdin
+        } else {
+            Self::Arguments { uuid, password }
+        }
+    }
+}
+
+/// One line from stdin with the trailing newline removed. On a terminal the
+/// prompt goes to stderr and echo is switched off while typing, so the value
+/// is not shown on screen either.
+fn read_peer_credential_from_stdin() -> Result<String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if stdin.is_terminal() {
+        eprint!("Credential issued by the peer server (input hidden): ");
+        std::io::stderr().flush().ok();
+        #[cfg(unix)]
+        {
+            let _echo_off = TerminalEchoOff::new(libc::STDIN_FILENO);
+            stdin.lock().read_line(&mut line)?;
+        }
+        #[cfg(not(unix))]
+        stdin.lock().read_line(&mut line)?;
+        eprintln!();
+    } else {
+        stdin.lock().read_line(&mut line)?;
+    }
+    let value = line.trim_end_matches(['\r', '\n']).to_string();
+    if value.trim().is_empty() {
+        bail!("--credential-stdin: no credential was provided on standard input");
+    }
+    Ok(value)
+}
+
+/// Restores the terminal's echo flag when dropped.
+#[cfg(unix)]
+struct TerminalEchoOff {
+    fd: libc::c_int,
+    original: Option<libc::termios>,
+}
+
+#[cfg(unix)]
+impl TerminalEchoOff {
+    fn new(fd: libc::c_int) -> Self {
+        // SAFETY: tcgetattr/tcsetattr on a descriptor this process owns,
+        // with a zeroed termios that tcgetattr fully initialises.
+        let mut term: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(fd, &mut term) } != 0 {
+            return Self { fd, original: None };
+        }
+        let original = term;
+        term.c_lflag &= !libc::ECHO;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
+            return Self { fd, original: None };
+        }
+        Self {
+            fd,
+            original: Some(original),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalEchoOff {
+    fn drop(&mut self) {
+        if let Some(original) = &self.original {
+            unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, original) };
+        }
+    }
+}
+
 fn cmd_user_peer_set(
     cfg: &DeploymentConfig,
     id: &str,
     endpoint_id: &str,
-    uuid: Option<String>,
-    password: Option<String>,
+    source: PeerCredentialSource,
     require_existing: bool,
 ) -> Result<()> {
     let peer = find_peer_endpoint(cfg, endpoint_id)?;
+    let (uuid, password) = match source {
+        PeerCredentialSource::Stdin => {
+            let value = read_peer_credential_from_stdin()?;
+            match peer.transport {
+                compat_config::model::CompatTransport::VlessReality => (Some(value), None),
+                compat_config::model::CompatTransport::Hysteria2 => (None, Some(value)),
+            }
+        }
+        PeerCredentialSource::Arguments { uuid, password } => {
+            if uuid.is_some() || password.is_some() {
+                eprintln!(
+                    "note: a credential passed as --uuid/--password is visible in process \
+                     listings and shell history; use --credential-stdin for automation."
+                );
+            }
+            (uuid, password)
+        }
+    };
     let credential = peer_credential_from_flags(peer, uuid, password)?;
 
     let mut users = store::load_users(&cfg.users_file())?;
@@ -6826,12 +7024,16 @@ fn run_reality_client_selftest(
 /// invalid connection`, while the client — run with this self-test's exact
 /// production log level — logged nothing matching either string.
 ///
-/// The SERVER's own log is the reliable signal (confirmed: it logs
-/// `processed invalid connection` at ERROR severity, so it survives the
-/// production default `"log": {"level": "warn"}`, matching `journalctl -u
-/// sing-box` output an operator would see directly), so `journal_hit`
-/// (a cross-check of that log during this self-test's own connection
-/// attempt) also counts. This is still only corroborating evidence, not
+/// The SERVER's own log is the reliable signal (it logs `processed invalid
+/// connection` at ERROR severity), so `journal_hit` (a cross-check of that
+/// log during this self-test's own connection attempt) also counts. Since
+/// D4 the production server config logs at `fatal`
+/// (`compat_config::server::server_log_options`), because the same ERROR
+/// class carries presented credentials and client addresses; on such a
+/// node the journal holds no per-connection lines, `journal_hit` stays
+/// `false`, and a silent failure is reported as Inconclusive rather than
+/// HandshakeRejected. A server run at a raised level for an investigation
+/// still gets the cross-check. This is still only corroborating evidence, not
 /// proof of cause: unrelated scanner traffic hitting the same port during
 /// the self-test's brief window could in principle produce a false-positive
 /// correlation, and — per the HandshakeRejected message in
@@ -8113,48 +8315,33 @@ mod udp_probe_tests {
         assert!(cert_expiry_days(&dir.path().join("does-not-exist.pem")).is_none());
     }
 
+    /// A synthetic, already-expired certificate with fixed dates
+    /// (notBefore 2020-01-01T00:00:00Z, notAfter 2020-01-02T00:00:00Z),
+    /// generated once for this test; its private key was never kept.
+    ///
+    /// A checked-in fixture rather than `openssl x509 -req -days -1`: OpenSSL
+    /// 3.5 (AlmaLinux 9.8) rejects a negative validity with "end date before
+    /// start date", which failed this test inside `update.sh --repair` on a
+    /// supported host (real two-VPS acceptance defect D5).
+    const EXPIRED_CERT_PEM: &str = include_str!("testdata/expired-2020-01-02.pem");
+    const EXPIRED_CERT_NOT_AFTER_UNIX: i64 = 1_577_923_200;
+
     #[test]
     fn cert_expiry_days_reports_negative_days_for_an_already_expired_cert() {
         let dir = tempfile::tempdir().unwrap();
-        let csr_path = dir.path().join("expired.csr");
-        let key_path = dir.path().join("expired.key");
         let cert_path = dir.path().join("expired.pem");
-        // `req -x509 -days` rejects negative values outright — build a CSR
-        // first, then self-sign it via `x509 -req -days -1`, which backdates
-        // notAfter to yesterday and so reliably produces an already-expired
-        // certificate regardless of what "today" is when this test runs.
-        let status = std::process::Command::new("openssl")
-            .args([
-                "req",
-                "-newkey",
-                "rsa:2048",
-                "-nodes",
-                "-subj",
-                "/CN=expired.example.com",
-                "-keyout",
-            ])
-            .arg(&key_path)
-            .arg("-out")
-            .arg(&csr_path)
-            .status()
-            .expect("openssl must be available to run this test");
-        assert!(status.success(), "openssl failed to generate a test CSR");
-        let status = std::process::Command::new("openssl")
-            .args(["x509", "-req", "-in"])
-            .arg(&csr_path)
-            .args(["-signkey"])
-            .arg(&key_path)
-            .args(["-days", "-1", "-out"])
-            .arg(&cert_path)
-            .status()
-            .expect("openssl must be available to run this test");
-        assert!(status.success(), "openssl failed to self-sign a test cert");
+        std::fs::write(&cert_path, EXPIRED_CERT_PEM).unwrap();
 
         let result = cert_expiry_days(&cert_path).expect("file exists, must return Some");
         let days = result.expect("valid cert, openssl/date parsing must succeed");
+        let expected = (EXPIRED_CERT_NOT_AFTER_UNIX - UnixSeconds::now().0 as i64) / 86400;
         assert!(
             days < 0,
-            "cert self-signed with -days -1 must report negative days remaining, got {days}"
+            "an expired cert must report negative days, got {days}"
+        );
+        assert!(
+            (days - expected).abs() <= 1,
+            "days must be computed from the certificate's own notAfter: expected about {expected}, got {days}"
         );
     }
 

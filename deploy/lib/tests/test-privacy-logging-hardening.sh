@@ -45,6 +45,21 @@ else
 fi
 
 echo
+echo "--- sing-box: no per-connection Core log lines reach persistent logs (D4) ---"
+SERVER_RS="$REPO_ROOT/crates/compat-config/src/server.rs"
+if grep -qE 'json!\(\{ "level": "fatal", "timestamp": true \}\)' "$SERVER_RS" \
+  && grep -qE '"log": server_log_options\(\),' "$SERVER_RS"; then
+  ok "server documents log sing-box at fatal (no 'unknown UUID: <credential>' / client-address lines)"
+else
+  fail "server.rs no longer renders the fatal-only sing-box log options"
+fi
+if grep -qE '^Standard(Output|Error)=' "$SINGBOX_UNIT"; then
+  fail "sing-box.service redirects Core output somewhere other than the journal"
+else
+  ok "sing-box.service keeps Core output in the journal only (no extra log file)"
+fi
+
+echo
 echo "--- per-service journal rate limiting (systemd-native, not global journald.conf) ---"
 for unit_label_path in "vpn-subscription.service:$SUBSCRIPTION_UNIT" "sing-box.service:$SINGBOX_UNIT"; do
   label="${unit_label_path%%:*}"

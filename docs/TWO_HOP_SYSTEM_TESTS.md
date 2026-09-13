@@ -24,12 +24,17 @@ client ── "Germany · via Russia" ─► RELAY (role = relay) ──► EXIT
   node's own loopback subscription health port, which the protocol
   self-test (`vpn-admin doctor --protocol`, run by install/update
   acceptance) uses to prove a real first-hop handshake.
-* The **exit** is an ordinary node (`role = exit`); its config is
-  byte-for-byte the pre-relay single-server document.
+* The **exit** is an ordinary node (`role = exit`); its config is the
+  single-server document with no role policy added.
 * The **client document** is the first-party provisioning contract served by
   the relay: the via route is the exit outbound with `detour` set to a hidden
   first-hop outbound. The first hop is never a selectable exit, never a share
-  link and never a capability. Formats that cannot express `detour`
+  link and never a capability. Once a document carries a relayed route,
+  the automatic `urltest` group contains only relayed routes and the
+  selector defaults to one of them; Direct stays an explicit choice. A
+  `urltest` group dials every member itself whatever is selected, so a
+  direct route inside it would reveal the client's address to the exit
+  (real two-VPS acceptance defect D3). Formats that cannot express `detour`
   (`vless://`/`hysteria2://` share links) omit the via route instead of
   emitting a direct link. A user with nothing routable gets HTTP 503
   `no_selectable_route`, never the relay as an exit.
@@ -37,7 +42,7 @@ client ── "Germany · via Russia" ─► RELAY (role = relay) ──► EXIT
 Credential scopes are independent: the subscription bearer token (relay),
 credential **A** (the relay user's VLESS UUID, authenticates the first hop)
 and credential **B** (issued by the exit, recorded on the relay as
-`user peer set … de1-direct --uuid B`, reused by the via route through
+`user peer set … de1-direct --credential-stdin`, reused by the via route through
 `credential_ref`). The relay's server config never contains B, and neither
 node ever holds the other's private key.
 
@@ -47,7 +52,7 @@ node ever holds the other's private key.
 |---|---|---|
 | 1 Unit | `crates/compat-config/src/deployment.rs` tests, `crates/compat-config/tests/relay_role_policy.rs` | Role/node-id parsing, relay declaration validation (fail closed), relay target derivation, byte-identical exit rendering, relay rule shape, credential separation, share-link omission, migration keeping role, fresh-install templates loading |
 | 2 Integration | `apps/admin/tests/relay_cli.rs`, `services/subscription/src/lib.rs` (`relay_subscription_tests`), `deploy/lib/tests/test-node-identity.sh` | `vpn-admin` against persisted relay/exit state (render, doctor, status, links, validate/migrate, backup/restore role guard, secret-free output), the real HTTP router on a relay, installer/update identity handling and rollback |
-| 3 Local system | `crates/compat-config/tests/two_hop_system.rs`, CI step "Two-hop relay system tests S1-S15", CI step "doctor --protocol against a real live UNPAIRED RELAY" | Real sing-box client → relay → exit → HTTP target on loopback |
+| 3 Local system | `crates/compat-config/tests/two_hop_system.rs`, CI step "Two-hop relay system tests S1-S17", CI step "doctor --protocol against a real live UNPAIRED RELAY" | Real sing-box client → relay → exit → HTTP target on loopback |
 | 4 Real acceptance | **Out of scope here** | Real VPSs, providers, devices, networks — see the last section |
 
 ## Local system harness
@@ -56,9 +61,9 @@ Topology (distinct loopback addresses on one Linux host):
 
 | Role | Address | Notes |
 |---|---|---|
-| client | `127.0.0.1` (SOCKS) | real sing-box running the provisioning document's embedded Core config; the test only adds a SOCKS inbound and selects a route tag (client-owned policy) |
+| client | `127.0.0.1` (SOCKS), dials from `127.0.0.6` | real sing-box running the provisioning document's embedded Core config; the test only adds a SOCKS inbound, the device source address and the selected route (client-owned policy) |
 | relay | `127.0.0.2` | `role = "relay"`, rendered by `render_server_config_for_deployment` |
-| exit | `127.0.0.3` | `role = "exit"`, same renderer |
+| exit | `127.0.0.3` | `role = "exit"`, same renderer; both declared peers point at a TCP tap in front of it that records each connection's source address |
 | declared target | `127.0.0.4` | HTTP server counting requests |
 | undeclared target | `127.0.0.5` | HTTP server that must never be hit through the relay |
 | REALITY decoy | `localhost` | local OpenSSL TLS 1.3 server (no third-party CDN) |
@@ -95,7 +100,11 @@ it so a skip is a failure, and asserts every scenario name ran and passed.
 | S13 | declared exit by IP and by DNS name | declared PASS; undeclared host, same host other port, IP form of a name-declared host FAIL | exact-destination allowlist | real DNS behaviour |
 | S14 | migrate + repeated render (repair/update) and v1→v2 relay migration | role stays relay, rules unchanged/idempotent, via PASS, undeclared FAIL | repair/update never loosens relay policy | the installer running on a real host |
 | S15 | failed candidate apply, SIGKILL + restart from disk | on-disk config never unrestricted; restricted after restart | no temporary unrestricted state | systemd restart semantics |
+| S16 | served profile unmodified (selector + automatic group), Privacy+ chosen explicitly, by default and via `auto`, then idle | Privacy+ PASS; zero client-sourced connections at the exit; control with a mixed Direct+via group IS detected | no health probe or fallback makes the client connect to the exit directly | the 1-minute probe interval over time, real packet captures |
+| S17 | relay stopped with Privacy+ chosen explicitly and via `auto` | both FAIL; no target hit; zero client-sourced connections at the exit; an explicit Direct choice then PASSES | no Privacy+ → Direct downgrade; Direct independent of the relay | real client UI behaviour |
 | log privacy | relay/exit logs at the production level after S2/S3 traffic | no credential, key, token hash or tunnelled destination | default logging introduces no activity history | long-term log retention on a real host |
+| rejected-credential log privacy | revoked A, revoked B and random credentials presented at relay and exit | no presented or current credential, client address or per-connection line in either log | the fatal-only Core log level keeps `unknown UUID: <value>` out of logs (defect D4) | journald/syslog on a real host |
+| start-failure visibility | production config started on a busy port | non-zero exit and `FATAL … start service` in the log | fatal-only logging keeps failures diagnosable | systemd unit status on a real host |
 
 A mutation check was run while developing this suite: forcing the relay
 renderer to return the exit document made S3, S12 and S13 fail, so the

@@ -230,6 +230,19 @@ pub enum ContractError {
          group {selector:?} — selecting an endpoint would then not change what is routed"
     )]
     RouteFinalMismatch { selector: String, found: String },
+
+    #[error(
+        "the embedded singbox_config renders relayed endpoint {tag:?} without a `detour` — \
+         a route the catalog describes as relayed would dial its exit directly"
+    )]
+    RelayedEndpointNotChained { tag: String },
+
+    #[error(
+        "the embedded singbox_config's automatic group {group:?} probes {member:?}, which is \
+         not a relayed route — a health check would connect the client straight to an exit \
+         that a relayed route must hide it from"
+    )]
+    AutomaticGroupCrossesPrivacyClass { group: String, member: String },
 }
 
 // ---------------------------------------------------------------------
@@ -1180,6 +1193,47 @@ impl ProvisioningDocument {
                 selector: SELECTOR_GROUP_TAG.to_string(),
                 found: final_tag.to_string(),
             });
+        }
+
+        // (E) relayed routes stay relayed. A `urltest` group dials each of
+        // its members whenever Core runs, whatever the selector says, so
+        // in a document with relayed endpoints every automatic group may
+        // contain only relayed routes, and each of those must really be
+        // chained through its first hop.
+        let relayed_tags: Vec<&str> = self
+            .endpoints
+            .iter()
+            .filter(|ep| match &ep.path {
+                Some(PathType::Other(path_id)) => self
+                    .access_paths
+                    .iter()
+                    .any(|path| path.id == *path_id && path.kind == AccessPathKind::Relay),
+                _ => false,
+            })
+            .map(|ep| ep.tag.as_str())
+            .collect();
+        if relayed_tags.is_empty() {
+            return Ok(());
+        }
+        for ob in outbounds {
+            let tag = tag_of(ob).unwrap_or_default();
+            if relayed_tags.contains(&tag.as_str())
+                && ob.get("detour").and_then(|d| d.as_str()).is_none()
+            {
+                return Err(ContractError::RelayedEndpointNotChained { tag });
+            }
+            if ob.get("type").and_then(|t| t.as_str()) == Some("urltest") {
+                let members = ob.get("outbounds").and_then(|m| m.as_array());
+                for member in members.into_iter().flatten() {
+                    let member = member.as_str().unwrap_or_default();
+                    if !relayed_tags.contains(&member) {
+                        return Err(ContractError::AutomaticGroupCrossesPrivacyClass {
+                            group: tag,
+                            member: member.to_string(),
+                        });
+                    }
+                }
+            }
         }
         Ok(())
     }
