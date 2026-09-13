@@ -366,16 +366,23 @@ pub fn apply_config_atomically(
 /// by the installer) and `fsync`d before it's ever handed to
 /// `sing-box check`, so a crash between write and validate never leaves
 /// an unflushed secret file behind.
+///
+/// The creation mode passed to `open` is still masked by the umask, so the
+/// mode is set explicitly on the open handle before any byte is written:
+/// under `umask 077` the file would otherwise be 0600 and the `sing-box`
+/// group could not read it (real two-VPS acceptance defect D1).
 #[cfg(unix)]
 fn write_config_file_mode_0640(path: &Path, bytes: &[u8]) -> Result<(), CompatError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o640)
         .open(path)
+        .map_err(|e| CompatError::Io(e.to_string()))?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o640))
         .map_err(|e| CompatError::Io(e.to_string()))?;
     f.write_all(bytes)
         .map_err(|e| CompatError::Io(e.to_string()))?;
@@ -702,6 +709,62 @@ mod tests {
             0o640,
             "config.json.bak must also be 0640"
         );
+    }
+
+    /// D1: under `umask 077` the config must still be 0640, or the
+    /// `sing-box` group cannot read it. The umask is process-wide, so the
+    /// assertions run in a child copy of this test binary started under
+    /// `umask 077`; the parent only launches it. Covers the three secret
+    /// writers: `apply_config_atomically`, `save_users_atomic`, `atomic_write`.
+    #[cfg(unix)]
+    #[test]
+    fn secret_file_modes_do_not_depend_on_the_process_umask() {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        const CHILD: &str = "SINGBOX_VPN_RESTRICTIVE_UMASK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg("umask 077 && exec \"$0\" --exact server::tests::secret_file_modes_do_not_depend_on_the_process_umask --test-threads 1")
+                .arg(std::env::current_exe().unwrap())
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "restrictive-umask child run failed");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let probe = dir.path().join("umask-probe");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .mode(0o640)
+            .open(&probe)
+            .unwrap();
+        assert_eq!(mode(&probe), 0o600, "the child really runs under umask 077");
+
+        let config = dir.path().join("config.json");
+        apply_config_atomically(&json!({"n": 1}), &config, |candidate| {
+            assert_eq!(
+                mode(candidate),
+                0o640,
+                "the candidate handed to sing-box check"
+            );
+            Ok(())
+        })
+        .unwrap();
+        apply_config_atomically(&json!({"n": 2}), &config, |_| Ok(())).unwrap();
+        assert_eq!(mode(&config), 0o640, "config.json");
+        assert_eq!(mode(&config_backup_path(&config)), 0o640, "config.json.bak");
+
+        let users = dir.path().join("users/users.json");
+        crate::store::save_users_atomic(&users, &[]).unwrap();
+        assert_eq!(mode(&users), 0o640, "users.json");
+
+        let state = dir.path().join("state.toml");
+        crate::migrate::atomic_write(&state, b"x", 0o640).unwrap();
+        assert_eq!(mode(&state), 0o640, "atomic_write");
     }
 
     #[cfg(unix)]
