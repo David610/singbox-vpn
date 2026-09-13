@@ -2040,6 +2040,68 @@ fn print_qr(data: &str) -> Result<()> {
     Ok(())
 }
 
+/// The real stdout of a `--json` command, kept aside while fd 1 points at
+/// stderr for the rest of the run.
+///
+/// `user create --json` is documented as pipeable into `jq`, but the apply
+/// path it shares with every mutation prints human progress (config
+/// written, reload notices, warnings) with `println!`, and child processes
+/// inherit stdout too — so the JSON arrived after prose lines (real
+/// two-VPS acceptance defect D2). Redirecting at the descriptor makes the
+/// guarantee structural: whatever else writes to stdout during the run
+/// lands on stderr, and only the final document is written here.
+struct MachineStdout {
+    #[cfg(unix)]
+    real_stdout: std::fs::File,
+}
+
+impl MachineStdout {
+    #[cfg(unix)]
+    fn divert_human_output_to_stderr() -> Result<Self> {
+        use std::io::Write;
+        use std::os::fd::FromRawFd;
+        std::io::stdout().flush().context("flushing stdout")?;
+        // SAFETY: plain descriptor duplication on the process's own
+        // standard streams; the duplicate is owned by the returned File.
+        let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
+        if saved < 0 {
+            bail!("duplicating stdout: {}", std::io::Error::last_os_error());
+        }
+        let real_stdout = unsafe { std::fs::File::from_raw_fd(saved) };
+        if unsafe { libc::dup2(libc::STDERR_FILENO, libc::STDOUT_FILENO) } < 0 {
+            bail!(
+                "pointing stdout at stderr: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        Ok(Self { real_stdout })
+    }
+
+    #[cfg(not(unix))]
+    fn divert_human_output_to_stderr() -> Result<Self> {
+        Ok(Self {})
+    }
+
+    fn write_document(mut self, document: &serde_json::Value) -> Result<()> {
+        use std::io::Write;
+        let text = serde_json::to_string_pretty(document)?;
+        #[cfg(unix)]
+        {
+            std::io::stdout()
+                .flush()
+                .context("flushing diverted output")?;
+            writeln!(self.real_stdout, "{text}").context("writing JSON to stdout")?;
+            self.real_stdout.flush().context("flushing JSON")?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = &mut self;
+            println!("{text}");
+        }
+        Ok(())
+    }
+}
+
 fn cmd_user_create(
     cfg: &DeploymentConfig,
     name: &str,
@@ -2047,6 +2109,11 @@ fn cmd_user_create(
     qr: bool,
     json: bool,
 ) -> Result<()> {
+    let machine_stdout = if json {
+        Some(MachineStdout::divert_human_output_to_stderr()?)
+    } else {
+        None
+    };
     let mut users = store::load_users(&cfg.users_file())?;
     let previous_users = users.clone();
     // 128-bit CSPRNG id (spec: do not reuse the 32-bit REALITY short_id
@@ -2073,7 +2140,7 @@ fn cmd_user_create(
     apply_users_and_save(cfg, &previous_users, &users)?;
 
     let url = subscription_url(cfg, &token);
-    if json {
+    if let Some(machine_stdout) = machine_stdout {
         let out = serde_json::json!({
             "id": id,
             "name": name,
@@ -2092,8 +2159,7 @@ fn cmd_user_create(
             // property weakened; see subscription_url_quic_reject.
             "subscription_url_quic_reject": subscription_url_quic_reject(cfg, &token),
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
+        return machine_stdout.write_document(&out);
     }
 
     println!("User ID:");

@@ -670,13 +670,8 @@ fn user_create_json_output_has_no_server_secrets() {
         .args(["user", "create", "--name", "bob", "--json"])
         .assert()
         .success();
-    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    // `regenerate_singbox_config` may print an informational warning line
-    // before the JSON block (no sing-box binary in this test
-    // environment) — the JSON itself starts at the first `{`.
-    let json_start = stdout.find('{').expect("JSON object in output");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout[json_start..]).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_slice(&output.get_output().stdout)
+        .expect("stdout of --json is exactly one JSON document");
     assert_eq!(parsed["name"], "bob");
     assert_eq!(parsed["enabled"], true);
     assert!(parsed["subscription_url"]
@@ -699,10 +694,8 @@ fn user_create_json_output_carries_the_experimental_vision_off_link_additively()
         .args(["user", "create", "--name", "berlin", "--json"])
         .assert()
         .success();
-    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    let json_start = stdout.find('{').expect("JSON object in output");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout[json_start..]).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_slice(&output.get_output().stdout)
+        .expect("stdout of --json is exactly one JSON document");
 
     // Pre-existing keys, unchanged.
     assert_eq!(parsed["name"], "berlin");
@@ -964,10 +957,8 @@ fn user_create_json_output_is_unaffected_by_suppression() {
         .args(["user", "create", "--name", "heidi", "--json"])
         .assert()
         .success();
-    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    let json_start = stdout.find('{').expect("JSON object in output");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout[json_start..]).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_slice(&output.get_output().stdout)
+        .expect("stdout of --json is exactly one JSON document");
     let url = parsed["subscription_url"].as_str().unwrap();
     assert!(url.contains("/sub/"));
     assert!(url.contains("?format=hiddify"));
@@ -3257,4 +3248,57 @@ fn every_binary_invocation_is_guarded() {
     );
     let support = std::fs::read_to_string(tests_dir.join("support/mod.rs")).unwrap();
     assert!(support.contains("SINGBOX_VPN_SYSTEMCTL"));
+}
+
+/// D2 (real two-VPS acceptance): `user create --json | jq .` failed because
+/// the live apply path printed progress lines before the document. Uses the
+/// live-reload path (fake sing-box and systemctl), which prints the most.
+#[cfg(unix)]
+#[test]
+fn user_create_json_stdout_is_one_document_and_progress_goes_to_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let run = |args: &[&str]| {
+        admin(dir.path(), &cfg_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SYSTEMCTL_LOG", dir.path().join("systemctl.log"))
+            .args(args)
+            .assert()
+            .success()
+    };
+    run(&["init"]);
+    let output = run(&["user", "create", "--name", "pipe", "--json"]);
+    let stdout = &output.get_output().stdout;
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+
+    let document: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not exactly one JSON document ({e}):\n{}",
+            String::from_utf8_lossy(stdout)
+        )
+    });
+    let mut stream = serde_json::Deserializer::from_slice(stdout).into_iter::<serde_json::Value>();
+    assert!(
+        stream.next().is_some() && stream.next().is_none(),
+        "one document"
+    );
+    assert!(
+        stderr.contains("sing-box config updated"),
+        "operational progress is still reported, on stderr:\n{stderr}"
+    );
+    let url = document["subscription_url"].as_str().unwrap();
+    let token = url
+        .split("/sub/")
+        .nth(1)
+        .unwrap()
+        .split('?')
+        .next()
+        .unwrap();
+    assert!(token.len() >= 16);
+    assert!(
+        !stderr.contains(token),
+        "the credential must appear only in the JSON document, never on stderr"
+    );
 }
