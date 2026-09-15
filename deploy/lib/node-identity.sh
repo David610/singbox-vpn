@@ -20,6 +20,19 @@ admin_output_declares_relay_enforcement() {
   printf '%s\n' "${1:-}" | grep -qF "$RELAY_ENFORCEMENT_CAPABILITY"
 }
 
+# Printed by every `vpn-admin config validate` that can render and apply
+# AmneziaWG (AMNEZIAWG_CAPABILITY in deployment.rs).
+AMNEZIAWG_CAPABILITY="capability: amneziawg-3"
+
+admin_output_declares_amneziawg() {
+  printf '%s\n' "${1:-}" | grep -qF "$AMNEZIAWG_CAPABILITY"
+}
+
+# True if deployment.toml ($1) enables the [amneziawg] transport.
+deployment_enables_amneziawg() {
+  grep -qE '^[[:space:]]*\[amneziawg\][[:space:]]*$' "${1:-/dev/null}" 2>/dev/null
+}
+
 # Strict role parser: prints the role and returns 0 for exactly "exit" or
 # "relay"; anything else returns 1.
 node_role_is_valid() {

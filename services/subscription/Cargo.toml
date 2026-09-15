@@ -24,8 +24,10 @@ axum = "0.7"
 common = { path = "../../crates/common" }
 compat-config = { path = "../../crates/compat-config" }
 provisioning-contract = { path = "../../crates/provisioning-contract" }
+platform-core = { path = "../../crates/platform-core" }
 anyhow = "1"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 tempfile = "3"
+toml.workspace = true

@@ -198,10 +198,25 @@ async fn main() -> Result<()> {
         );
     }
 
+    // AmneziaWG is loaded WITHOUT the server private key (`false`): this
+    // service can render client profiles, never a server configuration. An
+    // enabled but unreadable/invalid AWG state fails closed at start.
+    let amneziawg = compat_config::amneziawg_state::load_node_config(&cfg, false)
+        .map_err(|e| anyhow::anyhow!("invalid AmneziaWG state: {e}"))?;
+    if amneziawg.is_some() {
+        tracing::info!("AmneziaWG enabled: served in /v2/provision and ?format=amneziawg only");
+    }
+    let route_context = Some(compat_config::contract_v2::RouteContext::from_deployment(
+        &cfg,
+        endpoints.clone(),
+        amneziawg,
+    ));
+
     let state = std::sync::Arc::new(AppState {
         users_file: cfg.users_file(),
         endpoints,
         access_paths,
+        route_context,
         // Sized for the WHOLE deployment, not for one client: behind nginx
         // every request appears to come from 127.0.0.1, so this is one
         // shared bucket (see `RateLimiter`'s doc comment). The previous

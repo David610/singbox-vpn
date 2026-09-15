@@ -776,6 +776,11 @@ if [ -f "$DEPLOYMENT_TOML" ]; then
         echo "$precheck_output" >&2
         die "this node is a RELAY, and $TARGET_VERSION's vpn-admin does not declare fail-closed relay forwarding. Switching to it (update, repair or downgrade) could render this relay as an unrestricted exit. Nothing live has been changed."
       fi
+      if deployment_enables_amneziawg "$DEPLOYMENT_TOML" \
+          && ! admin_output_declares_amneziawg "$precheck_output"; then
+        echo "$precheck_output" >&2
+        die "this node serves AmneziaWG, and $TARGET_VERSION's vpn-admin does not declare AmneziaWG support. Switching to it would stop revoking and issuing AmneziaWG credentials. Run 'vpn-admin transport disable amneziawg --purge-credentials' first if a downgrade is intended. Nothing live has been changed."
+      fi
       ;;
     *)
       echo "$precheck_output" >&2

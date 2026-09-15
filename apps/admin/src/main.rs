@@ -7,6 +7,7 @@
 //! (spec §26).
 
 mod lock;
+mod platform;
 mod service;
 
 use anyhow::{bail, Context, Result};
@@ -217,6 +218,16 @@ enum Commands {
     User(UserCommands),
     #[command(subcommand)]
     Config(ConfigCommands),
+    /// Transports this node serves (VLESS+REALITY, Hysteria2, AmneziaWG):
+    /// status, enable/disable, key rotation, pinned install plan.
+    #[command(subcommand)]
+    Transport(platform::TransportCommands),
+    /// Listeners and routes, including per-user v2 route sets. Read-only.
+    #[command(subcommand)]
+    Endpoint(platform::EndpointCommands),
+    /// Nodes: this node plus declared peer failure domains. Read-only.
+    #[command(subcommand)]
+    Node(platform::NodeCommands),
 }
 
 #[derive(Subcommand)]
@@ -394,6 +405,10 @@ enum UserCommands {
     /// endpoint in their provisioning document.
     #[command(subcommand)]
     Peer(PeerCommands),
+    /// Manage this user's AmneziaWG credential on this node (issue, rotate,
+    /// revoke, show profile). Requires `transport enable amneziawg`.
+    #[command(subcommand)]
+    Awg(platform::AwgUserCommands),
     /// EXPERIMENTAL, one user at a time: render this user's VLESS
     /// inbound entry with an EMPTY flow instead of `xtls-rprx-vision`,
     /// so the `?compat=vision-off` subscription profile can actually
@@ -436,6 +451,11 @@ enum UserCommands {
 /// `deploy/almalinux/install.sh` uses an entirely separate lock file
 /// (`/run/lock/singbox-vpn-installer.lock`, not this one) to avoid.
 fn command_mutates_state(cmd: &Commands) -> bool {
+    match cmd {
+        Commands::Transport(t) => return !platform::is_read_only_transport(t),
+        Commands::User(UserCommands::Awg(a)) => return !platform::is_read_only_awg(a),
+        _ => {}
+    }
     !matches!(
         cmd,
         Commands::Version
@@ -445,6 +465,8 @@ fn command_mutates_state(cmd: &Commands) -> bool {
             | Commands::User(UserCommands::Subscription { .. })
             | Commands::Config(ConfigCommands::Validate)
             | Commands::Repair
+            | Commands::Endpoint(_)
+            | Commands::Node(_)
     )
 }
 
@@ -556,6 +578,43 @@ fn main() -> Result<()> {
         Commands::User(UserCommands::Subscription { user_id }) => {
             cmd_user_subscription(&cfg, &user_id)
         }
+        Commands::User(UserCommands::Awg(cmd)) => platform::cmd_user_awg(&cfg, cmd),
+        Commands::Transport(platform::TransportCommands::Status { json }) => {
+            platform::cmd_transport_status(&cfg, json)
+        }
+        Commands::Transport(platform::TransportCommands::Enable {
+            transport,
+            listen_port,
+            profile,
+            subnet_v4,
+            subnet_v6,
+            mtu,
+            no_issue,
+        }) => platform::cmd_transport_enable(
+            &cfg,
+            &cli.config,
+            &transport,
+            listen_port,
+            &profile,
+            subnet_v4,
+            subnet_v6,
+            mtu,
+            no_issue,
+        ),
+        Commands::Transport(platform::TransportCommands::Disable {
+            transport,
+            purge_credentials,
+        }) => platform::cmd_transport_disable(&cfg, &cli.config, &transport, purge_credentials),
+        Commands::Transport(platform::TransportCommands::Rotate { transport, yes }) => {
+            platform::cmd_transport_rotate(&cfg, &transport, yes)
+        }
+        Commands::Transport(platform::TransportCommands::Plan { transport }) => {
+            platform::cmd_transport_plan(&cfg, &transport)
+        }
+        Commands::Endpoint(platform::EndpointCommands::List { user, json }) => {
+            platform::cmd_endpoint_list(&cfg, user.as_deref(), json)
+        }
+        Commands::Node(platform::NodeCommands::List { json }) => platform::cmd_node_list(&cfg, json),
     }
 }
 
@@ -1752,7 +1811,11 @@ fn apply_restored_file_policy(_path: &std::path::Path, _group: &str) -> Result<(
 
 fn regenerate_singbox_config(cfg: &DeploymentConfig, require_live_apply: bool) -> Result<bool> {
     let users = store::load_users(&cfg.users_file())?;
-    render_and_apply_singbox_config(cfg, &users, require_live_apply)
+    let singbox = render_and_apply_singbox_config(cfg, &users, require_live_apply)?;
+    // Expiry reconciliation and `render-config` must revoke AmneziaWG peers
+    // exactly like sing-box users.
+    let amneziawg = platform::render_and_apply_amneziawg(cfg, &users, require_live_apply)?;
+    Ok(singbox && amneziawg)
 }
 
 /// `applied` distinguishes a genuine no-op ("nothing changed") from a
@@ -1810,7 +1873,8 @@ fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) ->
         migration_required = true;
     } else {
         println!(
-            "deployment.toml ({config_path:?}): CURRENT (schema_version {DEPLOYMENT_SCHEMA_VERSION}, node_id {:?}, role {})",
+            "deployment.toml ({config_path:?}): CURRENT (schema_version {}, node_id {:?}, role {})",
+            cfg.schema_version,
             cfg.node_id,
             cfg.role.as_str()
         );
@@ -1820,6 +1884,11 @@ fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) ->
         "{} (node role: {})",
         compat_config::deployment::RELAY_ENFORCEMENT_CAPABILITY,
         cfg.role.as_str()
+    );
+    println!(
+        "{} (enabled on this node: {})",
+        compat_config::deployment::AMNEZIAWG_CAPABILITY,
+        cfg.amneziawg.is_some()
     );
 
     let users_path = cfg.users_file();
@@ -2160,8 +2229,24 @@ fn cmd_user_create(
         expires_at,
         vision_off_experiment: false,
         peer_credentials: Default::default(),
+        amneziawg: None,
     };
     users.push(user);
+    // Every transport this node serves gets a credential at creation, like
+    // the VLESS UUID and Hysteria2 password above.
+    if let Some(node) = compat_config::amneziawg_state::load_node_config(cfg, false)? {
+        use platform_core::transport::TransportProvider;
+        let existing: Vec<_> = users
+            .iter()
+            .filter_map(|u| u.amneziawg.as_ref().map(|c| (u.id.as_str(), c)))
+            .collect();
+        let credential = compat_config::amneziawg::AmneziaWgProvider
+            .issue_credentials(&node, &id, &existing)
+            .map_err(|e| anyhow::anyhow!("issuing an AmneziaWG credential: {e}"))?;
+        if let Some(u) = users.iter_mut().find(|u| u.id == id) {
+            u.amneziawg = Some(credential);
+        }
+    }
     apply_users_and_save(cfg, &previous_users, &users)?;
 
     let url = subscription_url(cfg, &token);
@@ -2906,9 +2991,26 @@ fn apply_users_and_save(
     // a revocation reaches the protocol first, while a newly enabled
     // credential is not distributed until the protocol accepts it.
     let went_live = render_and_apply_singbox_config(cfg, users, true)?;
+    // AmneziaWG is a second, independent data plane: it must accept the
+    // same authorization change before users.json is published, and a
+    // failure there restores sing-box to the previous authorization.
+    if let Err(awg_error) = platform::render_and_apply_amneziawg(cfg, users, true) {
+        let rollback = render_and_apply_singbox_config(cfg, previous_users, true);
+        let _ = platform::render_and_apply_amneziawg(cfg, previous_users, false);
+        bail!(
+            "AmneziaWG did not accept the authorization change ({awg_error:#}); users.json was not \
+             changed. {}",
+            if rollback.is_ok() {
+                "sing-box was restored to the previous authorization."
+            } else {
+                "sing-box ROLLBACK ALSO FAILED; run `vpn-admin render-config` immediately."
+            }
+        );
+    }
 
     if let Err(save_error) = store::save_users_atomic(&cfg.users_file(), users) {
-        let rollback = render_and_apply_singbox_config(cfg, previous_users, true);
+        let rollback = render_and_apply_singbox_config(cfg, previous_users, true)
+            .and_then(|_| platform::render_and_apply_amneziawg(cfg, previous_users, true));
         bail!(
             "authorization config was loaded, but users.json could not be committed ({save_error}). {}",
             if rollback.is_ok() {
@@ -5704,6 +5806,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         expires_at: None,
         vision_off_experiment: false,
         peer_credentials: Default::default(),
+        amneziawg: None,
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
     // Deliberately LOCAL endpoints only (not `served_endpoints`): this
@@ -7228,6 +7331,16 @@ const BACKUP_MANIFEST: &[(&str, BackupFileAccessor)] = &[
     ("reality/hysteria_obfs_password.txt", |cfg| {
         cfg.hysteria_obfs_password_file()
     }),
+    // Optional: present only on nodes that enabled AmneziaWG. All three or
+    // none (enforced on restore): a restored key without its parameters
+    // would break every AmneziaWG client exactly like a split REALITY set.
+    ("amneziawg/server.key", |cfg| {
+        cfg.amneziawg_server_private_key_file()
+    }),
+    ("amneziawg/server.pub", |cfg| {
+        cfg.amneziawg_server_public_key_file()
+    }),
+    ("amneziawg/params.json", |cfg| cfg.amneziawg_params_file()),
 ];
 
 /// True for `deployment.toml`, every path in `BACKUP_MANIFEST`, and the
@@ -7539,6 +7652,34 @@ fn cmd_restore(
              mismatched certificate/key"
         );
     }
+    let awg_files = ["amneziawg/server.key", "amneziawg/server.pub", "amneziawg/params.json"];
+    let awg_present = awg_files
+        .iter()
+        .filter(|f| staging.path().join(f).exists())
+        .count();
+    if awg_present != 0 && awg_present != awg_files.len() {
+        bail!(
+            "archive contains an incomplete AmneziaWG state ({awg_present} of 3 files) — refusing \
+             to restore a key without its parameters"
+        );
+    }
+    if awg_present == awg_files.len() {
+        let private = std::fs::read_to_string(staging.path().join("amneziawg/server.key"))?;
+        let public = std::fs::read_to_string(staging.path().join("amneziawg/server.pub"))?;
+        let derived = compat_config::amneziawg::derive_public_key(private.trim())
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("restored AmneziaWG server key is malformed")?;
+        if derived != public.trim() {
+            bail!("restored AmneziaWG server.key and server.pub do not match — refusing to restore");
+        }
+        let params: compat_config::amneziawg::AwgParams = serde_json::from_slice(
+            &std::fs::read(staging.path().join("amneziawg/params.json"))?,
+        )
+        .context("restored AmneziaWG params.json does not parse")?;
+        params
+            .validate()
+            .map_err(|e| anyhow::anyhow!("restored AmneziaWG parameters are invalid: {e}"))?;
+    }
 
     let singbox_mgr = CompatibilityServiceManager::default();
     let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
@@ -7559,6 +7700,9 @@ fn cmd_restore(
     std::fs::create_dir_all(cfg.reality_dir())?;
     std::fs::create_dir_all(cfg.hysteria_dir())?;
     std::fs::create_dir_all(cfg.users_file().parent().unwrap())?;
+    if awg_present != 0 {
+        std::fs::create_dir_all(cfg.amneziawg_dir())?;
+    }
 
     // Derived from the same BACKUP_MANIFEST that drives backup creation
     // and archive-extraction allow-listing (see its doc comment) — minus
@@ -7675,11 +7819,25 @@ fn cmd_restore(
                 .with_context(|| format!("{rel} in the backup archive is not valid UTF-8"))?;
             install_rotated_key_file(dest, &text)
                 .with_context(|| format!("installing restored {rel}"))?;
+            if *rel == "amneziawg/server.key" {
+                // root-only: vpn-subscription must never be able to read it.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o600))?;
+                    if unsafe { libc::geteuid() } == 0 {
+                        std::os::unix::fs::chown(dest, Some(0), Some(0))?;
+                    }
+                }
+                continue;
+            }
             let group = if matches!(
                 *rel,
                 "reality/public.key"
                     | "reality/short_id.txt"
                     | "reality/hysteria_obfs_password.txt"
+                    | "amneziawg/server.pub"
+                    | "amneziawg/params.json"
             ) {
                 "vpn-subscription"
             } else {

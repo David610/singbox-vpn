@@ -25,6 +25,7 @@ toml.workspace = true
 common = { path = "../../crates/common" }
 compat-config = { path = "../../crates/compat-config" }
 provisioning-contract = { path = "../../crates/provisioning-contract" }
+platform-core = { path = "../../crates/platform-core" }
 anyhow = "1"
 qrcode = { version = "0.14", default-features = false }
 tempfile = "3"

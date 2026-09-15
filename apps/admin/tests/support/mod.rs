@@ -13,6 +13,8 @@
 //!   "systemd not available", never the host's service manager;
 //! * `SINGBOX_VPN_REPAIR_UPDATE_SH` points at a guard, so `vpn repair`
 //!   can never run the real updater;
+//! * `SINGBOX_VPN_AWG` points at a guard, so no test can `awg syncconf` a
+//!   live AmneziaWG interface;
 //! * `PATH` starts with guards for the host-control tools a helper script
 //!   could reach (`systemctl`, `service`, reboot/shutdown, account tools).
 //!
@@ -27,6 +29,7 @@ use std::sync::OnceLock;
 
 /// Tools a test must never run against the host. Each guard exits 97.
 const GUARDED_TOOLS: &[&str] = &[
+    "awg",
     "systemctl",
     "service",
     "reboot",
@@ -108,6 +111,9 @@ fn guard_env() -> Vec<(&'static str, std::ffi::OsString)> {
             "SINGBOX_VPN_REPAIR_UPDATE_SH",
             guard.bin_dir.join("service").into_os_string(),
         ),
+        // A live AmneziaWG interface must never be reconfigured by a test
+        // running on a real node (same defect class as D6).
+        ("SINGBOX_VPN_AWG", guard.bin_dir.join("awg").into_os_string()),
         ("PATH", guarded_path()),
     ]
 }

@@ -204,6 +204,14 @@ pub struct CompatUser {
     /// existed — the same treatment `vision_off_experiment` gets.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub peer_credentials: BTreeMap<String, PeerCredential>,
+
+    /// This user's AmneziaWG credential on THIS node, when the transport
+    /// is enabled and one was issued. Skipped when absent so users.json
+    /// stays byte-identical for deployments without AmneziaWG; a file
+    /// that carries one is written as users schema 2, which older
+    /// binaries refuse instead of silently dropping the credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amneziawg: Option<crate::amneziawg::AwgCredential>,
 }
 
 fn is_false(b: &bool) -> bool {

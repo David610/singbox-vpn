@@ -1,0 +1,22 @@
+[package]
+name = "probe-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Synthetic route prober: measures configured routes from a vantage point (e.g. a Russian datacenter VPS). Never carries user traffic."
+
+[[bin]]
+name = "vpn-probe"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+platform-core = { path = "../../crates/platform-core" }
+
+[dev-dependencies]
+tempfile = "3"

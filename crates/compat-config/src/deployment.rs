@@ -18,6 +18,24 @@ use std::path::{Path, PathBuf};
 /// `validate`) rather than silently reinterpreting it.
 pub const DEPLOYMENT_SCHEMA_VERSION: u32 = 2;
 
+/// Declared by a `deployment.toml` that enables `[amneziawg]`, and only by
+/// one. A binary that predates AmneziaWG refuses the file (it is newer
+/// than it supports) instead of rendering a node that silently stops
+/// serving every AWG peer. Files without `[amneziawg]` stay at
+/// [`DEPLOYMENT_SCHEMA_VERSION`] and byte-identical.
+pub const DEPLOYMENT_SCHEMA_VERSION_AMNEZIAWG: u32 = 3;
+
+/// Highest `deployment.toml` schema this binary can load.
+pub const DEPLOYMENT_MAX_SCHEMA_VERSION: u32 = DEPLOYMENT_SCHEMA_VERSION_AMNEZIAWG;
+
+/// Printed by `vpn-admin config validate` from every build that can render
+/// and apply AmneziaWG. `update.sh` refuses to switch an AWG-enabled node
+/// to a `vpn-admin` that does not print it.
+pub const AMNEZIAWG_CAPABILITY: &str = "capability: amneziawg-3";
+
+/// Endpoint id of this deployment's own AmneziaWG listener.
+pub const LOCAL_AMNEZIAWG_ENDPOINT_ID: &str = "amneziawg-1";
+
 /// Printed by `vpn-admin config validate` from every build that renders
 /// relays fail-closed. `update.sh` refuses to switch a relay node to a
 /// `vpn-admin` that does not print it: a build that parses `role` but
@@ -251,6 +269,98 @@ pub struct DeploymentConfig {
     /// `DEPLOYMENT_SCHEMA_VERSION` does not move.
     #[serde(default)]
     pub peer_endpoints: Vec<PeerEndpointSection>,
+
+    /// Optional AmneziaWG listener on this node. Its presence requires
+    /// `schema_version = 3` (see [`DEPLOYMENT_SCHEMA_VERSION_AMNEZIAWG`]).
+    /// Keys and obfuscation parameters are generated state under
+    /// `state_dir/amneziawg`, never part of this hand-edited file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amneziawg: Option<AmneziaWgSection>,
+}
+
+/// `[amneziawg]` — listener and tunnel addressing for the AmneziaWG
+/// transport. Unknown keys are refused, like `[[peer_endpoints]]`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmneziaWgSection {
+    pub listen_port: u16,
+    #[serde(default = "default_awg_interface")]
+    pub interface: String,
+    #[serde(default = "default_awg_subnet_v4")]
+    pub subnet_v4: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subnet_v6: Option<String>,
+    #[serde(default = "default_awg_mtu")]
+    pub mtu: u16,
+    #[serde(default = "default_awg_keepalive")]
+    pub persistent_keepalive: u16,
+    /// Only for fallback `awg-quick` profiles; see
+    /// `amneziawg::AwgNodeConfig::fallback_client_dns`.
+    #[serde(default = "default_awg_fallback_dns")]
+    pub fallback_client_dns: Vec<String>,
+}
+
+fn default_awg_interface() -> String {
+    "awg0".into()
+}
+fn default_awg_subnet_v4() -> String {
+    "10.66.0.0/16".into()
+}
+fn default_awg_mtu() -> u16 {
+    1380
+}
+fn default_awg_keepalive() -> u16 {
+    25
+}
+fn default_awg_fallback_dns() -> Vec<String> {
+    vec!["1.1.1.1".into(), "2606:4700:4700::1111".into()]
+}
+
+impl AmneziaWgSection {
+    fn validate(&self, cfg: &DeploymentConfig) -> Result<(), CompatError> {
+        let bad = |m: String| Err(CompatError::Parse(format!("[amneziawg] {m}")));
+        if self.listen_port == 0 {
+            return bad("listen_port must be non-zero".into());
+        }
+        if self.listen_port == cfg.hysteria2.listen_port {
+            return bad(format!(
+                "listen_port {} collides with the Hysteria2 UDP listener",
+                self.listen_port
+            ));
+        }
+        if self.interface.is_empty()
+            || self.interface.len() > 15
+            || !self
+                .interface
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return bad("interface must be 1-15 characters of [A-Za-z0-9_.-]".into());
+        }
+        self.subnet_v4
+            .parse::<crate::amneziawg::Ipv4Net>()
+            .map_err(|e| CompatError::Parse(format!("[amneziawg] subnet_v4: {e}")))?;
+        if let Some(v6) = &self.subnet_v6 {
+            v6.parse::<crate::amneziawg::Ipv6Net>()
+                .map_err(|e| CompatError::Parse(format!("[amneziawg] subnet_v6: {e}")))?;
+        }
+        if !(1280..=1500).contains(&self.mtu) {
+            return bad("mtu must be 1280..=1500".into());
+        }
+        for dns in &self.fallback_client_dns {
+            if dns.parse::<std::net::IpAddr>().is_err() {
+                return bad(format!("fallback_client_dns entry {dns:?} is not an IP literal"));
+            }
+        }
+        if cfg.role == NodeRole::Relay {
+            return bad(
+                "a relay node never exits to the Internet, and AmneziaWG is not detour-capable; \
+                 enable it on exit nodes only"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// One `[[access_paths]]` entry. Metadata only — no credentials or raw
@@ -717,11 +827,11 @@ impl DeploymentConfig {
     pub fn validate(&self) -> Result<(), CompatError> {
         // Fail closed on a schema newer than this binary understands —
         // see DEPLOYMENT_SCHEMA_VERSION's doc comment.
-        if self.schema_version > DEPLOYMENT_SCHEMA_VERSION {
+        if self.schema_version > DEPLOYMENT_MAX_SCHEMA_VERSION {
             return Err(CompatError::UnsupportedSchema {
                 what: "deployment.toml",
                 found: self.schema_version,
-                max_supported: DEPLOYMENT_SCHEMA_VERSION,
+                max_supported: DEPLOYMENT_MAX_SCHEMA_VERSION,
             });
         }
         if self.schema_version >= 2 && self.node_id.trim().is_empty() {
@@ -801,6 +911,25 @@ impl DeploymentConfig {
                  see docs/PERFORMANCE_OPTIMIZATION_PLAN.md"
                     .to_string(),
             ));
+        }
+
+        match (&self.amneziawg, self.schema_version) {
+            (Some(section), v) if v >= DEPLOYMENT_SCHEMA_VERSION_AMNEZIAWG => section.validate(self)?,
+            (Some(_), v) => {
+                return Err(CompatError::Parse(format!(
+                    "[amneziawg] requires schema_version = {DEPLOYMENT_SCHEMA_VERSION_AMNEZIAWG} \
+                     (found {v}); enable it with `vpn-admin transport enable amneziawg` so older \
+                     binaries refuse this file instead of dropping AmneziaWG silently"
+                )))
+            }
+            (None, v) if v >= DEPLOYMENT_SCHEMA_VERSION_AMNEZIAWG => {
+                return Err(CompatError::Parse(format!(
+                    "schema_version {v} declares AmneziaWG but no [amneziawg] section exists; \
+                     use `vpn-admin transport disable amneziawg` to return to schema \
+                     {DEPLOYMENT_SCHEMA_VERSION}"
+                )))
+            }
+            (None, _) => {}
         }
         Ok(())
     }
@@ -1123,6 +1252,36 @@ impl DeploymentConfig {
     pub fn singbox_config_file(&self) -> PathBuf {
         self.state_dir.join("sing-box/config.json")
     }
+
+    /// `root:vpn-compat 0750`: shared by vpn-admin and vpn-subscription.
+    pub fn amneziawg_dir(&self) -> PathBuf {
+        self.state_dir.join("amneziawg")
+    }
+
+    /// `root:root 0600`: vpn-subscription can never read it.
+    pub fn amneziawg_server_private_key_file(&self) -> PathBuf {
+        self.amneziawg_dir().join("server.key")
+    }
+
+    pub fn amneziawg_server_public_key_file(&self) -> PathBuf {
+        self.amneziawg_dir().join("server.pub")
+    }
+
+    /// Obfuscation parameters, including the header protection key shared
+    /// with every client (same class as the Salamander password).
+    pub fn amneziawg_params_file(&self) -> PathBuf {
+        self.amneziawg_dir().join("params.json")
+    }
+
+    /// Rendered `awg setconf` file; contains the server private key.
+    pub fn amneziawg_setconf_file(&self) -> PathBuf {
+        let iface = self
+            .amneziawg
+            .as_ref()
+            .map(|s| s.interface.as_str())
+            .unwrap_or("awg0");
+        self.amneziawg_dir().join(format!("{iface}.conf"))
+    }
 }
 
 /// Outcome of `migrate_deployment_toml`, reported by `vpn-admin config
@@ -1178,9 +1337,13 @@ pub fn migrate_deployment_toml_text(original: &str) -> Option<String> {
     let explicit_version = value_of("schema_version").and_then(|value| value.parse::<u32>().ok());
     let has_node_id = value_of("node_id").is_some();
     let has_role = value_of("role").is_some();
-    if explicit_version == Some(DEPLOYMENT_SCHEMA_VERSION) && has_node_id && has_role {
+    if explicit_version.is_some_and(|v| v >= DEPLOYMENT_SCHEMA_VERSION) && has_node_id && has_role {
         return None;
     }
+    // Never downgrade a file that already declares a newer feature schema.
+    let stamped_version = explicit_version
+        .filter(|v| *v > DEPLOYMENT_SCHEMA_VERSION)
+        .unwrap_or(DEPLOYMENT_SCHEMA_VERSION);
 
     let mut identity = String::new();
     if !has_node_id {
@@ -1193,7 +1356,7 @@ pub fn migrate_deployment_toml_text(original: &str) -> Option<String> {
         identity.push_str("role = \"exit\"\n");
     }
 
-    let header = format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{identity}");
+    let header = format!("schema_version = {stamped_version}\n{identity}");
     let mut body = String::new();
     let mut wrote_header = false;
     let mut in_top_level = true;
@@ -1247,7 +1410,7 @@ pub fn migrate_deployment_toml(path: &Path) -> Result<DeploymentMigrationOutcome
         ))
     })?;
     migrated_cfg.validate()?;
-    if migrated_cfg.schema_version != DEPLOYMENT_SCHEMA_VERSION {
+    if migrated_cfg.schema_version < DEPLOYMENT_SCHEMA_VERSION {
         return Err(CompatError::Parse(format!(
             "migration produced schema_version {} (expected {DEPLOYMENT_SCHEMA_VERSION}) — refusing to apply",
             migrated_cfg.schema_version

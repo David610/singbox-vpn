@@ -137,6 +137,7 @@ fn user() -> CompatUser {
         expires_at: None,
         vision_off_experiment: false,
         peer_credentials,
+        amneziawg: None,
     }
 }
 
@@ -463,11 +464,18 @@ fn duplicate_access_path_ids_are_refused() {
 
 #[test]
 fn future_schema_is_refused() {
-    let text = paired_relay_toml().replace("schema_version = 2", "schema_version = 3");
+    let future = compat_config::deployment::DEPLOYMENT_MAX_SCHEMA_VERSION + 1;
+    let text = paired_relay_toml().replace("schema_version = 2", &format!("schema_version = {future}"));
     assert!(matches!(
         load(&text),
-        Err(CompatError::UnsupportedSchema { found: 3, .. })
+        Err(CompatError::UnsupportedSchema { found, .. }) if found == future
     ));
+}
+
+#[test]
+fn amneziawg_schema_without_the_section_is_refused() {
+    let text = paired_relay_toml().replace("schema_version = 2", "schema_version = 3");
+    assert!(load(&text).is_err());
 }
 
 #[test]

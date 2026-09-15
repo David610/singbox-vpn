@@ -1,0 +1,288 @@
+{
+  "description": "No observations: operator priority, then declared CPU cost, then route id decide.",
+  "expected": {
+    "at_ms": 1000,
+    "network_id": "net-home",
+    "policy_version": "route-engine/1",
+    "ranked": [
+      {
+        "reasons": [
+          {
+            "kind": "operator_priority",
+            "points": 50
+          },
+          {
+            "kind": "unmeasured",
+            "points": 0
+          },
+          {
+            "kind": "cpu_cost",
+            "points": 3
+          }
+        ],
+        "route_id": "fi1/amneziawg",
+        "total": 53
+      },
+      {
+        "reasons": [
+          {
+            "kind": "operator_priority",
+            "points": 50
+          },
+          {
+            "kind": "unmeasured",
+            "points": 0
+          },
+          {
+            "kind": "cpu_cost",
+            "points": 3
+          }
+        ],
+        "route_id": "nl1/amneziawg",
+        "total": 53
+      },
+      {
+        "reasons": [
+          {
+            "kind": "operator_priority",
+            "points": 50
+          },
+          {
+            "kind": "unmeasured",
+            "points": 0
+          },
+          {
+            "kind": "cpu_cost",
+            "points": 0
+          }
+        ],
+        "route_id": "fi1/vless-reality",
+        "total": 50
+      },
+      {
+        "reasons": [
+          {
+            "kind": "operator_priority",
+            "points": 50
+          },
+          {
+            "kind": "unmeasured",
+            "points": 0
+          },
+          {
+            "kind": "cpu_cost",
+            "points": 0
+          }
+        ],
+        "route_id": "nl1/vless-reality",
+        "total": 50
+      },
+      {
+        "reasons": [
+          {
+            "kind": "operator_priority",
+            "points": 45
+          },
+          {
+            "kind": "unmeasured",
+            "points": 0
+          },
+          {
+            "kind": "cpu_cost",
+            "points": -3
+          }
+        ],
+        "route_id": "fi1/hysteria2",
+        "total": 42
+      },
+      {
+        "reasons": [
+          {
+            "kind": "operator_priority",
+            "points": 45
+          },
+          {
+            "kind": "unmeasured",
+            "points": 0
+          },
+          {
+            "kind": "cpu_cost",
+            "points": -3
+          }
+        ],
+        "route_id": "nl1/hysteria2",
+        "total": 42
+      },
+      {
+        "reasons": [
+          {
+            "kind": "operator_priority",
+            "points": 20
+          },
+          {
+            "kind": "unmeasured",
+            "points": 0
+          },
+          {
+            "kind": "cpu_cost",
+            "points": 0
+          }
+        ],
+        "route_id": "nl1/reality-via-ru1",
+        "total": 20
+      }
+    ]
+  },
+  "input": {
+    "catalog": {
+      "endpoints": [
+        {
+          "endpoint_id": "fi1-awg",
+          "host": "fi1.example.net",
+          "node_id": "fi1",
+          "port": 51820,
+          "transport": "amneziawg"
+        },
+        {
+          "endpoint_id": "fi1-reality",
+          "host": "fi1.example.net",
+          "node_id": "fi1",
+          "port": 443,
+          "transport": "vless-reality"
+        },
+        {
+          "endpoint_id": "fi1-hy2",
+          "host": "fi1.example.net",
+          "node_id": "fi1",
+          "port": 443,
+          "transport": "hysteria2"
+        },
+        {
+          "endpoint_id": "nl1-awg",
+          "host": "nl1.example.net",
+          "node_id": "nl1",
+          "port": 51820,
+          "transport": "amneziawg"
+        },
+        {
+          "endpoint_id": "nl1-reality",
+          "host": "nl1.example.net",
+          "node_id": "nl1",
+          "port": 443,
+          "transport": "vless-reality"
+        },
+        {
+          "endpoint_id": "nl1-hy2",
+          "host": "nl1.example.net",
+          "node_id": "nl1",
+          "port": 443,
+          "transport": "hysteria2"
+        },
+        {
+          "endpoint_id": "ru1-reality",
+          "host": "ru1.example.net",
+          "node_id": "ru1",
+          "port": 443,
+          "transport": "vless-reality"
+        }
+      ],
+      "nodes": [
+        {
+          "country": "FI",
+          "failure_domain": "provider-a/fi",
+          "node_id": "fi1",
+          "provider": "provider-a",
+          "role": "exit",
+          "status": "active"
+        },
+        {
+          "country": "NL",
+          "failure_domain": "provider-b/nl",
+          "node_id": "nl1",
+          "provider": "provider-b",
+          "role": "exit",
+          "status": "active"
+        },
+        {
+          "country": "RU",
+          "failure_domain": "provider-c/ru",
+          "node_id": "ru1",
+          "provider": "provider-c",
+          "role": "relay",
+          "status": "active"
+        }
+      ],
+      "routes": [
+        {
+          "hops": [
+            "fi1-awg"
+          ],
+          "kind": "direct",
+          "label": "Finland · AmneziaWG",
+          "priority": 50,
+          "route_id": "fi1/amneziawg"
+        },
+        {
+          "hops": [
+            "fi1-reality"
+          ],
+          "kind": "direct",
+          "label": "Finland · REALITY",
+          "priority": 50,
+          "route_id": "fi1/vless-reality"
+        },
+        {
+          "hops": [
+            "fi1-hy2"
+          ],
+          "kind": "direct",
+          "label": "Finland · Hysteria2",
+          "priority": 45,
+          "route_id": "fi1/hysteria2"
+        },
+        {
+          "hops": [
+            "nl1-awg"
+          ],
+          "kind": "direct",
+          "label": "Netherlands · AmneziaWG",
+          "priority": 50,
+          "route_id": "nl1/amneziawg"
+        },
+        {
+          "hops": [
+            "nl1-reality"
+          ],
+          "kind": "direct",
+          "label": "Netherlands · REALITY",
+          "priority": 50,
+          "route_id": "nl1/vless-reality"
+        },
+        {
+          "hops": [
+            "nl1-hy2"
+          ],
+          "kind": "direct",
+          "label": "Netherlands · Hysteria2",
+          "priority": 45,
+          "route_id": "nl1/hysteria2"
+        },
+        {
+          "hops": [
+            "ru1-reality",
+            "nl1-reality"
+          ],
+          "kind": "relayed",
+          "label": "Netherlands via Russia",
+          "priority": 20,
+          "route_id": "nl1/reality-via-ru1"
+        }
+      ]
+    },
+    "network_id": "net-home",
+    "now_ms": 1000,
+    "observations": []
+  },
+  "kind": "ranking",
+  "policy_version": "route-engine/1"
+}

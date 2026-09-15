@@ -863,6 +863,7 @@ mod tests {
             expires_at: None,
             vision_off_experiment: false,
             peer_credentials: Default::default(),
+            amneziawg: None,
         }
     }
 

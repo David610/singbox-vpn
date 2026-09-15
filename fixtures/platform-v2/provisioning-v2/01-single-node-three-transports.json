@@ -1,0 +1,104 @@
+{
+  "schema_version": 2,
+  "server": {
+    "product": "singbox-vpn",
+    "version": "1.1.0",
+    "minimum_client_version": "0.3.0"
+  },
+  "nodes": [
+    {
+      "node_id": "fi1",
+      "role": "exit",
+      "status": "active",
+      "failure_domain": "host:fi1.example.net"
+    }
+  ],
+  "endpoints": [
+    {
+      "endpoint_id": "reality-1",
+      "node_id": "fi1",
+      "host": "fi1.example.net",
+      "port": 443,
+      "transport": "vless-reality",
+      "server_name": "www.example-decoy.com",
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "flow": "xtls-rprx-vision",
+      "reality": {
+        "public_key": "FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEfake",
+        "short_id": "0a1b2c3d",
+        "fingerprint": "chrome"
+      }
+    },
+    {
+      "endpoint_id": "hysteria2-1",
+      "node_id": "fi1",
+      "host": "fi1.example.net",
+      "port": 443,
+      "transport": "hysteria2",
+      "server_name": "fi1.example.net",
+      "password": "fake-hysteria2-password-not-a-real-secret",
+      "obfs": {
+        "type": "salamander",
+        "password": "fake-salamander-obfs-password"
+      }
+    },
+    {
+      "endpoint_id": "amneziawg-1",
+      "node_id": "fi1",
+      "host": "fi1.example.net",
+      "port": 51820,
+      "transport": "amneziawg",
+      "protocol": "awg-3",
+      "server_public_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+      "client_private_key": "KSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9AQUJDREVGR0g=",
+      "preshared_key": "UVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3A=",
+      "addresses": [
+        "10.66.0.2/32"
+      ],
+      "recommended_mtu": 1380,
+      "persistent_keepalive": 25,
+      "jc": 5,
+      "jmin": 50,
+      "jmax": 420,
+      "s1": 61,
+      "s2": 94,
+      "s3": 33,
+      "s4": 17,
+      "h1": "182736455-219876543",
+      "h2": "1034567890-1098765432",
+      "h3": "2233445566-2299887766",
+      "h4": "3456789012-3567890123",
+      "header_protection_key": "eXp7fH1+f4CBgoOEhYaHiImKi4yNjo+QkZKTlJWWl5g=",
+      "content_padding_addition": "0-16"
+    }
+  ],
+  "routes": [
+    {
+      "route_id": "fi1/vless-reality",
+      "label": "fi1 \u00b7 vless-reality",
+      "kind": "direct",
+      "hops": [
+        "reality-1"
+      ],
+      "priority": 50
+    },
+    {
+      "route_id": "fi1/hysteria2",
+      "label": "fi1 \u00b7 hysteria2",
+      "kind": "direct",
+      "hops": [
+        "hysteria2-1"
+      ],
+      "priority": 45
+    },
+    {
+      "route_id": "fi1/amneziawg",
+      "label": "fi1 \u00b7 amneziawg",
+      "kind": "direct",
+      "hops": [
+        "amneziawg-1"
+      ],
+      "priority": 50
+    }
+  ]
+}

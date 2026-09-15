@@ -76,6 +76,7 @@ fn user() -> CompatUser {
         expires_at: None,
         vision_off_experiment: false,
         peer_credentials,
+        amneziawg: None,
     }
 }
 

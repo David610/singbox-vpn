@@ -1,0 +1,54 @@
+[Unit]
+Description=singbox-vpn AmneziaWG data plane (upstream amneziawg-go, userspace)
+Documentation=https://github.com/amnezia-vpn/amneziawg-go
+After=network-online.target
+Wants=network-online.target
+# Same restart budget rationale as sing-box.service.
+StartLimitIntervalSec=300
+StartLimitBurst=8
+ConditionPathExists=/etc/vpn/compat/amneziawg/runtime.env
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/vpn/compat/amneziawg/runtime.env
+# Upstream default. Verbose logging is never enabled: it records per-peer
+# handshake activity. See docs/platform-v2/PRIVACY_MODEL.md.
+Environment=LOG_LEVEL=error
+# Refuse to start on a configuration that does not exist or is not
+# root-only: it contains the server private key.
+ExecStartPre=/opt/singbox-vpn/deploy/lib/amneziawg.sh pre-start
+ExecStart=/usr/local/bin/amneziawg-go --foreground ${AWG_INTERFACE}
+# Applies keys/peers (`awg setconf`), addresses, MTU, forwarding and NAT.
+ExecStartPost=/opt/singbox-vpn/deploy/lib/amneziawg.sh post-start
+ExecStopPost=/opt/singbox-vpn/deploy/lib/amneziawg.sh post-stop
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65535
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
+Nice=-5
+
+# amneziawg-go creates a TUN device and configures it over netlink, so it
+# needs CAP_NET_ADMIN (and runs as root to open /dev/net/tun and the UAPI
+# socket under /var/run/amneziawg). Everything else is removed.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+MemoryHigh=75%
+MemoryMax=90%
+TasksMax=512
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+DeviceAllow=/dev/net/tun rw
+# ExecStartPost/ExecStopPost change sysctls and firewall state, so the
+# kernel tunables and /etc/sysctl.d must stay writable for this unit.
+ReadWritePaths=/var/run/amneziawg /run/amneziawg /etc/sysctl.d /var/lib/singbox-vpn
+ReadOnlyPaths=/etc/vpn/compat
+
+[Install]
+WantedBy=multi-user.target

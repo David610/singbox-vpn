@@ -443,6 +443,7 @@ mod tests {
                 expires_at: None,
                 vision_off_experiment: false,
                 peer_credentials: Default::default(),
+                amneziawg: None,
             },
             CompatUser {
                 id: "u-disabled".into(),
@@ -455,6 +456,7 @@ mod tests {
                 expires_at: None,
                 vision_off_experiment: false,
                 peer_credentials: Default::default(),
+                amneziawg: None,
             },
             CompatUser {
                 id: "u-expired".into(),
@@ -467,6 +469,7 @@ mod tests {
                 expires_at: Some(100),
                 vision_off_experiment: false,
                 peer_credentials: Default::default(),
+                amneziawg: None,
             },
         ]
     }
@@ -550,6 +553,7 @@ mod tests {
             expires_at: None,
             vision_off_experiment: true,
             peer_credentials: Default::default(),
+            amneziawg: None,
         });
         let ports = ServerPorts {
             vless_reality_port: 443,

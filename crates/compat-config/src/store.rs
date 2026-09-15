@@ -19,6 +19,24 @@ use std::path::{Path, PathBuf};
 /// `vpn-admin config migrate`.
 pub const USERS_SCHEMA_VERSION: u32 = 1;
 
+/// Written instead of [`USERS_SCHEMA_VERSION`] when at least one user
+/// carries an AmneziaWG credential. A binary that predates AmneziaWG
+/// refuses such a file (it is newer than it supports) rather than loading
+/// it and silently dropping every AWG credential on its next save.
+pub const USERS_SCHEMA_VERSION_AMNEZIAWG: u32 = 2;
+
+/// Highest `users.json` schema this binary can read.
+pub const USERS_MAX_SCHEMA_VERSION: u32 = USERS_SCHEMA_VERSION_AMNEZIAWG;
+
+/// The schema version a save of `users` must declare.
+pub fn required_users_schema_version(users: &[CompatUser]) -> u32 {
+    if users.iter().any(|u| u.amneziawg.is_some()) {
+        USERS_SCHEMA_VERSION_AMNEZIAWG
+    } else {
+        USERS_SCHEMA_VERSION
+    }
+}
+
 /// On-disk shape written by every save since versioning was introduced:
 /// `{"schema_version": 1, "users": [...]}`. Never constructed directly
 /// outside this module — `load_users`/`save_users_atomic` are the only
@@ -38,7 +56,7 @@ pub enum UsersSchemaState {
     /// Bare JSON array, pre-versioning — loadable, but `config migrate`
     /// has not normalized it to the versioned envelope yet.
     Legacy,
-    /// Versioned envelope at `USERS_SCHEMA_VERSION` — nothing to do.
+    /// Versioned envelope this binary understands — nothing to do.
     Current,
     /// Versioned envelope at a version newer than this binary supports
     /// — refuse to load (see `load_users`).
@@ -58,7 +76,7 @@ pub fn detect_users_schema(path: &Path) -> UsersSchemaState {
         Err(e) => return UsersSchemaState::Corrupted(e.to_string()),
     };
     if let Ok(versioned) = serde_json::from_slice::<UsersFile>(&bytes) {
-        return if versioned.schema_version > USERS_SCHEMA_VERSION {
+        return if versioned.schema_version > USERS_MAX_SCHEMA_VERSION {
             UsersSchemaState::Future(versioned.schema_version)
         } else {
             UsersSchemaState::Current
@@ -103,11 +121,11 @@ pub fn parse_users_bytes(bytes: &[u8]) -> Result<Vec<CompatUser>, CompatError> {
     // back to the legacy bare array. The two shapes are structurally
     // disjoint at the top level, so there is no ambiguity between them.
     if let Ok(versioned) = serde_json::from_slice::<UsersFile>(bytes) {
-        if versioned.schema_version > USERS_SCHEMA_VERSION {
+        if versioned.schema_version > USERS_MAX_SCHEMA_VERSION {
             return Err(CompatError::UnsupportedSchema {
                 what: "users.json",
                 found: versioned.schema_version,
-                max_supported: USERS_SCHEMA_VERSION,
+                max_supported: USERS_MAX_SCHEMA_VERSION,
             });
         }
         return Ok(versioned.users);
@@ -138,7 +156,7 @@ pub fn save_users_atomic(path: &Path, users: &[CompatUser]) -> Result<(), Compat
         set_dir_mode_0750(parent)?;
     }
     let envelope = UsersFile {
-        schema_version: USERS_SCHEMA_VERSION,
+        schema_version: required_users_schema_version(users),
         users: users.to_vec(),
     };
     let json =
@@ -170,7 +188,7 @@ pub fn migrate_users(path: &Path) -> Result<UsersMigrationOutcome, CompatError> 
             return Err(CompatError::UnsupportedSchema {
                 what: "users.json",
                 found,
-                max_supported: USERS_SCHEMA_VERSION,
+                max_supported: USERS_MAX_SCHEMA_VERSION,
             })
         }
         UsersSchemaState::Corrupted(msg) => {
@@ -184,7 +202,7 @@ pub fn migrate_users(path: &Path) -> Result<UsersMigrationOutcome, CompatError> 
     let legacy: Vec<CompatUser> =
         serde_json::from_slice(&bytes).map_err(|e| CompatError::Parse(e.to_string()))?;
     let envelope = UsersFile {
-        schema_version: USERS_SCHEMA_VERSION,
+        schema_version: required_users_schema_version(&legacy),
         users: legacy,
     };
     let json =
@@ -193,7 +211,7 @@ pub fn migrate_users(path: &Path) -> Result<UsersMigrationOutcome, CompatError> 
     // reparse to the same user list we just read.
     let reparsed: UsersFile =
         serde_json::from_slice(&json).map_err(|e| CompatError::Parse(e.to_string()))?;
-    if reparsed.schema_version != USERS_SCHEMA_VERSION
+    if reparsed.schema_version != required_users_schema_version(&reparsed.users)
         || reparsed.users.len() != envelope.users.len()
     {
         return Err(CompatError::Parse(
@@ -295,6 +313,7 @@ mod tests {
             expires_at: None,
             vision_off_experiment: false,
             peer_credentials: Default::default(),
+            amneziawg: None,
         }
     }
 
@@ -588,4 +607,74 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
+
+    fn awg_user(id: &str) -> CompatUser {
+        let mut u = user_for_schema_tests(id);
+        u.amneziawg = Some(crate::amneziawg::AwgCredential {
+            private_key: crate::SecretString::new(crate::amneziawg::generate_private_key().expose()),
+            public_key: "pub".into(),
+            preshared_key: crate::amneziawg::generate_symmetric_key(),
+            address_v4: "10.66.0.2".parse().unwrap(),
+            address_v6: None,
+        });
+        u
+    }
+
+    fn user_for_schema_tests(id: &str) -> CompatUser {
+        CompatUser {
+            id: id.into(),
+            name: id.into(),
+            enabled: true,
+            vless_uuid: "11111111-1111-4111-8111-111111111111".into(),
+            hysteria2_password: crate::SecretString::new("pw"),
+            subscription_token_hash_hex: "00".into(),
+            created_at: 0,
+            expires_at: None,
+            vision_off_experiment: false,
+            peer_credentials: Default::default(),
+            amneziawg: None,
+        }
+    }
+
+    #[test]
+    fn users_without_amneziawg_stay_schema_1_byte_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        let users = vec![user_for_schema_tests("u1")];
+        save_users_atomic(&path, &users).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"schema_version\": 1"));
+        assert!(!text.contains("amneziawg"));
+    }
+
+    #[test]
+    fn users_with_amneziawg_are_schema_2_and_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        let users = vec![user_for_schema_tests("u1"), awg_user("u2")];
+        save_users_atomic(&path, &users).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], USERS_SCHEMA_VERSION_AMNEZIAWG);
+        assert_eq!(detect_users_schema(&path), UsersSchemaState::Current);
+        let loaded = load_users(&path).unwrap();
+        assert_eq!(loaded[1].amneziawg, users[1].amneziawg);
+
+        // Revoking the last AWG credential returns the file to schema 1.
+        let mut users = loaded;
+        users[1].amneziawg = None;
+        save_users_atomic(&path, &users).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["schema_version"], USERS_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_pre_amneziawg_reader_would_refuse_schema_2() {
+        // Simulates the old binary's rule: it supported exactly schema 1.
+        let bytes = br#"{"schema_version": 2, "users": []}"#;
+        let versioned: UsersFile = serde_json::from_slice(bytes).unwrap();
+        assert!(versioned.schema_version > USERS_SCHEMA_VERSION);
+        let future = br#"{"schema_version": 3, "users": []}"#;
+        assert!(matches!(parse_users_bytes(future), Err(CompatError::UnsupportedSchema { found: 3, .. })));
+    }
+
 }

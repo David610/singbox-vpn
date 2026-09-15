@@ -23,6 +23,10 @@ pub struct AppState {
     pub users_file: std::path::PathBuf,
     pub endpoints: Vec<CompatEndpoint>,
     pub access_paths: Vec<contract::AccessPath>,
+    /// Route-model context for `GET /v2/provision/{token}` and the
+    /// AmneziaWG fallback profile. `None` disables both (the v2 path then
+    /// answers exactly like any other unimplemented version).
+    pub route_context: Option<compat_config::contract_v2::RouteContext>,
     pub rate_limiter: Mutex<RateLimiter>,
 }
 
@@ -412,6 +416,7 @@ async fn get_subscription(
                 }
             }
         }
+        "amneziawg" => amneziawg_profile_response(&state, &user),
         _ => (StatusCode::BAD_REQUEST, "unknown format").into_response(),
     }
 }
@@ -422,6 +427,86 @@ async fn get_subscription(
 /// first hop as if it were an exit, and instead of a generic 500 that
 /// looks like a server bug. Same body for both causes; neither reveals
 /// anything beyond what the token holder already knows.
+/// `?format=amneziawg`: the user's `awg-quick` profile for fallback
+/// AmneziaWG clients. Credential-bearing, never logged. 404 with a stable
+/// discriminator when this node or this user has no AmneziaWG credential.
+fn amneziawg_profile_response(state: &AppState, user: &CompatUser) -> Response {
+    let node = state
+        .route_context
+        .as_ref()
+        .and_then(|c| c.amneziawg.as_ref());
+    let (Some(node), Some(credential)) = (node, user.amneziawg.as_ref()) else {
+        return (
+            StatusCode::NOT_FOUND,
+            [("content-type", "application/json")],
+            serde_json::json!({
+                "error": "transport_not_enabled",
+                "message": "AmneziaWG is not enabled for this subscription",
+            })
+            .to_string(),
+        )
+            .into_response();
+    };
+    match compat_config::amneziawg::render_client_awg_quick(node, credential) {
+        Ok(body) => (
+            StatusCode::OK,
+            [("content-type", "text/plain; charset=utf-8")],
+            body,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "refusing to serve an invalid AmneziaWG profile");
+            (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+        }
+    }
+}
+
+/// Every provisioning schema version this process can serve.
+fn served_schema_versions(state: &AppState) -> Vec<u32> {
+    let mut v = contract::SUPPORTED_SCHEMA_VERSIONS.to_vec();
+    if state.route_context.is_some() {
+        v.push(contract::v2::SCHEMA_VERSION);
+    }
+    v
+}
+
+fn unsupported_version_json(requested: u32, supported: &[u32]) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "error": "unsupported_schema_version",
+            "requested": requested,
+            "supported": supported,
+            "message": format!(
+                "this server implements provisioning schema_version {supported:?}; it cannot \
+                 serve the requested version {requested}. The server will not guess."
+            ),
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+/// A version this server does serve, but at a different path.
+fn schema_path_mismatch_response(requested: u32, path_version: u32) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "error": "schema_version_path_mismatch",
+            "requested": requested,
+            "path_version": path_version,
+            "message": format!(
+                "schema_version {requested} is served at /v{requested}/provision/{{token}}; \
+                 this path serves only version {path_version}"
+            ),
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
 fn no_selectable_route_response() -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -524,7 +609,10 @@ async fn get_provision(
     if let Some(requested) = query.schema_version.as_deref() {
         let parsed: Option<u32> = requested.parse().ok();
         match parsed {
-            Some(v) if contract::is_supported_schema_version(v) => {}
+            Some(v) if v == contract::SCHEMA_VERSION => {}
+            Some(v) if served_schema_versions(&state).contains(&v) => {
+                return schema_path_mismatch_response(v, contract::SCHEMA_VERSION)
+            }
             Some(v) => return unsupported_schema_version_response(v),
             None => {
                 return (
@@ -637,13 +725,106 @@ fn unsupported_schema_version_response(requested: u32) -> Response {
 /// indistinguishable from a bad token; with it, a newer client learns
 /// exactly which versions this server speaks.
 async fn get_provision_unsupported_version(
+    State(state): State<std::sync::Arc<AppState>>,
     AxumPath((version, _token)): AxumPath<(String, String)>,
 ) -> Response {
+    let served = served_schema_versions(&state);
     match version.trim_start_matches('v').parse::<u32>() {
-        Ok(v) if !contract::is_supported_schema_version(v) => {
-            unsupported_schema_version_response(v)
+        Ok(v) if !served.contains(&v) => {
+            if state.route_context.is_some() {
+                unsupported_version_json(v, &served)
+            } else {
+                unsupported_schema_version_response(v)
+            }
         }
         _ => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+/// `GET /v2/provision/{token}` — the route-model contract (nodes,
+/// endpoints, routes, AmneziaWG). Same bearer token, rate limiting,
+/// no-store headers and generic 404 as `/v1`.
+async fn get_provision_v2(
+    State(state): State<std::sync::Arc<AppState>>,
+    AxumPath(token): AxumPath<String>,
+    Query(query): Query<ProvisionQuery>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    {
+        let mut limiter = state
+            .rate_limiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !limiter.allow(addr.ip()) {
+            tracing::warn!(
+                peer = %addr.ip(),
+                "subscription backend rate limit engaged — requests are being shed service-wide"
+            );
+            return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
+        }
+    }
+    let Some(ctx) = state.route_context.as_ref() else {
+        return unsupported_schema_version_response(contract::v2::SCHEMA_VERSION);
+    };
+    if let Some(requested) = query.schema_version.as_deref() {
+        match requested.parse::<u32>() {
+            Ok(v) if v == contract::v2::SCHEMA_VERSION => {}
+            Ok(v) if served_schema_versions(&state).contains(&v) => {
+                return schema_path_mismatch_response(v, contract::v2::SCHEMA_VERSION)
+            }
+            Ok(v) => return unsupported_version_json(v, &served_schema_versions(&state)),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [("content-type", "application/json")],
+                    serde_json::json!({"error": "invalid_schema_version", "requested": requested})
+                        .to_string(),
+                )
+                    .into_response()
+            }
+        }
+    }
+    if query.diagnostic.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            [("content-type", "application/json")],
+            serde_json::json!({
+                "error": "unknown_diagnostic",
+                "message": "diagnostic profiles exist only in schema_version 1",
+            })
+            .to_string(),
+        )
+            .into_response();
+    }
+    if token.is_empty() || token.len() > 128 {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let users = match compat_config::store::load_users(&state.users_file) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load user store");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    let now = common::UnixSeconds::now().0 as i64;
+    let Some(user) = find_user_by_token(&users, &token, now) else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    match compat_config::contract_v2::provisioning_document_v2(ctx, &user) {
+        Ok(doc) => match doc.to_json() {
+            Ok(body) => {
+                (StatusCode::OK, [("content-type", "application/json")], body).into_response()
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to serialize v2 provisioning document");
+                (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+            }
+        },
+        Err(compat_config::CompatError::NoSelectableRoute) => no_selectable_route_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "refusing to serve an invalid v2 provisioning document");
+            (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
+        }
     }
 }
 
@@ -656,6 +837,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route(
             "/v1/provision/:token",
             get(get_provision).layer(axum::middleware::from_fn(no_store_headers)),
+        )
+        .route(
+            "/v2/provision/:token",
+            get(get_provision_v2).layer(axum::middleware::from_fn(no_store_headers)),
         )
         .route(
             "/:version/provision/:token",
@@ -719,6 +904,7 @@ mod tests {
             expires_at: None,
             vision_off_experiment: false,
             peer_credentials: Default::default(),
+            amneziawg: None,
         }
     }
 
@@ -739,6 +925,7 @@ mod tests {
                 None,
             ),
             access_paths: Vec::new(),
+            route_context: None,
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }
@@ -1308,6 +1495,7 @@ mod tests {
             expires_at: None,
             vision_off_experiment: false,
             peer_credentials: Default::default(),
+            amneziawg: None,
         };
         let state = make_state(vec![user]);
         let output = captured_log_output_for_request("trace", &format!("/sub/{token}"), state);
@@ -1356,6 +1544,7 @@ mod tests {
             users_file: path,
             endpoints,
             access_paths: Vec::new(),
+            route_context: None,
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }
@@ -1365,6 +1554,134 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&body).expect("response body is JSON")
+    }
+
+    /// A contract state that also serves `/v2` and, when `awg` is set,
+    /// has AmneziaWG enabled with a credential issued to every user.
+    fn make_v2_state(mut users: Vec<CompatUser>, awg: bool) -> std::sync::Arc<AppState> {
+        use compat_config::amneziawg::{
+            derive_public_key, generate_private_key, AmneziaWgProvider, AwgNodeConfig, AwgParams,
+            AwgProfile,
+        };
+        use platform_core::transport::TransportProvider;
+        let base = make_contract_state(Vec::new(), Some("obfs-pass"), true);
+        let node = awg.then(|| {
+            let k = generate_private_key();
+            AwgNodeConfig {
+                interface: "awg0".into(),
+                public_host: "vpn.example.com".into(),
+                listen_port: 51820,
+                subnet_v4: "10.66.0.0/24".parse().unwrap(),
+                subnet_v6: None,
+                mtu: 1380,
+                persistent_keepalive: 25,
+                fallback_client_dns: vec!["1.1.1.1".into()],
+                server_public_key: derive_public_key(k.expose()).unwrap(),
+                server_private_key: None,
+                params: AwgParams::generate(AwgProfile::Awg3),
+            }
+        });
+        if let Some(node) = &node {
+            let mut issued: Vec<(String, compat_config::amneziawg::AwgCredential)> = Vec::new();
+            for u in users.iter_mut() {
+                let existing: Vec<_> = issued.iter().map(|(id, c)| (id.as_str(), c)).collect();
+                let c = AmneziaWgProvider.issue_credentials(node, &u.id, &existing).unwrap();
+                issued.push((u.id.clone(), c.clone()));
+                u.amneziawg = Some(c);
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("users.json");
+        compat_config::store::save_users_atomic(&path, &users).unwrap();
+        std::mem::forget(dir);
+        let cfg: compat_config::deployment::DeploymentConfig = toml::from_str(
+            "schema_version = 2\nnode_id = \"n1\"\nrole = \"exit\"\npublic_host = \"vpn.example.com\"\nsubscription_host = \"vpn.example.com\"\n[reality]\nlisten_port = 443\nhandshake_server = \"www.example-decoy.com\"\n[hysteria2]\nlisten_port = 443\n[subscription]\nlisten_port = 9100\n",
+        )
+        .unwrap();
+        let ctx = compat_config::contract_v2::RouteContext::from_deployment(
+            &cfg,
+            base.endpoints.clone(),
+            node,
+        );
+        std::sync::Arc::new(AppState {
+            users_file: path,
+            endpoints: base.endpoints.clone(),
+            access_paths: Vec::new(),
+            route_context: Some(ctx),
+            rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+        })
+    }
+
+    #[tokio::test]
+    async fn v2_provision_serves_routes_and_awg_for_the_token_owner() {
+        let state = make_v2_state(vec![user_with_token("goodtoken", true)], true);
+        let resp = oneshot_with_addr(state.clone(), "/v2/provision/goodtoken").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "no-store");
+        let v = body_json(resp).await;
+        assert_eq!(v["schema_version"], 2);
+        let routes: Vec<&str> = v["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["route_id"].as_str().unwrap())
+            .collect();
+        assert!(routes.contains(&"n1/amneziawg"), "{routes:?}");
+        assert!(routes.contains(&"n1/vless-reality"), "{routes:?}");
+        let text = v.to_string();
+        contract::v2::ProvisioningDocumentV2::from_json(&text).unwrap();
+        assert!(!text.contains("singbox_config"));
+
+        // v1 for the same user is unchanged: no AWG, no routes.
+        let v1 = body_json(oneshot_with_addr(state, "/v1/provision/goodtoken").await).await;
+        let v1_text = v1.to_string();
+        assert!(!v1_text.contains("amneziawg") && !v1_text.contains("\"routes\""));
+    }
+
+    #[tokio::test]
+    async fn v2_uses_the_same_404_semantics_and_version_errors() {
+        let state = make_v2_state(vec![user_with_token("goodtoken", false)], false);
+        let resp = oneshot_with_addr(state.clone(), "/v2/provision/goodtoken").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let resp = oneshot_with_addr(state.clone(), "/v2/provision/wrong").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let resp = oneshot_with_addr(state.clone(), "/v3/provision/goodtoken").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v = body_json(resp).await;
+        assert_eq!(v["error"], "unsupported_schema_version");
+        assert_eq!(v["supported"], serde_json::json!([1, 2]));
+
+        let resp = oneshot_with_addr(state.clone(), "/v1/provision/goodtoken?schema_version=2").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(resp).await["error"], "schema_version_path_mismatch");
+
+        let resp = oneshot_with_addr(state, "/v2/provision/goodtoken?diagnostic=tcp-only").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn amneziawg_fallback_profile_is_served_only_when_enabled() {
+        let state = make_v2_state(vec![user_with_token("goodtoken", true)], true);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=amneziawg").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "no-store");
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let ini = String::from_utf8(body.to_vec()).unwrap();
+        assert!(ini.starts_with("[Interface]\nPrivateKey = "));
+        assert!(ini.contains("HeaderProtectionKey = "));
+        assert!(ini.contains("Endpoint = vpn.example.com:51820"));
+
+        let state = make_v2_state(vec![user_with_token("goodtoken", true)], false);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=amneziawg").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(body_json(resp).await["error"], "transport_not_enabled");
+
+        // Hiddify formats never include AmneziaWG.
+        let state = make_v2_state(vec![user_with_token("goodtoken", true)], true);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=hiddify").await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(!String::from_utf8_lossy(&body).to_lowercase().contains("amnezia"));
     }
 
     #[tokio::test]
@@ -1518,6 +1835,7 @@ mod tests {
             users_file: path,
             endpoints,
             access_paths: Vec::new(),
+            route_context: None,
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }
@@ -1931,6 +2249,7 @@ capabilities = ["tcp"]
             expires_at: None,
             vision_off_experiment: false,
             peer_credentials,
+            amneziawg: None,
         }
     }
 
@@ -1943,6 +2262,7 @@ capabilities = ["tcp"]
             users_file: path,
             endpoints: cfg.served_endpoints(RELAY_KEY, "11223344", None).unwrap(),
             access_paths: cfg.contract_access_paths().unwrap(),
+            route_context: None,
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
         })
     }

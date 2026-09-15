@@ -64,6 +64,7 @@ fn user(vision_off: bool) -> CompatUser {
         expires_at: None,
         vision_off_experiment: vision_off,
         peer_credentials: Default::default(),
+        amneziawg: None,
     }
 }
 

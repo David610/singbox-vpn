@@ -187,6 +187,22 @@ fi
 REMOVED_ANYTHING=0
 note_removed() { REMOVED_ANYTHING=1; }
 
+# AmneziaWG (optional transport) owns its own unit, NAT/forwarding rules,
+# firewall port and pinned binaries, each recorded by deploy/lib/amneziawg.sh
+# when it created them. Remove it first, while that script (inside the
+# source tree) and its runtime.env still exist.
+AWG_LIB="$REPO_ROOT/deploy/lib/amneziawg.sh"
+if [ -e /etc/systemd/system/vpn-amneziawg.service ] || [ -e /etc/vpn/compat/amneziawg/runtime.env ] \
+   || [ -e /var/lib/singbox-vpn/amneziawg-binaries.sha256 ]; then
+  if [ -x "$AWG_LIB" ] || [ -r "$AWG_LIB" ]; then
+    log "removing the AmneziaWG data plane..."
+    bash "$AWG_LIB" uninstall || warn "AmneziaWG removal reported errors; check vpn-amneziawg, NAT and UDP firewall rules manually"
+    note_removed
+  else
+    warn "AmneziaWG state found but $AWG_LIB is missing; stop vpn-amneziawg and remove its NAT/firewall rules manually"
+  fi
+fi
+
 log "stopping and disabling singbox-vpn services..."
 for unit in sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service vpn-service-watchdog.timer vpn-service-watchdog.service; do
   if systemctl is-enabled --quiet "$unit" 2>/dev/null || systemctl is-active --quiet "$unit" 2>/dev/null; then

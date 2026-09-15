@@ -82,6 +82,7 @@ fn a_user_with_no_peer_credentials_round_trips_byte_identically() {
         expires_at: None,
         vision_off_experiment: false,
         peer_credentials: Default::default(),
+        amneziawg: None,
     };
     store::save_users_atomic(&path, &[user]).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
@@ -201,6 +202,7 @@ fn peer_credentials_round_trip_and_are_looked_up_by_endpoint_id() {
         expires_at: None,
         vision_off_experiment: false,
         peer_credentials: Default::default(),
+        amneziawg: None,
     };
     user.peer_credentials.insert(
         "eu2-reality".into(),

@@ -6,7 +6,10 @@
 //! hierarchy in this workspace — see
 //! `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` §6.
 
+pub mod amneziawg;
+pub mod amneziawg_state;
 pub mod contract;
+pub mod contract_v2;
 pub mod credentials;
 pub mod deployment;
 pub mod migrate;

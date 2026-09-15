@@ -10,8 +10,10 @@ members = [
     "crates/common",
     "crates/compat-config",
     "crates/provisioning-contract",
+    "crates/platform-core",
     "apps/admin",
     "services/subscription",
+    "apps/probe-agent",
 ]
 
 [workspace.package]

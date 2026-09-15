@@ -1,0 +1,120 @@
+{
+  "description": "Censorship requires every control; ambiguous input is UNKNOWN.",
+  "expected": [
+    {
+      "class": "HANDSHAKE_FAILURE",
+      "evidence": [
+        "error_kind"
+      ]
+    },
+    {
+      "class": "CENSORSHIP_SUSPECTED",
+      "evidence": [
+        "error_kind",
+        "local_network_control_ok",
+        "endpoint_ok_from_other_vantage",
+        "same_port_control_ok",
+        "repeated"
+      ]
+    },
+    {
+      "class": "UNKNOWN",
+      "evidence": [
+        "error_kind",
+        "local_network_control_failed"
+      ]
+    },
+    {
+      "class": "UDP_UNREACHABLE",
+      "evidence": [
+        "error_kind"
+      ]
+    },
+    {
+      "class": "ENDPOINT_DOWN",
+      "evidence": [
+        "error_kind",
+        "other_transports_same_node_failed",
+        "endpoint_failed_from_other_vantage"
+      ]
+    },
+    {
+      "class": "AUTH_FAILURE",
+      "evidence": [
+        "error_kind"
+      ]
+    },
+    {
+      "class": "LOCAL_TUN_FAILURE",
+      "evidence": [
+        "error_kind"
+      ]
+    },
+    {
+      "class": "UNKNOWN",
+      "evidence": [
+        "error_kind"
+      ]
+    }
+  ],
+  "input": [
+    {
+      "error": "handshake_reset",
+      "failed_layer": "L2",
+      "repetitions": 1,
+      "transport_l4": "tcp"
+    },
+    {
+      "endpoint_ok_from_other_vantage": true,
+      "error": "handshake_reset",
+      "failed_layer": "L2",
+      "local_network_control_ok": true,
+      "repetitions": 5,
+      "same_port_control_ok": true,
+      "transport_l4": "tcp"
+    },
+    {
+      "endpoint_ok_from_other_vantage": true,
+      "error": "handshake_reset",
+      "failed_layer": "L2",
+      "local_network_control_ok": false,
+      "repetitions": 5,
+      "same_port_control_ok": true,
+      "transport_l4": "tcp"
+    },
+    {
+      "error": "no_handshake_response",
+      "failed_layer": "L2",
+      "repetitions": 3,
+      "transport_l4": "udp"
+    },
+    {
+      "endpoint_ok_from_other_vantage": false,
+      "error": "connect_timeout",
+      "failed_layer": "L1",
+      "other_transports_same_node_failed": true,
+      "repetitions": 2,
+      "transport_l4": "tcp"
+    },
+    {
+      "error": "auth_rejected",
+      "failed_layer": "L2",
+      "repetitions": 1,
+      "transport_l4": "tcp"
+    },
+    {
+      "error": "tun_create_failed",
+      "failed_layer": "L3",
+      "repetitions": 1,
+      "transport_l4": "udp"
+    },
+    {
+      "error": "other",
+      "failed_layer": "L4",
+      "repetitions": 1,
+      "transport_l4": "tcp"
+    }
+  ],
+  "kind": "classification",
+  "policy_version": "route-engine/1"
+}

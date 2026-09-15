@@ -47,6 +47,8 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub mod v2;
+
 /// The schema version this server implements and emits.
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -1374,7 +1376,7 @@ fn non_empty(field: &'static str, value: &str) -> Result<(), ContractError> {
 
 /// 8-4-4-4-12 lowercase-or-uppercase hex, the only shape sing-box's
 /// VLESS inbound accepts as a client id.
-fn is_uuid(s: &str) -> bool {
+pub(crate) fn is_uuid(s: &str) -> bool {
     let groups: Vec<&str> = s.split('-').collect();
     if groups.len() != 5 {
         return false;
