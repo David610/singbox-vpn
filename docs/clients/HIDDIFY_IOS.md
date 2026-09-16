@@ -191,7 +191,53 @@ step 9). This project has not yet reproduced the failure on a real
 device end-to-end; treat any specific-cause claim beyond this list as
 unverified until it is.
 
+## YouTube does not play (check this FIRST)
+
+Hiddify does not run the profile we serve. Its core reads only the
+`outbounds` array, discards our `selector`, our `urltest` and our
+`route.final`, and rebuilds its own proxy groups. If more than one route
+survives that rebuild — and ours always does — the profile's default
+route becomes a `balance` group whose strategy is **round-robin**, and
+the member is chosen **per connection**. One YouTube playback opens many
+parallel connections to Google's video CDN, and those playback URLs are
+bound to the IP that requested them. Ordinary browsing survives a moving
+route; sustained video does not.
+
+Check it in one tap:
+
+1. Connect, then open Hiddify's proxy/server list.
+2. If the active entry is **`balance`** (or `lowest`), that is the
+   defect.
+3. Tap an actual server name instead — "Reality", "Hysteria2", or a
+   named exit such as "Germany · via Russia". Not `balance`, not
+   `lowest`, not `auto`.
+4. Fully kill the YouTube app (swipe it away, not just background it),
+   reopen it, and play a video for 10-15 minutes.
+
+The permanent fix is a profile Hiddify cannot turn into a balancer at
+all — ask the administrator for the pinned link:
+
+`https://<host>:<subscription-port>/sub/<your-token>?format=singbox&compat=hiddify-pinned`
+
+It carries exactly one route, so `len(tags) > 1` is never true in
+Hiddify's group builder and no balancer is created. Same credentials,
+same REALITY parameters, same transport as your normal profile — only
+the number of offered routes differs. Import it as a **separate**
+profile and keep the normal one. On a Privacy+ account it also removes
+the direct exits entirely, so Hiddify cannot route you around the relay.
+
+Full source-level reasoning: `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §13.
+
 ## Native YouTube app fails while Safari plays YouTube fine
+
+**Read the section above first — as of 2026-09-16 the QUIC theory below
+is untested, not confirmed.** Real-device testing showed that
+`compat=quic-reject`, `compat=tcp-only` and a hand-written Hiddify
+UDP/443 block rule all change nothing, and
+`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §12 shows why: hiddify-core discards
+imported route rules, never reads its own users' route rules, and cannot
+fire any reject rule at the point where it would produce a visible
+failure. None of those three was ever a valid test.
 
 If Safari can play YouTube through the normal subscription but the
 native YouTube iOS app cannot — on both REALITY and Hysteria2 — this is
