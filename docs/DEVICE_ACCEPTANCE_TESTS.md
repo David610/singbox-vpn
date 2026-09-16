@@ -67,15 +67,41 @@ from spec conformance or code review alone.
 | Windows | Hiddify | not yet tested | not yet tested | not yet tested | not yet tested |
 | macOS | Hiddify | not yet tested | not yet tested | not yet tested | not yet tested |
 
-## Open: YouTube native-app acceptance (`compat=quic-reject`)
+## Open: YouTube native-app acceptance
 
 No row above covers native-app media playback, and no YouTube test has
-passed on any device. `?format=singbox&compat=quic-reject` is implemented
-and unit-tested but **not device-verified** — see
-`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §10-11 for the one test that closes
-the incident and what each outcome means. Do not mark it working here
-without a dated entry recording device, OS, client version, active core,
-server commit, endpoint and network.
+passed on any device.
+
+### 2026-09-16 — real-device result for `compat=quic-reject`: FAIL
+
+USER-REPORTED, on the affected Hiddify setup:
+
+| What was tried | Result |
+|---|---|
+| Normal latest singbox-vpn profile | YouTube does not work correctly |
+| `?format=singbox&compat=quic-reject` | No change — does not fix it |
+| A Hiddify-native route rule (UDP, port 443, outbound `block`) | No change — does not fix it |
+| Self-hosted AmneziaWG, same general setup (control) | YouTube works |
+
+This **falsifies `compat=quic-reject` as a fix for the Hiddify path**,
+and `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` has been corrected accordingly.
+It does not falsify the QUIC hypothesis itself: per that document's §12,
+all three UDP/443 attempts were discarded by hiddify-core before the
+runtime, so none of them was ever a valid test.
+
+Device/OS/client-version/core/network fields were not captured for this
+report, so it is USER-REPORTED, not DEVICE-VERIFIED to this document's
+own standard.
+
+### Open: `compat=hiddify-pinned`
+
+`?format=singbox&compat=hiddify-pinned` is implemented, unit-tested and
+modeled against pinned hiddify-core/hiddify-app source
+(`crates/compat-config/tests/hiddify_runtime_contract.rs`), and is **not
+device-verified**. See `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §13 for the
+one test that closes the incident and what each outcome means. Do not
+mark it working here without a dated entry recording device, OS, client
+version, active core, server commit, endpoint and network.
 
 ## What each column means
 

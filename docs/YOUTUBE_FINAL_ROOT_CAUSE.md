@@ -1,7 +1,18 @@
-# YouTube native-app failure — root cause and fix (2026-09-08)
+# YouTube native-app failure — investigation record (2026-09-08, corrected 2026-09-16)
 
-**Status: mechanism PROVEN from upstream source; fix IMPLEMENTED and
-opt-in; real-device acceptance NOT YET RECORDED.**
+**Status: the 2026-09-08 fix (`compat=quic-reject`) is FALSIFIED for the
+Hiddify path — see §12. A second, independent defect in how Hiddify
+rebuilds our profile is now CODE-VERIFIED and fixed by
+`compat=hiddify-pinned` (§13); its real-device acceptance is NOT YET
+RECORDED.**
+
+> **Read §12 and §13 before anything else.** Sections 1-11 are the
+> 2026-09-08 record. Their source-level tracing of sing-box/sing-tun
+> (§3) still holds and is still useful. Their *conclusion* — that
+> `compat=quic-reject` fixes this incident — does not: real-device
+> evidence says it changes nothing, and §12 explains why it provably
+> cannot on this client. Nothing below §11 was edited, so the original
+> reasoning stays auditable.
 
 This is the current authoritative document for the YouTube incident. It
 supersedes the *conclusions* of `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md`
@@ -199,3 +210,222 @@ the YouTube app and play a video.
 - **Still hangs** → Hiddify almost certainly dropped the `route.rules`
   array (limitation 1). The next step is then a raw sing-box client on
   Android, where the executed config is knowable, using the same JSON.
+
+---
+
+# 12. CORRECTION (2026-09-16): why all three UDP/443 attempts did nothing
+
+## 12.1 What the device actually reported
+
+USER-REPORTED, on the affected Hiddify setup:
+
+| Attempt | Result |
+|---|---|
+| Normal profile | YouTube does not work correctly |
+| `?format=singbox&compat=quic-reject` (§6) | no change |
+| Hiddify-native route rule: UDP, port 443, outbound `block` | no change |
+| Self-hosted AmneziaWG (control) | YouTube works |
+
+§10's limitation 1 named the one thing that would make the fix inert —
+"whether Hiddify preserves an imported `route.rules` array". That is now
+answered, and the answer is worse than "no".
+
+## 12.2 Three independent reasons, all CODE-VERIFIED
+
+Read from the pinned upstream revisions the user is running against:
+hiddify-core `db74dfc257d5becb4b4e9dbc7257a3dcdde20692`, hiddify-app
+`276a7effb0046a039220a745022563740968c0b8`, and the sing-box they vendor.
+
+**(a) Hiddify discards every imported `route` object.** `BuildConfig`
+(`v2/config/builder.go`) seeds `options.Route` from the import only when
+`enable-full-config` is set — and then `setRoutingOptions`, called
+unconditionally a few lines later, ends with:
+
+```go
+options.Route = &option.RouteOptions{
+    Rules: routeRules,          // built entirely from HiddifyOptions
+    Final: OutboundMainDetour,
+    ...
+}
+```
+
+A plain assignment, not a merge, and not conditional. **No imported route
+rule can reach the runtime, with or without "execute config as is".**
+That kills `compat=quic-reject` outright.
+
+**(b) Hiddify never reads the user's own route rules either.** The app
+stores rules from its Routing-options UI as `route_rule.proto` in its
+base directory (`lib/features/route_rules/notifier/rules_notifier.dart`).
+Nothing in hiddify-core reads that file or converts those rules into
+sing-box rules: `setRoutingOptions`'s `for _, rule := range opt.Rules`
+loop is commented out, and `grep` over the core for any non-generated
+use of the `Rule` message returns nothing. The user's hand-written
+UDP/443 block rule was stored and then ignored. That kills attempt 3.
+
+**(c) Even Hiddify's own reject rules cannot produce the ICMP
+unreachable §3b depends on.** §3b is correct that a `reject` rule matched
+by `Router::PreMatch` yields `RejectedError{tun.ErrReset}` and an ICMP
+unreachable. But `setRoutingOptions` prepends, as **rule index 0**, an
+unconditional sniff rule:
+
+```go
+routeRules = append(routeRules, option.Rule{
+    Type: C.RuleTypeDefault,
+    DefaultOptions: option.DefaultRule{
+        RuleAction: option.RuleAction{Action: C.RuleActionTypeSniff},
+    },
+})
+```
+
+A rule with no match items matches everything
+(`abstractDefaultRule::matchStates` returns a non-empty state set for
+`len(r.allItems) == 0`). And in `matchRule`, with `preMatch = true`:
+
+```go
+case *R.RuleActionSniff:
+    if !preMatch { ... } else if metadata.Network != N.NetworkICMP {
+        selectedRule = currentRule
+        break match          // evaluation stops at rule 0
+    }
+```
+
+`PreMatch` then sees a selected rule that is not a reject, leaves
+`directRouteOutbound` nil, and returns `(nil, nil)` — flow accepted, no
+error, no ICMP. **In Hiddify, no reject rule of any origin can ever fire
+at PreMatch**, including Hiddify's own "Block QUIC" setting. (That
+setting is doubly ineffective: it emits `Method: default` with `NoDrop`
+unset, which `RuleActionReject::Error` escalates to `ErrDrop` after 50
+rejects in 30 seconds — §3b's own warning, in Hiddify's code.)
+
+## 12.3 What this does and does not prove
+
+- **PROVEN (CODE-VERIFIED):** `compat=quic-reject` is inert in Hiddify,
+  and so is every equivalent UDP/443 rule, from any source. §6 was
+  shipped as a fix on an assumption (§10, limitation 1) that is false.
+- **PROVEN (CODE-VERIFIED):** the mechanism in §3 is still correct for a
+  client that runs the config as given. `compat=quic-reject` remains
+  meaningful for a raw sing-box client and is kept for that, relabeled.
+- **NOT proven either way:** whether application QUIC is what breaks
+  YouTube. All three attempts failed before reaching the network, so
+  none of them was a test of the hypothesis. §1's conclusion is
+  therefore neither confirmed nor refuted — it is **untested**.
+- **NOT proven:** that §13's defect is the whole cause of this incident.
+
+## 12.4 Also corrected
+
+§5's verdict table said the manual Hiddify `route.rules` attempt was
+"INCONCLUSIVE — Hiddify's preservation was never proven". It is now
+**INVALID TEST**, for reason (a)/(b) above. The row for
+`?format=singbox&compat=quic-reject` should be read the same way.
+
+---
+
+# 13. A second defect, found while proving §12: Hiddify does not give our users a route
+
+## 13.1 The mechanism (CODE-VERIFIED)
+
+Hiddify does not run our config. `setOutbounds` reads the `outbounds`
+array, drops `selector` and `urltest` outbounds
+(`case C.TypeSelector, C.TypeURLTest: continue`), and rebuilds its own
+groups from whatever proxy tags remain. Then:
+
+```go
+defaultSelect := tags[0]
+...
+if len(tags) > 1 {
+    outbounds = append([]option.Outbound{balancer, urlTest}, outbounds...)
+    selectorTags = append([]string{urlTest.Tag, balancer.Tag}, selectorTags...)
+    defaultSelect = balancer.Tag
+}
+```
+
+So **as soon as our profile offers more than one route, Hiddify's default
+route becomes a `balance` outbound over every tag**, and `route.final`
+points at the selector holding it. hiddify-app's default
+`balancer-strategy` is `round-robin`
+(`lib/features/settings/data/config_option_repository.dart`), and
+`Balancer::DialContext` calls `strategyFn.Select(...)` **per
+connection**.
+
+Our profiles always offer more than one route (REALITY + Hysteria2, and
+more once Privacy+ exists). Our own `selector`, our `urltest` and our
+`route.final` — the three things that pin a route — are exactly what
+Hiddify throws away.
+
+## 13.2 Why this matches the symptom
+
+INFERENCE, confidence moderate-to-high, not packet-verified:
+
+- One YouTube playback opens many parallel connections to
+  `*.googlevideo.com`, and the playback URLs Google issues are bound to
+  the IP that requested them. Round-robining those connections across
+  transports — and, on a Privacy+ profile, across two different exit IPs
+  (RU relay and DE exit) — is not a route; it is a moving target.
+- Single-connection browsing tolerates this. Sustained, multi-connection
+  media does not. That is the shape of the reported symptom.
+- It is invisible to every UDP/443 experiment, which is consistent with
+  §12.1 row by row.
+- AmneziaWG is a single L3 tunnel with one exit. That is the control,
+  and it works.
+
+What would raise this to proven is in §13.5.
+
+## 13.3 It is also a security defect
+
+On a Privacy+ profile the balancer's member list includes the direct
+exits and the relay's own first hop, because nothing in what we served
+told Hiddify those are not routes. A share of every session therefore
+leaves the enforced RU->DE path, and the client's real IP reaches the
+exit directly — the exact no-direct-downgrade property
+`docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md` requires. This is fixed
+regardless of what turns out to break YouTube.
+
+## 13.4 The fix: `?format=singbox&compat=hiddify-pinned`
+
+`CompatibilityMode::HiddifyPinned` serves **one** route — the one the
+normal profile's selector already defaulted to — plus, for a relay
+route, the first-hop outbound it dials through, tagged with Hiddify's own
+`§hide§` marker so the core keeps it as a `detour` target and never as a
+selectable proxy (`setOutbounds`:
+`if !strings.Contains(out.Tag, "§hide§") { tags = append(...) }`).
+
+With one visible tag, `len(tags) > 1` is false: no balancer is built at
+all, and `defaultSelect = tags[0]`. A pinned route, chosen by us, not a
+per-connection lottery.
+
+- **Credentials, flow, REALITY parameters, TLS: unchanged.** Asserted by
+  `hiddify_pinned_leaves_the_surviving_outbound_byte_identical_to_normal`.
+- **Security: strictly improved.** A Privacy+ pinned profile contains no
+  direct exit at all, and its first hop is not selectable.
+- **Cost:** no in-app transport switching, and no failover, on a pinned
+  profile. Hiddify's failover was a round-robin we never asked for; the
+  normal multi-route profile stays available for clients that honor a
+  `selector`.
+- **Default behavior: unchanged.** Opt-in per request.
+
+## 13.5 Tests
+
+`crates/compat-config/tests/hiddify_runtime_contract.rs` models the parts
+of hiddify-core's rebuild that decide what our profile becomes,
+transcribed from the pinned revisions in §12.2, and asserts on *its*
+output rather than on the JSON we serve — the mistake §6 made. It records
+both the defect (`normal_profile_is_round_robin_balanced_by_current_hiddify`,
+`privacy_plus_normal_profile_lets_hiddify_balance_onto_a_direct_exit`,
+`quic_reject_route_rule_never_reaches_the_hiddify_runtime`) and the fix.
+
+It is a model of upstream source. It is not device evidence.
+
+## 13.6 The one device test that closes this
+
+Import `?format=singbox&compat=hiddify-pinned` as a **separate** profile,
+keep the normal one, connect, force-close and reopen the YouTube app, and
+play video for 10-15 minutes.
+
+- **Plays and sustains** → §13.2 confirmed end to end; record it in
+  `docs/DEVICE_ACCEPTANCE_TESTS.md` and promote this document.
+- **Still fails** → §13's defect is real and worth fixing on its own, but
+  it is not this incident's cause. The next variables to separate, one at
+  a time and in this order, are: Direct vs Privacy+; REALITY vs
+  Hysteria2; whether a large sustained download over the same tunnel
+  also stalls (which would make this a throughput problem, not a YouTube
+  one); and IPv6 reachability from the exit VPS.
