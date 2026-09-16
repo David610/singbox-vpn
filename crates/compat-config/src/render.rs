@@ -405,11 +405,12 @@ pub enum CompatibilityMode {
     /// here — there is nothing to race — and collapses to the REALITY
     /// default.
     ///
-    /// See [`pin_to_single_route`] for the source-level reason this mode
-    /// has to exist: on a multi-route profile Hiddify makes a per-
-    /// connection round-robin `balance` group the default route, which
-    /// both breaks sustained multi-connection media (YouTube) and, on a
-    /// Privacy+ profile, silently routes around the enforced relay path.
+    /// See `pin_to_single_route` in this module for the source-level
+    /// reason this mode has to exist: on a multi-route profile Hiddify
+    /// makes a per-connection round-robin `balance` group the default
+    /// route, which both breaks sustained multi-connection media
+    /// (YouTube) and, on a Privacy+ profile, silently routes around the
+    /// enforced relay path.
     HiddifyPinned,
 }
 
