@@ -124,6 +124,7 @@ fn every_compatibility_mode_renders_a_config_real_sing_box_accepts() {
         CompatibilityMode::TcpOnly,
         CompatibilityMode::QuicReject,
         CompatibilityMode::VisionOff,
+        CompatibilityMode::HiddifyPinned,
     ] {
         check_mode(&sb, dir.path(), mode);
     }

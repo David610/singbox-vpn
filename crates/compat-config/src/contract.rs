@@ -376,6 +376,40 @@ pub fn provisioning_document_with_mode_and_access_paths_and_options(
         compat_mode,
     )?;
 
+    // `HiddifyPinned` serves ONE route (see
+    // `crate::render::pin_to_single_route`), so the catalog has to say
+    // one route too. A document whose catalog advertises endpoints its
+    // own embedded config cannot dial is not a smaller promise, it is a
+    // false one — and `validate()` rejects it outright. Narrow by what
+    // the renderer actually kept rather than re-deriving the choice here,
+    // so the two can never disagree about which route was pinned.
+    let (selectable_endpoints, capabilities) =
+        if compat_mode == crate::render::CompatibilityMode::HiddifyPinned {
+            let pinned: Vec<contract::Endpoint> = selectable_endpoints
+                .into_iter()
+                .filter(|endpoint| {
+                    singbox_config["outbounds"]
+                        .as_array()
+                        .is_some_and(|outbounds| {
+                            outbounds.iter().any(|outbound| {
+                                outbound.get("tag").and_then(|tag| tag.as_str())
+                                    == Some(endpoint.tag.as_str())
+                            })
+                        })
+                })
+                .collect();
+            let mut pinned_capabilities: Vec<contract::Capability> = Vec::new();
+            for endpoint in &pinned {
+                let cap = contract::Capability::for_transport(&endpoint.transport());
+                if !pinned_capabilities.contains(&cap) {
+                    pinned_capabilities.push(cap);
+                }
+            }
+            (pinned, pinned_capabilities)
+        } else {
+            (selectable_endpoints, capabilities)
+        };
+
     let doc = contract::ProvisioningDocument::new(
         contract::ServerInfo::current(SERVER_VERSION),
         capabilities,

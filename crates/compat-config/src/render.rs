@@ -387,6 +387,31 @@ pub enum CompatibilityMode {
     ///    TLS session, so a Vision-off profile is more fingerprintable
     ///    to DPI. Diagnostic only; never a default.
     VisionOff,
+    /// Hiddify-targeted profile: exactly ONE client-visible route, plus
+    /// any relay first-hop outbound it dials through, tagged with
+    /// [`HIDDIFY_HIDDEN_TAG_SUFFIX`] so Hiddify keeps it as a `detour`
+    /// target and never as a selectable proxy.
+    ///
+    /// Every credential, endpoint, flow, REALITY parameter and TLS field
+    /// of the surviving route is byte-identical to `Normal`. This mode
+    /// changes only HOW MANY routes the profile offers and which of them
+    /// Hiddify is allowed to see — nothing about the security properties
+    /// of the route itself.
+    ///
+    /// The route it keeps is the one `Normal` would have made the
+    /// selector's default: the first relayed exit on a Privacy+ profile,
+    /// otherwise REALITY (`profile=reliability`, the default) or
+    /// Hysteria2 (`profile=performance`). `profile=auto` has no meaning
+    /// here — there is nothing to race — and collapses to the REALITY
+    /// default.
+    ///
+    /// See `pin_to_single_route` in this module for the source-level
+    /// reason this mode has to exist: on a multi-route profile Hiddify
+    /// makes a per-connection round-robin `balance` group the default
+    /// route, which both breaks sustained multi-connection media
+    /// (YouTube) and, on a Privacy+ profile, silently routes around the
+    /// enforced relay path.
+    HiddifyPinned,
 }
 
 impl CompatibilityMode {
@@ -396,6 +421,7 @@ impl CompatibilityMode {
             "tcp-only" => Some(Self::TcpOnly),
             "quic-reject" => Some(Self::QuicReject),
             "vision-off" => Some(Self::VisionOff),
+            "hiddify-pinned" => Some(Self::HiddifyPinned),
             _ => None,
         }
     }
@@ -702,11 +728,41 @@ pub fn render_singbox_config_from_contract_with_access_paths(
     // automatic group and the default choice stay inside that privacy
     // class; direct routes remain available only as explicit selections.
     let privacy_profile = !relayed_tags.is_empty();
-    let auto_members = if privacy_profile {
+    let mut auto_members = if privacy_profile {
         relayed_tags.clone()
     } else {
         tags.clone()
     };
+
+    let mut default_tag = match profile {
+        SelectionProfile::Auto if compat_mode != CompatibilityMode::HiddifyPinned => {
+            "auto".to_string()
+        }
+        _ if privacy_profile => relayed_tags[0].clone(),
+        SelectionProfile::Performance => hysteria2_tag
+            .clone()
+            .or(reality_tag.clone())
+            .or_else(|| tags.first().cloned())
+            .unwrap_or_else(|| "auto".to_string()),
+        // `Auto` collapses to the deterministic REALITY default under
+        // `HiddifyPinned` (the arm above is skipped there): a pinned
+        // profile has exactly one route, so there is nothing for
+        // sing-box's `urltest` race to choose between.
+        SelectionProfile::Reliability | SelectionProfile::Auto => reality_tag
+            .clone()
+            .or_else(|| tags.first().cloned())
+            .unwrap_or_else(|| "auto".to_string()),
+    };
+
+    if compat_mode == CompatibilityMode::HiddifyPinned {
+        pin_to_single_route(
+            &mut outbounds,
+            &mut tags,
+            &mut auto_members,
+            &mut default_tag,
+        )?;
+    }
+
     outbounds.push(json!({
         "type": "urltest",
         "tag": "auto",
@@ -717,17 +773,6 @@ pub fn render_singbox_config_from_contract_with_access_paths(
 
     let mut selector_options = tags.clone();
     selector_options.push("auto".to_string());
-    let default_tag = match profile {
-        SelectionProfile::Auto => "auto".to_string(),
-        _ if privacy_profile => relayed_tags[0].clone(),
-        SelectionProfile::Reliability => reality_tag
-            .or_else(|| tags.first().cloned())
-            .unwrap_or_else(|| "auto".to_string()),
-        SelectionProfile::Performance => hysteria2_tag
-            .or(reality_tag)
-            .or_else(|| tags.first().cloned())
-            .unwrap_or_else(|| "auto".to_string()),
-    };
     outbounds.push(json!({
         "type": "selector",
         "tag": "select",
@@ -745,6 +790,130 @@ pub fn render_singbox_config_from_contract_with_access_paths(
         "outbounds": outbounds,
         "route": route
     }))
+}
+
+/// Tag marker Hiddify's own config builder uses to mean "this outbound
+/// exists, but users must never see it or be routed onto it by a group".
+///
+/// CODE-VERIFIED against hiddify-core `db74dfc`
+/// (`v2/config/builder.go`, `setOutbounds`): an imported outbound whose
+/// tag contains this marker is still emitted into the runtime config —
+/// so it remains usable as a `detour` target — but it is NOT appended to
+/// the `tags` list from which Hiddify builds its `select`, `lowest` and
+/// `balance` groups. That is the only mechanism a subscription server
+/// has for keeping relay first-hop infrastructure out of a client's
+/// selectable proxy list, because Hiddify discards our own `selector`
+/// and `urltest` outbounds wholesale (`case C.TypeSelector,
+/// C.TypeURLTest: continue` in the same loop).
+pub const HIDDIFY_HIDDEN_TAG_SUFFIX: &str = " §hide§";
+
+/// Reduce an already-rendered outbound set to exactly ONE client-visible
+/// route: `default_tag`, plus the `detour` chain it needs, with every
+/// chain member renamed to carry [`HIDDIFY_HIDDEN_TAG_SUFFIX`].
+///
+/// WHY THIS EXISTS — CODE-VERIFIED against hiddify-core `db74dfc`
+/// (`v2/config/builder.go`) and hiddify-app `276a7ef`
+/// (`lib/features/settings/data/config_option_repository.dart`).
+///
+/// Hiddify does not run an imported sing-box config. It reads the
+/// `outbounds` array, throws away everything else, and rebuilds its own
+/// groups. In `setOutbounds`, once the imported profile yields MORE THAN
+/// ONE proxy tag:
+///
+/// ```go
+/// if len(tags) > 1 {
+///     outbounds = append([]option.Outbound{balancer, urlTest}, outbounds...)
+///     selectorTags = append([]string{urlTest.Tag, balancer.Tag}, selectorTags...)
+///     defaultSelect = balancer.Tag
+/// }
+/// ```
+///
+/// — the profile's default becomes a `balance` outbound over every tag,
+/// and `route.final` points at the selector holding it. The app's
+/// default `balancer-strategy` is `round-robin`, and
+/// `Balancer::DialContext` calls `strategyFn.Select(...)` **per
+/// connection**. So a multi-route profile does not get "a route": it
+/// gets a different route per TCP connection.
+///
+/// For this product that is two defects at once:
+///
+///  1. **Functional.** A YouTube playback session opens many parallel
+///     connections to `*.googlevideo.com`, and the playback URLs are
+///     bound to the IP that requested them. Round-robining those
+///     connections across transports — and, on a Privacy+ profile,
+///     across two different exit IPs — is not a route, it is a moving
+///     target. Ordinary single-connection browsing survives it; sustained
+///     multi-connection media does not.
+///  2. **Security.** On a Privacy+ profile the balancer's member list
+///     includes the direct exits and the relay's own first hop, so
+///     traffic silently leaves the enforced RU->DE path and the client's
+///     real IP reaches the exit directly — exactly the no-direct-downgrade
+///     property `docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md` requires.
+///
+/// Neither our `selector` nor our `urltest` nor our `route.final` can
+/// prevent this; Hiddify discards all three. The ONLY lever a
+/// subscription server has is the size and visibility of the outbound
+/// list it serves. One visible tag means `len(tags) > 1` is false, so no
+/// balancer is built at all and `defaultSelect = tags[0]` — a pinned
+/// route.
+fn pin_to_single_route(
+    outbounds: &mut Vec<serde_json::Value>,
+    tags: &mut Vec<String>,
+    auto_members: &mut Vec<String>,
+    default_tag: &mut String,
+) -> Result<(), CompatError> {
+    let keep = default_tag.clone();
+    if !tags.contains(&keep) {
+        return Err(CompatError::Parse(format!(
+            "cannot pin Hiddify profile to {keep:?}: not a selectable outbound tag"
+        )));
+    }
+
+    // Follow `detour` transitively so a relayed exit keeps the first-hop
+    // outbound it dials through. A cycle is impossible by construction
+    // (the builder above rejects self-detour), but the `contains` guard
+    // keeps this terminating rather than trusting that invariant.
+    let mut chain = vec![keep.clone()];
+    loop {
+        let last = chain.last().expect("chain is never empty").clone();
+        let next = outbounds
+            .iter()
+            .find(|ob| ob.get("tag").and_then(|t| t.as_str()) == Some(last.as_str()))
+            .and_then(|ob| ob.get("detour"))
+            .and_then(|d| d.as_str())
+            .map(str::to_string);
+        match next {
+            Some(next) if !chain.contains(&next) => chain.push(next),
+            _ => break,
+        }
+    }
+
+    outbounds.retain(|ob| {
+        ob.get("tag")
+            .and_then(|t| t.as_str())
+            .is_some_and(|tag| chain.iter().any(|kept| kept == tag))
+    });
+
+    // Everything the pinned route dials THROUGH is infrastructure, never
+    // a route of its own: hide it so Hiddify cannot offer it as a proxy
+    // (a relay first hop is not an Internet exit) and cannot place it in
+    // a group.
+    for hidden in chain.iter().skip(1) {
+        let renamed = format!("{hidden}{HIDDIFY_HIDDEN_TAG_SUFFIX}");
+        for ob in outbounds.iter_mut() {
+            if ob.get("tag").and_then(|t| t.as_str()) == Some(hidden.as_str()) {
+                ob["tag"] = json!(renamed);
+            }
+            if ob.get("detour").and_then(|d| d.as_str()) == Some(hidden.as_str()) {
+                ob["detour"] = json!(renamed);
+            }
+        }
+    }
+
+    *tags = vec![keep.clone()];
+    *auto_members = vec![keep.clone()];
+    *default_tag = keep;
+    Ok(())
 }
 
 /// The single `route.rules` entry `CompatibilityMode::QuicReject` emits.

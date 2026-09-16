@@ -279,7 +279,7 @@ async fn get_subscription(
                 Some(mode) => mode,
                 None => return (
                     StatusCode::BAD_REQUEST,
-                    "unknown compat value (expected \"normal\", \"tcp-only\", \"quic-reject\" or \"vision-off\")",
+                    "unknown compat value (expected \"normal\", \"tcp-only\", \"quic-reject\", \"vision-off\" or \"hiddify-pinned\")",
                 )
                     .into_response(),
             },
@@ -344,6 +344,22 @@ async fn get_subscription(
             }
         }
         "uri" | "hiddify" => {
+            if compat_mode == render::CompatibilityMode::HiddifyPinned {
+                // `hiddify-pinned` is defined entirely in terms of the
+                // native sing-box `outbounds` array Hiddify rebuilds its
+                // groups from: one visible tag, plus a hidden `detour`
+                // target. Share-link syntax has no representation for
+                // either, and a relay route has no share link at all, so
+                // serving the normal link list here would hand back
+                // exactly the multi-route profile this mode exists to
+                // avoid.
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "compat=hiddify-pinned is only supported with format=singbox — share-link \
+                     syntax cannot express a hidden detour outbound or a single-route profile",
+                )
+                    .into_response();
+            }
             if compat_mode == render::CompatibilityMode::QuicReject {
                 // `quic-reject` IS a `route.rules` entry — there is no
                 // share-link parameter that can express a routing rule at
@@ -858,6 +874,76 @@ mod tests {
         let state = make_state(vec![user_with_token("goodtoken", true)]);
         let resp = oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&compat=tcp-only").await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // --- compat=hiddify-pinned ---
+
+    /// The supported Hiddify import path: one selectable route, so
+    /// hiddify-core's `len(tags) > 1` branch — the one that makes a
+    /// per-connection round-robin `balance` group the default route — is
+    /// never taken. See `crates/compat-config/tests/hiddify_runtime_contract.rs`
+    /// for the model of that rebuild, and `docs/YOUTUBE_FINAL_ROOT_CAUSE.md`.
+    #[tokio::test]
+    async fn compat_hiddify_pinned_serves_exactly_one_selectable_outbound() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=singbox&compat=hiddify-pinned").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let proxies: Vec<&str> = doc["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|outbound| {
+                matches!(outbound["type"].as_str(), Some("vless") | Some("hysteria2"))
+            })
+            .filter_map(|outbound| outbound["tag"].as_str())
+            .filter(|tag| !tag.contains("\u{a7}hide\u{a7}"))
+            .collect();
+        assert_eq!(
+            proxies.len(),
+            1,
+            "hiddify-pinned must leave exactly one visible proxy outbound, got {proxies:?}"
+        );
+    }
+
+    /// Share-link syntax can express neither a single-route profile nor a
+    /// hidden detour outbound, so this must fail loudly rather than hand
+    /// back the multi-route link list the mode exists to avoid.
+    #[tokio::test]
+    async fn compat_hiddify_pinned_with_uri_format_is_rejected_not_silently_degraded() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=uri&compat=hiddify-pinned").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Opt-in only: a user who never passes `compat` is served exactly
+    /// what they were served before this mode existed.
+    #[tokio::test]
+    async fn adding_hiddify_pinned_does_not_change_the_normal_subscription() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=singbox").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let proxies = doc["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|outbound| {
+                matches!(outbound["type"].as_str(), Some("vless") | Some("hysteria2"))
+            })
+            .count();
+        assert!(
+            proxies > 1,
+            "the default profile must still offer every route"
+        );
     }
 
     // --- compat=quic-reject ---

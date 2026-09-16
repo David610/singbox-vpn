@@ -2000,6 +2000,29 @@ fn subscription_url_vision_off(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
+/// Hiddify-pinned subscription URL
+/// (`?format=singbox&compat=hiddify-pinned`, see
+/// `compat_config::render::CompatibilityMode::HiddifyPinned`). Same
+/// credentials, same REALITY parameters, same flow as the normal
+/// profile; the profile just carries ONE route instead of every route,
+/// with any relay first hop tagged so Hiddify keeps it as a dialer and
+/// never as a selectable proxy.
+///
+/// This is the link to hand a Hiddify user, not a diagnostic. Hiddify
+/// rebuilds imported configs and, on a multi-route profile, makes a
+/// per-connection round-robin `balance` group the default route — which
+/// breaks sustained multi-connection media and, on Privacy+, routes
+/// around the enforced relay path. See `docs/YOUTUBE_FINAL_ROOT_CAUSE.md`.
+///
+/// `?format=singbox` and NOT `?format=hiddify`: share-link syntax can
+/// express neither a hidden `detour` outbound nor a relay route.
+fn subscription_url_hiddify_pinned(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}?format=singbox&compat=hiddify-pinned",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
 /// Opt-in QUIC-reject subscription URL
 /// (`?format=singbox&compat=quic-reject`, see
 /// `compat_config::render::CompatibilityMode::QuicReject`). Identical
@@ -2183,6 +2206,9 @@ fn cmd_user_create(
             // Opt-in, no server-side change required, no security
             // property weakened; see subscription_url_quic_reject.
             "subscription_url_quic_reject": subscription_url_quic_reject(cfg, &token),
+            // The supported Hiddify import path; see
+            // subscription_url_hiddify_pinned's doc comment.
+            "subscription_url_hiddify_pinned": subscription_url_hiddify_pinned(cfg, &token),
         });
         return machine_stdout.write_document(&out);
     }
@@ -2230,6 +2256,17 @@ fn cmd_user_create(
     println!("  {}", provisioning_url(cfg, &token));
     println!();
     println!(
+        "Hiddify import link (RECOMMENDED for Hiddify: same credentials, one pinned route \
+         instead of a profile Hiddify turns into a per-connection round-robin — see \
+         docs/YOUTUBE_FINAL_ROOT_CAUSE.md):"
+    );
+    println!("  {}", subscription_url_hiddify_pinned(cfg, &token));
+    println!(
+        "  Import it as a SEPARATE profile. It offers one route, so there is no proxy-group \
+         choice to get wrong, and a Privacy+ user cannot be balanced onto a direct exit."
+    );
+    println!();
+    println!(
         "EXPERIMENTAL diagnostic link (XTLS Vision flow OFF, same credentials, labeled \
          \"(EXPERIMENTAL Vision-off)\" — see docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md \u{a7}9.5):"
     );
@@ -2242,15 +2279,14 @@ fn cmd_user_create(
     );
     println!();
     println!(
-        "YouTube/native-app compatibility link (same credentials, same transports, adds one \
-         route rule that fails application QUIC fast instead of black-holing it — see \
-         docs/YOUTUBE_FINAL_ROOT_CAUSE.md):"
+        "Raw-sing-box-only QUIC-reject link (same credentials and transports, adds one route \
+         rule that fails application QUIC fast instead of black-holing it):"
     );
     println!("  {}", subscription_url_quic_reject(cfg, &token));
     println!(
-        "  Needs no server-side change and weakens nothing. Import it as a SEPARATE profile \
-         and keep the normal one. It is format=singbox (raw JSON), because a routing rule \
-         cannot be expressed in a share link."
+        "  DOES NOTHING IN HIDDIFY. hiddify-core rebuilds routing and discards any imported \
+         route rules, so this only has an effect in a client that runs the config as given \
+         (a raw sing-box client). See docs/YOUTUBE_FINAL_ROOT_CAUSE.md."
     );
     if qr {
         println!();
