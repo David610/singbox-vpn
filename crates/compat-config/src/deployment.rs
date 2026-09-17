@@ -16,7 +16,24 @@ use std::path::{Path, PathBuf};
 /// binary cannot safely assume it still understands every field's
 /// meaning, so `DeploymentConfig::load` refuses it outright (see
 /// `validate`) rather than silently reinterpreting it.
-pub const DEPLOYMENT_SCHEMA_VERSION: u32 = 1;
+pub const DEPLOYMENT_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRole {
+    #[default]
+    Exit,
+    Relay,
+}
+
+impl NodeRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NodeRole::Exit => "exit",
+            NodeRole::Relay => "relay",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeploymentConfig {
@@ -26,6 +43,15 @@ pub struct DeploymentConfig {
     /// other value. See `DEPLOYMENT_SCHEMA_VERSION`'s doc comment.
     #[serde(default)]
     pub schema_version: u32,
+
+    /// Stable operator-facing node identity. Schema-v2 files always carry
+    /// this explicitly; legacy files default empty until migrated.
+    #[serde(default)]
+    pub node_id: String,
+    /// Operational role. Legacy deployments were ordinary exits, so the
+    /// serde default deliberately preserves that behavior.
+    #[serde(default)]
+    pub role: NodeRole,
 
     /// Public hostname/IP clients connect the VLESS+REALITY and
     /// Hysteria2 listeners to.
@@ -53,6 +79,12 @@ pub struct DeploymentConfig {
     #[serde(default = "default_singbox_binary")]
     pub singbox_binary: PathBuf,
 
+    /// Optional non-secret first-hop metadata advertised to first-party
+    /// clients. This is declarative only: it neither deploys nor contacts a
+    /// relay and it deliberately has no credential-bearing fields.
+    #[serde(default)]
+    pub access_paths: Vec<AccessPathSection>,
+
     /// Endpoints on OTHER, independently-operated servers that this
     /// deployment should also advertise (ADR-0009).
     ///
@@ -65,6 +97,131 @@ pub struct DeploymentConfig {
     /// `DEPLOYMENT_SCHEMA_VERSION` does not move.
     #[serde(default)]
     pub peer_endpoints: Vec<PeerEndpointSection>,
+}
+
+/// One `[[access_paths]]` entry. Metadata only — no credentials or raw
+/// proxy configuration are accepted here.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AccessPathSection {
+    pub id: String,
+    pub kind: String,
+    /// Non-secret endpoint-id reference for a real first hop. A relay path
+    /// referenced by an endpoint must set this; credentials remain in the
+    /// per-user endpoint model, never in this metadata block.
+    #[serde(default)]
+    pub via_endpoint_id: Option<String>,
+    #[serde(default)]
+    pub failure_domain: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, toml::Value>,
+}
+
+impl AccessPathSection {
+    fn validate(&self) -> Result<(), CompatError> {
+        if let Some(key) = self.extra.keys().find(|key| {
+            let key = key.to_ascii_lowercase();
+            [
+                "private",
+                "secret",
+                "password",
+                "token",
+                "credential",
+                "key",
+            ]
+            .iter()
+            .any(|needle| key.contains(needle))
+        }) {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: key {key:?} looks credential-bearing. Access-path metadata must never contain relay secrets or proxy configuration.",
+                self.id
+            )));
+        }
+        if let Some(key) = self.extra.keys().next() {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: unknown key {key:?}; unknown keys are refused rather than silently ignored",
+                self.id
+            )));
+        }
+        if self.id.trim().is_empty() {
+            return Err(CompatError::Parse("[[access_paths]] id is empty".into()));
+        }
+        if self.kind.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: kind is empty",
+                self.id
+            )));
+        }
+        if self
+            .via_endpoint_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: via_endpoint_id is empty",
+                self.id
+            )));
+        }
+        for (name, value) in [
+            ("failure_domain", self.failure_domain.as_deref()),
+            ("region", self.region.as_deref()),
+            ("provider", self.provider.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: {name} is empty",
+                    self.id
+                )));
+            }
+        }
+        if self.capabilities.is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[access_paths]] {}: capabilities is empty",
+                self.id
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for capability in &self.capabilities {
+            if capability.trim().is_empty() {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: capability is empty",
+                    self.id
+                )));
+            }
+            if !seen.insert(capability.as_str()) {
+                return Err(CompatError::Parse(format!(
+                    "[[access_paths]] {}: duplicate capability {:?}",
+                    self.id, capability
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_contract_access_path(
+        &self,
+    ) -> Result<provisioning_contract::AccessPath, CompatError> {
+        self.validate()?;
+        let mut path = provisioning_contract::AccessPath::new(
+            self.id.clone(),
+            provisioning_contract::AccessPathKind::from_wire(&self.kind),
+            self.capabilities.clone(),
+        )
+        .with_metadata(
+            self.failure_domain.clone(),
+            self.region.clone(),
+            self.provider.clone(),
+        );
+        if let Some(via) = &self.via_endpoint_id {
+            path = path.with_via_endpoint_id(via.clone());
+        }
+        Ok(path)
+    }
 }
 
 /// One `[[peer_endpoints]]` entry.
@@ -89,7 +246,7 @@ pub struct PeerEndpointSection {
     /// The peer's REALITY **public** key and short id. Public material:
     /// same treatment as this server's own, which is already published to
     /// every client. The peer's PRIVATE key is not a field here and is
-    /// actively refused — see [`PeerEndpointSection::validate`].
+    /// actively refused — see `PeerEndpointSection::validate`.
     #[serde(default)]
     pub reality_public_key: Option<String>,
     #[serde(default)]
@@ -115,6 +272,10 @@ pub struct PeerEndpointSection {
     pub asn: Option<String>,
     #[serde(default = "default_peer_path")]
     pub path: String,
+    /// Optional endpoint id whose per-user credential should be reused by
+    /// this route alias (for example DE-direct and DE-via-RU).
+    #[serde(default)]
+    pub credential_ref: Option<String>,
 
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, toml::Value>,
@@ -167,6 +328,22 @@ impl PeerEndpointSection {
             return Err(CompatError::Parse(format!(
                 "[[peer_endpoints]] {}: failure_domain is empty. A peer exists to fail \
                  independently; say which domain it belongs to.",
+                self.id
+            )));
+        }
+        if self.path.trim().is_empty() {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: path is empty",
+                self.id
+            )));
+        }
+        if self
+            .credential_ref
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(CompatError::Parse(format!(
+                "[[peer_endpoints]] {}: credential_ref is empty",
                 self.id
             )));
         }
@@ -255,6 +432,7 @@ impl PeerEndpointSection {
             provider: self.provider.clone(),
             asn: self.asn.clone(),
             path: Some(self.path.clone()),
+            credential_ref: self.credential_ref.clone(),
         })
     }
 }
@@ -390,6 +568,35 @@ impl DeploymentConfig {
                 max_supported: DEPLOYMENT_SCHEMA_VERSION,
             });
         }
+        if self.schema_version >= 2 {
+            if self.node_id.trim().is_empty() {
+                return Err(CompatError::Parse(
+                    "schema-v2 deployment.toml requires a non-empty node_id".into(),
+                ));
+            }
+            if !self
+                .node_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            {
+                return Err(CompatError::Parse(format!(
+                    "node_id {:?} contains unsupported characters (allowed: ASCII letters, digits, '-', '_', '.')",
+                    self.node_id
+                )));
+            }
+        }
+        let mut seen_access_path_ids: Vec<&str> = Vec::with_capacity(self.access_paths.len());
+        for path in &self.access_paths {
+            path.validate()?;
+            if seen_access_path_ids.contains(&path.id.as_str()) {
+                return Err(CompatError::Parse(format!(
+                    "duplicate [[access_paths]] id {:?}",
+                    path.id
+                )));
+            }
+            seen_access_path_ids.push(&path.id);
+        }
+
         let mut seen_peer_ids: Vec<&str> = Vec::with_capacity(self.peer_endpoints.len());
         for peer in &self.peer_endpoints {
             peer.validate()?;
@@ -408,6 +615,97 @@ impl DeploymentConfig {
                 )));
             }
             seen_peer_ids.push(&peer.id);
+
+            // Old schema-version-1 files were allowed to carry opaque path
+            // labels without an access_paths list. Preserve that. Once the
+            // operator opts into access_paths, though, every non-direct peer
+            // path must resolve to one of those declarations.
+            if !self.access_paths.is_empty()
+                && peer.path != "direct"
+                && !self.access_paths.iter().any(|path| path.id == peer.path)
+            {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: path {:?} has no matching [[access_paths]] declaration",
+                    peer.id, peer.path
+                )));
+            }
+        }
+
+        // Route aliases may reuse a credential issued for another peer
+        // endpoint, but only when that target exists and speaks the same
+        // transport. Otherwise the generated profile would be confidently
+        // undialable.
+        for peer in &self.peer_endpoints {
+            if let Some(credential_ref) = &peer.credential_ref {
+                let target = self
+                    .peer_endpoints
+                    .iter()
+                    .find(|candidate| candidate.id == *credential_ref)
+                    .ok_or_else(|| {
+                        CompatError::Parse(format!(
+                            "[[peer_endpoints]] {}: credential_ref {:?} does not name a declared peer endpoint",
+                            peer.id, credential_ref
+                        ))
+                    })?;
+                if target.transport != peer.transport {
+                    return Err(CompatError::Parse(format!(
+                        "[[peer_endpoints]] {}: credential_ref {:?} is {}, but this alias is {}; credentials cannot cross transports",
+                        peer.id,
+                        credential_ref,
+                        target.transport.as_str(),
+                        peer.transport.as_str()
+                    )));
+                }
+            }
+
+            if peer.path != "direct" {
+                if let Some(path) = self.access_paths.iter().find(|path| path.id == peer.path) {
+                    if path.kind == "relay" {
+                        if peer.transport != crate::model::CompatTransport::VlessReality {
+                            return Err(CompatError::Parse(format!(
+                                "[[peer_endpoints]] {}: relay path {:?} is TCP/VLESS-only in the current MVP; hysteria2-over-relay is not implemented",
+                                peer.id, peer.path
+                            )));
+                        }
+                        let via = path.via_endpoint_id.as_deref().ok_or_else(|| {
+                            CompatError::Parse(format!(
+                                "[[peer_endpoints]] {}: relay path {:?} has no via_endpoint_id; refusing to silently render it as a direct route",
+                                peer.id, peer.path
+                            ))
+                        })?;
+                        if via == peer.id {
+                            return Err(CompatError::Parse(format!(
+                                "[[peer_endpoints]] {}: relay path {:?} points back to itself",
+                                peer.id, peer.path
+                            )));
+                        }
+                        if via != "reality-1" {
+                            let first_hop = self
+                                .peer_endpoints
+                                .iter()
+                                .find(|candidate| candidate.id == via)
+                                .ok_or_else(|| {
+                                    CompatError::Parse(format!(
+                                        "[[access_paths]] {}: via_endpoint_id {:?} is neither local reality-1 nor a declared peer endpoint",
+                                        path.id, via
+                                    ))
+                                })?;
+                            if first_hop.transport != crate::model::CompatTransport::VlessReality {
+                                return Err(CompatError::Parse(format!(
+                                    "[[access_paths]] {}: via_endpoint_id {:?} is not VLESS+REALITY; relay chaining is TCP/VLESS-only in this MVP",
+                                    path.id, via
+                                )));
+                            }
+                        }
+                        if path.capabilities.iter().any(|cap| cap == "udp") {
+                            return Err(CompatError::Parse(format!(
+                                "[[access_paths]] {}: capability 'udp' is not implemented for the relay MVP; advertise only capabilities actually proven",
+                                path.id
+                            )));
+                        }
+                    }
+                }
+            }
         }
 
         if self.hysteria2.up_mbps.is_some() != self.hysteria2.down_mbps.is_some() {
@@ -491,16 +789,95 @@ pub enum DeploymentMigrationOutcome {
 /// operator formatting must survive byte-for-byte. Returns `None` if the
 /// file already has an explicit `schema_version` key anywhere (nothing
 /// to do).
-pub fn migrate_deployment_toml_text(original: &str) -> Option<String> {
-    let already_versioned = original
+fn derived_legacy_node_id(original: &str) -> String {
+    let host = original
         .lines()
-        .any(|l| l.trim_start().starts_with("schema_version"));
-    if already_versioned {
+        .find_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("public_host")
+                .and_then(|rest| rest.split_once('=').map(|(_, value)| value))
+                .map(|value| value.trim().trim_matches('"'))
+        })
+        .unwrap_or("legacy-node");
+    let first = host.split('.').next().unwrap_or(host);
+    let mut id: String = first
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    while id.starts_with('-') {
+        id.remove(0);
+    }
+    while id.ends_with('-') {
+        id.pop();
+    }
+    if id.is_empty() {
+        "legacy-node".to_string()
+    } else {
+        id
+    }
+}
+
+pub fn migrate_deployment_toml_text(original: &str) -> Option<String> {
+    let explicit_version = original.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        let rest = trimmed.strip_prefix("schema_version")?;
+        let (_, value) = rest.split_once('=')?;
+        value.trim().parse::<u32>().ok()
+    });
+    let has_node_id = original
+        .lines()
+        .any(|line| line.trim_start().starts_with("node_id"));
+    let has_role = original
+        .lines()
+        .any(|line| line.trim_start().starts_with("role"));
+    if explicit_version == Some(DEPLOYMENT_SCHEMA_VERSION) && has_node_id && has_role {
         return None;
     }
-    Some(format!(
-        "schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{original}"
-    ))
+
+    let mut body = String::new();
+    let mut wrote_version = false;
+    for line in original.lines() {
+        if line.trim_start().starts_with("schema_version") {
+            if !wrote_version {
+                body.push_str(&format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n"));
+                wrote_version = true;
+            }
+        } else {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if !wrote_version {
+        body = format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{body}");
+    }
+
+    let mut identity = String::new();
+    if !has_node_id {
+        identity.push_str(&format!(
+            "node_id = {:?}\n",
+            derived_legacy_node_id(original)
+        ));
+    }
+    if !has_role {
+        // Every deployment before role support was an ordinary unrestricted
+        // exit. Migration must never invent a relay.
+        identity.push_str("role = \"exit\"\n");
+    }
+    if !identity.is_empty() {
+        body = body.replacen(
+            &format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n"),
+            &format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{identity}"),
+            1,
+        );
+    }
+    Some(body)
 }
 
 /// Migrate `deployment.toml` at `path` to `DEPLOYMENT_SCHEMA_VERSION`.
@@ -548,9 +925,13 @@ pub fn migrate_deployment_toml(path: &Path) -> Result<DeploymentMigrationOutcome
         serde_json::to_value(&migrated_cfg).map_err(|e| CompatError::Parse(e.to_string()))?;
     if let Some(obj) = original_normalized.as_object_mut() {
         obj.remove("schema_version");
+        obj.remove("node_id");
+        obj.remove("role");
     }
     if let Some(obj) = migrated_normalized.as_object_mut() {
         obj.remove("schema_version");
+        obj.remove("node_id");
+        obj.remove("role");
     }
     if original_normalized != migrated_normalized {
         return Err(CompatError::Parse(
@@ -688,7 +1069,7 @@ listen_port = 443
     #[test]
     fn explicit_current_schema_version_loads() {
         let toml_str = format!(
-            "schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n{}",
+            "schema_version = {DEPLOYMENT_SCHEMA_VERSION}\nnode_id = \"test-node\"\nrole = \"exit\"\n{}",
             legacy_toml()
         );
         let cfg: DeploymentConfig = toml::from_str(&toml_str).unwrap();
@@ -711,8 +1092,9 @@ listen_port = 443
     fn migrate_text_inserts_marker_once_and_is_idempotent() {
         let original = legacy_toml();
         let patched = migrate_deployment_toml_text(&original).expect("should patch");
-        assert!(patched.starts_with("schema_version = 1\n"));
-        assert!(patched.ends_with(&original));
+        assert!(patched.starts_with(&format!("schema_version = {DEPLOYMENT_SCHEMA_VERSION}\n")));
+        assert!(patched.contains("node_id = \"vpn\""));
+        assert!(patched.contains("role = \"exit\""));
         // idempotent: already-versioned text is untouched
         assert_eq!(migrate_deployment_toml_text(&patched), None);
     }
@@ -735,6 +1117,8 @@ listen_port = 443
         let migrated_text = std::fs::read_to_string(&path).unwrap();
         let migrated_cfg: DeploymentConfig = toml::from_str(&migrated_text).unwrap();
         assert_eq!(migrated_cfg.schema_version, DEPLOYMENT_SCHEMA_VERSION);
+        assert_eq!(migrated_cfg.node_id, "vpn");
+        assert_eq!(migrated_cfg.role, NodeRole::Exit);
 
         let original_cfg: DeploymentConfig = toml::from_str(&original).unwrap();
         assert_eq!(migrated_cfg.public_host, original_cfg.public_host);

@@ -15,15 +15,17 @@ assumption.
 
 | Tier | Client | Served |
 |---|---|---|
-| **PRIMARY, first-party** | `singbox-client` (<https://github.com/David610/singbox-client>) | The versioned provisioning contract, `GET /v1/provision/{token}` — `docs/PROVISIONING_CONTRACT.md`. |
+| **PRIMARY, first-party** | **Tamara** (<https://github.com/David610/tamara>) | The versioned provisioning contract, `GET /v1/provision/{token}` — `docs/PROVISIONING_CONTRACT.md`. |
 | **FALLBACK, third-party** | Hiddify, v2rayNG, NekoBox, raw sing-box | The legacy `GET /sub/{token}` formats (share links, native sing-box JSON). |
 
 Both tiers are rendered from the same endpoint model
 (`crates/compat-config/src/contract.rs`), so they can never disagree
-about a user's credentials. The division of responsibility in the table
-below is identical for both: the contract is deliberately narrower than
-the sing-box profile — it carries no routing or selector semantics at
-all, because those are the client's to decide.
+about a user's credentials. Tamara receives the versioned envelope plus
+an opaque Core-consumable `singbox_config`; Tamara owns runtime route
+selection policy and does not reimplement transport parsing. Fallback
+clients keep consuming the legacy representations. Server metadata may
+describe selectable routes, but client-owned TUN/DNS/lifecycle policy
+remains outside this contract.
 
 ## What singbox-vpn generates vs. what the client controls
 

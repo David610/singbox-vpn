@@ -2267,7 +2267,7 @@ fn cmd_user_vision_off_experiment(cfg: &DeploymentConfig, id: &str, on: bool) ->
     Ok(())
 }
 
-/// Turn `--uuid`/`--password` into a [`PeerCredential`] for a declared
+/// Turn `--uuid`/`--password` into a `PeerCredential` for a declared
 /// peer endpoint, refusing anything that would not authenticate there.
 ///
 /// The transport check is the point of this function. A `--password`
@@ -8506,6 +8506,7 @@ mod peer_credential_cli_tests {
             provider: None,
             asn: None,
             path: "direct".into(),
+            credential_ref: None,
             extra: Default::default(),
         }
     }

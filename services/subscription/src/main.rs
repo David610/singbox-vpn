@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use compat_config::deployment::DeploymentConfig;
+use compat_config::deployment::{DeploymentConfig, NodeRole};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use subscription::{standard_endpoints, AppState, RateLimiter};
@@ -169,6 +169,48 @@ async fn main() -> Result<()> {
         &cfg.reality.handshake_server,
         hysteria_obfs_password.as_deref(),
     );
+    if cfg.role == NodeRole::Relay {
+        // A relay node's local VLESS listener is first-hop infrastructure,
+        // not an Internet-exit choice. Hysteria2-over-relay is deliberately
+        // not claimed by the TCP-first MVP.
+        endpoints.retain(|endpoint| endpoint.id == "reality-1");
+    }
+
+    // Operator-declared endpoints on servers this deployment does not
+    // control (ADR-0009). Appended AFTER the local ones so a client's
+    // endpoint order still leads with this server's own, and so a
+    // deployment with no peers gets a byte-identical endpoint list.
+    //
+    // Fail closed: `DeploymentConfig::load` already validated every
+    // declaration, so a failure here means the file changed underneath us
+    // or an id collides. Serving a partial endpoint set would silently
+    // withhold a peer that users have credentials for.
+    for peer in &cfg.peer_endpoints {
+        endpoints.push(
+            peer.to_compat_endpoint().map_err(|e| {
+                anyhow::anyhow!("invalid [[peer_endpoints]] entry {:?}: {e}", peer.id)
+            })?,
+        );
+    }
+    if !cfg.peer_endpoints.is_empty() {
+        tracing::info!(
+            peer_endpoints = cfg.peer_endpoints.len(),
+            "serving operator-declared peer endpoints; each is offered only to users who have a peer credential for it"
+        );
+    }
+
+    let access_paths = cfg
+        .access_paths
+        .iter()
+        .map(|path| path.to_contract_access_path())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("invalid [[access_paths]] declaration: {e}"))?;
+    if !access_paths.is_empty() {
+        tracing::info!(
+            access_paths = access_paths.len(),
+            "serving non-secret operator-declared access-path metadata"
+        );
+    }
 
     // Operator-declared endpoints on servers this deployment does not
     // control (ADR-0009). Appended AFTER the local ones so a client's
@@ -196,6 +238,7 @@ async fn main() -> Result<()> {
     let state = std::sync::Arc::new(AppState {
         users_file: cfg.users_file(),
         endpoints,
+        access_paths,
         // Sized for the WHOLE deployment, not for one client: behind nginx
         // every request appears to come from 127.0.0.1, so this is one
         // shared bucket (see `RateLimiter`'s doc comment). The previous

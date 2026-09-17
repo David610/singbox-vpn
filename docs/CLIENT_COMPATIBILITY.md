@@ -11,16 +11,14 @@ this file does not duplicate it; the table below is the summary. See
 IPv4/IPv6, full-tunnel, UDP/TCP, failover) that apply across every
 client, and see `docs/clients/` for per-platform walkthroughs.
 
-**Client tiers.** `singbox-client`
-(<https://github.com/David610/singbox-client>) is the PRIMARY,
-first-party client and consumes the versioned provisioning contract
-(`docs/PROVISIONING_CONTRACT.md`). Hiddify and the other importers below
-are FALLBACK, third-party consumers of the legacy `/sub/` formats. The
-tier does not change the honesty rule: no row below is "yes" on the
-strength of the contract existing. `singbox-client` has no row here at
-all yet — its own device testing lives in its repository, and this
-project claims nothing about it beyond the contract shape its CI can
-check against `fixtures/singbox-client-contract/`.
+**Client tiers.** **Tamara** (<https://github.com/David610/tamara>) is the
+PRIMARY, first-party client and consumes the versioned provisioning contract
+(`docs/PROVISIONING_CONTRACT.md`). Hiddify and the other importers below are
+FALLBACK, third-party consumers of the legacy `/sub/` formats. The tier does not
+change the honesty rule: no row below is "yes" on the strength of the contract
+existing. The historical `singbox-client` fixture directory is retained only to
+avoid churn in fixture consumers; `singbox-client` itself is superseded and is
+not a product source of truth.
 
 | Client | VLESS+REALITY | Hysteria2 | Subscription import |
 |---|---|---|---|

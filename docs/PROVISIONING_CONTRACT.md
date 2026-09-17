@@ -185,6 +185,7 @@ pinned as
   `docs/ADR/0009-declarative-peer-endpoints.md`, and fixtures `09` and
   `10`. Peer support is implemented and tested against fixtures and
   loopback only — no real second VPS exists to verify it against.
+* `access_paths` — optional non-secret first-hop metadata. Omitted when empty; when present, non-direct `endpoints[].path` values must resolve to an id in this list. It contains no relay credentials or proxy configuration.
 * `singbox_config` — the Core-consumable config for exactly the endpoint
   set above, rendered from the same model in the same request. See **The
   additive `schema_version` 1 extension**.
@@ -220,7 +221,7 @@ existed.
 |---|---|
 | `failure_domain` | Operator-declared shared-fate identifier. Endpoints with the same value are expected to fail together. |
 | `region`, `provider`, `asn` | Opaque operator labels. **The server never reads these for any decision** and performs no network or ASN lookup to populate them — they are exactly what the operator typed. |
-| `path` | `direct` today. A relay path is reserved and **not implemented**; an unrecognised value round-trips like any other unknown, so a future one does not break a v1 parser. |
+| `path` | `direct` by default. When top-level `access_paths` is present, a non-direct value references an `access_paths[].id`. The metadata/reference mechanism is implemented; actual relay routing is not. |
 
 **When `failure_domain` is absent the client derives one from the
 normalised host.** That is correct for this deployment's own endpoints:
@@ -234,6 +235,34 @@ machine cannot be known to share a failure domain from syntax alone, and
 will be treated as independent. Correcting that requires the operator to
 declare `failure_domain` explicitly. Neither side resolves names or
 queries ASNs to find out.
+
+### Optional access-path metadata
+
+`access_paths` is an optional top-level list of **non-secret first-hop metadata**.
+It is omitted when empty, so existing direct-only deployments keep the same
+schema-version-1 wire shape. Each entry contains only:
+
+- `id` — stable path identity referenced by a non-direct `endpoints[].path`;
+- `kind` — `direct`, `relay`, or a forward-compatible unknown value;
+- optional `failure_domain`, `region`, and `provider` operator labels;
+- non-empty `capabilities` such as `tcp`/`udp`.
+
+The server also accepts the same metadata declaratively through optional
+`[[access_paths]]` blocks in `deployment.toml`. These declarations do not deploy,
+contact, authenticate to, or health-check a relay. Unknown keys are refused, and
+credential-shaped keys (`password`, `token`, `secret`, `credential`, `key`,
+`private`) fail closed. Relay credentials and protocol configuration belong only
+inside protected/opaque Core configuration, never in `access_paths`.
+
+When `access_paths` is non-empty, every non-direct endpoint path must resolve to
+an entry in that same atomic document. With no `access_paths` list, the original
+v1 forward-compatibility rule remains: an opaque future `path` value can still
+round-trip without being reinterpreted.
+
+**Implementation status:** this metadata and validation layer is implemented and
+tested. A production relay outbound, Core `detour` chain, relay credential
+lifecycle, and real-network reachability are not implemented or verified by this
+contract change.
 
 ### The embedded `singbox_config`
 

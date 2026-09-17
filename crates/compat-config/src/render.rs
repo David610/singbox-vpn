@@ -128,6 +128,11 @@ pub fn render_vision_off_uri_list(
 ) -> Result<String, CompatError> {
     let mut lines = Vec::with_capacity(endpoints.len());
     for ep in endpoints {
+        if ep.path.as_deref().is_some_and(|path| path != "direct") {
+            // Share-link syntax cannot express sing-box detour. Omitting the
+            // route is safer than silently handing a client a direct exit.
+            continue;
+        }
         let uri = match ep.transport {
             crate::model::CompatTransport::VlessReality => {
                 render_vless_reality_uri_vision_off(user, ep)?
@@ -184,6 +189,11 @@ pub fn render_uri_list(
 ) -> Result<String, CompatError> {
     let mut lines = Vec::with_capacity(endpoints.len());
     for ep in endpoints {
+        if ep.path.as_deref().is_some_and(|path| path != "direct") {
+            // Share-link syntax cannot express sing-box detour. Omitting the
+            // route is safer than silently handing a client a direct exit.
+            continue;
+        }
         let uri = match ep.transport {
             crate::model::CompatTransport::VlessReality => render_vless_reality_uri(user, ep)?,
             crate::model::CompatTransport::Hysteria2 => render_hysteria2_uri(user, ep)?,
@@ -466,23 +476,92 @@ pub fn render_singbox_config_from_contract(
     profile: SelectionProfile,
     compat_mode: CompatibilityMode,
 ) -> Result<serde_json::Value, CompatError> {
+    let selectable_ids: Vec<String> = contract_endpoints
+        .iter()
+        .map(|endpoint| endpoint.id.clone())
+        .collect();
+    render_singbox_config_from_contract_with_access_paths(
+        contract_endpoints,
+        &selectable_ids,
+        &[],
+        profile,
+        compat_mode,
+    )
+}
+
+/// Access-path-aware Core renderer. `all_endpoints` includes both the
+/// client-selectable exits and any authenticated first-hop endpoints needed
+/// only as dialers. `selectable_endpoint_ids` is the exact catalog/selector
+/// surface. Relay paths use sing-box's native outbound `detour`; a malformed
+/// or metadata-only path is an error rather than silently becoming direct.
+pub fn render_singbox_config_from_contract_with_access_paths(
+    all_endpoints: &[contract::Endpoint],
+    selectable_endpoint_ids: &[String],
+    access_paths: &[contract::AccessPath],
+    profile: SelectionProfile,
+    compat_mode: CompatibilityMode,
+) -> Result<serde_json::Value, CompatError> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let selectable: BTreeSet<&str> = selectable_endpoint_ids.iter().map(String::as_str).collect();
+    let endpoint_by_id: BTreeMap<&str, &contract::Endpoint> = all_endpoints
+        .iter()
+        .map(|endpoint| (endpoint.id.as_str(), endpoint))
+        .collect();
+    let path_by_id: BTreeMap<&str, &contract::AccessPath> = access_paths
+        .iter()
+        .map(|path| (path.id.as_str(), path))
+        .collect();
+
+    for id in &selectable {
+        if !endpoint_by_id.contains_key(id) {
+            return Err(CompatError::Parse(format!(
+                "selectable endpoint id {id:?} has no credential-bearing endpoint"
+            )));
+        }
+    }
+
+    let mut infrastructure_ids: BTreeSet<&str> = BTreeSet::new();
+    for path in access_paths {
+        if matches!(path.kind, contract::AccessPathKind::Relay) {
+            if let Some(via) = path.via_endpoint_id.as_deref() {
+                infrastructure_ids.insert(via);
+            }
+        }
+    }
+
     let mut outbounds = Vec::new();
     let mut tags = Vec::new();
     let mut reality_tag: Option<String> = None;
     let mut hysteria2_tag: Option<String> = None;
-    for ep in contract_endpoints {
-        let tag = ep.tag.clone();
-        tags.push(tag.clone());
-        match &ep.params {
-            contract::TransportParams::VlessReality { .. } if reality_tag.is_none() => {
-                reality_tag = Some(tag.clone());
-            }
-            contract::TransportParams::Hysteria2 { .. } if hysteria2_tag.is_none() => {
-                hysteria2_tag = Some(tag.clone());
-            }
-            _ => {}
+
+    for ep in all_endpoints {
+        let is_selectable = selectable.contains(ep.id.as_str());
+        let is_infrastructure = infrastructure_ids.contains(ep.id.as_str());
+        if !is_selectable && !is_infrastructure {
+            continue;
         }
-        let outbound = match &ep.params {
+
+        let tag = ep.tag.clone();
+        if is_selectable {
+            if tags.contains(&tag) {
+                return Err(CompatError::Parse(format!(
+                    "duplicate selectable outbound tag {tag:?}; endpoint labels used as Core tags must be unique"
+                )));
+            }
+            tags.push(tag.clone());
+            match &ep.params {
+                contract::TransportParams::VlessReality { .. } if reality_tag.is_none() => {
+                    reality_tag = Some(tag.clone());
+                }
+                contract::TransportParams::Hysteria2 { .. } if hysteria2_tag.is_none() => {
+                    hysteria2_tag = Some(tag.clone());
+                }
+                _ => {}
+            }
+        }
+
+        let mut outbound = match &ep.params {
             contract::TransportParams::VlessReality {
                 uuid,
                 flow,
@@ -505,10 +584,6 @@ pub fn render_singbox_config_from_contract(
                         }
                     }
                 });
-                // Absent, not `""` — an absent `flow` is sing-box's own
-                // default for a VLESS outbound, so the diag-vision-off
-                // profile differs from production by exactly one thing:
-                // Vision is not requested.
                 if let Some(flow) = flow {
                     ob["flow"] = json!(flow);
                 }
@@ -527,7 +602,6 @@ pub fn render_singbox_config_from_contract(
                     "tls": {
                         "enabled": true,
                         "server_name": ep.server_name,
-                        // Never opt-out: no code path here can set this true.
                         "insecure": false,
                     }
                 });
@@ -537,7 +611,61 @@ pub fn render_singbox_config_from_contract(
                 ob
             }
         };
+
+        if is_selectable && !access_paths.is_empty() {
+            if let Some(contract::PathType::Other(path_id)) = &ep.path {
+                let path = path_by_id.get(path_id.as_str()).ok_or_else(|| {
+                    CompatError::Parse(format!(
+                        "endpoint {:?} references unknown access path {:?}",
+                        ep.id, path_id
+                    ))
+                })?;
+                if !matches!(path.kind, contract::AccessPathKind::Relay) {
+                    return Err(CompatError::Parse(format!(
+                        "endpoint {:?} references access path {:?} of kind {:?}; only relay paths have executable chaining semantics",
+                        ep.id,
+                        path_id,
+                        path.kind.as_str()
+                    )));
+                }
+                let via_id = path.via_endpoint_id.as_deref().ok_or_else(|| {
+                    CompatError::Parse(format!(
+                        "endpoint {:?} references relay path {:?} without via_endpoint_id; refusing to silently dial direct",
+                        ep.id, path_id
+                    ))
+                })?;
+                let via = endpoint_by_id.get(via_id).ok_or_else(|| {
+                    CompatError::Parse(format!(
+                        "relay path {:?} references unavailable first-hop endpoint {:?} for this user",
+                        path_id, via_id
+                    ))
+                })?;
+                if via.id == ep.id {
+                    return Err(CompatError::Parse(format!(
+                        "endpoint {:?} cannot detour through itself",
+                        ep.id
+                    )));
+                }
+                if !matches!(ep.params, contract::TransportParams::VlessReality { .. })
+                    || !matches!(via.params, contract::TransportParams::VlessReality { .. })
+                {
+                    return Err(CompatError::Parse(format!(
+                        "relay path {:?} is TCP/VLESS+REALITY-only in the current MVP; both first hop and exit must be vless-reality",
+                        path_id
+                    )));
+                }
+                outbound["network"] = json!("tcp");
+                outbound["detour"] = json!(via.tag);
+            }
+        }
         outbounds.push(outbound);
+    }
+
+    if tags.is_empty() {
+        return Err(CompatError::Parse(
+            "no selectable endpoints remain after reserving relay first-hop infrastructure; pair/configure an exit before provisioning users"
+                .to_string(),
+        ));
     }
 
     outbounds.push(json!({
@@ -548,13 +676,6 @@ pub fn render_singbox_config_from_contract(
         "interval": "1m",
     }));
 
-    // Manual selector: what actually decides the default route. `default`
-    // is chosen by `profile` (see `SelectionProfile`'s doc comment):
-    // Reliability picks REALITY, Performance picks Hysteria2, Auto picks
-    // the `auto` (urltest) group itself. Every profile falls back to the
-    // first endpoint of any kind, then to `auto`, if its preferred
-    // transport isn't present in this deployment's endpoint set — the
-    // renderer must not panic on a reduced/experimental endpoint set.
     let mut selector_options = tags.clone();
     selector_options.push("auto".to_string());
     let default_tag = match profile {
@@ -573,13 +694,8 @@ pub fn render_singbox_config_from_contract(
         "outbounds": selector_options,
         "default": default_tag,
     }));
-
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
 
-    // `route.final` is unconditional and identical in every mode. Only
-    // `QuicReject` adds rules, and it adds exactly one — see
-    // `CompatibilityMode::QuicReject` for why each field is required and
-    // why `no_drop` is load-bearing rather than decorative.
     let mut route = json!({ "final": "select" });
     if compat_mode == CompatibilityMode::QuicReject {
         route["rules"] = json!([quic_reject_rule()]);

@@ -6,6 +6,24 @@ This file describes implementation history; `docs/archive/PRODUCTION_ACCEPTANCE_
 is a dated historical audit snapshot. Neither may upgrade ledger evidence.
 Read `docs/SUPPORTED_PRODUCT.md` first; do not re-audit the repo from scratch.
 
+## Phase-2 access-path metadata update (2026-09-10)
+
+- Optional, non-secret `access_paths` metadata is now implemented in the
+  schema-version-1 provisioning contract and in `deployment.toml` as
+  `[[access_paths]]`. Empty/absent access paths preserve the previous direct-only
+  wire/deployment behavior.
+- Non-direct endpoint `path` values resolve against the declared access-path set
+  once a document opts into that list. Duplicate/dangling ids, empty capability
+  sets, and credential-shaped/unknown deployment keys fail closed.
+- The subscription service carries the declared metadata into the same atomic
+  provisioning document as the endpoint catalog and embedded Core config.
+- Targeted Rust tests cover round-trip, zero-path compatibility, secret-shaped
+  key rejection, duplicate/dangling references, and legacy opaque-path behavior.
+- **Not implemented by this checkpoint:** a real relay outbound, Core `detour`
+  chain, per-user relay credential lifecycle, Tamara `(exit, access-path)` route
+  selection, or the `SIMULATED_ALLOWLIST` harness. No real VPS/restricted-network
+  evidence is claimed.
+
 ## Release readiness update (2026-09-07)
 
 Final focused remediation pass on the last deterministic lifecycle blockers
