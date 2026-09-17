@@ -16,6 +16,7 @@ Usage:
   vpn-investigate.sh youtube
   vpn-investigate.sh tiktok
   vpn-investigate.sh client CLIENT_IP
+  vpn-investigate.sh pairing [DEPLOYMENT_TOML]
 
 target validates a REALITY handshake candidate from this host over IPv4 and
 IPv6. capture records only CLIENT_IP and TCP/443 or UDP/443 for at most 300s.
@@ -81,6 +82,15 @@ recent sing-box journal entries mentioning that IP, host-wide counts of
 REALITY invalid-connection/accepted/reset events, a suggested (not run)
 bounded capture command, and read-only firewall state. Every line is labeled
 FACT/INFERENCE/UNKNOWN; no secret is ever printed; nothing is mutated.
+
+pairing reads a schema-v2 deployment config (default /etc/vpn/deployment.toml)
+and reports a role=relay node's pairing state: its local first-hop relay access
+path (kind="relay", via_endpoint_id="reality-1"), any [[peer_endpoints]] entry
+whose path references that access path (the RelayTarget allow-list), the
+RELAY-PAIRED / RELAY-UNPAIRED verdict (unpaired = intended fail-closed
+reject-all + subscription-service 503), listener presence, and backend
+liveness. It prints deployment topology but never secrets (peer obfs_password,
+reality keys, UUIDs); it reads config and listener state only.
 EOF
 }
 
@@ -526,6 +536,219 @@ client() {
   echo "It cannot observe the client device's TUN state, DNS, routing, or"
   echo "application behavior — see docs/RUSSIA_PRODUCTION_INVESTIGATION.md's"
   echo "evidence-boundary conventions before drawing a conclusion from it alone."
+}
+
+# ---------------------------------------------------------------------------
+# pairing — relay role/pairing visibility. Reads the deployment config and
+# reports, secret-free, whether a role=relay node is paired to a peer exit.
+# Pairing means: a `kind = "relay"` access path whose via_endpoint_id is this
+# node's own "reality-1" exists, AND at least one [[peer_endpoints]] entry's
+# `path` references that access-path id — exactly the set
+# `DeploymentConfig::relay_targets()` computes. Unpaired is the intended
+# fail-closed state (server renderer emits reject-all; the subscription
+# service answers 503 relay_unpaired for every format). Nothing is mutated;
+# no secret field (peer obfs_password, reality keys, VLESS UUIDs) is ever
+# emitted — access-path metadata is schema-refused from carrying secrets, and
+# peer output here is restricted to id/tag/host/port/path, which is public
+# deployment topology.
+# ---------------------------------------------------------------------------
+
+# pairing_parse FILE — one line per interesting key:
+#   <block>|<idx>|<key>|<value>
+# block ∈ top|sub|ap|pe (top-level, [subscription], [[access_paths]],
+# [[peer_endpoints]]); idx is the per-block instance counter. Values keep the
+# raw TOML text (quotes and array brackets intact) so no quoting/unescaping
+# logic is needed for presentation.
+pairing_parse() {
+  local file=${1:-}
+  [[ -f "$file" ]] || return 2
+  awk '
+    BEGIN { ap=0; pe=0; cur="top" }
+    /^\[subscription\]/ { cur="sub"; next }
+    /^\[\[access_paths\]\]/ { cur="ap"; ap++; next }
+    /^\[\[peer_endpoints\]\]/ { cur="pe"; pe++; next }
+    /^\[[a-zA-Z0-9_.-]+\]/ { cur="top"; next }
+    {
+      line=$0
+      sub(/^[[:space:]]+/, "", line)
+      if (line=="" || line ~ /^[#;]/) next
+      n=split(line, kv, "=")
+      if (n<2) next
+      key=kv[1]; sub(/[[:space:]]+$/, "", key); sub(/^[[:space:]]+/, "", key)
+      val=kv[2]; for (i=3;i<=n;i++) val=val "=" kv[i]
+      sub(/^[[:space:]]+/, "", val); sub(/[[:space:]]+$/, "", val)
+      idx="-"
+      if (cur=="sub") idx="sub"
+      else if (cur=="ap") idx=ap
+      else if (cur=="pe") idx=pe
+      print cur "|" idx "|" key "|" val
+    }
+  ' "$file"
+}
+
+pairing_field() {
+  local parsed=$1 block=$2 idx=$3 key=$4
+  awk -F'|' -v b="$block" -v i="$idx" -v k="$key" '
+    $1==b && $2==i && $3==k {
+      val=$4
+      sub(/\r$/, "", val)
+      # TOML string values carry their surrounding quotes; strip one pair so
+      # role/id/host/path compare cleanly. Array values (capabilities)
+      # start with "[" so this is a no-op for them.
+      if (val ~ /^"/ && val ~ /"$/) val=substr(val,2,length(val)-2)
+      print val
+      exit
+    }' <<<"$parsed"
+}
+
+pairing() {
+  local cfg=${1:-${VPN_DEPLOYMENT_TOML:-/etc/vpn/deployment.toml}}
+  echo "Relay role/pairing investigation for $cfg"
+  echo "======================================================================"
+  echo "Every line is labeled FACT, INFERENCE, or UNKNOWN. Deployment topology"
+  echo "(public hosts, ports, access-path ids) is printed; secrets (REALITY"
+  echo "private key, VLESS UUIDs, Hysteria2/OBFS passwords) are deliberately not."
+  echo
+
+  [[ -f "$cfg" ]] || { echo "UNKNOWN: $cfg not found - pass a path argument or set VPN_DEPLOYMENT_TOML." >&2; return 2; }
+  command -v awk >/dev/null || { echo "UNKNOWN: awk not found - cannot parse $cfg." >&2; return 3; }
+
+  local parsed
+  parsed=$(pairing_parse "$cfg") || { echo "UNKNOWN: could not read $cfg." >&2; return 2; }
+  if [[ -z "$parsed" ]]; then
+    echo "UNKNOWN: no known keys found in $cfg (not a deployment.toml, or unsupported layout)." >&2
+    return 2
+  fi
+
+  local role node_id schema public_host sub_host sub_port
+  role=$(pairing_field "$parsed" top - role)
+  node_id=$(pairing_field "$parsed" top - node_id)
+  schema=$(pairing_field "$parsed" top - schema_version)
+  public_host=$(pairing_field "$parsed" top - public_host)
+  sub_host=$(pairing_field "$parsed" top - subscription_host)
+  sub_port=$(pairing_field "$parsed" sub sub listen_port)
+
+  echo "FACT: schema_version=${schema:-<absent>} node_id=\"${node_id:-<empty>}\" role=\"${role:-<absent>}\""
+  echo "FACT: public_host=\"${public_host}\" subscription_host=\"${sub_host}\" (subscription listen_port=${sub_port:-<absent>})"
+  echo
+
+  if [[ -z "$role" ]]; then
+    echo "FACT: no role key present - this is a legacy pre-schema-v2 deployment treated as role=exit."
+  fi
+  if [[ "$role" != "relay" ]]; then
+    echo "FACT: this node is NOT role=relay, so relay pairing does not apply here."
+    echo "INFERENCE: an exit node forwards relayed sessions without knowing they were relayed,"
+    echo "  so nothing about relay pairing can or should be checked on this node."
+    return 0
+  fi
+  if [[ -z "$public_host" || -z "$sub_host" || -z "$sub_port" ]]; then
+    echo "UNKNOWN: one or more of public_host / subscription_host / [subscription] listen_port"
+    echo "  is missing - the operator help lines below may show incomplete URLs."
+  fi
+  echo
+
+  echo "--- Access paths declared on this node ---"
+  local ap_count
+  ap_count=$(awk -F'|' '$1=="ap" {m=($2+0)>m?($2+0):m} END{print m+0}' <<<"$parsed")
+  local i id kind via caps
+  local -a relay_path_ids=()
+  for ((i=1;i<=ap_count;i++)); do
+    id=$(pairing_field "$parsed" ap "$i" id)
+    kind=$(pairing_field "$parsed" ap "$i" kind)
+    via=$(pairing_field "$parsed" ap "$i" via_endpoint_id)
+    caps=$(pairing_field "$parsed" ap "$i" capabilities)
+    echo "FACT: access_path id=\"${id:-<absent>}\" kind=\"${kind:-<absent>}\" via_endpoint_id=\"${via:-<absent>}\" capabilities=${caps:-[]}"
+    if [[ "$kind" == "relay" && "$via" == "reality-1" && -n "$id" ]]; then
+      relay_path_ids+=("$id")
+    fi
+  done
+  if [[ "$ap_count" -eq 0 ]]; then
+    echo "UNKNOWN: no [[access_paths]] declared - a relay node MUST declare one (kind=\"relay\","
+    echo "  via_endpoint_id=\"reality-1\"); DeploymentConfig::validate rejects role=relay without it,"
+    echo "  so a running service here is almost certainly serving its previous good config."
+  fi
+  echo
+
+  echo "--- Relay-pathing peer endpoints (paired exits) ---"
+  local pe_count
+  pe_count=$(awk -F'|' '$1=="pe" {m=($2+0)>m?($2+0):m} END{print m+0}' <<<"$parsed")
+  local j id tag host port path key
+  local -a paired_targets=()
+  for ((j=1;j<=pe_count;j++)); do
+    id=$(pairing_field "$parsed" pe "$j" id)
+    tag=$(pairing_field "$parsed" pe "$j" tag)
+    host=$(pairing_field "$parsed" pe "$j" host)
+    port=$(pairing_field "$parsed" pe "$j" port)
+    path=$(pairing_field "$parsed" pe "$j" path)
+    key="${host}:${port}"
+    if [[ -n "$host" && " ${relay_path_ids[*]} " == *" ${path} "* ]]; then
+      if [[ " ${paired_targets[*]} " != *" ${key} "* ]]; then
+        paired_targets+=("$key")
+        echo "FACT: relay-pathed peer id=\"${id:-<absent>}\" tag=\"${tag:-<absent>}\" target=\"${host}:${port}\" path=\"${path}\""
+      fi
+    fi
+  done
+  if [[ "$pe_count" -eq 0 ]]; then
+    echo "FACT: no [[peer_endpoints]] declared on this node."
+  fi
+  echo
+
+  echo "--- Verdict ---"
+  if [[ "${#relay_path_ids[@]}" -eq 0 ]]; then
+    echo "INFERENCE: role=relay but no first-hop relay access path (kind=\"relay\","
+    echo "  via_endpoint_id=\"reality-1\") is declared - the config is misdeclared."
+    echo "VERDICT: CONFIG-INVALID (relay role cannot function without that access path)."
+  elif [[ "${#paired_targets[@]}" -eq 0 ]]; then
+    echo "INFERENCE: the relay's first-hop access path exists but no [[peer_endpoints]] entry"
+    echo "  references it via path=\"...\" - the RelayTarget allow-list is empty."
+    echo "VERDICT: RELAY-UNPAIRED - this is the intended fail-closed state: the role-aware"
+    echo "  server renderer emits a final reject-all, the subscription service answers 503"
+    echo "  (relay_unpaired) for every format and any compat, and a client sees no servers."
+    echo "  Serve the published profile only after declaring a paired exit (a [[peer_endpoints]]"
+    echo "  entry with path=\"${relay_path_ids[0]}\") and re-rendering/reinstalling the config."
+  else
+    echo "FACT: relay-pathed targets: ${paired_targets[*]}"
+    echo "VERDICT: RELAY-PAIRED - the role-aware server renderer will emit allow-only route"
+    echo "  rules for those targets and a final reject-all, and the subscription service can"
+    echo "  serve the singleton pinned profile."
+  fi
+  echo
+
+  echo "--- Operational checks (read-only) ---"
+  if command -v ss >/dev/null; then
+    if ss -tlnp 2>/dev/null | grep -q ':443 '; then
+      echo "FACT: TCP/443 listener present (REALITY first hop)."
+    else
+      echo "FACT: no TCP/443 listener observed (REALITY may be stopping/stopped)."
+    fi
+    if ss -ulnp 2>/dev/null | grep -q ':443 '; then
+      echo "FACT: UDP/443 listener present (Hysteria2)."
+    else
+      echo "FACT: no UDP/443 listener observed (Hysteria2 may be stopping/stopped)."
+    fi
+  else
+    echo "UNKNOWN: ss not found - listener presence not checked."
+  fi
+  if [[ -n "$sub_port" ]] && command -v curl >/dev/null; then
+    if curl -fsS --connect-timeout 5 --max-time 10 "http://127.0.0.1:${sub_port}/healthz" >/dev/null 2>&1; then
+      echo "FACT: subscription backend /healthz on 127.0.0.1:${sub_port} answers."
+    else
+      echo "FACT: subscription backend /healthz on 127.0.0.1:${sub_port} did not answer."
+    fi
+  elif [[ -z "$sub_port" ]]; then
+    echo "UNKNOWN: [subscription] listen_port not found in config - backend health not probed."
+  fi
+  echo
+
+  echo "--- Per-token relay_unpaired probe (needs a real subscription token) ---"
+  echo "UNKNOWN: confirming from outside that the service actually answers 503 (rather than by"
+  echo "  config inference above) requires a live token. With one, from any host:"
+  echo "    curl -si 'https://${sub_host}/sub/<token>?format=singbox' | head -1"
+  echo "  503 = relay_unpaired; 400 = paired but the profile is incompatible with the format"
+  echo "  (relay users must use format=singbox&compat=hiddify-pinned); 200 = paired and serving."
+  echo
+  echo "This command reads deployment.toml and listener state only - it proves nothing about a"
+  echo "specific remote client's path, credentials, or device."
 }
 
 # ---------------------------------------------------------------------------
@@ -1025,6 +1248,7 @@ case ${1:-} in
   youtube) shift; youtube "$@" ;;
   tiktok) shift; tiktok "$@" ;;
   client) shift; client "$@" ;;
+  pairing) shift; pairing "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

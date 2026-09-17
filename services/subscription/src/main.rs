@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
     // declaration, so a failure here means the file changed underneath us.
     // Serving a partial endpoint set would silently withhold a peer that
     // users have credentials for.
-    let endpoints = cfg
+    let mut endpoints = cfg
         .served_endpoints(&public_key, &short_id, hysteria_obfs_password.as_deref())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if cfg.role == NodeRole::Relay {

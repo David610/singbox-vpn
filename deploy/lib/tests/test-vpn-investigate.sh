@@ -106,6 +106,83 @@ if echo "$CLIENT_OUT" | grep -qiE 'private_key|reality[_ ]?private|vless_uuid|hy
   exit 1
 fi
 
+# pairing: usage presence, missing-config validation, PAIRED/UNPAIRED/exit
+# verdicts, secret-safety, and FACT/INFERENCE/UNKNOWN labeling. Pure config
+# reading — no service, firewall, or route mutation. Guarded on awk (used
+# only to parse the deployment config), same optional-tool convention as the
+# tshark/tcpdump path above.
+"$TOOL" --help | grep -q 'pairing'
+if "$TOOL" pairing /tmp/does-not-exist-deployment.toml 2>/dev/null; then exit 1; fi
+if command -v awk >/dev/null 2>&1; then
+  PAIR_DIR=$(mktemp -d)
+  if [[ -n "${VERDICT_DIR:-}" ]]; then
+    trap 'rm -rf "$PAIR_DIR" "$VERDICT_DIR"' EXIT
+  else
+    trap 'rm -rf "$PAIR_DIR"' EXIT
+  fi
+
+  cat >"$PAIR_DIR/paired.toml" <<'TOML'
+schema_version = 2
+node_id = "ru1"
+role = "relay"
+public_host = "135.106.178.167"
+subscription_host = "135.106.178.167"
+
+[reality]
+listen_port = 443
+handshake_server = "www.microsoft.com"
+
+[hysteria2]
+listen_port = 443
+
+[subscription]
+listen_port = 8443
+public_port = 8443
+
+[udp_probe]
+ipv4_resolvers = ["1.1.1.1"]
+retries = 2
+timeout_ms = 2000
+delay_ms = 250
+
+[[access_paths]]
+id = "relay-egress"
+kind = "relay"
+via_endpoint_id = "reality-1"
+capabilities = ["tcp"]
+
+[[peer_endpoints]]
+id = "de1-via-ru1"
+tag = "DE via RU"
+host = "91.244.71.165"
+port = 443
+transport = "vless_reality"
+failure_domain = "de-node"
+reality_public_key = "test-public-key-that-must-never-print"
+path = "relay-egress"
+TOML
+
+  PAIRED_OUT="$("$TOOL" pairing "$PAIR_DIR/paired.toml" 2>&1)"
+  echo "$PAIRED_OUT" | grep -q 'RELAY-PAIRED'
+  echo "$PAIRED_OUT" | grep -q 'FACT'
+  echo "$PAIRED_OUT" | grep -q 'INFERENCE'
+  echo "$PAIRED_OUT" | grep -q 'UNKNOWN'
+  if echo "$PAIRED_OUT" | grep -qiE 'test-public-key-that-must-never-print|private_key|reality[_ ]?private|vless_uuid|hysteria2_password|obfs_password'; then
+    echo "FAIL: pairing printed something secret-shaped" >&2
+    exit 1
+  fi
+
+  sed '/\[\[peer_endpoints\]\]/,$d' "$PAIR_DIR/paired.toml" >"$PAIR_DIR/unpaired.toml"
+  UNPAIRED_OUT="$("$TOOL" pairing "$PAIR_DIR/unpaired.toml" 2>&1)"
+  echo "$UNPAIRED_OUT" | grep -q 'RELAY-UNPAIRED'
+
+  sed 's/role = "relay"/role = "exit"/; /\[\[access_paths\]\]/,$d' "$PAIR_DIR/paired.toml" >"$PAIR_DIR/exit.toml"
+  EXIT_OUT="$("$TOOL" pairing "$PAIR_DIR/exit.toml" 2>&1)"
+  echo "$EXIT_OUT" | grep -q 'NOT role=relay'
+else
+  echo "SKIP: pairing verdict assertions need awk - only the usage/missing-config contract above applies."
+fi
+
 # youtube takes no arguments and performs real outbound network calls
 # (DNS/TCP/TLS to public Google/YouTube domains) with no bounded
 # input-validation path of its own to test in isolation — CI/this sandbox
