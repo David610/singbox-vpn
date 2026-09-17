@@ -173,6 +173,23 @@ inconclusive:
     --ssh-port 2222
 ```
 
+### Node role and identity
+
+Every installation has a stable `node_id` and a `role`:
+
+- `--role exit` (default) — an ordinary VPN exit; identical to every earlier
+  installation.
+- `--role relay` — a first hop that forwards authenticated traffic only to
+  exits declared in `deployment.toml`, and nothing until one is paired. See
+  [ALMALINUX_DEPLOYMENT.md](ALMALINUX_DEPLOYMENT.md#relay-nodes-two-hop-routes).
+- `--node-id ID` — 1–63 of `A-Z a-z 0-9 . _ -`, starting with a letter or
+  digit. Default: the first DNS label of the public hostname with unsupported
+  characters replaced by `-` (for example `de1.example.com` → `de1`).
+
+Both are written once. A repair or update keeps them and refuses a
+conflicting flag; deployments installed before roles existed are migrated to
+`role = "exit"` with the default node id.
+
 ### Custom subscription port
 
 ```bash

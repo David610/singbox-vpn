@@ -3,7 +3,7 @@ use clap::Parser;
 use compat_config::deployment::{DeploymentConfig, NodeRole};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use subscription::{standard_endpoints, AppState, RateLimiter};
+use subscription::{AppState, RateLimiter};
 
 /// Reads the deployment-wide Hysteria2 salamander obfuscation password
 /// (see `DeploymentConfig::hysteria_obfs_password_file`'s doc comment for
@@ -160,36 +160,25 @@ async fn main() -> Result<()> {
     // rather than silently look the same.
     let hysteria_obfs_password = read_hysteria_obfs_password(&cfg.hysteria_obfs_password_file())?;
 
-    let mut endpoints = standard_endpoints(
-        &cfg.public_host,
-        cfg.reality.listen_port,
-        cfg.hysteria2.listen_port,
-        &public_key,
-        &short_id,
-        &cfg.reality.handshake_server,
-        hysteria_obfs_password.as_deref(),
-    );
-    if cfg.role == NodeRole::Relay {
-        // A relay node's local VLESS listener is first-hop infrastructure,
-        // not an Internet-exit choice. Hysteria2-over-relay is deliberately
-        // not claimed by the TCP-first MVP.
-        endpoints.retain(|endpoint| endpoint.id == "reality-1");
-    }
-
-    // Operator-declared endpoints on servers this deployment does not
-    // control (ADR-0009). Appended AFTER the local ones so a client's
-    // endpoint order still leads with this server's own, and so a
+    // The ONE canonical endpoint set (`DeploymentConfig::served_endpoints`),
+    // shared with `vpn-admin doctor`'s live-fingerprint check so the two
+    // can never disagree about what a relay serves. Local listeners first,
+    // then operator-declared peers (ADR-0009) in declaration order, so a
     // deployment with no peers gets a byte-identical endpoint list.
     //
     // Fail closed: `DeploymentConfig::load` already validated every
-    // declaration, so a failure here means the file changed underneath us
-    // or an id collides. Serving a partial endpoint set would silently
-    // withhold a peer that users have credentials for.
-    for peer in &cfg.peer_endpoints {
-        endpoints.push(
-            peer.to_compat_endpoint().map_err(|e| {
-                anyhow::anyhow!("invalid [[peer_endpoints]] entry {:?}: {e}", peer.id)
-            })?,
+    // declaration, so a failure here means the file changed underneath us.
+    // Serving a partial endpoint set would silently withhold a peer that
+    // users have credentials for.
+    let endpoints = cfg
+        .served_endpoints(&public_key, &short_id, hysteria_obfs_password.as_deref())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if cfg.role == NodeRole::Relay {
+        tracing::info!(
+            node_id = %cfg.node_id,
+            declared_exit_targets = cfg.relay_targets().len(),
+            "relay node: the local VLESS+REALITY listener is served only as first-hop \
+             infrastructure; no local listener is offered as an exit"
         );
     }
     if !cfg.peer_endpoints.is_empty() {
@@ -200,10 +189,7 @@ async fn main() -> Result<()> {
     }
 
     let access_paths = cfg
-        .access_paths
-        .iter()
-        .map(|path| path.to_contract_access_path())
-        .collect::<Result<Vec<_>, _>>()
+        .contract_access_paths()
         .map_err(|e| anyhow::anyhow!("invalid [[access_paths]] declaration: {e}"))?;
     if !access_paths.is_empty() {
         tracing::info!(

@@ -3,6 +3,7 @@
 //! for Xray later does not require rewriting user management or
 //! subscription logic — only a new backend impl of this trait.
 
+use crate::deployment::{DeploymentConfig, NodeRole};
 use crate::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
 use crate::CompatError;
 use serde_json::json;
@@ -15,10 +16,120 @@ pub struct ServerPorts {
     pub hysteria2_port: u16,
 }
 
-/// Render the full sing-box server config (both inbounds) from the
-/// authoritative user store. Only `is_active` users are included —
-/// disabled/expired users are silently excluded, which is how
-/// revocation actually takes effect (spec §29).
+impl ServerPorts {
+    pub fn for_deployment(deployment: &DeploymentConfig) -> Self {
+        ServerPorts {
+            vless_reality_port: deployment.reality.listen_port,
+            hysteria2_port: deployment.hysteria2.listen_port,
+        }
+    }
+}
+
+/// THE production server renderer. Every command that writes, validates,
+/// or compares a live sing-box server config goes through this function
+/// (`apps/admin/tests/relay_cli.rs::production_code_never_bypasses_the_role_aware_renderer`
+/// enforces it), so no mutating path can render a relay as an exit.
+///
+/// The forwarding policy is derived from `deployment.role` alone:
+///
+/// * `Exit` — the single-server document (no `route` section, `direct`
+///   egress). Role policy adds nothing to it; the only change an upgrade
+///   from a pre-D4 build makes is [`server_log_options`].
+/// * `Relay` — the same authenticated inbounds, plus a `route.rules` list
+///   that forwards ONLY to the exits declared in `deployment.toml`
+///   ([`DeploymentConfig::relay_targets`]) and ends in an unconditional
+///   `reject`. There is no generic fallback to `direct`: an unpaired relay
+///   rejects everything, and any destination not declared — another
+///   Internet host, another port on the exit host, UDP, Hysteria2 traffic —
+///   is refused. The one extra allowed destination is this node's own
+///   loopback subscription health endpoint over VLESS+REALITY, which the
+///   post-install/post-update protocol self-test uses to prove a real
+///   first-hop handshake; it is local infrastructure, not an Internet exit.
+///
+/// Policy uses only routing facts the relay must already know (declared
+/// exit host/port). No sniffing, no destination logging.
+pub fn render_server_config_for_deployment(
+    deployment: &DeploymentConfig,
+    users: &[CompatUser],
+    reality: &RealityServerParams,
+    hysteria: &Hysteria2ServerParams,
+    now_unix: i64,
+) -> Result<serde_json::Value, CompatError> {
+    // Re-validate: a DeploymentConfig can be built in memory without
+    // `load`, and a relay policy must never be derived from a
+    // declaration that would not load.
+    deployment.validate()?;
+    let mut config = render_singbox_server_config(
+        users,
+        reality,
+        hysteria,
+        ServerPorts::for_deployment(deployment),
+        now_unix,
+    );
+    if deployment.role == NodeRole::Exit {
+        return Ok(config);
+    }
+
+    let reality_inbound = "vless-reality-in";
+    let mut rules = vec![json!({
+        "inbound": [reality_inbound],
+        "network": "tcp",
+        "ip_cidr": ["127.0.0.1/32"],
+        "port": deployment.subscription.listen_port,
+        "action": "route",
+        "outbound": "direct",
+    })];
+    for target in deployment.relay_targets() {
+        let mut rule = json!({
+            "inbound": [reality_inbound],
+            "network": "tcp",
+            "port": target.port,
+            "action": "route",
+            "outbound": "direct",
+        });
+        match target.host.parse::<std::net::IpAddr>() {
+            Ok(ip) => {
+                let prefix = if ip.is_ipv4() { 32 } else { 128 };
+                rule["ip_cidr"] = json!([format!("{ip}/{prefix}")]);
+            }
+            Err(_) => rule["domain"] = json!([target.host]),
+        }
+        rules.push(rule);
+    }
+    // Scoped to every inbound the document actually contains, computed
+    // from the document itself, so an inbound added later is covered
+    // without anyone remembering to add it here.
+    let all_inbounds: Vec<serde_json::Value> = config["inbounds"]
+        .as_array()
+        .map(|inbounds| {
+            inbounds
+                .iter()
+                .map(|inbound| inbound["tag"].clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    if all_inbounds.is_empty() {
+        return Err(CompatError::Parse(
+            "relay config has no inbounds to restrict — refusing to render".into(),
+        ));
+    }
+    rules.push(json!({
+        "inbound": all_inbounds,
+        "action": "reject",
+        "method": "default",
+    }));
+    config["route"] = json!({ "rules": rules });
+    Ok(config)
+}
+
+/// Transport-level document builder: both inbounds for the active users
+/// plus unrestricted `direct` egress, with NO role policy. Only
+/// [`render_server_config_for_deployment`] and transport interop tests may
+/// call this; production code must not (see that function's doc comment).
+///
+/// Only `is_active` users are included — disabled/expired users are
+/// silently excluded, which is how revocation actually takes effect
+/// (spec §29).
 pub fn render_singbox_server_config(
     users: &[CompatUser],
     reality: &RealityServerParams,
@@ -104,7 +215,7 @@ pub fn render_singbox_server_config(
     }
 
     json!({
-        "log": { "level": "warn", "timestamp": true },
+        "log": server_log_options(),
         "inbounds": [
             {
                 "type": "vless",
@@ -132,6 +243,28 @@ pub fn render_singbox_server_config(
             { "type": "direct", "tag": "direct" }
         ]
     })
+}
+
+/// Core logging for every server document: start-up/fatal failures only.
+///
+/// sing-box reports per-connection events at ERROR and WARN, and those
+/// lines carry what this product must never persist: a rejected VLESS
+/// login is logged as `process connection from <client address>: unknown
+/// UUID: <presented credential>`, and dial failures name tunnelled
+/// destinations. Under systemd that output is journald/syslog on disk, so
+/// with `warn` revoked — and, after a disable/re-enable, currently valid —
+/// credentials were recoverable from ordinary server logs (real two-VPS
+/// acceptance defect D4). There is no per-message filter in sing-box, so
+/// the level is the boundary: nothing per-connection is emitted at all,
+/// rather than logged and scrubbed later.
+///
+/// Service health stays diagnosable without those lines: a start failure
+/// is still printed as `FATAL ... start service: ...` with a non-zero exit
+/// status (the CLI reports it independently of this setting), which is
+/// what `systemctl status`, `journalctl -u sing-box`, the watchdog and
+/// `vpn-admin doctor` surface.
+pub fn server_log_options() -> serde_json::Value {
+    json!({ "level": "fatal", "timestamp": true })
 }
 
 /// Confirms the rendered config never contains anything it shouldn't
@@ -233,16 +366,23 @@ pub fn apply_config_atomically(
 /// by the installer) and `fsync`d before it's ever handed to
 /// `sing-box check`, so a crash between write and validate never leaves
 /// an unflushed secret file behind.
+///
+/// The creation mode passed to `open` is still masked by the umask, so the
+/// mode is set explicitly on the open handle before any byte is written:
+/// under `umask 077` the file would otherwise be 0600 and the `sing-box`
+/// group could not read it (real two-VPS acceptance defect D1).
 #[cfg(unix)]
 fn write_config_file_mode_0640(path: &Path, bytes: &[u8]) -> Result<(), CompatError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o640)
         .open(path)
+        .map_err(|e| CompatError::Io(e.to_string()))?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o640))
         .map_err(|e| CompatError::Io(e.to_string()))?;
     f.write_all(bytes)
         .map_err(|e| CompatError::Io(e.to_string()))?;
@@ -458,6 +598,25 @@ mod tests {
     }
 
     #[test]
+    fn server_documents_emit_no_per_connection_core_log_lines() {
+        let cfg = render_singbox_server_config(
+            &users(),
+            &reality(),
+            &hysteria(),
+            ServerPorts {
+                vless_reality_port: 443,
+                hysteria2_port: 443,
+            },
+            1000,
+        );
+        assert_eq!(cfg["log"]["level"], "fatal");
+        assert!(
+            cfg["log"].get("output").is_none(),
+            "no separate log file that could collect what journald no longer does"
+        );
+    }
+
+    #[test]
     fn rendered_config_never_contains_private_key_string() {
         let cfg = render_singbox_server_config(
             &users(),
@@ -550,6 +709,62 @@ mod tests {
             0o640,
             "config.json.bak must also be 0640"
         );
+    }
+
+    /// D1: under `umask 077` the config must still be 0640, or the
+    /// `sing-box` group cannot read it. The umask is process-wide, so the
+    /// assertions run in a child copy of this test binary started under
+    /// `umask 077`; the parent only launches it. Covers the three secret
+    /// writers: `apply_config_atomically`, `save_users_atomic`, `atomic_write`.
+    #[cfg(unix)]
+    #[test]
+    fn secret_file_modes_do_not_depend_on_the_process_umask() {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        const CHILD: &str = "SINGBOX_VPN_RESTRICTIVE_UMASK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg("umask 077 && exec \"$0\" --exact server::tests::secret_file_modes_do_not_depend_on_the_process_umask --test-threads 1")
+                .arg(std::env::current_exe().unwrap())
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "restrictive-umask child run failed");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let probe = dir.path().join("umask-probe");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o640)
+            .open(&probe)
+            .unwrap();
+        assert_eq!(mode(&probe), 0o600, "the child really runs under umask 077");
+
+        let config = dir.path().join("config.json");
+        apply_config_atomically(&json!({"n": 1}), &config, |candidate| {
+            assert_eq!(
+                mode(candidate),
+                0o640,
+                "the candidate handed to sing-box check"
+            );
+            Ok(())
+        })
+        .unwrap();
+        apply_config_atomically(&json!({"n": 2}), &config, |_| Ok(())).unwrap();
+        assert_eq!(mode(&config), 0o640, "config.json");
+        assert_eq!(mode(&config_backup_path(&config)), 0o640, "config.json.bak");
+
+        let users = dir.path().join("users/users.json");
+        crate::store::save_users_atomic(&users, &[]).unwrap();
+        assert_eq!(mode(&users), 0o640, "users.json");
+
+        let state = dir.path().join("state.toml");
+        crate::migrate::atomic_write(&state, b"x", 0o640).unwrap();
+        assert_eq!(mode(&state), 0o640, "atomic_write");
     }
 
     #[cfg(unix)]

@@ -1,0 +1,14 @@
+# public_host<TAB>expected default node_id
+# Shared by deploy/lib/tests/test-node-identity.sh (shell rule) and
+# crates/compat-config/tests/relay_role_policy.rs (Rust rule).
+de1.example.com	de1
+vpn	vpn
+1-2-3-4.sslip.io	1-2-3-4
+xn--80ak6aa92e.com	xn--80ak6aa92e
+_srv.example	srv
+my_node-.example	my_node
+	legacy-node
+....	legacy-node
+ru1.example.test	ru1
+127.0.0.2	127
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.example	xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

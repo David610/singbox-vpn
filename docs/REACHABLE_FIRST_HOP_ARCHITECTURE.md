@@ -1,6 +1,6 @@
 # Reachable first-hop architecture — Phase 2 design
 
-**Status:** Phase-2 access-path metadata foundation implemented; production relay/chained routing remains design-only and unverified.
+**Status:** Server-side relay role (fail-closed forwarding) and Core `detour` provisioning implemented; CODE-VERIFIED/CI-VERIFIED including loopback system tests (`docs/TWO_HOP_SYSTEM_TESTS.md`). Real-network reachability, provider separation and device behaviour remain UNVERIFIED (§15).
 **Date:** 2026-09-10  
 **Primary client:** [Tamara](https://github.com/David610/tamara)  
 **Evidence boundary:** local/source feasibility only. No real second VPS, Russian ISP, destination allowlist, SNI filter, UDP restriction, or relay-provider outage has been tested.
@@ -305,7 +305,7 @@ An Internet-reachable relay creates a real abuse surface even for a small truste
 
 ## 13. Operational model
 
-The access-path metadata portion is now operator-declared and implemented in `deployment.toml` as optional `[[access_paths]]` entries. Relay credentials/references in `users.json` and actual relay runtime wiring remain **design-only**:
+The access-path metadata portion is operator-declared in `deployment.toml` as optional `[[access_paths]]` entries. As of 2026-09-13 the MVP runtime (option A with option E) is implemented: a node installed with `--role relay` declares its own `reality-1` as the first hop, forwards only to exits declared as `[[peer_endpoints]]` on that path, and rejects everything else; per-user first-hop credentials are the relay's own users, and exit credentials are recorded per user as peer credentials reused by `credential_ref`. The layout remains:
 
 ```text
 deployment.toml
@@ -347,9 +347,17 @@ Required `SIMULATED_ALLOWLIST` cases:
 
 The lab may use loopback relays and firewall/process-level refusal. It must be labeled `SIMULATED_ALLOWLIST`, never `RUSSIA_VERIFIED`.
 
+**Status (2026-09-13):** the server-side mechanics are covered by
+`crates/compat-config/tests/two_hop_system.rs` (S1–S15: direct and via routes,
+relay-as-exit refusal, credential failures, exit/relay outages without fallback,
+revocation, expiry, rotation, malformed declarations, unpaired/allowlisted
+relay, repair and crash restart; see `docs/TWO_HOP_SYSTEM_TESTS.md`). Client-side
+cases 3–7 above (Tamara route selection, flap suppression, manual-mode behaviour,
+stale results) belong to the client repository and are not covered here.
+
 ## 15. Real-world acceptance matrix
 
-No row below is currently PASS.
+No row below is currently PASS. Loopback system tests (`docs/TWO_HOP_SYSTEM_TESTS.md`) do not change any row: they share one host, one kernel and one network.
 
 | Acceptance item | Current evidence | Required later evidence |
 |---|---|---|

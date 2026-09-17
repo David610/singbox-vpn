@@ -452,6 +452,10 @@ client() {
   echo
 
   echo "--- Recent sing-box log entries mentioning $ip ---"
+  echo "UNKNOWN (by design): the production sing-box config logs at 'fatal' only, so"
+  echo "  per-connection events (client addresses, rejected credentials, destinations)"
+  echo "  are never written to the journal. Empty results below prove nothing unless"
+  echo "  the log level was deliberately raised for this investigation."
   if command -v journalctl >/dev/null; then
     local matches
     matches="$(journalctl -u sing-box --since '2 hours ago' --no-pager 2>/dev/null | grep -F "$ip" | tail -50 || true)"

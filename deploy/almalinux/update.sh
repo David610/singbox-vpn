@@ -91,7 +91,38 @@ done
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/state-schema.sh"
 # shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/node-identity.sh"
+
+# Role/identity safety for every update/repair: snapshot deployment.toml
+# (and its role/node_id) under the state lock before anything mutates,
+# refuse to continue if a migration changed either, and put the exact
+# pre-update file back on rollback. An update must never turn a relay into
+# an exit, an exit into a relay, or rename a node.
+snapshot_deployment_identity() {
+  PRE_UPDATE_ROLE="$(deployment_effective_role "$DEPLOYMENT_TOML")"
+  PRE_UPDATE_NODE_ID="$(deployment_top_level_value "$DEPLOYMENT_TOML" node_id)"
+  cp -a "$DEPLOYMENT_TOML" "$BACKUP_DIR/deployment.toml"
+  log "deployment identity before update: node_id=${PRE_UPDATE_NODE_ID:-<unset, legacy>} role=$PRE_UPDATE_ROLE"
+}
+
+assert_deployment_identity_unchanged() {
+  local reason
+  if ! reason="$(deployment_identity_unchanged "$DEPLOYMENT_TOML" "$PRE_UPDATE_ROLE" "$PRE_UPDATE_NODE_ID")"; then
+    die "$reason during update — refusing to continue with a changed node identity/role. Rolling back."
+  fi
+}
+
+restore_deployment_toml_snapshot() {
+  [ -f "$BACKUP_DIR/deployment.toml" ] || return 0
+  if ! cmp -s "$BACKUP_DIR/deployment.toml" "$DEPLOYMENT_TOML" 2>/dev/null; then
+    cp -a "$BACKUP_DIR/deployment.toml" "$DEPLOYMENT_TOML.rollback" \
+      && mv -f "$DEPLOYMENT_TOML.rollback" "$DEPLOYMENT_TOML"
+  fi
+}
+# shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/binary-version-check.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/test-isolation.sh"
 
 # Production updates perform the same kinds of GitHub/SagerNet fetches as a
 # fresh install. A real lifecycle run reproduced a transient TCP connection
@@ -303,9 +334,29 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   command -v cargo >/dev/null 2>&1 \
     || die "cargo not found. --dev-rebuild requires a Rust toolchain. (A normal production update does not need this — use --version/--latest instead.)"
 
-  log "running tests before touching installed state..."
-  ( cd "$REPO_ROOT" && cargo test --workspace --locked -p admin -p subscription -p compat-config ) \
-    || die "tests failed; installed state was not changed."
+  # The suite runs on this live host, so it runs isolated from the host's
+  # service manager (deploy/lib/test-isolation.sh, defect D6), and what the
+  # updater then says about live services is observed, not assumed.
+  log "running tests before touching installed state (isolated: no systemd/D-Bus access, host-control tools guarded)..."
+  test_guard_dir="$(mktemp -d /tmp/singbox-vpn-test-isolation.XXXXXX)"
+  services_before_tests="$(host_service_fingerprint)"
+  tests_rc=0
+  run_isolated_from_host "$test_guard_dir" \
+    bash -c 'cd "$1" && cargo test --workspace --locked -p admin -p subscription -p compat-config' \
+    isolated-cargo-test "$REPO_ROOT" || tests_rc=$?
+  services_after_tests="$(host_service_fingerprint)"
+  refused_host_control="$(cat "$test_guard_dir/refused-host-control.log" 2>/dev/null || true)"
+  rm -rf "$test_guard_dir"
+  if [ "$services_before_tests" != "$services_after_tests" ]; then
+    die "live services CHANGED while the test phase ran (before: $(echo "$services_before_tests" | tr '\n' ';') after: $(echo "$services_after_tests" | tr '\n' ';')). Nothing was installed — binaries, systemd units and config are unchanged — but sing-box/vpn-subscription were restarted during the test phase. Check 'systemctl status sing-box vpn-subscription' before retrying."
+  fi
+  if [ -n "$refused_host_control" ]; then
+    die "the test phase attempted to control this host; the isolation guard refused every attempt: $(echo "$refused_host_control" | tr '\n' ';') Nothing was installed and live services were not restarted (identical MainPID/NRestarts before and after). This is a test defect — report it."
+  fi
+  if [ "$tests_rc" -ne 0 ]; then
+    die "tests failed (exit $tests_rc). Nothing was installed — binaries, systemd units and config are unchanged — and live services were not restarted (identical MainPID/NRestarts before and after the test phase)."
+  fi
+  log "tests passed; live services untouched during the test phase."
   log "building new binaries..."
   # --locked matches every CI build/test job: without it, this could
   # silently resolve a different dependency set than the one committed
@@ -342,6 +393,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   flock -x 201
   [ -f /etc/vpn/compat/sing-box/config.json ] \
     && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
+  snapshot_deployment_identity
 
   mutation_started=0
   committed=0
@@ -365,6 +417,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
       rm -f "$SYSTEMD_DIR/$u.update-new"
     done
     systemctl daemon-reload || failed=1
+    restore_deployment_toml_snapshot || failed=1
     for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
       if [ -f "$BACKUP_DIR/$f" ]; then
         install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
@@ -439,12 +492,13 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
       die "persistent state is INVALID/unsupported — see output above. Rolling back to the previous working binaries/config."
       ;;
   esac
+  assert_deployment_identity_unchanged
 
   log "rendering current authoritative users/REALITY state with new tooling..."
   SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
     "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
 
-  log "restarting services..."
+  log "deliberate service activation (apply stage, not the test phase): restarting vpn-subscription once..."
   systemctl restart vpn-subscription
   singbox_config_changed=1
   if [ -f "$BACKUP_DIR/config.json" ] && [ -f /etc/vpn/compat/sing-box/config.json ] \
@@ -717,6 +771,11 @@ if [ -f "$DEPLOYMENT_TOML" ]; then
   case "$precheck_rc" in
     0 | 2)
       log "pre-switch schema compatibility check: $TARGET_VERSION's vpn-admin can read the current persistent state (status $precheck_rc)."
+      if [ "$(deployment_effective_role "$DEPLOYMENT_TOML")" = "relay" ] \
+          && ! admin_output_declares_relay_enforcement "$precheck_output"; then
+        echo "$precheck_output" >&2
+        die "this node is a RELAY, and $TARGET_VERSION's vpn-admin does not declare fail-closed relay forwarding. Switching to it (update, repair or downgrade) could render this relay as an unrestricted exit. Nothing live has been changed."
+      fi
       ;;
     *)
       echo "$precheck_output" >&2
@@ -773,6 +832,7 @@ exec 201>/run/lock/singbox-vpn.lock
 flock -x 201
 [ -f /etc/vpn/compat/sing-box/config.json ] \
   && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
+snapshot_deployment_identity
 
 mutation_started=0
 committed=0
@@ -822,6 +882,11 @@ rollback_update() {
   fi
 
   systemctl daemon-reload || failed=1
+
+  # deployment.toml IS rewound when this transaction migrated it: the
+  # restored (older) binaries may not understand the migrated schema, and
+  # a node's role/identity must come back exactly as it was.
+  restore_deployment_toml_snapshot || failed=1
 
   # Never rewind users.json or REALITY material — authoritative, may
   # have changed while staging/download ran. Render with the restored
@@ -933,6 +998,7 @@ case "$schema_rc" in
     die "persistent state is INVALID/unsupported — see output above. Rolling back to $CURRENT_VERSION."
     ;;
 esac
+assert_deployment_identity_unchanged
 lifecycle_gate_abort_hook after_switch
 
 log "rendering current authoritative users/REALITY state with new tooling (credentials are never rotated by an update)..."
@@ -1004,6 +1070,8 @@ cat > "$INSTALL_STATE_MANIFEST.tmp" <<EOF
   "sing_box_sha256_pinned": "$pinned_singbox_sha256",
   "arch": "$ARCH",
   "installed_at_unix": $(date +%s),
+  "node_id": "$(deployment_top_level_value "$DEPLOYMENT_TOML" node_id)",
+  "role": "$(deployment_effective_role "$DEPLOYMENT_TOML")",
   "public_host": "$public_host",
   "subscription_host": "$subscription_host",
   "firewall_backend": "$firewall_backend",

@@ -17,8 +17,8 @@ use compat_config::model::{CompatUser, Hysteria2ServerParams, RealityServerParam
 use compat_config::render::render_singbox_client_subscription;
 use compat_config::secret::SecretString;
 use compat_config::server::{
-    apply_config_atomically, config_backup_path, render_singbox_server_config,
-    CompatibilityBackend, ServerPorts, SingBoxBackend,
+    apply_config_atomically, config_backup_path, render_server_config_for_deployment,
+    CompatibilityBackend, SingBoxBackend,
 };
 use compat_config::{credentials, store};
 use serde_json::json;
@@ -244,29 +244,46 @@ enum ConfigCommands {
 enum PeerCommands {
     /// Set (or replace) this user's credential for a peer endpoint.
     ///
-    /// Exactly one of `--uuid` / `--password` must be given, and it must
-    /// match the peer endpoint's declared transport: `--uuid` for
-    /// `vless-reality`, `--password` for `hysteria2`. A mismatch is
-    /// refused rather than coerced — silently reshaping it would produce
-    /// a profile that looks dialable and cannot authenticate.
+    /// Prefer `--credential-stdin`: the credential is read from standard
+    /// input (or a hidden prompt on a terminal), so it never appears in
+    /// process listings, shell history or command-line captures. The value
+    /// is interpreted by the endpoint's declared transport (VLESS client id
+    /// for `vless-reality`, password for `hysteria2`).
+    ///
+    /// `--uuid` / `--password` remain for compatibility and are UNSAFE for
+    /// production automation: a command-line argument is readable by every
+    /// local user via /proc and is kept in shell history. Whichever form is
+    /// used, it must match the transport; a mismatch is refused rather than
+    /// coerced — silently reshaping it would produce a profile that looks
+    /// dialable and cannot authenticate.
     Set {
         user_id: String,
         /// Peer endpoint id, as declared in `[[peer_endpoints]]`.
         endpoint_id: String,
-        /// VLESS client id issued to this user ON THE PEER SERVER.
+        /// Read the credential issued ON THE PEER SERVER from stdin (one
+        /// line) instead of the command line.
+        #[arg(long, conflicts_with_all = ["uuid", "password"])]
+        credential_stdin: bool,
+        /// VLESS client id issued to this user ON THE PEER SERVER. Visible
+        /// in process listings and shell history — prefer --credential-stdin.
         #[arg(long, conflicts_with = "password")]
         uuid: Option<String>,
         /// Hysteria2 password issued to this user ON THE PEER SERVER.
+        /// Visible in process listings and shell history — prefer
+        /// --credential-stdin.
         #[arg(long)]
         password: Option<String>,
     },
     /// Replace an existing peer credential (after rotating it on the peer
     /// server). Refuses if this user has no credential for that endpoint
     /// yet — use `set` for that, so a typo in the endpoint id cannot
-    /// silently create a second, unused entry.
+    /// silently create a second, unused entry. Takes the same credential
+    /// options as `set`; prefer `--credential-stdin`.
     Rotate {
         user_id: String,
         endpoint_id: String,
+        #[arg(long, conflicts_with_all = ["uuid", "password"])]
+        credential_stdin: bool,
         #[arg(long, conflicts_with = "password")]
         uuid: Option<String>,
         #[arg(long)]
@@ -512,15 +529,23 @@ fn main() -> Result<()> {
         Commands::User(UserCommands::Peer(PeerCommands::Set {
             user_id,
             endpoint_id,
+            credential_stdin,
             uuid,
             password,
-        })) => cmd_user_peer_set(&cfg, &user_id, &endpoint_id, uuid, password, false),
+        })) => {
+            let source = PeerCredentialSource::from_flags(credential_stdin, uuid, password);
+            cmd_user_peer_set(&cfg, &user_id, &endpoint_id, source, false)
+        }
         Commands::User(UserCommands::Peer(PeerCommands::Rotate {
             user_id,
             endpoint_id,
+            credential_stdin,
             uuid,
             password,
-        })) => cmd_user_peer_set(&cfg, &user_id, &endpoint_id, uuid, password, true),
+        })) => {
+            let source = PeerCredentialSource::from_flags(credential_stdin, uuid, password);
+            cmd_user_peer_set(&cfg, &user_id, &endpoint_id, source, true)
+        }
         Commands::User(UserCommands::Peer(PeerCommands::Remove {
             user_id,
             endpoint_id,
@@ -807,13 +832,10 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
     };
     let users = store::load_users(&cfg.users_file())?;
     let hysteria = load_hysteria_params(cfg);
-    let ports = ServerPorts {
-        vless_reality_port: cfg.reality.listen_port,
-        hysteria2_port: cfg.hysteria2.listen_port,
-    };
     let now = UnixSeconds::now().0 as i64;
     let candidate_doc =
-        render_singbox_server_config(&users, &candidate_reality, &hysteria, ports, now);
+        render_server_config_for_deployment(cfg, &users, &candidate_reality, &hysteria, now)
+            .context("rendering the candidate server config; live state was not changed")?;
 
     let backend = SingBoxBackend {
         binary_path: cfg.singbox_binary.clone(),
@@ -1146,13 +1168,10 @@ fn cmd_hysteria_obfs_rotate(cfg: &DeploymentConfig) -> Result<()> {
     let mut candidate_hysteria = load_hysteria_params(cfg);
     candidate_hysteria.obfs_password = Some(SecretString::new(candidate_password.clone()));
     let users = store::load_users(&cfg.users_file())?;
-    let ports = ServerPorts {
-        vless_reality_port: cfg.reality.listen_port,
-        hysteria2_port: cfg.hysteria2.listen_port,
-    };
     let now = UnixSeconds::now().0 as i64;
     let candidate_doc =
-        render_singbox_server_config(&users, &reality, &candidate_hysteria, ports, now);
+        render_server_config_for_deployment(cfg, &users, &reality, &candidate_hysteria, now)
+            .context("rendering the candidate server config; live state was not changed")?;
 
     let backend = SingBoxBackend {
         binary_path: cfg.singbox_binary.clone(),
@@ -1528,12 +1547,9 @@ fn render_and_apply_singbox_config(
         }
     };
     let hysteria = load_hysteria_params(cfg);
-    let ports = ServerPorts {
-        vless_reality_port: cfg.reality.listen_port,
-        hysteria2_port: cfg.hysteria2.listen_port,
-    };
     let now = UnixSeconds::now().0 as i64;
-    let doc = render_singbox_server_config(users, &reality, &hysteria, ports, now);
+    let doc = render_server_config_for_deployment(cfg, users, &reality, &hysteria, now)
+        .context("rendering the role-aware sing-box server config")?;
     let candidate_fingerprint = rendered_config_fingerprint(&doc)?;
 
     let target = cfg.singbox_config_file();
@@ -1661,7 +1677,7 @@ fn render_and_apply_singbox_config(
     // verdict (see `run_reality_client_selftest`'s doc comment) and must
     // not turn an environmental limitation into a false failure here.
     let handshake_verification =
-        verify_reality_handshake_or_warn(cfg, users, &reality, ports.vless_reality_port);
+        verify_reality_handshake_or_warn(cfg, users, &reality, cfg.reality.listen_port);
     if let HandshakeVerification::Ran(RealitySelfTestOutcome::HandshakeRejected) =
         &handshake_verification
     {
@@ -1780,14 +1796,31 @@ fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) ->
     let mut invalid = false;
     let mut migration_required = false;
 
+    let deployment_text =
+        std::fs::read_to_string(config_path).with_context(|| format!("reading {config_path:?}"))?;
     if cfg.schema_version == 0 {
         println!("deployment.toml ({config_path:?}): LEGACY (no schema_version marker)");
         migration_required = true;
+    } else if compat_config::deployment::migrate_deployment_toml_text(&deployment_text).is_some() {
+        println!(
+            "deployment.toml ({config_path:?}): OUTDATED (schema_version {}, current is \
+             {DEPLOYMENT_SCHEMA_VERSION}; node identity/role not yet explicit)",
+            cfg.schema_version
+        );
+        migration_required = true;
     } else {
         println!(
-            "deployment.toml ({config_path:?}): CURRENT (schema_version {DEPLOYMENT_SCHEMA_VERSION})"
+            "deployment.toml ({config_path:?}): CURRENT (schema_version {DEPLOYMENT_SCHEMA_VERSION}, node_id {:?}, role {})",
+            cfg.node_id,
+            cfg.role.as_str()
         );
     }
+
+    println!(
+        "{} (node role: {})",
+        compat_config::deployment::RELAY_ENFORCEMENT_CAPABILITY,
+        cfg.role.as_str()
+    );
 
     let users_path = cfg.users_file();
     match store::detect_users_schema(&users_path) {
@@ -1967,6 +2000,29 @@ fn subscription_url_vision_off(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
+/// Hiddify-pinned subscription URL
+/// (`?format=singbox&compat=hiddify-pinned`, see
+/// `compat_config::render::CompatibilityMode::HiddifyPinned`). Same
+/// credentials, same REALITY parameters, same flow as the normal
+/// profile; the profile just carries ONE route instead of every route,
+/// with any relay first hop tagged so Hiddify keeps it as a dialer and
+/// never as a selectable proxy.
+///
+/// This is the link to hand a Hiddify user, not a diagnostic. Hiddify
+/// rebuilds imported configs and, on a multi-route profile, makes a
+/// per-connection round-robin `balance` group the default route — which
+/// breaks sustained multi-connection media and, on Privacy+, routes
+/// around the enforced relay path. See `docs/YOUTUBE_FINAL_ROOT_CAUSE.md`.
+///
+/// `?format=singbox` and NOT `?format=hiddify`: share-link syntax can
+/// express neither a hidden `detour` outbound nor a relay route.
+fn subscription_url_hiddify_pinned(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}?format=singbox&compat=hiddify-pinned",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
 /// Opt-in QUIC-reject subscription URL
 /// (`?format=singbox&compat=quic-reject`, see
 /// `compat_config::render::CompatibilityMode::QuicReject`). Identical
@@ -2032,6 +2088,68 @@ fn print_qr(data: &str) -> Result<()> {
     Ok(())
 }
 
+/// The real stdout of a `--json` command, kept aside while fd 1 points at
+/// stderr for the rest of the run.
+///
+/// `user create --json` is documented as pipeable into `jq`, but the apply
+/// path it shares with every mutation prints human progress (config
+/// written, reload notices, warnings) with `println!`, and child processes
+/// inherit stdout too — so the JSON arrived after prose lines (real
+/// two-VPS acceptance defect D2). Redirecting at the descriptor makes the
+/// guarantee structural: whatever else writes to stdout during the run
+/// lands on stderr, and only the final document is written here.
+struct MachineStdout {
+    #[cfg(unix)]
+    real_stdout: std::fs::File,
+}
+
+impl MachineStdout {
+    #[cfg(unix)]
+    fn divert_human_output_to_stderr() -> Result<Self> {
+        use std::io::Write;
+        use std::os::fd::FromRawFd;
+        std::io::stdout().flush().context("flushing stdout")?;
+        // SAFETY: plain descriptor duplication on the process's own
+        // standard streams; the duplicate is owned by the returned File.
+        let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
+        if saved < 0 {
+            bail!("duplicating stdout: {}", std::io::Error::last_os_error());
+        }
+        let real_stdout = unsafe { std::fs::File::from_raw_fd(saved) };
+        if unsafe { libc::dup2(libc::STDERR_FILENO, libc::STDOUT_FILENO) } < 0 {
+            bail!(
+                "pointing stdout at stderr: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        Ok(Self { real_stdout })
+    }
+
+    #[cfg(not(unix))]
+    fn divert_human_output_to_stderr() -> Result<Self> {
+        Ok(Self {})
+    }
+
+    fn write_document(mut self, document: &serde_json::Value) -> Result<()> {
+        use std::io::Write;
+        let text = serde_json::to_string_pretty(document)?;
+        #[cfg(unix)]
+        {
+            std::io::stdout()
+                .flush()
+                .context("flushing diverted output")?;
+            writeln!(self.real_stdout, "{text}").context("writing JSON to stdout")?;
+            self.real_stdout.flush().context("flushing JSON")?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = &mut self;
+            println!("{text}");
+        }
+        Ok(())
+    }
+}
+
 fn cmd_user_create(
     cfg: &DeploymentConfig,
     name: &str,
@@ -2039,6 +2157,11 @@ fn cmd_user_create(
     qr: bool,
     json: bool,
 ) -> Result<()> {
+    let machine_stdout = if json {
+        Some(MachineStdout::divert_human_output_to_stderr()?)
+    } else {
+        None
+    };
     let mut users = store::load_users(&cfg.users_file())?;
     let previous_users = users.clone();
     // 128-bit CSPRNG id (spec: do not reuse the 32-bit REALITY short_id
@@ -2065,7 +2188,7 @@ fn cmd_user_create(
     apply_users_and_save(cfg, &previous_users, &users)?;
 
     let url = subscription_url(cfg, &token);
-    if json {
+    if let Some(machine_stdout) = machine_stdout {
         let out = serde_json::json!({
             "id": id,
             "name": name,
@@ -2083,9 +2206,11 @@ fn cmd_user_create(
             // Opt-in, no server-side change required, no security
             // property weakened; see subscription_url_quic_reject.
             "subscription_url_quic_reject": subscription_url_quic_reject(cfg, &token),
+            // The supported Hiddify import path; see
+            // subscription_url_hiddify_pinned's doc comment.
+            "subscription_url_hiddify_pinned": subscription_url_hiddify_pinned(cfg, &token),
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
+        return machine_stdout.write_document(&out);
     }
 
     println!("User ID:");
@@ -2131,6 +2256,17 @@ fn cmd_user_create(
     println!("  {}", provisioning_url(cfg, &token));
     println!();
     println!(
+        "Hiddify import link (RECOMMENDED for Hiddify: same credentials, one pinned route \
+         instead of a profile Hiddify turns into a per-connection round-robin — see \
+         docs/YOUTUBE_FINAL_ROOT_CAUSE.md):"
+    );
+    println!("  {}", subscription_url_hiddify_pinned(cfg, &token));
+    println!(
+        "  Import it as a SEPARATE profile. It offers one route, so there is no proxy-group \
+         choice to get wrong, and a Privacy+ user cannot be balanced onto a direct exit."
+    );
+    println!();
+    println!(
         "EXPERIMENTAL diagnostic link (XTLS Vision flow OFF, same credentials, labeled \
          \"(EXPERIMENTAL Vision-off)\" — see docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md \u{a7}9.5):"
     );
@@ -2143,15 +2279,14 @@ fn cmd_user_create(
     );
     println!();
     println!(
-        "YouTube/native-app compatibility link (same credentials, same transports, adds one \
-         route rule that fails application QUIC fast instead of black-holing it — see \
-         docs/YOUTUBE_FINAL_ROOT_CAUSE.md):"
+        "Raw-sing-box-only QUIC-reject link (same credentials and transports, adds one route \
+         rule that fails application QUIC fast instead of black-holing it):"
     );
     println!("  {}", subscription_url_quic_reject(cfg, &token));
     println!(
-        "  Needs no server-side change and weakens nothing. Import it as a SEPARATE profile \
-         and keep the normal one. It is format=singbox (raw JSON), because a routing rule \
-         cannot be expressed in a share link."
+        "  DOES NOTHING IN HIDDIFY. hiddify-core rebuilds routing and discards any imported \
+         route rules, so this only has an effect in a client that runs the config as given \
+         (a raw sing-box client). See docs/YOUTUBE_FINAL_ROOT_CAUSE.md."
     );
     if qr {
         println!();
@@ -2285,10 +2420,14 @@ fn peer_credential_from_flags(
         (CompatTransport::VlessReality, Some(uuid), None) => {
             let uuid = uuid.trim().to_string();
             if !credentials::is_uuid_v4_shaped(&uuid) {
+                // The rejected value is not echoed: a near-miss paste is
+                // still most of a credential.
                 anyhow::bail!(
-                    "peer endpoint {:?} is vless-reality, and {uuid:?} is not an 8-4-4-4-12 hex \
-                     UUID. Paste the client id the PEER server issued for this user.",
-                    peer.id
+                    "peer endpoint {:?} is vless-reality, and the supplied value ({} characters, \
+                     not shown) is not an 8-4-4-4-12 hex UUID. Paste the client id the PEER \
+                     server issued for this user.",
+                    peer.id,
+                    uuid.chars().count()
                 );
             }
             Ok(PeerCredential::VlessReality { uuid })
@@ -2346,15 +2485,118 @@ fn find_peer_endpoint<'a>(
 /// nothing about this deployment's own listeners changes, so there is
 /// nothing to apply. It affects only what this user's next subscription
 /// fetch returns.
+/// Where `user peer set|rotate` takes the peer credential from.
+enum PeerCredentialSource {
+    /// `--credential-stdin`: never in argv (real two-VPS acceptance O5).
+    Stdin,
+    /// Legacy `--uuid` / `--password` command-line values.
+    Arguments {
+        uuid: Option<String>,
+        password: Option<String>,
+    },
+}
+
+impl PeerCredentialSource {
+    fn from_flags(credential_stdin: bool, uuid: Option<String>, password: Option<String>) -> Self {
+        if credential_stdin {
+            Self::Stdin
+        } else {
+            Self::Arguments { uuid, password }
+        }
+    }
+}
+
+/// One line from stdin with the trailing newline removed. On a terminal the
+/// prompt goes to stderr and echo is switched off while typing, so the value
+/// is not shown on screen either.
+fn read_peer_credential_from_stdin() -> Result<String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if stdin.is_terminal() {
+        eprint!("Credential issued by the peer server (input hidden): ");
+        std::io::stderr().flush().ok();
+        #[cfg(unix)]
+        {
+            let _echo_off = TerminalEchoOff::new(libc::STDIN_FILENO);
+            stdin.lock().read_line(&mut line)?;
+        }
+        #[cfg(not(unix))]
+        stdin.lock().read_line(&mut line)?;
+        eprintln!();
+    } else {
+        stdin.lock().read_line(&mut line)?;
+    }
+    let value = line.trim_end_matches(['\r', '\n']).to_string();
+    if value.trim().is_empty() {
+        bail!("--credential-stdin: no credential was provided on standard input");
+    }
+    Ok(value)
+}
+
+/// Restores the terminal's echo flag when dropped.
+#[cfg(unix)]
+struct TerminalEchoOff {
+    fd: libc::c_int,
+    original: Option<libc::termios>,
+}
+
+#[cfg(unix)]
+impl TerminalEchoOff {
+    fn new(fd: libc::c_int) -> Self {
+        // SAFETY: tcgetattr/tcsetattr on a descriptor this process owns,
+        // with a zeroed termios that tcgetattr fully initialises.
+        let mut term: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(fd, &mut term) } != 0 {
+            return Self { fd, original: None };
+        }
+        let original = term;
+        term.c_lflag &= !libc::ECHO;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
+            return Self { fd, original: None };
+        }
+        Self {
+            fd,
+            original: Some(original),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalEchoOff {
+    fn drop(&mut self) {
+        if let Some(original) = &self.original {
+            unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, original) };
+        }
+    }
+}
+
 fn cmd_user_peer_set(
     cfg: &DeploymentConfig,
     id: &str,
     endpoint_id: &str,
-    uuid: Option<String>,
-    password: Option<String>,
+    source: PeerCredentialSource,
     require_existing: bool,
 ) -> Result<()> {
     let peer = find_peer_endpoint(cfg, endpoint_id)?;
+    let (uuid, password) = match source {
+        PeerCredentialSource::Stdin => {
+            let value = read_peer_credential_from_stdin()?;
+            match peer.transport {
+                compat_config::model::CompatTransport::VlessReality => (Some(value), None),
+                compat_config::model::CompatTransport::Hysteria2 => (None, Some(value)),
+            }
+        }
+        PeerCredentialSource::Arguments { uuid, password } => {
+            if uuid.is_some() || password.is_some() {
+                eprintln!(
+                    "note: a credential passed as --uuid/--password is visible in process \
+                     listings and shell history; use --credential-stdin for automation."
+                );
+            }
+            (uuid, password)
+        }
+    };
     let credential = peer_credential_from_flags(peer, uuid, password)?;
 
     let mut users = store::load_users(&cfg.users_file())?;
@@ -2501,22 +2743,7 @@ fn served_endpoints(
     hysteria_obfs_password: Option<&str>,
 ) -> Result<Vec<compat_config::model::CompatEndpoint>> {
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
-    let mut endpoints = compat_config::render::standard_endpoints(
-        &cfg.public_host,
-        cfg.reality.listen_port,
-        cfg.hysteria2.listen_port,
-        &reality.public_key_hex,
-        &short_id,
-        &reality.handshake_server,
-        hysteria_obfs_password,
-    );
-    for peer in &cfg.peer_endpoints {
-        endpoints.push(
-            peer.to_compat_endpoint()
-                .with_context(|| format!("invalid [[peer_endpoints]] entry {:?}", peer.id))?,
-        );
-    }
-    Ok(endpoints)
+    Ok(cfg.served_endpoints(&reality.public_key_hex, &short_id, hysteria_obfs_password)?)
 }
 
 /// `vpn-admin user links ID`: out-of-band recovery path (see the
@@ -2547,29 +2774,51 @@ fn cmd_user_links(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
         &reality,
         hysteria.obfs_password.as_ref().map(|s| s.expose()),
     )?;
+    let access_paths = cfg.contract_access_paths()?;
+    let infrastructure = compat_config::contract::infrastructure_endpoint_ids(&access_paths);
+    // Same representability rules as the subscription service's share-link
+    // formats (`render::share_link_endpoints`): a relay route or a relay's
+    // own first hop is never printed as a link that would dial directly.
+    let shareable = compat_config::render::share_link_endpoints(&endpoints, &access_paths);
 
     println!("Out-of-band connection URIs for {id} (subscription service NOT required):");
     println!();
     for endpoint in &endpoints {
-        // A peer this user has no credential for is skipped rather than
-        // erroring out: it must not stop the LOCAL endpoints, which are
-        // the ones this recovery path exists to deliver.
-        if endpoint.origin == compat_config::model::EndpointOrigin::Peer
-            && user.peer_credential(&endpoint.id).is_none()
+        if infrastructure.contains(&endpoint.id) {
+            continue;
+        }
+        if !shareable
+            .iter()
+            .any(|candidate| candidate.id == endpoint.id)
         {
+            println!(
+                "{}: omitted — this route needs a relay first hop, which share-link syntax cannot \
+                 express (use the provisioning/sing-box subscription instead)",
+                endpoint.label
+            );
+            println!();
+            continue;
+        }
+        let flow = compat_config::contract::VlessFlow::Vision;
+        let Some(built) =
+            compat_config::contract::contract_endpoint_opt(user, endpoint, flow, None)?
+        else {
+            // A peer this user has no credential for is skipped rather than
+            // erroring out: it must not stop the LOCAL endpoints, which are
+            // the ones this recovery path exists to deliver.
             println!(
                 "{} (peer): skipped — no peer credential set for this user",
                 endpoint.label
             );
             println!();
             continue;
-        }
+        };
         let uri = match endpoint.transport {
             compat_config::model::CompatTransport::VlessReality => {
-                compat_config::render::render_vless_reality_uri(user, endpoint)?
+                compat_config::render::render_vless_reality_uri_from_contract(&built)?
             }
             compat_config::model::CompatTransport::Hysteria2 => {
-                compat_config::render::render_hysteria2_uri(user, endpoint)?
+                compat_config::render::render_hysteria2_uri_from_contract(&built)?
             }
         };
         println!("{}:", endpoint.label);
@@ -2790,6 +3039,8 @@ fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
 
     println!("singbox-vpn status");
     println!();
+    print_node_identity(cfg);
+    println!();
     let singbox = CompatibilityServiceManager::new("sing-box");
     println!("sing-box              {}", service_state_label(&singbox));
     let subscription = CompatibilityServiceManager::new("vpn-subscription");
@@ -2831,6 +3082,96 @@ fn cmd_status(cfg: &DeploymentConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Node identity, role and relay pairing for `status`. Aggregate and
+/// non-secret only: counts and declared ids, never credentials, never
+/// anything derived from traffic.
+fn print_node_identity(cfg: &DeploymentConfig) {
+    use compat_config::deployment::NodeRole;
+    let node_id = if cfg.node_id.is_empty() {
+        "(not set — run `vpn-admin config migrate`)"
+    } else {
+        cfg.node_id.as_str()
+    };
+    println!("Node:                  {node_id}");
+    println!("Role:                  {}", cfg.role.as_str());
+    let direct_peers = cfg
+        .peer_endpoints
+        .iter()
+        .filter(|peer| peer.path == "direct")
+        .count();
+    let relay_routes = cfg.peer_endpoints.len() - direct_peers;
+    println!(
+        "Declared routes:       {direct_peers} direct peer route(s), {relay_routes} relay route(s)"
+    );
+    if cfg.role == NodeRole::Relay {
+        let targets = cfg.relay_targets();
+        if targets.is_empty() {
+            println!(
+                "Relay pairing:         UNPAIRED — forwarding is reject-all until an exit is declared"
+            );
+        } else {
+            println!(
+                "Relay pairing:         {} declared exit target(s); every other destination is rejected",
+                targets.len()
+            );
+        }
+    }
+}
+
+/// `doctor`'s relay policy check: proves the document this node renders
+/// (and therefore what `render-config` would apply) forwards only to the
+/// declared exits and ends in a reject. Reports aggregate counts only.
+fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures: &mut u32) {
+    use compat_config::deployment::NodeRole;
+    let rules = doc["route"]["rules"].as_array();
+    match cfg.role {
+        NodeRole::Exit => {
+            if rules.is_some() {
+                report_check(
+                    CheckStatus::Fail,
+                    "L2",
+                    "exit node renders relay forwarding rules — role/renderer mismatch",
+                );
+                *failures += 1;
+            }
+        }
+        NodeRole::Relay => {
+            let targets = cfg.relay_targets();
+            let fail_closed = rules.is_some_and(|rules| {
+                rules.last().is_some_and(|last| last["action"] == "reject")
+                    && rules.len() == targets.len() + 2
+            });
+            if fail_closed {
+                report_check(
+                    CheckStatus::Ok,
+                    "L2",
+                    format!(
+                        "relay forwarding policy is fail-closed: {} declared exit target(s) allowed, \
+                         everything else rejected",
+                        targets.len()
+                    ),
+                );
+            } else {
+                report_check(
+                    CheckStatus::Fail,
+                    "L2",
+                    "relay forwarding policy is NOT fail-closed in the rendered config — refusing \
+                     to treat this relay as safe",
+                );
+                *failures += 1;
+            }
+            if targets.is_empty() {
+                report_check(
+                    CheckStatus::Warn,
+                    "L2",
+                    "relay is UNPAIRED: no exit is declared, so every forwarded connection is rejected \
+                     and subscriptions answer 503 no_selectable_route",
+                );
+            }
+        }
+    }
 }
 
 /// A human-readable service state summary — `active`/`inactive`/
@@ -5365,12 +5706,21 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         }
     };
     let hysteria = load_hysteria_params(cfg);
-    let ports = ServerPorts {
-        vless_reality_port: cfg.reality.listen_port,
-        hysteria2_port: cfg.hysteria2.listen_port,
-    };
     let now = UnixSeconds::now().0 as i64;
-    let fresh_server_doc = render_singbox_server_config(&users, &reality, &hysteria, ports, now);
+    let fresh_server_doc =
+        match render_server_config_for_deployment(cfg, &users, &reality, &hysteria, now) {
+            Ok(doc) => doc,
+            Err(e) => {
+                report_check(
+                    CheckStatus::Fail,
+                    "L4",
+                    format!("cannot render the role-aware server config for this deployment: {e}"),
+                );
+                *failures += 1;
+                return;
+            }
+        };
+    report_relay_policy(cfg, &fresh_server_doc, failures);
 
     // The EXACT same function `services/subscription`'s live process
     // calls to build its own `AppState.endpoints` — not a hand-rolled
@@ -6710,12 +7060,16 @@ fn run_reality_client_selftest(
 /// invalid connection`, while the client — run with this self-test's exact
 /// production log level — logged nothing matching either string.
 ///
-/// The SERVER's own log is the reliable signal (confirmed: it logs
-/// `processed invalid connection` at ERROR severity, so it survives the
-/// production default `"log": {"level": "warn"}`, matching `journalctl -u
-/// sing-box` output an operator would see directly), so `journal_hit`
-/// (a cross-check of that log during this self-test's own connection
-/// attempt) also counts. This is still only corroborating evidence, not
+/// The SERVER's own log is the reliable signal (it logs `processed invalid
+/// connection` at ERROR severity), so `journal_hit` (a cross-check of that
+/// log during this self-test's own connection attempt) also counts. Since
+/// D4 the production server config logs at `fatal`
+/// (`compat_config::server::server_log_options`), because the same ERROR
+/// class carries presented credentials and client addresses; on such a
+/// node the journal holds no per-connection lines, `journal_hit` stays
+/// `false`, and a silent failure is reported as Inconclusive rather than
+/// HandshakeRejected. A server run at a raised level for an investigation
+/// still gets the cross-check. This is still only corroborating evidence, not
 /// proof of cause: unrelated scanner traffic hitting the same port during
 /// the self-test's brief window could in principle produce a false-positive
 /// correlation, and — per the HandshakeRejected message in
@@ -7120,6 +7474,45 @@ fn extract_validated_backup(archive_path: &std::path::Path, dir: &std::path::Pat
     Ok(())
 }
 
+/// A backup's users are first-hop credentials on a relay and exit
+/// credentials on an exit. Restoring one role's users onto the other role
+/// would silently change what those credentials can reach — a relay's
+/// users becoming unrestricted exit users is exactly the escalation relay
+/// mode exists to prevent — so a role or node-identity mismatch is refused
+/// before any live state is touched. Backups taken before roles existed
+/// carry no role and were exits.
+fn refuse_cross_node_restore(
+    cfg: &DeploymentConfig,
+    archived_deployment: &std::path::Path,
+) -> Result<()> {
+    if !archived_deployment.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(archived_deployment)
+        .context("reading the backup's deployment.toml")?;
+    let archived: DeploymentConfig = toml::from_str(&text)
+        .context("the backup's deployment.toml does not parse — refusing to restore")?;
+    if archived.role != cfg.role {
+        bail!(
+            "refusing restore: the backup was taken on a node with role {}, but this node's role \
+             is {}. Restoring it would change what the restored credentials can reach. Restore \
+             onto a node installed with the same --role.",
+            archived.role.as_str(),
+            cfg.role.as_str()
+        );
+    }
+    if !archived.node_id.is_empty() && !cfg.node_id.is_empty() && archived.node_id != cfg.node_id {
+        bail!(
+            "refusing restore: the backup belongs to node {:?} but this node is {:?}. Reinstall \
+             with --node-id {} to rebuild that node.",
+            archived.node_id,
+            cfg.node_id,
+            archived.node_id
+        );
+    }
+    Ok(())
+}
+
 fn cmd_restore(
     cfg: &DeploymentConfig,
     config_path: &std::path::Path,
@@ -7173,6 +7566,7 @@ fn cmd_restore(
             "restored REALITY private/public keys do not form one X25519 keypair — refusing to \
              install a split keyset",
         )?;
+    refuse_cross_node_restore(cfg, &staging.path().join("deployment.toml"))?;
     let hy_cert = staging.path().join("hysteria/cert.pem");
     let hy_key = staging.path().join("hysteria/key.pem");
     if hy_cert.exists() != hy_key.exists() {
@@ -7957,48 +8351,33 @@ mod udp_probe_tests {
         assert!(cert_expiry_days(&dir.path().join("does-not-exist.pem")).is_none());
     }
 
+    /// A synthetic, already-expired certificate with fixed dates
+    /// (notBefore 2020-01-01T00:00:00Z, notAfter 2020-01-02T00:00:00Z),
+    /// generated once for this test; its private key was never kept.
+    ///
+    /// A checked-in fixture rather than `openssl x509 -req -days -1`: OpenSSL
+    /// 3.5 (AlmaLinux 9.8) rejects a negative validity with "end date before
+    /// start date", which failed this test inside `update.sh --repair` on a
+    /// supported host (real two-VPS acceptance defect D5).
+    const EXPIRED_CERT_PEM: &str = include_str!("testdata/expired-2020-01-02.pem");
+    const EXPIRED_CERT_NOT_AFTER_UNIX: i64 = 1_577_923_200;
+
     #[test]
     fn cert_expiry_days_reports_negative_days_for_an_already_expired_cert() {
         let dir = tempfile::tempdir().unwrap();
-        let csr_path = dir.path().join("expired.csr");
-        let key_path = dir.path().join("expired.key");
         let cert_path = dir.path().join("expired.pem");
-        // `req -x509 -days` rejects negative values outright — build a CSR
-        // first, then self-sign it via `x509 -req -days -1`, which backdates
-        // notAfter to yesterday and so reliably produces an already-expired
-        // certificate regardless of what "today" is when this test runs.
-        let status = std::process::Command::new("openssl")
-            .args([
-                "req",
-                "-newkey",
-                "rsa:2048",
-                "-nodes",
-                "-subj",
-                "/CN=expired.example.com",
-                "-keyout",
-            ])
-            .arg(&key_path)
-            .arg("-out")
-            .arg(&csr_path)
-            .status()
-            .expect("openssl must be available to run this test");
-        assert!(status.success(), "openssl failed to generate a test CSR");
-        let status = std::process::Command::new("openssl")
-            .args(["x509", "-req", "-in"])
-            .arg(&csr_path)
-            .args(["-signkey"])
-            .arg(&key_path)
-            .args(["-days", "-1", "-out"])
-            .arg(&cert_path)
-            .status()
-            .expect("openssl must be available to run this test");
-        assert!(status.success(), "openssl failed to self-sign a test cert");
+        std::fs::write(&cert_path, EXPIRED_CERT_PEM).unwrap();
 
         let result = cert_expiry_days(&cert_path).expect("file exists, must return Some");
         let days = result.expect("valid cert, openssl/date parsing must succeed");
+        let expected = (EXPIRED_CERT_NOT_AFTER_UNIX - UnixSeconds::now().0 as i64) / 86400;
         assert!(
             days < 0,
-            "cert self-signed with -days -1 must report negative days remaining, got {days}"
+            "an expired cert must report negative days, got {days}"
+        );
+        assert!(
+            (days - expected).abs() <= 1,
+            "days must be computed from the certificate's own notAfter: expected about {expected}, got {days}"
         );
     }
 
