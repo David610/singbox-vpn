@@ -104,12 +104,12 @@ pub fn contract_endpoint_opt(
                 Some(c) => {
                     if c.transport() != endpoint.transport {
                         return Err(CompatError::Parse(format!(
-                        "user {}: peer credential for {:?} is a {} credential but that endpoint is {}; a credential is never coerced across transports",
-                        user.id,
-                        endpoint.id,
-                        c.transport().as_str(),
-                        endpoint.transport.as_str()
-                    )));
+                            "user {}: peer credential for {:?} is a {} credential but that endpoint is {}; a credential is never coerced across transports",
+                            user.id,
+                            endpoint.id,
+                            c.transport().as_str(),
+                            endpoint.transport.as_str()
+                        )));
                     }
                     Some(c)
                 }
@@ -288,6 +288,50 @@ pub fn provisioning_document_with_mode_and_access_paths(
     )
 }
 
+/// Hiddify's pinned Privacy+ route is a VLESS+REALITY exit reached through a
+/// VLESS first-hop `detour`. That transport chain still has to accept
+/// application UDP from the TUN: sing-box encodes it as XUDP inside the
+/// final VLESS connection, while the final VLESS connection itself is dialled
+/// through the first-hop VLESS outbound over TCP/REALITY.
+///
+/// Relay rendering historically added `"network":"tcp"` to the final
+/// outbound. In sing-box that filters the application network too, so Hiddify
+/// cannot hand UDP/QUIC traffic to XUDP and native apps can wait on a silent
+/// black hole. Remove that accidental restriction only for the opt-in
+/// Hiddify-pinned compatibility profile. Other profiles keep their existing
+/// semantics unchanged; `TcpOnly` in particular remains deliberately TCP-only.
+fn restore_application_udp_on_relayed_vless(
+    singbox_config: &mut serde_json::Value,
+    compat_mode: crate::render::CompatibilityMode,
+) -> Result<(), CompatError> {
+    if compat_mode != crate::render::CompatibilityMode::HiddifyPinned {
+        return Ok(());
+    }
+
+    let outbounds = singbox_config
+        .get_mut("outbounds")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| {
+            CompatError::Parse("rendered sing-box config has no outbounds array".into())
+        })?;
+
+    for outbound in outbounds {
+        let relayed_vless = outbound.get("type").and_then(serde_json::Value::as_str)
+            == Some("vless")
+            && outbound
+                .get("detour")
+                .and_then(serde_json::Value::as_str)
+                .is_some();
+        if relayed_vless {
+            outbound
+                .as_object_mut()
+                .expect("rendered outbound is always an object")
+                .remove("network");
+        }
+    }
+    Ok(())
+}
+
 /// Access-path-aware provisioning while preserving the caller's complete
 /// rendering request. This is used by relay-aware subscriptions.
 pub fn provisioning_document_with_mode_and_access_paths_and_options(
@@ -368,13 +412,14 @@ pub fn provisioning_document_with_mode_and_access_paths_and_options(
         .iter()
         .map(|endpoint| endpoint.id.clone())
         .collect();
-    let singbox_config = crate::render::render_singbox_config_from_contract_with_access_paths(
+    let mut singbox_config = crate::render::render_singbox_config_from_contract_with_access_paths(
         &contract_endpoints,
         &selectable_ids,
         access_paths,
         profile,
         compat_mode,
     )?;
+    restore_application_udp_on_relayed_vless(&mut singbox_config, compat_mode)?;
 
     // `HiddifyPinned` serves ONE route (see
     // `crate::render::pin_to_single_route`), so the catalog has to say
