@@ -135,6 +135,29 @@ OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
 # shellcheck source=/dev/null
 . "$INSTALL_SH"
 
+# Floating RHEL-family base images (rockylinux:9, almalinux:9) stay at an
+# older minor while their live BaseOS/AppStream repos roll to a newer one
+# (e.g. the rockylinux:9 container at 9.3 against repos at 9.8). A package
+# pin like `openssl-devel = 1:3.5.8-1.el9_8` then requires
+# `openssl-libs = 1:3.5.8-1.el9_8` at the same NVR, which a stale base cannot
+# satisfy — a real os-matrix failure on rockylinux:9. Align the base image
+# with its own repos first so L2 measures "these package names resolve on
+# this distribution today" rather than "this floating container image is
+# stale." RHEL-family only: Debian's per-suite repos and rolling tags don't
+# pin packages by exact version the way AppStream does, so there is no
+# equivalent skew failure mode there. A refresh that fails (e.g. mid-
+# propagation mirrors) is a real environment defect today and is reported,
+# never hidden behind a retry/`|| true`.
+if [ "$OS_FAMILY" = "rhel" ]; then
+  echo "[install] aligning base image with rolling $OS_ID repos (dnf -y update)..."
+  pkg_update_log="$(mktemp)"
+  if ! dnf -y update >"$pkg_update_log" 2>&1; then
+    cat "$pkg_update_log" >&2
+    echo "FAIL: dnf -y update could not align base image with rolling $OS_ID repos" >&2
+    exit 1
+  fi
+  rm -f "$pkg_update_log"
+fi
 install_packages
 
 echo
