@@ -104,12 +104,12 @@ pub fn contract_endpoint_opt(
                 Some(c) => {
                     if c.transport() != endpoint.transport {
                         return Err(CompatError::Parse(format!(
-                        "user {}: peer credential for {:?} is a {} credential but that endpoint is {}; a credential is never coerced across transports",
-                        user.id,
-                        endpoint.id,
-                        c.transport().as_str(),
-                        endpoint.transport.as_str()
-                    )));
+                            "user {}: peer credential for {:?} is a {} credential but that endpoint is {}; a credential is never coerced across transports",
+                            user.id,
+                            endpoint.id,
+                            c.transport().as_str(),
+                            endpoint.transport.as_str()
+                        )));
                     }
                     Some(c)
                 }
@@ -288,31 +288,32 @@ pub fn provisioning_document_with_mode_and_access_paths(
     )
 }
 
-/// A VLESS+REALITY `detour` is a transport chain, not an instruction to
-/// accept only application TCP.  The final VLESS outbound still needs to
-/// carry both TCP and UDP from the TUN; application UDP is encoded as XUDP
-/// inside that outbound's TCP/REALITY connection, whose socket is then
-/// dialled through the first-hop VLESS outbound.
+/// Hiddify's pinned Privacy+ route is a VLESS+REALITY exit reached through a
+/// VLESS first-hop `detour`. That transport chain still has to accept
+/// application UDP from the TUN: sing-box encodes it as XUDP inside the
+/// final VLESS connection, while the final VLESS connection itself is dialled
+/// through the first-hop VLESS outbound over TCP/REALITY.
 ///
-/// Older relay rendering added `"network":"tcp"` to the final outbound.
-/// In sing-box that field filters the *application* network.  It therefore
-/// disabled XUDP, and because the later unsupported-UDP error is not turned
-/// into an app-visible rejection by the TUN path, QUIC-heavy native apps can
-/// wait on a black hole instead of falling back.  Remove only that accidental
-/// restriction from detoured VLESS outbounds.  The explicit TcpOnly
-/// diagnostic deliberately keeps it.
+/// Relay rendering historically added `"network":"tcp"` to the final
+/// outbound. In sing-box that filters the application network too, so Hiddify
+/// cannot hand UDP/QUIC traffic to XUDP and native apps can wait on a silent
+/// black hole. Remove that accidental restriction only for the opt-in
+/// Hiddify-pinned compatibility profile. Other profiles keep their existing
+/// semantics unchanged; `TcpOnly` in particular remains deliberately TCP-only.
 fn restore_application_udp_on_relayed_vless(
     singbox_config: &mut serde_json::Value,
     compat_mode: crate::render::CompatibilityMode,
 ) -> Result<(), CompatError> {
-    if compat_mode == crate::render::CompatibilityMode::TcpOnly {
+    if compat_mode != crate::render::CompatibilityMode::HiddifyPinned {
         return Ok(());
     }
 
     let outbounds = singbox_config
         .get_mut("outbounds")
         .and_then(serde_json::Value::as_array_mut)
-        .ok_or_else(|| CompatError::Parse("rendered sing-box config has no outbounds array".into()))?;
+        .ok_or_else(|| {
+            CompatError::Parse("rendered sing-box config has no outbounds array".into())
+        })?;
 
     for outbound in outbounds {
         let relayed_vless = outbound.get("type").and_then(serde_json::Value::as_str)
