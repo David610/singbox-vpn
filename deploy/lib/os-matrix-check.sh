@@ -5,12 +5,12 @@
 #
 # This is NOT part of the deploy/lib/tests/*.sh fixture suite (those never
 # touch a real package manager, a real network, or a real distribution
-# image) ??? it is the L1/L2 layer described in docs/SUPPORTED_PRODUCT.md /
+# image) — it is the L1/L2 layer described in docs/SUPPORTED_PRODUCT.md /
 # docs/INSTALLATION.md:
-#   L1 ??? the real detect_os() (deploy/lib/os.sh) classifies this
+#   L1 — the real detect_os() (deploy/lib/os.sh) classifies this
 #        container's real /etc/os-release into the expected
 #        OS_FAMILY/PKG_MANAGER/FIREWALL_BACKEND.
-#   L2 ??? the exact package list install_dependencies_rhel()/
+#   L2 — the exact package list install_dependencies_rhel()/
 #        install_dependencies_debian() (deploy/almalinux/install.sh) would
 #        install in production actually resolves and installs, for real,
 #        via the real dnf/apt against that distro's real live repositories
@@ -19,10 +19,10 @@
 #
 # Deliberately does NOT prove: firewalld/ufw activation, systemd unit
 # behavior, SELinux enforcement, or anything else needing a real init
-# system and live kernel network stack (L3/L4 ??? see
+# system and live kernel network stack (L3/L4 — see
 # deploy/almalinux/acceptance-test.sh and docs/DEVICE_ACCEPTANCE_TESTS.md
 # for what an actual VPS smoke pass covers). systemctl/firewall-cmd/ufw
-# are stubbed to harmless no-ops below for exactly that reason ??? most
+# are stubbed to harmless no-ops below for exactly that reason — most
 # container runtimes provide neither a running init system nor real
 # firewall/netfilter access. A green run here is real evidence that
 # package names resolve on this distribution today; it is NOT an
@@ -51,7 +51,7 @@ fi
 echo
 echo "--- L2: real dependency installation via install_dependencies_${OS_FAMILY}() (production function, real dnf/apt, firewall/systemd stubbed) ---"
 
-# systemctl/firewall-cmd/firewall-offline-cmd/ufw: stubbed ??? no container
+# systemctl/firewall-cmd/firewall-offline-cmd/ufw: stubbed — no container
 # runtime here has a real init system or real firewall/netfilter access,
 # this is the documented L1/L2 boundary above, not an attempt to fake
 # L3/L4. But activate_firewalld_ssh_safe()/activate_ufw_ssh_safe()
@@ -59,10 +59,10 @@ echo "--- L2: real dependency installation via install_dependencies_${OS_FAMILY}
 # rule before/after activation (a real P0 fix: never trust a firewall
 # activation without checking it), so these stubs have to track just
 # enough in-memory state for that self-verification to see a consistent
-# answer ??? a blanket no-op response now makes install_packages() itself
+# answer — a blanket no-op response now makes install_packages() itself
 # fail here, not because activation is broken, but because the stub
 # can't distinguish "rule requested" from "rule not requested". Still not
-# real netfilter/systemd ??? just enough state to round-trip the same
+# real netfilter/systemd — just enough state to round-trip the same
 # add/query calls the real tools would.
 _fw_zone_ssh_service=0
 _fw_zone_ssh_port=0
@@ -128,7 +128,7 @@ OWNERSHIP_DIR="$(mktemp -d)"
 OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
 
 # install.sh guards its own main() behind a `[[ "${BASH_SOURCE[0]}" ==
-# "${0}" ]]` check specifically so it can be sourced like this ??? see the
+# "${0}" ]]` check specifically so it can be sourced like this — see the
 # comment at the bottom of that file. Sourcing it defines every function
 # (including install_dependencies_rhel/debian and install_packages) without
 # running the production install.
@@ -140,7 +140,7 @@ OWNERSHIP_FILE="$OWNERSHIP_DIR/ownership.env"
 # (e.g. the rockylinux:9 container at 9.3 against repos at 9.8). A package
 # pin like `openssl-devel = 1:3.5.8-1.el9_8` then requires
 # `openssl-libs = 1:3.5.8-1.el9_8` at the same NVR, which a stale base cannot
-# satisfy ??? a real os-matrix failure on rockylinux:9. Align the base image
+# satisfy — a real os-matrix failure on rockylinux:9. Align the base image
 # with its own repos first so L2 measures "these package names resolve on
 # this distribution today" rather than "this floating container image is
 # stale." RHEL-family only: Debian's per-suite repos and rolling tags don't
@@ -158,7 +158,6 @@ if [ "$OS_FAMILY" = "rhel" ]; then
   fi
   rm -f "$pkg_update_log"
 fi
-
 install_packages
 
 echo
