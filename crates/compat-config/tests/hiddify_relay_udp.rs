@@ -126,7 +126,10 @@ fn hiddify_pinned_relay_keeps_xudp_available_to_application_udp() {
         .expect("pinned relayed exit");
 
     assert_eq!(exit["type"], "vless");
-    assert!(exit["detour"].is_string(), "relay detour must remain intact");
+    assert!(
+        exit["detour"].is_string(),
+        "relay detour must remain intact"
+    );
     assert!(
         exit.get("network").is_none(),
         "network=tcp filters application UDP before VLESS can encode it as XUDP"
