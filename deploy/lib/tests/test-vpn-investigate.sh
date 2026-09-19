@@ -183,6 +183,49 @@ else
   echo "SKIP: pairing verdict assertions need awk - only the usage/missing-config contract above applies."
 fi
 
+# session-capture / session-verdict: root-causing a mid-session failure that
+# survives setup (docs/YOUTUBE_FINAL_ROOT_CAUSE.md §10 item 4). Input
+# validation is always checked; the real tshark-driven verdict is only
+# exercised when tshark and tcpdump are both available, same optional-tool
+# convention as udp-egress-verdict above.
+"$TOOL" --help | grep -q 'session-capture'
+"$TOOL" --help | grep -q 'session-verdict'
+if "$TOOL" session-capture 'not-an-ip' /tmp/no.pcap 60 2>/dev/null; then exit 1; fi
+if "$TOOL" session-capture 192.0.2.1 /tmp/no.notpcap 60 2>/dev/null; then exit 1; fi
+if "$TOOL" session-capture 192.0.2.1 /tmp/no.pcap 59 2>/dev/null; then exit 1; fi
+if "$TOOL" session-capture 192.0.2.1 /tmp/no.pcap 1801 2>/dev/null; then exit 1; fi
+if "$TOOL" session-verdict /tmp/no.pcap 'not-an-ip' 2026-01-01T00:00:00Z 2>/dev/null; then exit 1; fi
+if "$TOOL" session-verdict /tmp/does-not-exist.pcap 192.0.2.1 2026-01-01T00:00:00Z 2>/dev/null; then exit 1; fi
+if ! command -v tshark >/dev/null 2>&1 || ! command -v tcpdump >/dev/null 2>&1; then
+  echo "SKIP: session-verdict's real pcap-driven verdict needs tshark and tcpdump, neither guaranteed present here — input-validation contract above still applies."
+else
+  SESSION_DIR=$(mktemp -d)
+  trap 'rm -rf "$SESSION_DIR" "${PAIR_DIR:-}" "${VERDICT_DIR:-}"' EXIT
+  SESSION_CLIENT=192.0.2.77
+
+  # A bad FAILURE_TIME_UTC must be rejected before any pcap/tshark work, on a
+  # real (if empty) pcap — not just on a missing one.
+  EMPTY_SESSION_PCAP="$SESSION_DIR/empty.pcap"
+  sudo timeout 2 tcpdump -i lo -w "$EMPTY_SESSION_PCAP" 'tcp port 1' >/dev/null 2>&1 || true
+  if [[ -f "$EMPTY_SESSION_PCAP" ]]; then
+    if "$TOOL" session-verdict "$EMPTY_SESSION_PCAP" "$SESSION_CLIENT" 'not-a-real-time' 2>/dev/null; then
+      exit 1
+    fi
+
+    SESSION_OUT="$(sudo "$TOOL" session-verdict "$EMPTY_SESSION_PCAP" "$SESSION_CLIENT" 2026-01-01T00:00:00Z 2>&1)"
+    echo "$SESSION_OUT" | grep -q '0 TCP/443 packets'
+    echo "$SESSION_OUT" | grep -q 'VERDICT: INCONCLUSIVE'
+    echo "$SESSION_OUT" | grep -q 'FACT'
+    echo "$SESSION_OUT" | grep -q 'INFERENCE'
+    if echo "$SESSION_OUT" | grep -qiE 'private_key|reality[_ ]?private|vless_uuid|hysteria2_password'; then
+      echo "FAIL: session-verdict printed something secret-shaped" >&2
+      exit 1
+    fi
+  else
+    echo "SKIP: this sandbox could not write a loopback pcap fixture — the input-validation contract above still applies."
+  fi
+fi
+
 # youtube takes no arguments and performs real outbound network calls
 # (DNS/TCP/TLS to public Google/YouTube domains) with no bounded
 # input-validation path of its own to test in isolation — CI/this sandbox
