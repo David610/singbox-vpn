@@ -17,6 +17,8 @@ Usage:
   vpn-investigate.sh tiktok
   vpn-investigate.sh client CLIENT_IP
   vpn-investigate.sh pairing [DEPLOYMENT_TOML]
+  vpn-investigate.sh session-capture CLIENT_IP OUTPUT.pcap [SECONDS]
+  vpn-investigate.sh session-verdict INPUT.pcap CLIENT_IP FAILURE_TIME_UTC
 
 target validates a REALITY handshake candidate from this host over IPv4 and
 IPv6. capture records only CLIENT_IP and TCP/443 or UDP/443 for at most 300s.
@@ -91,6 +93,28 @@ RELAY-PAIRED / RELAY-UNPAIRED verdict (unpaired = intended fail-closed
 reject-all + subscription-service 503), listener presence, and backend
 liveness. It prints deployment topology but never secrets (peer obfs_password,
 reality keys, UUIDs); it reads config and listener state only.
+
+session-capture records ONLY CLIENT_IP's TCP/443-or-UDP/443 traffic for up to
+1800s (30 minutes) — long enough to span a reported multi-minute mid-session
+failure, unlike `capture`'s 300s bound. Run it on EVERY hop a session crosses
+(the relay AND the exit, for a two-hop Privacy+ path) at the same time, then
+have the affected client use the VPN as normal until the failure reproduces or
+the window ends. See docs/YOUTUBE_FINAL_ROOT_CAUSE.md §10 item 4 ("the 15-18
+minute REALITY session death... observed on two clients") for the defect class
+this exists to actually root-cause instead of leaving as a standing hypothesis.
+
+session-verdict reads a session-capture (or capture) pcap plus CLIENT_IP and a
+FAILURE_TIME_UTC (RFC3339, e.g. 2026-09-19T14:32:00Z — the time the user
+reports the app broke), and reports, FACT/INFERENCE/UNKNOWN labeled: every
+RST/FIN seen for that client on this hop and which side sent it (this host or
+the client — anchored to this host's own addresses, same mechanism as
+udp-egress-verdict), the closest such event to FAILURE_TIME_UTC, and whether
+this hop's traffic went silent (no packets at all, no RST/FIN) before, at, or
+after the reported failure time. Run its output from every hop's own capture
+side by side: the hop whose traffic actually stops or resets at the reported
+time is where the break is; a hop still exchanging packets normally straight
+through that time is proven NOT to be where the break is. Never prints a
+secret; never mutates anything.
 EOF
 }
 
@@ -752,6 +776,145 @@ pairing() {
 }
 
 # ---------------------------------------------------------------------------
+# session-capture / session-verdict — root-causing a mid-session failure that
+# survives connection setup and shows up only after minutes of real use
+# (docs/YOUTUBE_FINAL_ROOT_CAUSE.md §10 item 4: "the 15-18 minute REALITY
+# session death... observed on two clients", never diagnosed). `capture`
+# above is bounded to 300s specifically so a routine operator run cannot
+# accidentally capture for a long time; this defect needs longer than that to
+# reproduce, so it gets its own explicitly-named, still-bounded command
+# rather than loosening `capture`'s existing 300s ceiling (and its test's
+# assertion on that ceiling) for every other caller.
+#
+# Run session-capture on EVERY hop the session crosses at the same time (the
+# relay AND the exit, for a two-hop Privacy+ path — a break can be on either
+# hop, or on neither, if the actual fault is downstream of both, e.g. the
+# client's own ISP/DPI), reproduce the failure, then run session-verdict
+# against each hop's own pcap with the SAME reported failure time. Whichever
+# hop's traffic actually stops or resets at that time is where the break is;
+# a hop still exchanging packets normally straight through that time is
+# proven not to be where the break is — that is the falsifiable question this
+# pair of commands exists to answer, instead of leaving it a standing
+# HYPOTHESIS.
+# ---------------------------------------------------------------------------
+
+session_capture() {
+  local ip=${1:-} output=${2:-} seconds=${3:-1200}
+  valid_ip "$ip" || { echo "invalid client IP" >&2; return 2; }
+  [[ "$output" == *.pcap ]] || { echo "output must end in .pcap" >&2; return 2; }
+  [[ "$seconds" =~ ^[0-9]+$ ]] && ((seconds >= 60 && seconds <= 1800)) || { echo "seconds must be 60..1800" >&2; return 2; }
+  command -v tcpdump >/dev/null || { echo "tcpdump is required" >&2; return 3; }
+  umask 077
+  echo "Capturing only host $ip and TCP/443 or UDP/443 for ${seconds}s -> $output"
+  echo "Use the VPN as normal on the affected client now. Note the wall-clock UTC time (per"
+  echo "  session-verdict's FAILURE_TIME_UTC argument) the moment the failure actually happens —"
+  echo "  this capture alone does not know which moment mattered."
+  timeout --signal=INT "${seconds}s" tcpdump -i any -nn -s 160 -w "$output" \
+    "host $ip and (tcp port 443 or udp port 443)" || [[ $? -eq 124 ]]
+  chmod 600 "$output"
+}
+
+session_verdict() {
+  local input=${1:-} client_ip=${2:-} failure_time=${3:-}
+  valid_ip "$client_ip" || { echo "invalid client IP" >&2; return 2; }
+  [[ -f "$input" ]] || { echo "pcap not found" >&2; return 2; }
+  command -v tshark >/dev/null || { echo "tshark is required" >&2; return 3; }
+  local failure_epoch
+  failure_epoch=$(date -u -d "$failure_time" +%s 2>/dev/null) || {
+    echo "FAILURE_TIME_UTC must be a date 'date -u -d' can parse (e.g. 2026-09-19T14:32:00Z)" >&2
+    return 2
+  }
+
+  echo "Session-death verdict for $input, client $client_ip, reported failure $failure_time (UTC)"
+  echo "======================================================================"
+  echo "This characterizes ONLY THIS HOST's own interface — run the matching command against"
+  echo "every other hop's own capture, with this SAME failure time, to localize the break."
+  echo "Every line is labeled FACT, INFERENCE, or UNKNOWN. No secret is ever printed."
+  echo
+
+  local tcp_count
+  tcp_count=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.number 2>/dev/null | wc -l)
+  if [[ "$tcp_count" -eq 0 ]]; then
+    echo "FACT: 0 TCP/443 packets to/from ${client_ip} observed in this capture."
+    echo "INFERENCE: this is a PROCEDURAL FAILURE, not a network finding — either the wrong"
+    echo "  CLIENT_IP was given, the capture window did not overlap the client's actual session,"
+    echo "  or this hop never saw this client's traffic at all (wrong hop for this session)."
+    echo
+    echo "VERDICT: INCONCLUSIVE — no tunnel activity observed on this hop in this window."
+    return 0
+  fi
+
+  local first_ts last_ts
+  first_ts=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | head -1)
+  last_ts=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | tail -1)
+  echo "FACT: ${tcp_count} TCP/443 packets to/from ${client_ip} observed."
+  echo "FACT: first packet (UTC): $(date -u -d "@${first_ts%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
+  echo "FACT: last packet (UTC):  $(date -u -d "@${last_ts%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
+  local last_gap=$(( failure_epoch - ${last_ts%.*} ))
+  if (( last_gap > 5 )); then
+    echo "FACT: the last packet on this hop was ${last_gap}s BEFORE the reported failure time."
+    echo "INFERENCE: this hop's traffic was already silent — no packets at all, not even a"
+    echo "  RST/FIN — well before the reported failure. Consistent with a silent/black-hole"
+    echo "  death on or before this hop (matches the undiagnosed '15-18 minute REALITY session"
+    echo "  death' in docs/YOUTUBE_FINAL_ROOT_CAUSE.md §10 item 4), NOT a clean close."
+  elif (( last_gap < -5 )); then
+    echo "FACT: this hop's traffic continued for $(( -last_gap ))s AFTER the reported failure time."
+    echo "INFERENCE: this hop was still exchanging packets normally at and after the reported"
+    echo "  failure — this hop is very likely NOT where the break is."
+  else
+    echo "INFERENCE: this hop's last packet lines up with the reported failure time (within 5s)."
+  fi
+  echo
+
+  local -a local_v4 local_v6
+  mapfile -t local_v4 < <(local_addrs -4)
+  mapfile -t local_v6 < <(local_addrs -6)
+  local this_host_is_src="" a
+  for a in "${local_v4[@]}"; do
+    [[ -n "$a" ]] || continue
+    this_host_is_src+="${this_host_is_src:+ or }ip.src==${a}"
+  done
+  for a in "${local_v6[@]}"; do
+    [[ -n "$a" ]] || continue
+    this_host_is_src+="${this_host_is_src:+ or }ipv6.src==${a}"
+  done
+
+  local ev_filter ev_label ev_filter_label
+  for ev_filter_label in "tcp.flags.reset==1|RST" "tcp.flags.fin==1|FIN"; do
+    ev_filter="${ev_filter_label%%|*}"
+    ev_label="${ev_filter_label##*|}"
+    local count
+    count=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443 and ${ev_filter}" -T fields -e frame.number 2>/dev/null | wc -l)
+    echo "FACT: ${ev_label} packets for ${client_ip}: ${count}"
+    if [[ "$count" -gt 0 ]]; then
+      local ts closest_ts='' closest_diff=''
+      while IFS= read -r ts; do
+        [[ -n "$ts" ]] || continue
+        local diff=$(( failure_epoch - ${ts%.*} ))
+        (( diff < 0 )) && diff=$(( -diff ))
+        if [[ -z "$closest_diff" || "$diff" -lt "$closest_diff" ]]; then
+          closest_diff=$diff
+          closest_ts=$ts
+        fi
+      done < <(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443 and ${ev_filter}" -T fields -e frame.time_epoch 2>/dev/null)
+      local sender="the client (${client_ip})"
+      if [[ -n "$this_host_is_src" ]]; then
+        tshark -n -r "$input" -Y "frame.time_epoch==${closest_ts} and (${this_host_is_src})" -T fields -e frame.number 2>/dev/null | grep -q . \
+          && sender="THIS HOST"
+      fi
+      echo "FACT: closest ${ev_label} to the reported failure time was sent by ${sender}, at"
+      echo "  $(date -u -d "@${closest_ts%.*}" '+%Y-%m-%dT%H:%M:%SZ'), ${closest_diff}s from the reported failure time."
+    fi
+  done
+  echo
+
+  echo "UNKNOWN: this verdict characterizes packets crossing THIS HOST's own interface only — it"
+  echo "  cannot see any other hop, the client device's own state, or anything between this host"
+  echo "  and the client/next hop on the wire. Compare against the same command run on every other"
+  echo "  hop's own capture before concluding where the break actually is."
+}
+
+# ---------------------------------------------------------------------------
 # streaming — P2: sustained-flow diagnostics. A one-shot health check (a
 # bound socket, a single small request) cannot see conntrack eviction,
 # throughput collapse, or loss that only shows up under a real, sustained
@@ -1249,6 +1412,8 @@ case ${1:-} in
   tiktok) shift; tiktok "$@" ;;
   client) shift; client "$@" ;;
   pairing) shift; pairing "$@" ;;
+  session-capture) shift; session_capture "$@" ;;
+  session-verdict) shift; session_verdict "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac
