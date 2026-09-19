@@ -1,10 +1,9 @@
 # YouTube native-app failure — investigation record (2026-09-08, corrected 2026-09-16)
 
-**Status: the 2026-09-08 fix (`compat=quic-reject`) is FALSIFIED for the
-Hiddify path — see §12. A second, independent defect in how Hiddify
-rebuilds our profile is now CODE-VERIFIED and fixed by
-`compat=hiddify-pinned` (§13); its real-device acceptance is NOT YET
-RECORDED.**
+**Status: `compat=quic-reject` is falsified for Hiddify.
+`compat=hiddify-pinned` and the relay XUDP correction fix real routing defects
+and ordinary playback, but real-device tests on 19 September 2026 show that
+Shorts still fail. See §14 and `docs/YOUTUBE_INVESTIGATION_2026-09-17.md`.**
 
 > **Read §12 and §13 before anything else.** Sections 1-11 are the
 > 2026-09-08 record. Their source-level tracing of sing-box/sing-tun
@@ -429,3 +428,50 @@ play video for 10-15 minutes.
   Hysteria2; whether a large sustained download over the same tunnel
   also stalls (which would make this a throughput problem, not a YouTube
   one); and IPv6 reachability from the exit VPS.
+
+---
+
+## 14. FIELD CORRECTION (2026-09-19): ordinary playback passes; Shorts do not
+
+The real-device tests required by §13.6 were completed on the affected iPhone.
+The pinned direct and relayed profiles play ordinary videos, which validates the
+route-pinning repair for that behavior. Shorts fail through both profiles with
+YouTube's explicit content-unavailable UI. The same Shorts play with the VPN
+disconnected.
+
+The failure also survived all of the following controlled changes:
+
+- a direct TCP-only profile, with the exit capture confirming no UDP traffic;
+- Hysteria2 instead of VLESS/REALITY/Vision;
+- Shadowrocket and sing-box MT instead of Hiddify;
+- direct egress from each server rather than the two-hop relay path;
+- a temporary per-user IPv4-only rule;
+- the reviewed server-side UDP/443 rejection experiment;
+- a checksum-verified sing-box 1.13.18 sidecar instead of production 1.13.19;
+- logged-in and private/incognito browser sessions;
+- YouTube's content-restriction check, which reported DNS and HTTP-header
+  restrictions disabled.
+
+The supplied reproducible Short's native iOS player request returned `OK` and
+128 adaptive formats from each server. Each server then downloaded a 4 MiB range
+from a signed H.264 media URL with HTTP 206 at multi-megabyte-per-second speed.
+The server networks therefore reach the player API and CDN media for the exact
+content that fails on the phone.
+
+The narrowest demonstrated boundary is the phone's real YouTube/Safari session
+and YouTube's playability decision after the VPN becomes active. A retained
+Google/YouTube visitor session tied to a prior source address is plausible, but
+not proven. No server-side Shorts repair is claimed.
+
+Consequences for the repository:
+
+- Keep `compat=hiddify-pinned`; it fixes a proven routing and privacy defect.
+- Keep the relay XUDP correction; it fixes a proven application-UDP restriction.
+- Do not claim either change fixes Shorts.
+- Do not merge `experiment/server-side-quic-reject` as an incident repair; its
+  device result was negative.
+- Do not ship speculative DNS, MTU, IP-family, firewall, or binary changes from
+  this investigation.
+
+The complete redacted matrix, capture evidence, cleanup record, and remaining
+uncertainty are in `docs/YOUTUBE_INVESTIGATION_2026-09-17.md`.
