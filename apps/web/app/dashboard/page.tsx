@@ -1,7 +1,10 @@
 import { CopyField } from "@/components/CopyField";
 import { logout } from "@/app/auth/actions";
 import { requireUser } from "@/lib/auth";
-import { subscriptionEntitled } from "@/lib/billing";
+import {
+  isOpenSubscriptionStatus,
+  subscriptionEntitled
+} from "@/lib/billing";
 import { getSubscription } from "@/lib/store";
 import { accessLinks } from "@/lib/vpn-access";
 
@@ -31,6 +34,7 @@ export default async function DashboardPage({ searchParams }: Props) {
   const params = await searchParams;
   const subscription = await getSubscription(user.id);
   const entitled = await subscriptionEntitled(user.id);
+  const openSubscription = isOpenSubscriptionStatus(subscription?.status);
   const links = entitled ? await accessLinks(user.id) : null;
   const periodEnd = dateLabel(subscription?.current_period_end ?? null);
 
@@ -80,14 +84,21 @@ export default async function DashboardPage({ searchParams }: Props) {
           </p>
         )}
 
+        {openSubscription && !entitled && (
+          <div className="notice">
+            This subscription needs billing attention before VPN access can be
+            enabled. Open billing to update the payment method or subscription.
+          </div>
+        )}
+
         <div className="actions" style={{ marginTop: "1rem" }}>
-          {!subscription || !entitled ? (
-            <form method="post" action="/api/checkout">
-              <button type="submit">Subscribe with Stripe</button>
-            </form>
-          ) : (
+          {openSubscription ? (
             <form method="post" action="/api/billing">
               <button className="secondary" type="submit">Manage billing</button>
+            </form>
+          ) : (
+            <form method="post" action="/api/checkout">
+              <button type="submit">Subscribe with Stripe</button>
             </form>
           )}
           <form method="post" action="/api/reconcile">
