@@ -96,6 +96,27 @@ pub fn render_server_config_for_deployment(
         .iter()
         .filter(|u| u.is_active(now_unix) && u.google_egress_hairpin)
     {
+        // The exit forwards whatever destination form it received from
+        // its own client (often a bare IP: an iOS TUN core typically
+        // resolves DNS itself before the packet ever reaches sing-box,
+        // and sniffing on the exit only recovers the domain for the
+        // EXIT's own routing decision — it does not rewrite the
+        // destination it dials onward, see
+        // `route.Router.prepareMatchMetadata`/`actionSniff` in sing-box).
+        // Without recovering the domain again here, `domain_suffix`
+        // below can never match an IP-only destination
+        // (`route/rule/rule_item_domain.go`'s `DomainItem.Match` falls
+        // back to `metadata.Destination.Fqdn`, which is empty for an
+        // IP), and the connection falls through to the reject-all rule.
+        // Scoped to this one dedicated, non-client-facing hairpin
+        // credential only — every other relay connection is still
+        // routed by IP/port alone, per this function's no-sniffing
+        // invariant.
+        rules.push(json!({
+            "inbound": [reality_inbound],
+            "auth_user": [hairpin_user.id.clone()],
+            "action": "sniff",
+        }));
         rules.push(json!({
             "inbound": [reality_inbound],
             // NOT "user" — that field matches the local OS process

@@ -1065,7 +1065,14 @@ fn relay_hairpin_flag_off_leaves_relay_rendering_byte_identical() {
 }
 
 #[test]
-fn relay_hairpin_user_gets_exactly_one_extra_rule_scoped_to_google_domains() {
+fn relay_hairpin_user_gets_exactly_two_extra_rules_scoped_to_google_domains() {
+    // A hairpin user needs its OWN sniff step: the exit only sniffs to
+    // decide ITS OWN routing, then forwards whatever destination form it
+    // received from its own client — often a bare IP, since an iOS TUN
+    // core typically resolves DNS itself before sing-box ever sees the
+    // packet. Without recovering the domain again here, `domain_suffix`
+    // can never match an IP-only destination and the connection falls
+    // through to reject (see docs/YOUTUBE_FINAL_ROOT_CAUSE.md §16).
     let relay = load(&paired_relay_toml()).unwrap();
     let without = render(&relay, &[user()]);
     let with_hairpin = render(&relay, &[user(), hairpin_user()]);
@@ -1073,10 +1080,13 @@ fn relay_hairpin_user_gets_exactly_one_extra_rule_scoped_to_google_domains() {
     let with_rules = with_hairpin["route"]["rules"].as_array().unwrap();
     assert_eq!(
         with_rules.len(),
-        without_rules.len() + 1,
-        "the hairpin user must add exactly one rule, changing nothing else"
+        without_rules.len() + 2,
+        "the hairpin user must add exactly two rules (sniff, then route), changing nothing else"
     );
-    let hairpin_rule = &with_rules[1];
+    let sniff_rule = &with_rules[1];
+    assert_eq!(sniff_rule["auth_user"], serde_json::json!(["u-hairpin"]));
+    assert_eq!(sniff_rule["action"], "sniff");
+    let hairpin_rule = &with_rules[2];
     assert_eq!(hairpin_rule["auth_user"], serde_json::json!(["u-hairpin"]));
     assert_eq!(hairpin_rule["outbound"], "direct");
     assert_eq!(
@@ -1087,7 +1097,7 @@ fn relay_hairpin_user_gets_exactly_one_extra_rule_scoped_to_google_domains() {
     // final reject) is untouched and in its original relative order.
     assert_eq!(with_rules[0], without_rules[0]);
     for i in 1..without_rules.len() {
-        assert_eq!(with_rules[i + 1], without_rules[i]);
+        assert_eq!(with_rules[i + 2], without_rules[i]);
     }
 }
 
