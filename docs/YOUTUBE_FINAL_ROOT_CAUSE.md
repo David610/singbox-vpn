@@ -805,9 +805,88 @@ reconnect/idle cycle.
 
 `crates/compat-config/tests/relay_role_policy.rs`:
 `relay_hairpin_flag_off_leaves_relay_rendering_byte_identical`,
-`relay_hairpin_user_gets_exactly_one_extra_rule_scoped_to_google_domains`,
+`relay_hairpin_user_gets_exactly_two_extra_rules_scoped_to_google_domains`,
 `relay_hairpin_user_still_falls_through_to_reject_for_non_google_destinations`,
 `exit_without_hairpin_config_renders_exactly_as_before`,
 `exit_with_hairpin_config_but_no_credential_still_renders_unchanged`,
 `exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule`,
 `exit_hairpin_outbound_never_carries_this_exits_own_private_key`.
+
+## 17. FIELD CORRECTION (2026-09-20B): the relay needed its own sniff step —
+## an IP-only destination could never match the hairpin's `domain_suffix` rule
+
+After §16's fix shipped, a real iPhone Hiddify test reported a *new* and
+*worse* symptom: "Es ist ein SSL-Fehler aufgetreten. Eine sichere Verbindung
+zum Server kann nicht hergestellt werden" (SSL error, cannot establish a
+secure connection) — happening **every time, consistently**, on **both**
+regular YouTube and Shorts, not just Shorts. This was not reproducible via
+the same Windows/Playwright rig used to verify §16, which kept passing
+cleanly against the identical rendered profile.
+
+### 17.1 Root cause
+
+`{"action": "sniff"}` on the exit recovers `metadata.Domain` (from the TLS
+ClientHello's SNI) only to make the *exit's own* routing decision — which
+outbound to use. It does not rewrite `metadata.Destination`; sing-box only
+does that when FakeIP is active (`route/route.go`'s
+`prepareMatchMetadata`). So the exit forwards onward, into the hairpin VLESS
+tunnel, whatever destination form its own client used. An iOS TUN core
+(which is what Hiddify's VPN/TUN mode is) typically resolves DNS itself
+before the packet ever reaches sing-box, so that destination is commonly a
+bare IP address, not a domain.
+
+The relay's hairpin rule matches on `domain_suffix`. Per
+`route/rule/rule_item_domain.go`'s `DomainItem.Match`, that checks
+`metadata.Domain` first and falls back to `metadata.Destination.Fqdn` only
+if `metadata.Domain` is empty. The relay's route.rules had **no sniff action
+of its own** — so for an IP-only destination, `domainHost` was always
+empty, the rule never matched, and the connection fell through to the
+relay's fail-closed final `reject`. The client's TLS session got reset,
+which iOS/Safari/WKWebView surfaces as a generic SSL/TLS connection failure
+— exactly the reported symptom, and exactly why it was consistent (every
+real device request hits this) rather than intermittent, and why it broke
+ordinary YouTube too (the exit hairpins *all* Google/YouTube domains, not
+just Shorts-specific ones).
+
+The earlier Windows/Playwright verification never exercised this path
+because it always went through a SOCKS proxy (`socks5h://`), which forwards
+the destination as a domain name end-to-end by design — masking exactly the
+gap that broke on a real TUN-mode client.
+
+### 17.2 The fix
+
+Give the relay its own sniff step, scoped to the hairpin credential only —
+one rule ahead of the existing `domain_suffix` route rule:
+
+```json
+{"action": "sniff", "auth_user": ["<hairpin-user-id>"], "inbound": ["vless-reality-in"]}
+```
+
+This keeps the relay's stated "no sniffing" invariant intact for every
+ordinary connection (destination-only, no content inspection) — only the
+one dedicated, non-client-facing hairpin credential's traffic is sniffed,
+and only to recover the domain the `domain_suffix` rule already needed.
+
+### 17.3 Verification (this session)
+
+- `cargo test -p compat-config`: 58/58 passing, including
+  `every_rendered_relay_route_rule_is_accepted_by_real_sing_box` and the
+  updated `relay_hairpin_user_gets_exactly_two_extra_rules_scoped_to_google_domains`.
+- `vpn-admin doctor --protocol` on both nodes after deploying via
+  `update.sh --dev-rebuild`: all server-side checks pass, including the L2
+  fail-closed rule-count check (which counts hairpin rules by `auth_user`
+  presence, so it needed no logic change for the second rule).
+- Live end-to-end reproduction of the exact failure mode: forced a literal
+  IP destination through the local sing-box core (`curl -4 -x
+  socks5://127.0.0.1:<port> https://www.youtube.com/generate_204`, which
+  makes curl resolve DNS itself and send a bare IP over SOCKS5 — the same
+  shape an iOS TUN core produces) through the real exit → hairpin → relay
+  chain. Before this fix this shape would have been rejected; after it,
+  got a real `HTTP/1.1 204` from Google.
+
+### 17.4 What is NOT yet established
+
+Still the same gap as §16.6: no confirmation from the actual iPhone/Hiddify
+app yet. Ask for a retest with the existing `?format=singbox&compat=hiddify-pinned`
+profile — known-failing Short, the control video, and at least one other
+Short, over a normal reconnect/idle cycle.
