@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HELPER="$ROOT/deploy/almalinux/vpn-web-provision"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'sudo rm -rf "$TMP"' EXIT
 
 STUB="$TMP/vpn-admin"
 LOG="$TMP/calls.log"
@@ -35,16 +35,18 @@ run_helper() {
 
 first="$(run_helper provision "$USER_ID")"
 second="$(run_helper provision "$USER_ID")"
+run_helper disable "$USER_ID" >/dev/null
+run_helper enable "$USER_ID" >/dev/null
+
+# The helper correctly creates root-only state. Copy the non-secret call log
+# into the test user's context only after all privileged actions are complete.
+calls="$(sudo cat "$LOG")"
 
 [[ "$(printf '%s' "$first" | jq -r .id)" == "user_web" ]]
 [[ "$first" == "$second" ]]
-[[ "$(grep -c '^user create ' "$LOG")" -eq 1 ]]
-
-run_helper disable "$USER_ID" >/dev/null
-run_helper enable "$USER_ID" >/dev/null
-grep -q '^user disable user_web$' "$LOG"
-grep -q '^user enable user_web$' "$LOG"
-
-sudo test "$(stat -c '%a' "$STATE/$USER_ID.json")" = "600"
+[[ "$(printf '%s\n' "$calls" | grep -c '^user create ')" -eq 1 ]]
+printf '%s\n' "$calls" | grep -q '^user disable user_web$'
+printf '%s\n' "$calls" | grep -q '^user enable user_web$'
+sudo test "$(sudo stat -c '%a' "$STATE/$USER_ID.json")" = "600"
 
 printf 'vpn-web-provision tests: OK\n'
