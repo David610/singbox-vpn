@@ -251,6 +251,54 @@ pub struct DeploymentConfig {
     /// `DEPLOYMENT_SCHEMA_VERSION` does not move.
     #[serde(default)]
     pub peer_endpoints: Vec<PeerEndpointSection>,
+
+    /// Public (never secret) connection metadata for an EXIT's own
+    /// Google/YouTube egress hairpin through a relay with better network
+    /// peering to Google's CDN — see `CompatUser::google_egress_hairpin`
+    /// and `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16. Only meaningful on an
+    /// exit; ignored on a relay. `None` (the default, and every existing
+    /// deployment file) means this exit renders exactly as it always has.
+    /// The secret half — this exit's own UUID credential for the relay's
+    /// hairpin user — is `RealityServerParams::google_egress_hairpin_uuid`,
+    /// loaded separately from disk, never from this TOML file.
+    #[serde(default)]
+    pub google_egress_hairpin: Option<GoogleEgressHairpinSection>,
+}
+
+/// See `DeploymentConfig::google_egress_hairpin`. Every field here is
+/// public REALITY connection metadata — the same class of information
+/// already published to every client as a `[[peer_endpoints]]` entry —
+/// never a secret.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GoogleEgressHairpinSection {
+    pub relay_host: String,
+    pub relay_port: u16,
+    pub relay_server_name: String,
+    pub relay_reality_public_key: String,
+    pub relay_reality_short_id: String,
+}
+
+impl GoogleEgressHairpinSection {
+    fn validate(&self) -> Result<(), CompatError> {
+        for (name, value) in [
+            ("relay_host", self.relay_host.as_str()),
+            ("relay_server_name", self.relay_server_name.as_str()),
+            ("relay_reality_public_key", self.relay_reality_public_key.as_str()),
+            ("relay_reality_short_id", self.relay_reality_short_id.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(CompatError::Parse(format!(
+                    "[google_egress_hairpin]: {name} is empty"
+                )));
+            }
+        }
+        if self.relay_port == 0 {
+            return Err(CompatError::Parse(
+                "[google_egress_hairpin]: relay_port must not be 0".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// One `[[access_paths]]` entry. Metadata only — no credentials or raw
@@ -795,6 +843,10 @@ impl DeploymentConfig {
         self.validate_relay_routes()?;
         self.validate_role()?;
 
+        if let Some(hairpin) = &self.google_egress_hairpin {
+            hairpin.validate()?;
+        }
+
         if self.hysteria2.up_mbps.is_some() != self.hysteria2.down_mbps.is_some() {
             return Err(CompatError::Parse(
                 "[hysteria2] up_mbps and down_mbps must be set together (both, or neither) — \
@@ -1099,6 +1151,21 @@ impl DeploymentConfig {
 
     pub fn hysteria_dir(&self) -> PathBuf {
         self.state_dir.join("hysteria")
+    }
+
+    /// This exit's own secret credential for the relay's
+    /// `google_egress_hairpin` user — see
+    /// `RealityServerParams::google_egress_hairpin_uuid` and
+    /// `DeploymentConfig::google_egress_hairpin`. Deliberately its own
+    /// directory rather than inside `reality_dir()`: it is this exit's
+    /// own OUTBOUND credential to a different server, not part of this
+    /// exit's own REALITY server identity.
+    pub fn google_egress_hairpin_dir(&self) -> PathBuf {
+        self.state_dir.join("google-egress")
+    }
+
+    pub fn google_egress_hairpin_uuid_file(&self) -> PathBuf {
+        self.google_egress_hairpin_dir().join("uuid.txt")
     }
 
     /// Deployment-wide Hysteria2 salamander obfuscation password. Shared

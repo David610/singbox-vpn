@@ -73,6 +73,7 @@ fn test_user(hysteria2_password: &str) -> CompatUser {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         peer_credentials: Default::default(),
     }
 }
@@ -107,6 +108,7 @@ fn build_configs(
         short_ids: vec!["00000000".into()],
         handshake_server: "www.google.com".into(),
         handshake_port: 443,
+        google_egress_hairpin_uuid: None,
     };
     let hysteria = Hysteria2ServerParams {
         tls_cert_path: cert_path.display().to_string(),
@@ -470,6 +472,7 @@ fn hysteria2_brutal_bandwidth_config_passes_real_sing_box_check() {
         short_ids: vec!["00000000".into()],
         handshake_server: "www.google.com".into(),
         handshake_port: 443,
+        google_egress_hairpin_uuid: None,
     };
     let hysteria = Hysteria2ServerParams {
         tls_cert_path: cert.display().to_string(),

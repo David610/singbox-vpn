@@ -63,6 +63,7 @@ fn user(vision_off: bool) -> CompatUser {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: vision_off,
+        google_egress_hairpin: false,
         peer_credentials: Default::default(),
     }
 }

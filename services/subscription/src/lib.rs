@@ -755,6 +755,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            google_egress_hairpin: false,
             peer_credentials: Default::default(),
         }
     }
@@ -1499,6 +1500,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            google_egress_hairpin: false,
             peer_credentials: Default::default(),
         };
         let state = make_state(vec![user]);
@@ -2122,6 +2124,7 @@ capabilities = ["tcp"]
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            google_egress_hairpin: false,
             peer_credentials,
         }
     }

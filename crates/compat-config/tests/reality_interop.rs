@@ -78,6 +78,7 @@ fn test_user() -> CompatUser {
         hysteria2_password: SecretString::new("unused-in-this-test"),
         subscription_token_hash_hex: "unused".into(),
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         created_at: 0,
         expires_at: None,
         peer_credentials: Default::default(),
@@ -105,6 +106,7 @@ fn build_configs(
         short_ids: vec![short_id.to_string()],
         handshake_server: decoy.hostname.to_string(),
         handshake_port: decoy.port,
+        google_egress_hairpin_uuid: None,
     };
     // Hysteria2 params are required by the renderer signature but irrelevant
     // to this REALITY-only test; give it a harmless disabled-masquerade shape.
@@ -374,6 +376,7 @@ fn server_and_client_configs_agree_on_reality_key_material() {
         short_ids: vec!["deadbeef".into()],
         handshake_server: "www.google.com".into(),
         handshake_port: 443,
+        google_egress_hairpin_uuid: None,
     };
     let hysteria = Hysteria2ServerParams {
         tls_cert_path: "/dev/null".into(),

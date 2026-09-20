@@ -1028,20 +1028,7 @@ fn quic_reject_rule() -> serde_json::Value {
 /// exactly like `QuicReject` — is inert rather than wrong.
 fn youtube_direct_rule() -> serde_json::Value {
     json!({
-        "domain_suffix": [
-            "youtube.com",
-            "youtubekids.com",
-            "youtu.be",
-            "youtube-nocookie.com",
-            "googlevideo.com",
-            "ytimg.com",
-            "ggpht.com",
-            "googleusercontent.com",
-            "youtubei.googleapis.com",
-            "google.com",
-            "googleapis.com",
-            "gstatic.com",
-        ],
+        "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
         "outbound": "direct",
     })
 }
@@ -1132,6 +1119,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            google_egress_hairpin: false,
             peer_credentials: Default::default(),
         }
     }

@@ -3,8 +3,9 @@
 //! for Xray later does not require rewriting user management or
 //! subscription logic — only a new backend impl of this trait.
 
-use crate::deployment::{DeploymentConfig, NodeRole};
+use crate::deployment::{DeploymentConfig, GoogleEgressHairpinSection, NodeRole};
 use crate::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
+use crate::secret::SecretString;
 use crate::CompatError;
 use serde_json::json;
 use std::path::Path;
@@ -67,6 +68,12 @@ pub fn render_server_config_for_deployment(
         now_unix,
     );
     if deployment.role == NodeRole::Exit {
+        if let (Some(hairpin), Some(uuid)) = (
+            &deployment.google_egress_hairpin,
+            &reality.google_egress_hairpin_uuid,
+        ) {
+            apply_google_egress_hairpin(&mut config, hairpin, uuid);
+        }
         return Ok(config);
     }
 
@@ -79,6 +86,24 @@ pub fn render_server_config_for_deployment(
         "action": "route",
         "outbound": "direct",
     })];
+    // One narrowly-scoped exception ahead of the fail-closed policy: a
+    // user with `google_egress_hairpin` set (never a real end user — see
+    // that field's doc comment) may reach ONLY the Google/YouTube domain
+    // set via this relay's own `direct` outbound. Every other user, and
+    // every other destination for this one, is unaffected — the loop
+    // below and the final reject-all still apply to everything else.
+    for hairpin_user in users
+        .iter()
+        .filter(|u| u.is_active(now_unix) && u.google_egress_hairpin)
+    {
+        rules.push(json!({
+            "inbound": [reality_inbound],
+            "user": [hairpin_user.id.clone()],
+            "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
+            "action": "route",
+            "outbound": "direct",
+        }));
+    }
     for target in deployment.relay_targets() {
         let mut rule = json!({
             "inbound": [reality_inbound],
@@ -120,6 +145,58 @@ pub fn render_server_config_for_deployment(
     }));
     config["route"] = json!({ "rules": rules });
     Ok(config)
+}
+
+/// Mutates an already-rendered exit document to hairpin the Google/
+/// YouTube domain set through a relay with better network peering to
+/// Google's CDN than this exit's own network — see
+/// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16. Adds exactly one outbound (a
+/// VLESS+REALITY client dialing the relay's hairpin user) and one
+/// `route.rules` entry matching that domain set to it; every other
+/// destination keeps using the pre-existing `direct` outbound via
+/// `route.final`. Enables `sniff` on every inbound so a client that
+/// resolved DNS itself and sent a bare IP (common on mobile TUN clients)
+/// still gets matched by domain, from the TLS ClientHello SNI, exactly
+/// like a client that passed the domain through unresolved.
+fn apply_google_egress_hairpin(
+    config: &mut serde_json::Value,
+    hairpin: &GoogleEgressHairpinSection,
+    uuid: &SecretString,
+) {
+    if let Some(inbounds) = config["inbounds"].as_array_mut() {
+        for inbound in inbounds {
+            inbound["sniff"] = json!(true);
+        }
+    }
+    let hairpin_tag = "google-egress-hairpin";
+    if let Some(outbounds) = config["outbounds"].as_array_mut() {
+        outbounds.push(json!({
+            "type": "vless",
+            "tag": hairpin_tag,
+            "server": hairpin.relay_host,
+            "server_port": hairpin.relay_port,
+            "uuid": uuid.expose(),
+            "flow": "xtls-rprx-vision",
+            "tls": {
+                "enabled": true,
+                "server_name": hairpin.relay_server_name,
+                "utls": { "enabled": true, "fingerprint": "chrome" },
+                "reality": {
+                    "enabled": true,
+                    "public_key": hairpin.relay_reality_public_key,
+                    "short_id": hairpin.relay_reality_short_id,
+                }
+            }
+        }));
+    }
+    config["route"] = json!({
+        "rules": [{
+            "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
+            "action": "route",
+            "outbound": hairpin_tag,
+        }],
+        "final": "direct",
+    });
 }
 
 /// Transport-level document builder: both inbounds for the active users
@@ -460,6 +537,7 @@ mod tests {
                 created_at: 0,
                 expires_at: None,
                 vision_off_experiment: false,
+                google_egress_hairpin: false,
                 peer_credentials: Default::default(),
             },
             CompatUser {
@@ -472,6 +550,7 @@ mod tests {
                 created_at: 0,
                 expires_at: None,
                 vision_off_experiment: false,
+                google_egress_hairpin: false,
                 peer_credentials: Default::default(),
             },
             CompatUser {
@@ -484,6 +563,7 @@ mod tests {
                 created_at: 0,
                 expires_at: Some(100),
                 vision_off_experiment: false,
+                google_egress_hairpin: false,
                 peer_credentials: Default::default(),
             },
         ]
@@ -496,6 +576,7 @@ mod tests {
             short_ids: vec!["0a1b2c3d".into()],
             handshake_server: "www.google.com".into(),
             handshake_port: 443,
+            google_egress_hairpin_uuid: None,
         }
     }
 
@@ -567,6 +648,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: true,
+            google_egress_hairpin: false,
             peer_credentials: Default::default(),
         });
         let ports = ServerPorts {

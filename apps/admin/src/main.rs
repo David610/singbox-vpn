@@ -410,6 +410,21 @@ enum UserCommands {
         #[arg(long)]
         off: bool,
     },
+    /// RELAY ROLE ONLY, and never for a real end user: mark this user as
+    /// the Google/YouTube egress hairpin credential (see
+    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16 and
+    /// `compat_config::model::CompatUser::google_egress_hairpin`). This
+    /// is meant to be run once, on a RELAY, against a dedicated user
+    /// created just for this — the resulting UUID then gets copied into
+    /// the paired EXIT's `[google_egress_hairpin]` credential file, never
+    /// handed to a real client. `--off` restores this relay's ordinary
+    /// fail-closed policy for that user (they revert to being an
+    /// ordinary, unpaired relay user with no forwarding target).
+    GoogleEgressHairpin {
+        user_id: String,
+        #[arg(long)]
+        off: bool,
+    },
     /// Print connection material for a user. The subscription URL itself
     /// requires the raw token, which (by design, spec §26) is not
     /// persisted — only shown at `create`/`rotate-token` time. This
@@ -512,6 +527,9 @@ fn main() -> Result<()> {
         }
         Commands::User(UserCommands::VisionOffExperiment { user_id, off }) => {
             cmd_user_vision_off_experiment(&cfg, &user_id, !off)
+        }
+        Commands::User(UserCommands::GoogleEgressHairpin { user_id, off }) => {
+            cmd_user_google_egress_hairpin(&cfg, &user_id, !off)
         }
         Commands::User(UserCommands::RotateToken { user_id, qr }) => {
             cmd_user_rotate_token(&cfg, &user_id, qr)
@@ -829,6 +847,13 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
         short_ids: vec![candidate_sid.clone()],
         handshake_server: cfg.reality.handshake_server.clone(),
         handshake_port: cfg.reality.handshake_port,
+        // Rotation only replaces this exit's own key/short_id — carry
+        // the current hairpin credential (if any) through unchanged so
+        // the candidate render+validate faithfully covers the whole
+        // live document, not a version missing that outbound.
+        google_egress_hairpin_uuid: std::fs::read_to_string(cfg.google_egress_hairpin_uuid_file())
+            .ok()
+            .map(|s| SecretString::new(s.trim().to_string())),
     };
     let users = store::load_users(&cfg.users_file())?;
     let hysteria = load_hysteria_params(cfg);
@@ -1438,12 +1463,21 @@ fn load_reality_params(cfg: &DeploymentConfig) -> Result<RealityServerParams> {
     let short_id = std::fs::read_to_string(cfg.reality_dir().join("short_id.txt"))?
         .trim()
         .to_string();
+    // Optional: absent on every deployment that has not opted into the
+    // Google/YouTube egress hairpin (see
+    // `DeploymentConfig::google_egress_hairpin_uuid_file`) — a missing
+    // file means this exit renders exactly as it always has, not an
+    // error.
+    let google_egress_hairpin_uuid = std::fs::read_to_string(cfg.google_egress_hairpin_uuid_file())
+        .ok()
+        .map(|s| SecretString::new(s.trim().to_string()));
     Ok(RealityServerParams {
         private_key_hex: SecretString::new(private_key_hex),
         public_key_hex,
         short_ids: vec![short_id],
         handshake_server: cfg.reality.handshake_server.clone(),
         handshake_port: cfg.reality.handshake_port,
+        google_egress_hairpin_uuid,
     })
 }
 
@@ -2218,6 +2252,7 @@ fn cmd_user_create(
         created_at: UnixSeconds::now().0 as i64,
         expires_at,
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         peer_credentials: Default::default(),
     };
     users.push(user);
@@ -2449,6 +2484,44 @@ fn cmd_user_vision_off_experiment(cfg: &DeploymentConfig, id: &str, on: bool) ->
         println!(
             "WARNING: the new config was written but NOT reloaded live (see the warning above) \
              — the RUNNING server still enforces the previous flow for this user."
+        );
+    }
+    Ok(())
+}
+
+/// See `UserCommands::GoogleEgressHairpin`. Run on a RELAY against a
+/// dedicated user; this user's UUID (printed here) then goes into the
+/// paired EXIT's `[google_egress_hairpin]` credential — this command
+/// never touches the exit itself.
+fn cmd_user_google_egress_hairpin(cfg: &DeploymentConfig, id: &str, on: bool) -> Result<()> {
+    let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
+    let user = find_user_mut(&mut users, id)?;
+    user.google_egress_hairpin = on;
+    let uuid = user.vless_uuid.clone();
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
+    println!("{id}: google_egress_hairpin={on}");
+    if on {
+        println!(
+            "This relay will now let ONLY this user reach the Google/YouTube domain set via \
+             this relay's own direct outbound; every other destination for this user, and \
+             every other user, keeps this relay's ordinary fail-closed policy unchanged."
+        );
+        println!(
+            "This user's VLESS UUID (copy into the paired exit's [google_egress_hairpin] \
+             credential file — never hand this to a real client):"
+        );
+        println!("  {uuid}");
+    } else {
+        println!(
+            "This user is back to this relay's ordinary policy — no Google/YouTube exception, \
+             no forwarding target unless one is declared for them."
+        );
+    }
+    if !went_live {
+        println!(
+            "WARNING: the new config was written but NOT reloaded live (see the warning above) \
+             — the RUNNING server still enforces the previous policy for this user."
         );
     }
     Ok(())
@@ -5791,6 +5864,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         peer_credentials: Default::default(),
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();

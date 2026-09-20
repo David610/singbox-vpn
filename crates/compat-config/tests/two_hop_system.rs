@@ -334,6 +334,7 @@ impl Node {
                 short_ids: vec![short_id.to_string()],
                 handshake_server: decoy.hostname.to_string(),
                 handshake_port: decoy.port,
+                google_egress_hairpin_uuid: None,
             },
             hysteria: Hysteria2ServerParams {
                 tls_cert_path: cert.to_string_lossy().into_owned(),

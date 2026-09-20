@@ -66,6 +66,7 @@ fn test_user() -> CompatUser {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         peer_credentials: Default::default(),
     }
 }
@@ -127,6 +128,7 @@ fn oversized_decoy_certificate_breaks_the_tunnel_even_though_reality_auth_succee
         short_ids: vec![short_id.to_string()],
         handshake_server: decoy.hostname.to_string(),
         handshake_port: decoy.port,
+        google_egress_hairpin_uuid: None,
     };
     let hysteria = Hysteria2ServerParams {
         tls_cert_path: "/dev/null".into(),
