@@ -17,6 +17,12 @@
 - No secret (VLESS UUID, Hysteria2 password, subscription token, REALITY private key) may appear in a log line — follow the existing pattern in `services/subscription/src/lib.rs`'s `tracing::debug!` calls (user id only, never the token).
 - New CLI flags/query values follow existing naming: kebab-case CLI subcommands (`set-expiry`, `clear-expiry`), lower-case query values (`encoding=base64`).
 
+**Known pre-existing baseline failures on this Windows dev machine (verified before any task in this plan started; not caused by and not fixable within this plan):**
+- `cargo test -p admin --test cli` has 4 pre-existing failures unrelated to this plan: `repair_runs_the_located_update_script_with_repair_flag_and_propagates_success`, `user_create_json_output_carries_the_experimental_vision_off_link_additively`, `user_create_json_output_has_no_server_secrets`, `user_create_json_output_is_unaffected_by_suppression` (Windows path-translation issues invoking a fake bash script). `full_user_lifecycle` — the test Task 1 extends — passes at baseline; a fresh failure in it IS this plan's problem, these four names are not.
+- `cargo test -p admin --lib` has 1 pre-existing failure, `udp_probe_tests::cert_expiry_days_reports_positive_days_for_a_freshly_issued_cert` (local OpenSSL config path issue), unrelated to this plan.
+- `services/subscription`'s **binary** target (`src/main.rs`) and its `tests/startup_validation.rs` integration test use `std::os::unix::fs::PermissionsExt`/`Permissions::from_mode`, which do not compile on Windows at all — pre-existing, unrelated to this plan. Test the `subscription` crate with `cargo test -p subscription --lib` only (this exercises `src/lib.rs`, where Task 2's actual changes live, and passes cleanly: 65/65 at baseline).
+- Therefore: never run bare `cargo test --workspace` on this machine as a pass/fail gate for this plan — it will fail for the reasons above regardless of this plan's changes. Use the scoped commands each task step specifies.
+
 ---
 
 ## Task 1: `vpn-admin user set-expiry` / `clear-expiry`
@@ -60,7 +66,7 @@ Open `apps/admin/tests/cli.rs` and find the block around line 467-472 (the `// r
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test -p admin --test cli user_lifecycle -- --nocapture` (use the actual test function name containing the block above if different — grep `apps/admin/tests/cli.rs` for `fn ` near line 400 to confirm; if the surrounding test has a different name, target that name instead of `user_lifecycle`)
+Run: `cargo test -p admin --test cli full_user_lifecycle -- --nocapture` (the test function is `full_user_lifecycle`, `apps/admin/tests/cli.rs:397`)
 
 Expected: FAIL — `error: unrecognized subcommand 'set-expiry'` (clap rejects the unknown subcommand), because `UserCommands::SetExpiry` does not exist yet.
 
@@ -393,15 +399,19 @@ In `services/subscription/src/lib.rs`, in the `"uri" | "hiddify" =>` arm, there 
 
 - [ ] **Step 10: Run the tests to verify they pass**
 
-Run: `cargo test -p subscription`
+Run: `cargo test -p subscription --lib`
 
-Expected: PASS — every test in the file, including the pre-existing ones (`default_and_existing_format_outputs_are_byte_for_byte_unchanged` especially, to confirm no regression to the unencoded path).
+(`--lib` is required on this machine: `subscription`'s binary target and its `tests/startup_validation.rs` use Unix-only APIs that do not compile on Windows — see the "Known pre-existing baseline failures" note in Global Constraints. `--lib` exercises exactly `src/lib.rs`, where every change in this task lives.)
 
-- [ ] **Step 11: Run the full workspace test suite**
+Expected: PASS — every test in the file, including the pre-existing ones (`default_and_existing_format_outputs_are_byte_for_byte_unchanged` especially, to confirm no regression to the unencoded path). Baseline was 65/65 passing before this task's changes.
 
-Run: `cargo test --workspace`
+- [ ] **Step 11: Run the related crates' test suites**
 
-Expected: PASS. This catches any other test (e.g. in `apps/admin` doctor/report paths) that might assert on `SubQuery`'s field set or on subscription-service response shape.
+Run: `cargo test -p compat-config --lib && cargo test -p admin --test cli full_user_lifecycle`
+
+(Not `cargo test --workspace` — see the Global Constraints note; it fails on this machine for reasons unrelated to this plan.) This catches any other test that might assert on `SubQuery`'s field set, on subscription-service response shape, or on the CLI surface Task 1 touches.
+
+Expected: PASS.
 
 - [ ] **Step 12: Commit**
 
