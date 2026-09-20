@@ -1,0 +1,399 @@
+:root {
+  --primary: #0070f3;
+  --primary-hover: #0056b3;
+  --background: #ffffff;
+  --text: #333333;
+  --muted: #666666;
+  --border: #eaeaea;
+  --soft: #f6f6f6;
+  --danger: #b42318;
+  --success: #067647;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--background);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+    Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+  line-height: 1.6;
+}
+
+a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--primary-hover);
+  text-decoration: underline;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button,
+.button {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border: 1px solid var(--text);
+  border-radius: 7px;
+  padding: 0.65rem 1rem;
+  color: #fff;
+  background: var(--text);
+  cursor: pointer;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+button:hover,
+.button:hover {
+  opacity: 0.86;
+  color: #fff;
+  text-decoration: none;
+}
+
+.button.secondary,
+button.secondary {
+  color: var(--text);
+  background: #fff;
+  border-color: var(--border);
+}
+
+.button.secondary:hover,
+button.secondary:hover {
+  color: var(--text);
+}
+
+button.link-button {
+  min-height: auto;
+  border: 0;
+  padding: 0;
+  color: var(--primary);
+  background: transparent;
+  font-weight: 500;
+}
+
+.shell {
+  width: min(920px, calc(100% - 2rem));
+  margin: 0 auto;
+}
+
+.site-header {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  color: var(--text);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.brand:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.92rem;
+}
+
+main {
+  min-height: calc(100vh - 150px);
+}
+
+.hero {
+  display: grid;
+  gap: 1.2rem;
+  padding: 5.5rem 0 3rem;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.18;
+}
+
+h1 {
+  max-width: 760px;
+  font-size: clamp(2.4rem, 7vw, 4.8rem);
+  letter-spacing: -0.055em;
+}
+
+h2 {
+  font-size: 1.55rem;
+}
+
+h3 {
+  font-size: 1rem;
+}
+
+.lead {
+  max-width: 650px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 1.08rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.85rem;
+  padding: 1rem 0 4rem;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 1.15rem;
+  background: #fff;
+}
+
+.card p {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.section {
+  padding: 2.5rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.2rem;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.form-wrap {
+  width: min(440px, 100%);
+  margin: 0 auto;
+  padding: 4rem 0;
+}
+
+.form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+input[type="email"],
+input[type="password"],
+input[type="text"] {
+  width: 100%;
+  border: 1px solid #d8d8d8;
+  border-radius: 7px;
+  padding: 0.72rem 0.78rem;
+  color: var(--text);
+  background: #fff;
+}
+
+input:focus {
+  outline: 2px solid rgba(0, 112, 243, 0.2);
+  border-color: var(--primary);
+}
+
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.checkbox input {
+  margin-top: 0.35rem;
+}
+
+.notice {
+  margin: 1rem 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0.8rem 0.9rem;
+  background: var(--soft);
+  font-size: 0.9rem;
+}
+
+.notice.error {
+  border-color: #fecdca;
+  color: var(--danger);
+  background: #fef3f2;
+}
+
+.notice.success {
+  border-color: #abefc6;
+  color: var(--success);
+  background: #ecfdf3;
+}
+
+.dashboard {
+  display: grid;
+  gap: 1rem;
+  padding: 3rem 0 4rem;
+}
+
+.dashboard-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status.active {
+  background: #ecfdf3;
+  color: var(--success);
+}
+
+.config-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.config-row {
+  display: grid;
+  gap: 0.65rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.secret-field {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.secret-field input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+}
+
+.secret-field button {
+  flex: 0 0 auto;
+}
+
+.prose {
+  max-width: 720px;
+  padding: 3rem 0 5rem;
+}
+
+.prose h1 {
+  font-size: 2.4rem;
+  margin-bottom: 1.4rem;
+}
+
+.prose h2 {
+  margin: 2rem 0 0.6rem;
+}
+
+.prose p,
+.prose li {
+  color: var(--muted);
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid var(--border);
+  padding: 1.4rem 0 2rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.footer nav {
+  display: flex;
+  gap: 0.9rem;
+}
+
+@media (max-width: 720px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .site-header,
+  .dashboard-head,
+  .section-heading {
+    align-items: flex-start;
+  }
+
+  .site-header {
+    padding: 1rem 0;
+  }
+
+  .nav {
+    gap: 0.65rem;
+  }
+
+  .hero {
+    padding-top: 3.5rem;
+  }
+
+  .secret-field {
+    display: grid;
+  }
+}

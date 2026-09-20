@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+VPN_ADMIN="${VPN_ADMIN:-/usr/local/bin/vpn-admin}"
+STATE_DIR="${VPN_WEB_STATE_DIR:-/var/lib/singbox-vpn/web-users}"
+
+die() {
+  printf 'vpn-web-provision: %s\n' "$*" >&2
+  exit 2
+}
+
+[[ $# -eq 2 ]] || die "usage: vpn-web-provision <provision|enable|disable> <supabase-user-uuid>"
+action="$1"
+external_id="$2"
+
+[[ "$action" =~ ^(provision|enable|disable)$ ]] || die "unsupported action"
+[[ "$external_id" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$ ]] \
+  || die "invalid Supabase user id"
+[[ -x "$VPN_ADMIN" ]] || die "vpn-admin not executable: $VPN_ADMIN"
+command -v jq >/dev/null 2>&1 || die "jq is required"
+command -v flock >/dev/null 2>&1 || die "flock is required"
+
+install -d -m 0700 -o root -g root "$STATE_DIR"
+
+# Serialize the external-id -> vpn-user mapping around create/read/apply so
+# webhook retries and a simultaneous manual reconcile cannot mint duplicates.
+exec 9>"$STATE_DIR/.web-provision.lock"
+flock -x 9
+
+state_file="$STATE_DIR/$external_id.json"
+
+validate_state() {
+  jq -e '
+    (.id | type == "string" and length > 0) and
+    (.subscription_url | type == "string" and startswith("https://")) and
+    (.provisioning_url | type == "string" and startswith("https://"))
+  ' "$1" >/dev/null
+}
+
+case "$action" in
+  provision)
+    if [[ -f "$state_file" ]]; then
+      validate_state "$state_file" || die "stored mapping is corrupt"
+      cat "$state_file"
+      exit 0
+    fi
+
+    vpn_name="web-${external_id//-/}"
+    output="$("$VPN_ADMIN" user create --name "$vpn_name" --json)"
+    json="${output#*\{}"
+    json="{${json}"
+
+    printf '%s\n' "$json" \
+      | jq -e '
+          (.id | type == "string" and length > 0) and
+          (.subscription_url | type == "string" and startswith("https://")) and
+          (.provisioning_url | type == "string" and startswith("https://"))
+        ' >/dev/null \
+      || die "vpn-admin returned an invalid JSON contract"
+
+    tmp="$(mktemp "$STATE_DIR/.web-user.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    printf '%s\n' "$json" | jq -c '.' > "$tmp"
+    chmod 0600 "$tmp"
+    chown root:root "$tmp"
+    mv "$tmp" "$state_file"
+    trap - EXIT
+    cat "$state_file"
+    ;;
+
+  enable|disable)
+    [[ -f "$state_file" ]] || die "VPN mapping does not exist"
+    validate_state "$state_file" || die "stored mapping is corrupt"
+    vpn_user_id="$(jq -er '.id' "$state_file")"
+    "$VPN_ADMIN" user "$action" "$vpn_user_id" >/dev/null
+    jq -cn --arg id "$vpn_user_id" --arg action "$action" \
+      '{id:$id, action:$action, ok:true}'
+    ;;
+esac

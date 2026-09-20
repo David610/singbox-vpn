@@ -1,0 +1,64 @@
+name: Web
+
+on:
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "deploy/almalinux/vpn-web-provision"
+      - "deploy/almalinux/vpn-web-sudoers"
+      - "deploy/lib/tests/test-vpn-web-provision.sh"
+      - ".github/workflows/web.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - "deploy/almalinux/vpn-web-provision"
+      - "deploy/almalinux/vpn-web-sudoers"
+      - "deploy/lib/tests/test-vpn-web-provision.sh"
+      - ".github/workflows/web.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      NEXT_PUBLIC_APP_URL: https://vpn.example.test
+      NEXT_PUBLIC_PRODUCT_NAME: VPN
+      NEXT_PUBLIC_PRICE_DISPLAY: Monthly subscription
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci
+      SUPABASE_SERVICE_ROLE_KEY: sb_secret_ci
+      STRIPE_SECRET_KEY: sk_test_ci
+      STRIPE_WEBHOOK_SECRET: whsec_ci
+      STRIPE_PRICE_ID: price_ci
+      VPN_CONFIG_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      LEGAL_NAME: CI Operator
+      LEGAL_ADDRESS: CI Address
+      LEGAL_EMAIL: ci@example.test
+      SUPPORT_EMAIL: ci@example.test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install web dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Validate provisioning helper
+        working-directory: .
+        run: |
+          bash -n deploy/almalinux/vpn-web-provision
+          bash deploy/lib/tests/test-vpn-web-provision.sh

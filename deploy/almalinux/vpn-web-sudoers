@@ -1,0 +1,3 @@
+# Validate with: visudo -cf /etc/sudoers.d/vpn-web
+# The helper validates both the action and UUID before invoking vpn-admin.
+vpn-web ALL=(root) NOPASSWD: /usr/local/sbin/vpn-web-provision

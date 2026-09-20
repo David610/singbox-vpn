@@ -1,0 +1,23 @@
+[Unit]
+Description=singbox-vpn customer web app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vpn-web
+Group=vpn-web
+WorkingDirectory=/opt/singbox-vpn-web
+EnvironmentFile=/etc/singbox-vpn/web.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run start -- --hostname 127.0.0.1 --port 3000
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
