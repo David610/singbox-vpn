@@ -98,7 +98,14 @@ pub fn render_server_config_for_deployment(
     {
         rules.push(json!({
             "inbound": [reality_inbound],
-            "user": [hairpin_user.id.clone()],
+            // NOT "user" — that field matches the local OS process
+            // that originated the connection (`route/rule/rule_item_
+            // user.go`'s `metadata.ProcessInfo.UserName`, always empty
+            // for a remote proxy connection). The VLESS-authenticated
+            // identity this rule actually needs lives in
+            // `metadata.User`, which only `auth_user`
+            // (`route/rule/rule_item_auth_user.go`) matches against.
+            "auth_user": [hairpin_user.id.clone()],
             "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
             "action": "route",
             "outbound": "direct",

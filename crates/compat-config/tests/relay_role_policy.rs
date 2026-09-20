@@ -1077,7 +1077,7 @@ fn relay_hairpin_user_gets_exactly_one_extra_rule_scoped_to_google_domains() {
         "the hairpin user must add exactly one rule, changing nothing else"
     );
     let hairpin_rule = &with_rules[1];
-    assert_eq!(hairpin_rule["user"], serde_json::json!(["u-hairpin"]));
+    assert_eq!(hairpin_rule["auth_user"], serde_json::json!(["u-hairpin"]));
     assert_eq!(hairpin_rule["outbound"], "direct");
     assert_eq!(
         hairpin_rule["domain_suffix"],
@@ -1109,7 +1109,7 @@ fn relay_hairpin_user_still_falls_through_to_reject_for_non_google_destinations(
     let last = rules.last().unwrap();
     assert_eq!(last["action"], "reject");
     assert!(last.get("domain_suffix").is_none());
-    assert!(last.get("user").is_none());
+    assert!(last.get("auth_user").is_none());
 }
 
 fn exit_hairpin_deployment_toml() -> String {
