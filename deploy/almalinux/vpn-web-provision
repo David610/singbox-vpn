@@ -38,6 +38,38 @@ validate_state() {
   ' "$1" >/dev/null
 }
 
+json_from_rotated_token() {
+  local vpn_user_id="$1"
+  local output sub_url path_and_query token origin provisioning_url
+
+  # rotate-token intentionally prints the new bearer URL only once. Capture it
+  # in-memory; do not echo the full command output to logs.
+  output="$("$VPN_ADMIN" user rotate-token "$vpn_user_id")"
+  sub_url="$(printf '%s\n' "$output" | grep -m1 -E '^  https://' | sed -e 's/^  //')" || true
+  [[ "$sub_url" == https://*/sub/* ]] || die "could not recover subscription URL after token rotation"
+
+  origin="${sub_url%%/sub/*}"
+  path_and_query="${sub_url#*/sub/}"
+  token="${path_and_query%%\?*}"
+  [[ -n "$token" && "$token" != "$path_and_query" ]] || die "rotated subscription URL had no token/query boundary"
+
+  # The existing server exposes the first-party schema at /v1/provision/{token}.
+  # Keep this construction next to the helper's recovery path: normal first
+  # creation still trusts vpn-admin's own provisioning_url JSON field.
+  provisioning_url="$origin/v1/provision/$token"
+
+  jq -cn \
+    --arg id "$vpn_user_id" \
+    --arg subscription_url "$sub_url" \
+    --arg provisioning_url "$provisioning_url" \
+    '{
+      id: $id,
+      enabled: true,
+      subscription_url: $subscription_url,
+      provisioning_url: $provisioning_url
+    }'
+}
+
 case "$action" in
   provision)
     if [[ -f "$state_file" ]]; then
@@ -47,9 +79,27 @@ case "$action" in
     fi
 
     vpn_name="web-${external_id//-/}"
-    output="$("$VPN_ADMIN" user create --name "$vpn_name" --json)"
-    json="${output#*\{}"
-    json="{${json}"
+
+    # Crash recovery: vpn-admin commits the user before this helper can persist
+    # the web mapping. If the process dies in that narrow window, a retry sees
+    # the deterministic internal name, rotates a fresh subscription token, and
+    # records the existing VPN identity instead of creating a duplicate user.
+    mapfile -t existing_ids < <(
+      "$VPN_ADMIN" user list \
+        | awk -v wanted="$vpn_name" 'NR > 1 && $2 == wanted { print $1 }'
+    )
+
+    if (( ${#existing_ids[@]} > 1 )); then
+      die "multiple VPN users match the deterministic web account name; operator intervention required"
+    fi
+
+    if (( ${#existing_ids[@]} == 1 )); then
+      json="$(json_from_rotated_token "${existing_ids[0]}")"
+    else
+      output="$("$VPN_ADMIN" user create --name "$vpn_name" --json)"
+      json="${output#*\{}"
+      json="{${json}"
+    fi
 
     printf '%s\n' "$json" \
       | jq -e '
@@ -57,7 +107,7 @@ case "$action" in
           (.subscription_url | type == "string" and startswith("https://")) and
           (.provisioning_url | type == "string" and startswith("https://"))
         ' >/dev/null \
-      || die "vpn-admin returned an invalid JSON contract"
+      || die "vpn-admin returned an invalid provisioning contract"
 
     tmp="$(mktemp "$STATE_DIR/.web-user.XXXXXX")"
     trap 'rm -f "$tmp"' EXIT
