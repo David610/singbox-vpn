@@ -13,9 +13,17 @@ export type AccessLinks = {
   provision: string;
 };
 
-function withFormat(subscriptionUrl: string, format: "hiddify" | "uri" | "singbox") {
+function subscriptionVariant(
+  subscriptionUrl: string,
+  format: "uri" | "singbox",
+  compatibility?: string
+) {
   const url = new URL(subscriptionUrl);
   url.searchParams.set("format", format);
+  url.searchParams.delete("compat");
+  if (compatibility) {
+    url.searchParams.set("compat", compatibility);
+  }
   return url.toString();
 }
 
@@ -56,9 +64,9 @@ export async function accessLinks(userId: string): Promise<AccessLinks | null> {
   const provisioningUrl = decryptSecret(access.provisioning_url_encrypted);
 
   return {
-    hiddify: withFormat(subscriptionUrl, "hiddify"),
-    uri: withFormat(subscriptionUrl, "uri"),
-    singbox: withFormat(subscriptionUrl, "singbox"),
+    hiddify: subscriptionVariant(subscriptionUrl, "singbox", "hiddify-pinned"),
+    uri: subscriptionVariant(subscriptionUrl, "uri"),
+    singbox: subscriptionVariant(subscriptionUrl, "singbox"),
     provision: provisioningUrl
   };
 }
