@@ -12,6 +12,11 @@ import { syncStripeSubscription } from "@/lib/billing";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+async function syncCurrentSubscription(subscriptionId: string) {
+  const current = await stripe().subscriptions.retrieve(subscriptionId);
+  await syncStripeSubscription(current);
+}
+
 async function processEvent(event: Stripe.Event) {
   switch (event.type) {
     case "checkout.session.completed": {
@@ -22,17 +27,22 @@ async function processEvent(event: Stripe.Event) {
           : session.subscription?.id;
 
       if (subscriptionId) {
-        const subscription = await stripe().subscriptions.retrieve(subscriptionId);
-        await syncStripeSubscription(subscription);
+        await syncCurrentSubscription(subscriptionId);
       }
       break;
     }
 
     case "customer.subscription.created":
     case "customer.subscription.updated":
-    case "customer.subscription.deleted":
-      await syncStripeSubscription(event.data.object as Stripe.Subscription);
+    case "customer.subscription.deleted": {
+      const snapshot = event.data.object as Stripe.Subscription;
+
+      // Stripe does not guarantee webhook delivery order. Re-read the
+      // subscription so an older delivered event cannot overwrite newer
+      // entitlement state, such as re-enabling an already-canceled account.
+      await syncCurrentSubscription(snapshot.id);
       break;
+    }
 
     default:
       break;
