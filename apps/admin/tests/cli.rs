@@ -470,6 +470,29 @@ fn full_user_lifecycle() {
         .assert()
         .success();
 
+    // set-expiry takes effect in the store and is reported back.
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "set-expiry", &user_id, "--expires-at", "4102444800"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains(&format!("{user_id}: expires_at=4102444800")));
+
+    // clear-expiry removes it again.
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "clear-expiry", &user_id])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains(&format!("{user_id}: expires_at=none")));
+
+    // set-expiry on an unknown user fails cleanly, same as other user
+    // subcommands.
+    admin(dir.path(), &cfg_path)
+        .args(["user", "set-expiry", "no-such-user", "--expires-at", "1"])
+        .assert()
+        .failure();
+
     // rotate-token prints a fresh URL.
     let output = admin(dir.path(), &cfg_path)
         .args(["user", "rotate-token", &user_id])
