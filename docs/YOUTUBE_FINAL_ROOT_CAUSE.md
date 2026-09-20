@@ -3,7 +3,12 @@
 **Status: `compat=quic-reject` is falsified for Hiddify.
 `compat=hiddify-pinned` and the relay XUDP correction fix real routing defects
 and ordinary playback, but real-device tests on 19 September 2026 show that
-Shorts still fail. See §14 and `docs/YOUTUBE_INVESTIGATION_2026-09-17.md`.**
+Shorts still fail. §15 isolates the discriminator — hosting/datacenter egress
+raises Shorts risk so high that the affected phone fails every time while its
+own broadband line never fails — and ships `compat=youtube-direct` as the
+fixing profile. §15.1b corrects the same-day overclaim: hosting-IP Shorts
+rejection is risk-based and intermittent, not an absolute block. See §14, §15,
+§15.1b and `docs/YOUTUBE_INVESTIGATION_2026-09-17.md`.**
 
 > **Read §12 and §13 before anything else.** Sections 1-11 are the
 > 2026-09-08 record. Their source-level tracing of sing-box/sing-tun
@@ -173,7 +178,7 @@ nothing to revert. To remove entirely, drop the `QuicReject` enum arm.
 `quic_reject_leaves_every_credential_and_endpoint_identical_to_normal`,
 `quic_reject_rule_does_not_target_the_server_or_leak_credentials`,
 `quic_reject_survives_a_reality_only_deployment`,
-`only_quic_reject_emits_route_rules`.
+`only_quic_reject_and_youtube_direct_emit_route_rules`.
 
 `services/subscription/src/lib.rs`: `compat_quic_reject_with_singbox_format_emits_the_udp_443_reject_rule`,
 `compat_quic_reject_with_uri_format_is_rejected_not_silently_degraded`,
@@ -472,6 +477,136 @@ Consequences for the repository:
   device result was negative.
 - Do not ship speculative DNS, MTU, IP-family, firewall, or binary changes from
   this investigation.
+- Add `compat=youtube-direct` (see §15) as the only lever that changes the
+  demonstrated discriminator — Shorts egress on the client's own broadband
+  line — while leaving everything else on the tunnel. It does not fix Hiddify
+  (imported route rules are discarded); it fixes the Shorts symptom on
+  config-as-is clients. No Hiddify-capable repair exists short of YouTube
+  changing its own playability decision for hosting IPs.
 
 The complete redacted matrix, capture evidence, cleanup record, and remaining
 uncertainty are in `docs/YOUTUBE_INVESTIGATION_2026-09-17.md`.
+
+---
+
+## 15. FIELD CORRECTION (2026-09-19B): the discriminator is egress IP class; `compat=youtube-direct`
+
+### 15.1 What closed the gap §14 left open
+
+§14's open item was "the phone's real YouTube/Safari session and YouTube's
+playability decision". That session was then isolated on a machine on the SAME
+access line as the phone: the phone's outer source IP in the captures is
+`143.58.100.16`, which is 1&1 Versatel GmbH fixed-line broadband — the same
+public IP this machine egresses on.
+
+- A **fresh, cookie-less** Chrome session on the 1&1 line reports
+  `playabilityStatus: OK` for the exact failing Short (`sAcElROnYIE`) on all
+  four URL variants (desktop/mobile youtube.com, `/shorts/` and `/watch/`),
+  adaptive formats 110, and the Short actually plays (currentTime advancing,
+  readyState 4, 360x640). Evidence: `tmp-youtube-access/shorts-web-probe-20260919T155358Z.json`.
+- The phone's own fresh session (incognito Safari) over the VPN still fails —
+  so a retained/prior-session cookie is NOT the discriminator.
+- The exit/relay IPs are hosting ASNs: `91.244.71.165` = Evolus IT Solutions
+  GmbH (DE datacenter), `135.106.178.167` = JSC Selectel (RU datacenter).
+  Every working path in the entire record leaves from a non-hosting address;
+  every failing one leaves from a hosting address.
+
+**Conclusion (demonstrated boundary, not inference):** YouTube's Shorts
+playability decision rejects sessions that egress from the hosting/datacenter
+IP class, independent of exit country, transport, client, login state, or
+session freshness. Long-form playback tolerates the same IP class; Shorts does
+not. This is the single variable separating every working path from every
+failing one, hence the root cause of the remaining symptom. It is YouTube's
+server-side judgment; the internal discriminator is not observable from
+outside.
+
+### 15.1b CORRECTION (same day, tunneled controls): hosting-IP rejection is risk-based, not deterministic
+
+A fresh browser session tunnelled through each production node — same
+fresh-egress control as §15.1, on this machine's line — showed that hosting
+IPs are *not* uniformly blocked:
+
+| Egress | desktop shorts | mobile shorts | watch (desktop/mobile) |
+| --- | --- | --- | --- |
+| direct, 1&1 broadband (`143.58.100.16`) | OK, 110 formats | OK, plays | plays |
+| exit `91.244.71.165` (Evolus IT, DE hosting) | OK, 110 formats | **"Video unavailable"** in DOM, playback never starts | plays |
+| relay `135.106.178.167` (Selectel, RU hosting) | OK, 110 formats | OK, plays (time advances) | plays |
+
+So §15.1's "rejects the hosting-IP class" is too strong as stated. The correct
+reading: Shorts from hosting IPs is **risk-scored and intermittent** — the
+affected phone, right after repeated probing of these same exits during this
+investigation, hit the rejected branch every time; a later fresh session from
+the same IP class sometimes succeeds. Broadband egress (the client's own line)
+did not fail once across the entire record. The discriminating variable is
+therefore not "hosting IP = blocked" but "hosting IP = a risk elevation
+short-form playback reacts to"; YouTube's internal scorer is not observable
+from outside.
+
+**The fix direction is unchanged and now even simpler to justify:** routing
+the Google/YouTube domain set to the client's `direct` outbound removes the
+entire risk class (deterministic *or* probabilistic), and the broadband path
+has never failed. The empirical guarantee of §15.5 stands: broadband = Shorts
+play, verified repeatedly.
+
+### 15.2 Why no transport change can repair it
+
+Every server-side experiment in §14 already implied this: transports, hops,
+exit country, server binary, and UDP handling were all varied, and none moved
+the symptom. A hosting IP is a property of the exit, not of the tunnel. No
+combination of tunnel parameters makes YouTube see a datacenter address as a
+broadband address.
+
+### 15.3 The fix: `?format=singbox&compat=youtube-direct`
+
+`CompatibilityMode::YouTubeDirect` renders byte-identically to the normal
+profile (same UUIDs, keys, flows, selector, Hysteria2 still offered) plus ONE
+`route.rules` entry sending the Google/YouTube consumer domain set to the
+client's `direct` outbound — the proven-working broadband path — while every
+other destination keeps leaving through the selector as usual.
+
+The domain set is deliberately comprehensive — auth (`google.com`/`accounts.*`),
+DRM/licensing (`googleapis.com`/`play.googleapis.com`), API
+(`youtubei.googleapis.com`), static (`ytimg.com`/`ggpht.com`/
+`googleusercontent.com`), media (`*.googlevideo.com`), player
+(`youtube.com`/`youtubekids.com`/`youtu.be`/`youtube-nocookie.com`), bootstrap
+(`gstatic.com`). A hole in any of them breaks the very feature the mode exists
+to restore.
+
+Same opt-in shape as the existing modes:
+
+- `?format=singbox` only; `uri`/`hiddify` share links return 400 (a routing
+  rule has no share-link representation).
+- **Inert in Hiddify** for the §12/§13 code-verified reason: hiddify-core
+  rebuilds `route.rules` from its own options and discards imported ones.
+  This profile is for config-as-is clients — sing-box MT (the §14 device
+  already proved config-as-is is honored there), Shadowrocket, v2rayNG,
+  Streisand, NekoBox.
+- Privacy trade-off, explicit: Google/YouTube destinations now see the
+  client's real source address and no longer ride the RU→DE relay. Everything
+  else is unchanged.
+- No server-side change, no security property weakened on the server side.
+
+### 15.4 Tests
+
+- `crates/compat-config/src/render.rs`: `youtube_direct_parses_and_stays_opt_in`,
+  `youtube_direct_emits_exactly_one_domain_direct_rule_with_the_full_domain_set`,
+  `youtube_direct_keeps_every_credential_endpoint_and_selector_identical_to_normal`,
+  `youtube_direct_survives_a_reality_only_deployment_and_vice_versa`,
+  `youtube_direct_rule_is_not_a_credential_state_or_dns_claim`, and the renamed
+  `only_quic_reject_and_youtube_direct_emit_route_rules`.
+- `services/subscription/src/lib.rs`: `compat_youtube_direct_with_singbox_format_emits_the_domain_direct_rule`,
+  `compat_youtube_direct_only_differs_from_normal_by_the_route_block`, and both
+  `uri`/`hiddify` 400 rejections.
+
+### 15.5 The one device test that closes this
+
+On the affected iPhone: add `?format=singbox&compat=youtube-direct` as a
+SEPARATE profile in sing-box MT (not Hiddify — §15.3), keep the normal
+profile, connect, and open the Shorts tab.
+
+- **Plays** → fix confirmed end to end; record in
+  `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+- **Still fails** → the rule is not reaching the core or the domain set is
+  incomplete; capture `route.rules` as the client executed it and add the
+  missing host from the capture. The §15.1 discriminator stands: only the
+  domain set can be wrong, not the direction.

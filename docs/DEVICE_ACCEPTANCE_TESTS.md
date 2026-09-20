@@ -103,6 +103,22 @@ one test that closes the incident and what each outcome means. Do not
 mark it working here without a dated entry recording device, OS, client
 version, active core, server commit, endpoint and network.
 
+### Open: `compat=youtube-direct` (YouTube Shorts on a config-as-is client)
+
+`?format=singbox&compat=youtube-direct` is implemented, unit-tested and
+validated against pinned sing-box 1.13.19 syntax
+(`crates/compat-config/tests/quic_reject_config.rs`), and is **not
+device-verified**. It is the fixing profile for the Shorts failure
+isolated in `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §15: YouTube's Shorts
+playability decision rejects hosting/datacenter egress IPs, and this
+profile routes the Google/YouTube domain set to the client's `direct`
+outbound (the client's own broadband line). It is **inert in Hiddify**
+(imported route rules are discarded — §12), so the device test must run
+in sing-box MT / Shadowrocket / v2rayNG / Streisand / NekoBox. §15.5 is
+the one test that closes the incident. Do not mark it working here
+without a dated entry recording device, OS, client version, active core,
+server commit, endpoint and network.
+
 ## What each column means
 
 - **VLESS+REALITY** / **Hysteria2**: the client successfully connects

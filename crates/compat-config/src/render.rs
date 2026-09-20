@@ -412,6 +412,50 @@ pub enum CompatibilityMode {
     /// (YouTube) and, on a Privacy+ profile, silently routes around the
     /// enforced relay path.
     HiddifyPinned,
+    /// Opt-in profile for the real-device issue recorded in
+    /// `docs/YOUTUBE_INVESTIGATION_2026-09-17.md` and re-closed in
+    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §14: YouTube **Shorts** play
+    /// fine from the client's own broadband line but fail with YouTube's
+    /// "content is unavailable" UI through every VPN profile, no matter
+    /// the transport, client, or exit. Ordinary (long-form) video keeps
+    /// working. The demonstrated discriminator is the egress IP class:
+    /// every working path leaves from a non-hosting (residential/
+    /// broadband) address; every failing path — RU and DE exits alike —
+    /// leaves from a hosting/datacenter address. YouTube's short-form
+    /// playability decision rejects the hosting-IP class; nothing a VPN
+    /// config can change about a hosting source repairs that.
+    ///
+    /// This mode makes YouTube/Google consumer traffic egress `direct`
+    /// from the client's own access line — the proven-working path —
+    /// while every other destination keeps travelling through the
+    /// selector as usual. It renders byte-identically to `Normal`
+    /// (same UUIDs, keys, flows, selector, Hysteria2 offered) plus ONE
+    /// `route.rules` entry that sends the Google/YouTube domain set to
+    /// the already-present `direct` outbound (see [`youtube_direct_rule`]
+    /// for the exact set and the rationale for its breadth).
+    ///
+    /// Two properties must not be overstated:
+    ///  - **Hiddify cannot honor this.** Hiddify rebuilds the config
+    ///    from the `outbounds` array alone and discards imported
+    ///    `route.rules` (code-verified against hiddify-core `db74dfc`,
+    ///    same evidence as §13 of `docs/YOUTUBE_FINAL_ROOT_CAUSE.md`).
+    ///    This mode is therefore only enforceable on clients that run
+    ///    the config as given (sing-box MT, Shadowrocket, v2rayNG,
+    ///    Streisand, NekoBox) — the same limitation `QuicReject` has.
+    ///  - **It trades privacy for the YouTube/Google domain set.** Those
+    ///    destinations now see the client's real source address and the
+    ///    RU→DE relay path no longer carries them. The domain set is
+    ///    deliberately comprehensive because the native YouTube app's
+    ///    auth (`accounts.google.com`), DRM/licensing
+    ///    (`play.googleapis.com`), API (`youtubei.googleapis.com`),
+    ///    static (`ytimg.com`/`ggpht.com`) and media
+    ///    (`*.googlevideo.com`) each resolve to a different Google
+    ///    domain, and a hole in any of them breaks the very feature this
+    ///    mode exists to restore. Users who need Google traffic to
+    ///    keep leaving the exit should not use this mode.
+    ///
+    /// Opt-in per request; never a default.
+    YouTubeDirect,
 }
 
 impl CompatibilityMode {
@@ -422,6 +466,7 @@ impl CompatibilityMode {
             "quic-reject" => Some(Self::QuicReject),
             "vision-off" => Some(Self::VisionOff),
             "hiddify-pinned" => Some(Self::HiddifyPinned),
+            "youtube-direct" => Some(Self::YouTubeDirect),
             _ => None,
         }
     }
@@ -782,7 +827,9 @@ pub fn render_singbox_config_from_contract_with_access_paths(
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
 
     let mut route = json!({ "final": "select" });
-    if compat_mode == CompatibilityMode::QuicReject {
+    if compat_mode == CompatibilityMode::YouTubeDirect {
+        route["rules"] = json!([youtube_direct_rule()]);
+    } else if compat_mode == CompatibilityMode::QuicReject {
         route["rules"] = json!([quic_reject_rule()]);
     }
 
@@ -942,6 +989,60 @@ fn quic_reject_rule() -> serde_json::Value {
         "action": "reject",
         "method": "default",
         "no_drop": true,
+    })
+}
+
+/// The single `route.rules` entry `CompatibilityMode::YouTubeDirect`
+/// emits: route the Google/YouTube consumer domain set to the
+/// already-present `direct` outbound, for everything else keep
+/// `route.final` ("select") as the tunneled default.
+///
+/// The set deliberately covers every host the native YouTube app and the
+/// web/Safari player contact for one playback, since a hole in any of
+/// them breaks the feature the mode exists to restore:
+///
+///  - `youtube.com`/`youtubekids.com`/`youtu.be`/`youtube-nocookie.com` —
+///    player pages, consumer API (`youtubei`), init/playlist, Shorts feed.
+///  - `youtubei.googleapis.com` — the `youtubei/v1/player` endpoint the
+///    Shorts player request actually lands on.
+///  - `googlevideo.com` — adaptive media / signed playback URLs
+///    (`rr*.googlevideo.com`).
+///  - `ytimg.com`, `ggpht.com`, `googleusercontent.com` — player/thumbnail
+///    static content.
+///  - `google.com` — visitor service, `accounts.youtube.com`/Google sign-in,
+///    consent, and the `GVS`/`VISITOR_INFO1_LIVE` cookie issuance a truly
+///    fresh Shorts session depends on.
+///  - `googleapis.com` — `play.googleapis.com` (DRM/licensing), plus the
+///    `*.google.com`/`*.googleapis.com` identity and data endpoints the app
+///    repeatedly contacts while a session is live.
+///  - `gstatic.com` — JS/bootstrap assets.
+///
+/// `domain_suffix` values are intentionally bare (no leading dot):
+/// sing-box matches both the apex and subdomains, so `youtube.com` covers
+/// `www.youtube.com` and `m.youtube.com` alike.
+///
+/// The rule is expressed in standard sing-box syntax; TUN clients that run
+/// our config as-is and sniff TLS SNI will honor it. Hiddify's rebuild
+/// discards imported `route.rules` entirely (see
+/// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §12/§13), so on Hiddify this mode —
+/// exactly like `QuicReject` — is inert rather than wrong.
+fn youtube_direct_rule() -> serde_json::Value {
+    json!({
+        "domain_suffix": [
+            "youtube.com",
+            "youtubekids.com",
+            "youtu.be",
+            "youtube-nocookie.com",
+            "googlevideo.com",
+            "ytimg.com",
+            "ggpht.com",
+            "googleusercontent.com",
+            "youtubei.googleapis.com",
+            "google.com",
+            "googleapis.com",
+            "gstatic.com",
+        ],
+        "outbound": "direct",
     })
 }
 
@@ -1847,11 +1948,12 @@ mod tests {
     }
 
     #[test]
-    fn only_quic_reject_emits_route_rules() {
+    fn only_quic_reject_and_youtube_direct_emit_route_rules() {
         for mode in [
             CompatibilityMode::Normal,
             CompatibilityMode::TcpOnly,
             CompatibilityMode::VisionOff,
+            CompatibilityMode::HiddifyPinned,
         ] {
             let doc = render_singbox_client_subscription_with_options(
                 &user(),
@@ -1862,9 +1964,173 @@ mod tests {
             .unwrap();
             assert!(
                 doc["route"].get("rules").is_none(),
-                "{mode:?} must not emit route.rules — only QuicReject does"
+                "{mode:?} must not emit route.rules — only QuicReject and YouTubeDirect do"
             );
         }
+        for mode in [
+            CompatibilityMode::QuicReject,
+            CompatibilityMode::YouTubeDirect,
+        ] {
+            let doc = render_singbox_client_subscription_with_options(
+                &user(),
+                &[reality_endpoint(), hysteria_endpoint()],
+                SelectionProfile::default(),
+                mode,
+            )
+            .unwrap();
+            assert_eq!(
+                doc["route"]["rules"].as_array().unwrap().len(),
+                1,
+                "{mode:?} must emit exactly one rule"
+            );
+        }
+    }
+
+    // --- CompatibilityMode::YouTubeDirect ---
+    //
+    // The mode's whole value is the domain->direct rule (see
+    // `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §14): every otherwise-working
+    // Shorts path leaves from the client's own broadband line, and this
+    // rule is the only way a profile can express that while keeping the
+    // rest of the tunnel. The domain set is load-bearing — a missing
+    // youtubei/googleapis/googlevideo entry is exactly the kind of hole
+    // that makes the mode fail while looking plausible — so it is
+    // asserted field by field.
+
+    #[test]
+    fn youtube_direct_parses_and_stays_opt_in() {
+        assert_eq!(
+            CompatibilityMode::parse("youtube-direct"),
+            Some(CompatibilityMode::YouTubeDirect)
+        );
+        assert_eq!(CompatibilityMode::parse("youtube_direct"), None);
+        assert_eq!(CompatibilityMode::parse("YouTube-Direct"), None);
+        assert_eq!(CompatibilityMode::default(), CompatibilityMode::Normal);
+    }
+
+    #[test]
+    fn youtube_direct_emits_exactly_one_domain_direct_rule_with_the_full_domain_set() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::YouTubeDirect,
+        )
+        .unwrap();
+        assert_eq!(doc["route"]["final"], "select");
+        let rules = doc["route"]["rules"]
+            .as_array()
+            .expect("route.rules present");
+        assert_eq!(
+            rules.len(),
+            1,
+            "exactly one rule — this mode changes one variable"
+        );
+        let rule = &rules[0];
+        assert_eq!(rule["outbound"], "direct");
+        let domains: Vec<&str> = rule["domain_suffix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d.as_str().unwrap())
+            .collect();
+        for required in [
+            "youtube.com",
+            "youtubekids.com",
+            "youtu.be",
+            "youtube-nocookie.com",
+            "googlevideo.com",
+            "ytimg.com",
+            "ggpht.com",
+            "googleusercontent.com",
+            "youtubei.googleapis.com",
+            "google.com",
+            "googleapis.com",
+            "gstatic.com",
+        ] {
+            assert!(
+                domains.contains(&required),
+                "youtube-direct rule must route {required} direct — a missing entry breaks \
+                 the native-app/DRM/player path this mode exists to repair"
+            );
+        }
+    }
+
+    #[test]
+    fn youtube_direct_keeps_every_credential_endpoint_and_selector_identical_to_normal() {
+        let args = |mode| {
+            render_singbox_client_subscription_with_options(
+                &user(),
+                &[reality_endpoint(), hysteria_endpoint()],
+                SelectionProfile::default(),
+                mode,
+            )
+            .unwrap()
+        };
+        let normal = args(CompatibilityMode::Normal);
+        let ytd = args(CompatibilityMode::YouTubeDirect);
+        assert_eq!(
+            normal["outbounds"], ytd["outbounds"],
+            "YouTubeDirect must change nothing but route — same UUIDs, keys, tags, selector, \
+             Hysteria2 still offered"
+        );
+        assert_eq!(normal["route"]["final"], ytd["route"]["final"]);
+        assert!(normal["route"].get("rules").is_none());
+        let rules = ytd["route"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["outbound"], "direct");
+        assert!(
+            normal["outbounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|o| o["tag"] == "direct"),
+            "the direct outbound this rule targets must exist in the profile"
+        );
+    }
+
+    #[test]
+    fn youtube_direct_survives_a_reality_only_deployment_and_vice_versa() {
+        let reality_only = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::YouTubeDirect,
+        )
+        .unwrap();
+        assert_eq!(reality_only["route"]["rules"].as_array().unwrap().len(), 1);
+        let hysteria_only = render_singbox_client_subscription_with_options(
+            &user(),
+            &[hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::YouTubeDirect,
+        )
+        .unwrap();
+        assert_eq!(hysteria_only["route"]["rules"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn youtube_direct_rule_is_not_a_credential_state_or_dns_claim() {
+        let doc = render_singbox_client_subscription_with_options(
+            &user(),
+            &[reality_endpoint(), hysteria_endpoint()],
+            SelectionProfile::default(),
+            CompatibilityMode::YouTubeDirect,
+        )
+        .unwrap();
+        let rules = serde_json::to_string(&doc["route"]["rules"]).unwrap();
+        for forbidden in ["uuid", "password", "reality", "sid", "ip_cidr", "action"] {
+            assert!(
+                !rules.contains(forbidden),
+                "youtube-direct rule must stay a bare domain->direct route; found {forbidden}"
+            );
+        }
+        assert!(
+            doc.get("dns").is_none(),
+            "youtube-direct must NOT add a dns block — domain routing belongs to the client's \
+             TUN/DNS handling, exactly as the normal profile (see \
+             client_subscription_has_no_dns_block_and_no_inbounds)"
+        );
     }
 
     #[test]

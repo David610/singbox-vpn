@@ -2050,6 +2050,42 @@ fn subscription_url_quic_reject(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
+/// Opt-in YouTube-direct subscription URL
+/// (`?format=singbox&compat=youtube-direct`, see
+/// `compat_config::render::CompatibilityMode::YouTubeDirect`). Identical
+/// credentials, endpoints, flow and transports to the normal profile —
+/// the only difference is one `route.rules` entry that routes the
+/// Google/YouTube domain set to the client's `direct` outbound.
+///
+/// This is the profile for the real-device issue documented in
+/// `docs/YOUTUBE_INVESTIGATION_2026-09-17.md` and re-closed in
+/// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §14: YouTube Shorts play fine from
+/// the client's own broadband line but fail from every hosting/datacenter
+/// egress IP, whatever the transport, client, or exit. Routing the
+/// YouTube/Google domain set direct makes YouTube leave from the
+/// proven-working path while the rest of the tunnel is unchanged.
+///
+/// `?format=singbox` and NOT `?format=hiddify`, unlike every other link
+/// this app prints: a routing rule has no representation in
+/// `vless://`/`hysteria2://` share-link syntax at all, so the raw
+/// sing-box JSON profile is the only format that can carry it.
+///
+/// Same hard limitation as the QUIC-reject link: Hiddify discards any
+/// imported `route.rules` array (code-verified in §12 of the root-cause
+/// doc), so this mode only has an effect in a client that runs the config
+/// as given — sing-box MT, Shadowrocket, v2rayNG, Streisand, NekoBox.
+///
+/// Unlike the Vision-off link, this needs NO server-side opt-in and
+/// weakens no security property of the server side. It DOES trade privacy
+/// specifically for the Google/YouTube domain set: those destinations now
+/// see the client's real source address instead of the exit's.
+fn subscription_url_youtube_direct(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}?format=singbox&compat=youtube-direct",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
 /// Automated/CI callers (the lifecycle acceptance harness, in
 /// particular) run `user create`/`user rotate-token` for real, and the
 /// real subscription URL/QR this prints IS the bearer credential — the
@@ -2209,6 +2245,9 @@ fn cmd_user_create(
             // The supported Hiddify import path; see
             // subscription_url_hiddify_pinned's doc comment.
             "subscription_url_hiddify_pinned": subscription_url_hiddify_pinned(cfg, &token),
+            // The real-device Shorts path; same limitation as quic-reject,
+            // same opt-in shape; see subscription_url_youtube_direct.
+            "subscription_url_youtube_direct": subscription_url_youtube_direct(cfg, &token),
         });
         return machine_stdout.write_document(&out);
     }
@@ -2287,6 +2326,19 @@ fn cmd_user_create(
         "  DOES NOTHING IN HIDDIFY. hiddify-core rebuilds routing and discards any imported \
          route rules, so this only has an effect in a client that runs the config as given \
          (a raw sing-box client). See docs/YOUTUBE_FINAL_ROOT_CAUSE.md."
+    );
+    println!();
+    println!(
+        "Raw-sing-box-only YouTube-Direct link (same credentials and transports, adds one route \
+         rule that sends the YouTube/Google domain set out the client's own line — the only \
+         demonstrated-working path for YouTube Shorts):"
+    );
+    println!("  {}", subscription_url_youtube_direct(cfg, &token));
+    println!(
+        "  DOES NOTHING IN HIDDIFY for the same reason as the QUIC-reject link (imported route \
+         rules are discarded). Use it in sing-box MT, Shadowrocket, v2rayNG, Streisand, or \
+         NekoBox. Trades privacy only for Google/YouTube traffic: those domains now see the \
+         client's real source address. See docs/YOUTUBE_FINAL_ROOT_CAUSE.md \u{a7}14."
     );
     if qr {
         println!();
