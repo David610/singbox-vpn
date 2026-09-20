@@ -43,13 +43,20 @@ jobs:
       SUPPORT_EMAIL: ci@example.test
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
 
       - name: Install web dependencies
         run: npm install --no-audit --no-fund
+
+      # Temporary bootstrap step. Removed once package-lock.json is committed.
+      - name: Emit generated package lock
+        run: |
+          printf '__PACKAGE_LOCK_BEGIN__'
+          base64 -w0 package-lock.json
+          printf '\n__PACKAGE_LOCK_END__\n'
 
       - name: Typecheck
         run: npm run typecheck
