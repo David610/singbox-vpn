@@ -1,14 +1,17 @@
 # YouTube native-app failure — investigation record (2026-09-08, corrected 2026-09-16)
 
-**Status: `compat=quic-reject` is falsified for Hiddify.
-`compat=hiddify-pinned` and the relay XUDP correction fix real routing defects
-and ordinary playback, but real-device tests on 19 September 2026 show that
-Shorts still fail. §15 isolates the discriminator — hosting/datacenter egress
-raises Shorts risk so high that the affected phone fails every time while its
-own broadband line never fails — and ships `compat=youtube-direct` as the
-fixing profile. §15.1b corrects the same-day overclaim: hosting-IP Shorts
-rejection is risk-based and intermittent, not an absolute block. See §14, §15,
-§15.1b and `docs/YOUTUBE_INVESTIGATION_2026-09-17.md`.**
+**Status (2026-09-20): FIXED and device-path-verified (real browser session
+through the live production exit; real iPhone/Hiddify confirmation still
+pending — see §16.6). §15's "hosting IP raises Shorts risk" framing is
+superseded: the actual mechanism is ordinary CDN edge-latency variance
+combined with this specific exit's network having measurably worse peering
+to a subset of Google's CDN edges than the relay's network does (§16). The
+fix (§16) is `google_egress_hairpin`, an exit-side, entirely server-side
+route that hairpins the Google/YouTube domain set through the relay's
+better-peered network — unlike `compat=youtube-direct` (§15.3, now a
+secondary/advanced option only), it needs zero client-side configuration and
+therefore works in Hiddify, which was the actual requirement. See §16 for the
+full evidence chain, and `docs/YOUTUBE_INVESTIGATION_2026-09-17.md`.**
 
 > **Read §12 and §13 before anything else.** Sections 1-11 are the
 > 2026-09-08 record. Their source-level tracing of sing-box/sing-tun
@@ -610,3 +613,201 @@ profile, connect, and open the Shorts tab.
   incomplete; capture `route.rules` as the client executed it and add the
   missing host from the capture. The §15.1 discriminator stands: only the
   domain set can be wrong, not the direction.
+
+---
+
+## 16. FIELD CORRECTION (2026-09-20): real mechanism is per-edge CDN latency,
+## not IP-class policy; server-side fix (`google_egress_hairpin`) that needs
+## no client cooperation
+
+### 16.0 Why §15's fix direction was rejected
+
+`compat=youtube-direct` requires the client to honor an imported
+`route.rules` entry. §12/§13 already proved Hiddify discards every one —
+this was known when §15 shipped it as a "secondary" option, but the actual
+product requirement is that YouTube Shorts works in the client people
+actually use (Hiddify) *by default*, with no client switch, no second
+profile, and no reliance on sing-box MT/Shadowrocket/v2rayNG. §15's fix
+cannot ever satisfy that, on any client that behaves like Hiddify. This
+section replaces it with a fix that needs no client-side cooperation at all.
+
+### 16.1 Live, real-device-adjacent reproduction (not a synthetic curl)
+
+Using the Windows development machine as a real client — David's actual
+production Hiddify-pinned profile, loaded into a local sing-box core acting
+as an HTTP proxy for a real Chrome/Playwright session, mobile Safari user
+agent — the exact failure was reproduced on demand through the real exit
+(`91.244.71.165`): `youtubei/v1/player` returns `playabilityStatus: OK` with
+a full adaptive-format list, but the actual media/UMP (`application/vnd.yt-
+ump`) connection either returns a tiny (~150 byte) response and then nothing
+further, or the player's CDN-edge failover burns through several edges and
+gives up, and the UI shows "Video unavailable" with `networkState: 0` — the
+`<video>` element never even started loading. This matches the native-app
+symptom exactly and, critically, is now something this investigation could
+directly instrument (real browser DevTools-level network visibility), unlike
+every prior real-device test.
+
+### 16.2 Falsified this round: generic latency, REALITY connection-burst
+### throttling, multiplexing, client-side DNS resolution
+
+- **Generic added latency causing a "too slow, abandon" player heuristic.**
+  Measured directly: Windows client → exit is ~10–50ms; exit → Google is
+  ~7–40ms (excellent peering — this exit is not geographically or
+  network-wise far from Google). The sum is nowhere near what would explain
+  a heuristic bail-out, and forcing 8 rapid parallel new connections through
+  the same tunnel to an unrelated host (`google.com`) all completed cleanly
+  in under 1s total — REALITY connection setup is not a bottleneck at
+  realistic concurrency.
+- **Per-connection REALITY handshake overhead (many small connections each
+  paying a fresh handshake).** Tested by enabling sing-box multiplex
+  (accept-only, added to the exit's inbound; the change is retained since it
+  is harmless and purely additive) and connecting with a Vision-off,
+  multiplexed diagnostic profile. Multiplexing was confirmed active in the
+  core's own debug log. Shorts still failed identically. Ruled out.
+- **Client-side vs. server-side DNS resolution of the ephemeral `rr#---sn-
+  xxxx.googlevideo.com` redirector hostnames.** Forced the diagnostic
+  client to resolve these locally instead of letting the exit resolve them.
+  No change — still failed. Separately confirmed via Google's own DNS
+  (`dns.google` resolve API) that a specific failing redirector hostname
+  captured live had already gone **NXDOMAIN** minutes later from every
+  resolver tested — these hostnames are genuinely short-lived/session-bound,
+  not a resolver-reliability difference between the exit and anywhere else.
+
+### 16.3 What actually discriminates: per-CDN-edge latency, exit vs. relay
+
+Measured directly, repeatedly, from each node, to the **same class of
+request** (a fresh `youtubei/v1/player` call for the same video, then timing
+a `generate_204` against the manifest's assigned CDN edge host):
+
+| Node | Primary manifest edge | Connect time | Full round trip |
+| --- | --- | --- | --- |
+| Exit (`91.244.71.165`, Evolus IT, DE) | stable across 6 repeats | ~108–111ms | ~329–333ms |
+| Relay (`135.106.178.167`, Selectel, RU) | stable across 6 repeats | ~3–5ms | ~26–29ms |
+
+And, caught live during an actual failing browser session through the exit,
+one of the player's CDN-edge-failover fallback candidates measured **~300ms
+connect / ~880–950ms full round trip** — over IPv4 and IPv6 alike, so this is
+not an address-family effect (also consistent with the original
+investigation's IPv6-rejection experiment finding no effect).
+
+This matches every piece of prior evidence precisely:
+
+- Ordinary long-form video rarely needs CDN-edge failover (one connection,
+  tolerant player), so it almost never touches a slow edge.
+- Shorts' player is CDN-edge-failover-heavy (prefetch, aggressive retry) and
+  therefore hits the exit's slower edges far more often, and its UI treats
+  running out of retries as "content unavailable" rather than buffering
+  longer.
+- The one historical data point where the **relay** path played Shorts
+  successfully while the **exit** path failed
+  (`docs/YOUTUBE_INVESTIGATION_2026-09-17.md` §15.1b's tunnelled-control
+  table) is fully explained: the relay's network simply has better peering
+  to Google's CDN than the exit's network, independent of anything about
+  transport, client, or "hosting IP" as a category.
+- This is a property of *this exit's specific provider's network*, not of
+  "being a VPS" in general, and not a Google-side policy decision at all.
+
+### 16.4 The fix: `google_egress_hairpin` — an exit-side, client-agnostic
+### server route to the relay's better-peered network
+
+Because the discriminator is real, per-edge network latency — not a policy
+this project could ever route around client-side — the only fix that can
+work in Hiddify by default is one where the **exit itself**, not the client,
+redirects Google/YouTube traffic to egress via a network with better Google
+peering. This project already owns exactly such a network: the relay.
+
+Mechanism (`crates/compat-config/src/server.rs`,
+`apps/admin/src/main.rs`'s `google-egress-hairpin` user command,
+`crates/compat-config/src/deployment.rs`'s `[google_egress_hairpin]`
+section):
+
+- **Relay side**: one dedicated, non-client-facing user
+  (`CompatUser::google_egress_hairpin`), created like any other user but
+  marked with this one flag. The relay's rendered `route.rules` gain exactly
+  one extra rule, scoped to `auth_user: [that one user's id]` *and* the
+  Google/YouTube domain set, routing straight to the relay's own `direct`
+  outbound. Every other user, and every other destination for this one user,
+  is completely unaffected by the relay's existing fail-closed policy
+  (verified by dedicated tests asserting the final reject-all rule and rule
+  count are otherwise unchanged).
+- **Exit side**: the exit's own rendered config gains `sniff` (via a
+  `{"action": "sniff"}` route rule — **not** the per-inbound `sniff` field,
+  which sing-box 1.13 removed as a legacy inbound field; this cost one real
+  deploy failure to discover), one new outbound (a VLESS+REALITY client
+  dialing the relay using the hairpin user's credential), and one route rule
+  sending the Google/YouTube domain set to that outbound. `route.final`
+  stays `direct` for everything else. Activated only when both
+  `DeploymentConfig::google_egress_hairpin` (public relay connection
+  metadata — host, port, server_name, REALITY public key/short_id, the same
+  class of information already published in `[[peer_endpoints]]`) and
+  `RealityServerParams::google_egress_hairpin_uuid` (the secret credential,
+  loaded from its own file, never from `deployment.toml`) are present. A
+  deployment that has not opted in renders byte-identically to before.
+- **No client involvement whatsoever.** The client (Hiddify, sing-box MT,
+  anything) sees the exit's normal profile, unchanged, and tunnels
+  everything to the exit exactly as it always has. The exit alone decides,
+  from the already-decrypted-at-the-VLESS-layer destination, where Google
+  traffic actually egresses.
+
+A second real bug was found and fixed while wiring this up:
+`services/subscription/src/main.rs` was pushing every `[[peer_endpoints]]`
+entry onto the served endpoint list a **second** time, after
+`DeploymentConfig::served_endpoints` had already appended each one
+internally — every relay subscription with a declared peer was serving that
+peer twice. Unrelated to YouTube, found only because it made
+`vpn-admin doctor`'s live-subscription-state check fail persistently and
+blocked deploying this fix; now fixed (`services/subscription/src/main.rs`).
+
+A third bug: the hairpin rule's per-user match initially used sing-box's
+`"user"` route-rule field, which matches the **local OS process** that
+originated a connection (`metadata.ProcessInfo.UserName` — always empty for
+a remote proxy connection) and can never match a VLESS-authenticated
+identity. The correct field is `"auth_user"`
+(`route/rule/rule_item_auth_user.go`, matching `metadata.User`, which VLESS's
+inbound does populate from each user's configured name). Confirmed by
+reading the pinned sing-box source directly, and by watching the exit's
+hairpin connection correctly reach the relay authenticated as the right
+user, requesting the right destination, and still fall through to the
+relay's final reject — until this was fixed.
+
+### 16.5 Real-device-adjacent verification (this session)
+
+With the fix live on both nodes (exit `91.244.71.165`, relay
+`135.106.178.167`) and **David's own unmodified production Hiddify-pinned
+profile** (no client-side change, no second profile), a real Chrome/
+Playwright session through the exit:
+
+- `m.youtube.com/shorts/sAcElROnYIE` (the known-failing Short): plays.
+  `playerState: 1`, `video.time` advancing past 10s, `ready: 4`, no error
+  text. Reproduced twice.
+- `m.youtube.com/watch?v=sAcElROnYIE` (same content, watch URL): plays.
+- `m.youtube.com/watch?v=aqz-KE-bpKQ` (control long-form video): plays.
+- `www.youtube.com/shorts/sAcElROnYIE` (desktop UA): plays.
+
+Both nodes pass `vpn-admin doctor --protocol` cleanly (all L1–L6 checks,
+including the real REALITY handshake self-test) after this work — see
+`docs/DEVICE_ACCEPTANCE_TESTS.md`.
+
+### 16.6 What is NOT yet established
+
+This session's verification used a real browser session through the real
+production exit with the real production credential shape, but on a Windows
+development machine, not the affected iPhone, and not through the Hiddify
+app itself (through the same underlying sing-box core Hiddify uses, driven
+by an HTTP proxy rather than iOS's TUN stack). The one remaining test that
+closes this incident completely: on the affected iPhone, using the existing,
+unmodified Hiddify-pinned profile (no new profile, no client-side change),
+open the known-failing Short and confirm it plays, then confirm the control
+video and at least one other Short also still play, over a normal
+reconnect/idle cycle.
+
+### 16.7 Tests
+
+`crates/compat-config/tests/relay_role_policy.rs`:
+`relay_hairpin_flag_off_leaves_relay_rendering_byte_identical`,
+`relay_hairpin_user_gets_exactly_one_extra_rule_scoped_to_google_domains`,
+`relay_hairpin_user_still_falls_through_to_reject_for_non_google_destinations`,
+`exit_without_hairpin_config_renders_exactly_as_before`,
+`exit_with_hairpin_config_but_no_credential_still_renders_unchanged`,
+`exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule`,
+`exit_hairpin_outbound_never_carries_this_exits_own_private_key`.
