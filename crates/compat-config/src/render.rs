@@ -237,6 +237,20 @@ pub fn render_uri_list(
     render_share_links(user, endpoints, false)
 }
 
+/// Base64-encode a subscription body (standard alphabet, padded) — the
+/// conventional V2Ray/Shadowrocket subscription-import encoding. Several
+/// import-by-URL clients (Shadowrocket confirmed) expect the response body
+/// of a subscription URL to be base64, not raw share-link text; the plain
+/// `format=uri`/`format=hiddify` body stays unchanged for every existing
+/// consumer, and this is applied only when a caller opts in via
+/// `?encoding=base64` (see `services/subscription`). Not used for
+/// `format=singbox`, which is JSON, not share-link text.
+pub fn to_base64_subscription(body: &str) -> String {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    STANDARD.encode(body)
+}
+
 /// Which endpoint the manual `select` outbound defaults to. This picks
 /// ONLY the default — every profile still lists every real endpoint tag
 /// plus `auto` (urltest) in the selector, so a user can always override
@@ -2458,5 +2472,22 @@ mod tests {
             .unwrap()
             .contains("flow=xtls-rprx-vision"));
         assert!(!normal.contains("EXPERIMENTAL"));
+    }
+
+    #[test]
+    fn to_base64_subscription_round_trips_and_matches_known_vector() {
+        let input = "vless://uuid@host:443?x=1#label\nhysteria2://pw@host:443?y=2#label";
+        let encoded = to_base64_subscription(input);
+        // Standard (not URL-safe) base64 with padding — the conventional
+        // V2Ray/Shadowrocket subscription encoding.
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let decoded = STANDARD.decode(&encoded).expect("valid standard base64");
+        assert_eq!(String::from_utf8(decoded).unwrap(), input);
+    }
+
+    #[test]
+    fn to_base64_subscription_of_empty_string_is_empty() {
+        assert_eq!(to_base64_subscription(""), "");
     }
 }
