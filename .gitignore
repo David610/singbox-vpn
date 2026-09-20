@@ -10,6 +10,7 @@ deploy/local/relay-pool.json.root_pub
 
 # Local agent worktrees / tooling state — never part of repo history
 /.claude/
+/.worktrees/
 
 # Local lifecycle-acceptance run logs (see docs/release-acceptance/)
 lifecycle-run*.log
