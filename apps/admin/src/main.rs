@@ -3279,9 +3279,23 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
         }
         NodeRole::Relay => {
             let targets = cfg.relay_targets();
+            // Google-egress-hairpin rules (`CompatUser::google_egress_hairpin`)
+            // add one rule each, identifiable by carrying `auth_user` -
+            // a field no other rule this renderer emits uses. Counted
+            // from the document itself rather than recomputed from
+            // `users`/`now_unix` (not available here) so this check
+            // can never drift from what the renderer actually did.
+            let hairpin_rule_count = rules
+                .map(|rules| {
+                    rules
+                        .iter()
+                        .filter(|rule| rule.get("auth_user").is_some())
+                        .count()
+                })
+                .unwrap_or(0);
             let fail_closed = rules.is_some_and(|rules| {
                 rules.last().is_some_and(|last| last["action"] == "reject")
-                    && rules.len() == targets.len() + 2
+                    && rules.len() == targets.len() + 2 + hairpin_rule_count
             });
             if fail_closed {
                 report_check(
