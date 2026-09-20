@@ -277,6 +277,7 @@ async fn get_subscription(
         format = ?query.format,
         profile = ?query.profile,
         compat = ?query.compat,
+        encoding = ?query.encoding,
         "subscription served"
     );
 
@@ -945,6 +946,11 @@ mod tests {
         let state = make_state(vec![user_with_token("goodtoken", true)]);
         let resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri&encoding=garbage").await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.contains("unknown encoding value"));
     }
 
     #[tokio::test]
@@ -953,6 +959,11 @@ mod tests {
         let resp =
             oneshot_with_addr(state, "/sub/goodtoken?format=singbox&encoding=base64").await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.contains("only supported with format=uri/hiddify"));
     }
 
     #[tokio::test]

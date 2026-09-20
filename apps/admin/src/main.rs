@@ -2484,10 +2484,25 @@ fn cmd_user_set_expiry(cfg: &DeploymentConfig, id: &str, expires_at: Option<i64>
     let mut users = store::load_users(&cfg.users_file())?;
     let previous_users = users.clone();
     find_user_mut(&mut users, id)?.expires_at = expires_at;
-    apply_users_and_save(cfg, &previous_users, &users)?;
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
     match expires_at {
         Some(t) => println!("{id}: expires_at={t}"),
         None => println!("{id}: expires_at=none"),
+    }
+    if let Some(t) = expires_at {
+        if t < UnixSeconds::now().0 as i64 {
+            println!(
+                "This expiry is already in the past: once reloaded live, this user is dropped \
+                 from the rendered sing-box authorization config, same as `user disable`."
+            );
+        }
+    }
+    if !went_live {
+        println!(
+            "WARNING: the new config was written but NOT reloaded live (see the warning \
+             above) — this user's previous expiry (or lack of one) is still what the RUNNING \
+             server enforces. Do not treat this as applied yet."
+        );
     }
     Ok(())
 }
