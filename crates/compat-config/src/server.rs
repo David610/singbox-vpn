@@ -235,7 +235,25 @@ pub fn render_singbox_server_config(
                         "private_key": reality.private_key_hex.expose(),
                         "short_id": reality.short_ids,
                     }
-                }
+                },
+                // Accept (never require) client-initiated multiplexing.
+                // A client that never asks for it (the default profile,
+                // every existing client in the field) is byte-for-byte
+                // unaffected — this only adds a listener-side capability.
+                // Rationale: YouTube Shorts opens many short-lived
+                // connections to distinct googlevideo/youtubei hosts in
+                // quick succession; each one currently pays a full new
+                // REALITY handshake (measured ~300-800ms added per new
+                // destination versus a direct, unproxied connection from
+                // the same network — see docs/YOUTUBE_FINAL_ROOT_CAUSE.md
+                // §16), which a long-lived multiplexed connection avoids
+                // by reusing one already-established tunnel for many
+                // logical streams. NOT compatible with `xtls-rprx-vision`
+                // flow on the same connection (Vision needs direct access
+                // to the raw TLS record stream) — a client must pair this
+                // with the existing `vision_off_experiment` per-user flag
+                // to actually use it.
+                "multiplex": { "enabled": true }
             },
             hysteria_inbound
         ],
