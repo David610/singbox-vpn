@@ -45,9 +45,11 @@ async function run(action: "provision" | "enable" | "disable", userId: string) {
     "sudo",
     ["-n", helper, action, userId],
     {
+      encoding: "utf8",
       timeout: 30_000,
       maxBuffer: 256 * 1024,
       env: {
+        ...process.env,
         PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       }
     }
