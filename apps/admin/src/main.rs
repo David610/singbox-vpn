@@ -3253,7 +3253,22 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
     let rules = doc["route"]["rules"].as_array();
     match cfg.role {
         NodeRole::Exit => {
-            if rules.is_some() {
+            // The one legitimate exception: the Google/YouTube egress
+            // hairpin (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16) adds
+            // exactly one route.rules entry to an exit. Anything else —
+            // no hairpin configured but rules present, or rules present
+            // that don't match that exact shape — is the role/renderer
+            // mismatch this check exists to catch.
+            let is_expected_hairpin_shape = cfg.google_egress_hairpin.is_some()
+                && rules.is_some_and(|rules| {
+                    rules.len() == 2
+                        && rules[0]["action"] == "sniff"
+                        && rules[1]["outbound"] == "google-egress-hairpin"
+                        && rules[1]["domain_suffix"]
+                            == serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
+                        && doc["route"]["final"] == "direct"
+                });
+            if rules.is_some() && !is_expected_hairpin_shape {
                 report_check(
                     CheckStatus::Fail,
                     "L2",

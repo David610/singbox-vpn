@@ -151,23 +151,22 @@ pub fn render_server_config_for_deployment(
 /// YouTube domain set through a relay with better network peering to
 /// Google's CDN than this exit's own network — see
 /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16. Adds exactly one outbound (a
-/// VLESS+REALITY client dialing the relay's hairpin user) and one
-/// `route.rules` entry matching that domain set to it; every other
-/// destination keeps using the pre-existing `direct` outbound via
-/// `route.final`. Enables `sniff` on every inbound so a client that
-/// resolved DNS itself and sent a bare IP (common on mobile TUN clients)
-/// still gets matched by domain, from the TLS ClientHello SNI, exactly
-/// like a client that passed the domain through unresolved.
+/// VLESS+REALITY client dialing the relay's hairpin user) and two
+/// `route.rules` entries: an unconditional sniff (so a client that
+/// resolved DNS itself and sent a bare IP — common on mobile TUN
+/// clients — still gets matched by domain, from the TLS ClientHello
+/// SNI, exactly like a client that passed the domain through
+/// unresolved) and the domain-match rule itself. Per-inbound `sniff`
+/// is a legacy field removed in sing-box 1.13 (see
+/// <https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions>);
+/// a `{"action": "sniff"}` route rule — the same shape Hiddify's own
+/// core emits — is the current syntax. Every other destination keeps
+/// using the pre-existing `direct` outbound via `route.final`.
 fn apply_google_egress_hairpin(
     config: &mut serde_json::Value,
     hairpin: &GoogleEgressHairpinSection,
     uuid: &SecretString,
 ) {
-    if let Some(inbounds) = config["inbounds"].as_array_mut() {
-        for inbound in inbounds {
-            inbound["sniff"] = json!(true);
-        }
-    }
     let hairpin_tag = "google-egress-hairpin";
     if let Some(outbounds) = config["outbounds"].as_array_mut() {
         outbounds.push(json!({
@@ -190,11 +189,14 @@ fn apply_google_egress_hairpin(
         }));
     }
     config["route"] = json!({
-        "rules": [{
-            "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
-            "action": "route",
-            "outbound": hairpin_tag,
-        }],
+        "rules": [
+            { "action": "sniff" },
+            {
+                "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
+                "action": "route",
+                "outbound": hairpin_tag,
+            },
+        ],
         "final": "direct",
     });
 }

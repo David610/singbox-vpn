@@ -1156,12 +1156,15 @@ fn exit_with_hairpin_config_but_no_credential_still_renders_unchanged() {
 }
 
 #[test]
-fn exit_with_hairpin_configured_adds_sniff_one_outbound_and_one_route_rule() {
+fn exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule() {
     let exit = load(&exit_hairpin_deployment_toml()).unwrap();
     let doc = render_server_config_for_deployment(&exit, &[user()], &hairpin_reality(), &hysteria(), 0)
         .unwrap();
+    // sing-box 1.13 removed per-inbound `sniff` as a legacy field; the
+    // unconditional sniff must instead be the first route.rules entry
+    // (the same shape Hiddify's own core emits).
     for inbound in doc["inbounds"].as_array().unwrap() {
-        assert_eq!(inbound["sniff"], true, "every inbound must gain sniff");
+        assert!(inbound.get("sniff").is_none(), "sniff must not be a legacy inbound field");
     }
     let outbounds = doc["outbounds"].as_array().unwrap();
     assert_eq!(outbounds.len(), 2, "the original direct outbound stays, plus one hairpin outbound");
@@ -1176,10 +1179,11 @@ fn exit_with_hairpin_configured_adds_sniff_one_outbound_and_one_route_rule() {
     assert_eq!(hairpin_ob["tls"]["reality"]["public_key"], "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8");
     assert_eq!(hairpin_ob["tls"]["reality"]["short_id"], "0a1b2c3d");
     let rules = doc["route"]["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 1);
-    assert_eq!(rules[0]["outbound"], "google-egress-hairpin");
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["action"], "sniff");
+    assert_eq!(rules[1]["outbound"], "google-egress-hairpin");
     assert_eq!(
-        rules[0]["domain_suffix"],
+        rules[1]["domain_suffix"],
         serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
     );
     assert_eq!(doc["route"]["final"], "direct");
