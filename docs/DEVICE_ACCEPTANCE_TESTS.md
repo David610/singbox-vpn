@@ -103,6 +103,26 @@ one test that closes the incident and what each outcome means. Do not
 mark it working here without a dated entry recording device, OS, client
 version, active core, server commit, endpoint and network.
 
+### Open: `google_egress_hairpin` (YouTube Shorts, no client-side change — Hiddify included)
+
+Superseded `compat=youtube-direct` as the primary fix
+(`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16): the real discriminator is
+per-CDN-edge network latency specific to the exit's provider, not IP class,
+and the fix is entirely server-side (an exit-to-relay hairpin for the
+Google/YouTube domain set), so it needs **no client-side configuration at
+all** and works in Hiddify by default, unlike `compat=youtube-direct`.
+
+Implemented, unit-tested (`crates/compat-config/tests/relay_role_policy.rs`),
+deployed to both production nodes, and verified via a real browser session
+through the live production exit using David's actual unmodified
+Hiddify-pinned profile (§16.5): the known-failing Short, the same Short via
+`/watch?v=`, the long-form control video, and desktop Shorts all played.
+
+**Not yet verified on the affected iPhone through the Hiddify app itself**
+(§16.6) — this is the one test that closes the incident. Do not mark it
+working here without a dated entry recording device, OS, Hiddify version,
+server commit, endpoint and network.
+
 ## What each column means
 
 - **VLESS+REALITY** / **Hysteria2**: the client successfully connects

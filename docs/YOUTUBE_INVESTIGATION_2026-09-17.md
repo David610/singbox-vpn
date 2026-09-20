@@ -2,6 +2,21 @@
 
 ## Status
 
+**UPDATE (19 September 2026, later session):** the root cause is now
+established and the fixing profile is shipped. The discriminator is the
+**egress IP class — as a risk elevation, not an absolute block**: every
+working path leaves from a non-hosting (broadband) address, and broadband
+never failed across the whole record. Fresh browser sessions tunnelled
+through the hosting exits (Evolus DE / Selectel RU) are *intermittent*: the
+mobile Shorts path returned YouTube's "Video unavailable" through the exit
+and played through the relay on the same day, so Shorts from hosting IPs is
+risk-scored rather than deterministically denied — but the affected phone hit
+the rejected branch every time. The fix is `compat=youtube-direct` (route the
+Google/YouTube domain set to the client's `direct` outbound), which removes
+the whole risk class by using the broadband path that has never failed. It is
+**inert in Hiddify** (imported route rules are discarded) and only works on
+config-as-is clients. See `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §15 and §15.1b.
+
 The relay pairing defect was repaired and ordinary YouTube videos now play on
 the affected iPhone through the direct and relayed profiles. YouTube Shorts
 still fail with the German message `Video nicht verfügbar / Dieser Inhalt ist

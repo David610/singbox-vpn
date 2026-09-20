@@ -172,7 +172,14 @@ pub struct SubQuery {
     /// one `route.rules` entry rejecting application UDP/443 with
     /// `method: "default"`/`no_drop: true`, which is the only one of the
     /// two that produces a failure the application can actually see (see
-    /// `render::CompatibilityMode::QuicReject`). `vision-off` is the
+    /// `render::CompatibilityMode::QuicReject`). `youtube-direct` keeps
+    /// every endpoint and credential exactly as in the normal profile and
+    /// adds one `route.rules` entry routing the Google/YouTube domain set
+    /// to the client's `direct` outbound — the only demonstrated-working
+    /// path for YouTube Shorts, which YouTube's playability decision
+    /// blocks for hosting/datacenter egress IPs regardless of transport
+    /// (see `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §14 and
+    /// `render::CompatibilityMode::YouTubeDirect`). `vision-off` is the
     /// EXPERIMENTAL §9.5 diagnostic of
     /// `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md`: everything stays as
     /// in the normal profile except that the VLESS+REALITY profile omits
@@ -279,7 +286,7 @@ async fn get_subscription(
                 Some(mode) => mode,
                 None => return (
                     StatusCode::BAD_REQUEST,
-                    "unknown compat value (expected \"normal\", \"tcp-only\", \"quic-reject\", \"vision-off\" or \"hiddify-pinned\")",
+                    "unknown compat value (expected \"normal\", \"tcp-only\", \"quic-reject\", \"vision-off\", \"hiddify-pinned\" or \"youtube-direct\")",
                 )
                     .into_response(),
             },
@@ -370,6 +377,20 @@ async fn get_subscription(
                 return (
                     StatusCode::BAD_REQUEST,
                     "compat=quic-reject is only supported with format=singbox — it is a \
+                     route.rules entry, which share-link syntax cannot express",
+                )
+                    .into_response();
+            }
+            if compat_mode == render::CompatibilityMode::YouTubeDirect {
+                // The mode is defined entirely in terms of a
+                // `route.rules` entry, which share-link syntax cannot
+                // express. Handing back a link list here would silently
+                // serve the normal multi-route profile this mode exists
+                // to repair — so reject explicitly, same rule as
+                // `quic-reject`.
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "compat=youtube-direct is only supported with format=singbox — it is a \
                      route.rules entry, which share-link syntax cannot express",
                 )
                     .into_response();
@@ -734,6 +755,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            google_egress_hairpin: false,
             peer_credentials: Default::default(),
         }
     }
@@ -1006,6 +1028,91 @@ mod tests {
             doc["route"].get("rules").is_none(),
             "the default subscription must never carry a UDP reject rule"
         );
+    }
+
+    // --- compat=youtube-direct ---
+
+    #[tokio::test]
+    async fn compat_youtube_direct_with_singbox_format_emits_the_domain_direct_rule() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=singbox&compat=youtube-direct").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rules = doc["route"]["rules"]
+            .as_array()
+            .expect("route.rules present");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["outbound"], "direct");
+        let domains: Vec<&str> = rules[0]["domain_suffix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d.as_str().unwrap())
+            .collect();
+        for required in [
+            "youtube.com",
+            "googlevideo.com",
+            "youtubei.googleapis.com",
+            "google.com",
+            "googleapis.com",
+        ] {
+            assert!(
+                domains.contains(&required),
+                "youtube-direct rule must route {required} direct for the player/DRM/API path"
+            );
+        }
+        assert_eq!(doc["route"]["final"], "select");
+        // Every transport stays on offer — this mode changes no endpoint
+        // and hides nothing from the selector.
+        let outbounds = doc["outbounds"].as_array().unwrap();
+        assert!(outbounds.iter().any(|o| o["type"] == "hysteria2"));
+        let vless = outbounds.iter().find(|o| o["type"] == "vless").unwrap();
+        assert_eq!(vless["flow"], "xtls-rprx-vision");
+        assert!(vless.get("network").is_none());
+    }
+
+    #[tokio::test]
+    async fn compat_youtube_direct_only_differs_from_normal_by_the_route_block() {
+        // Same singularity contract as `quic-reject`: the mode must not
+        // silently change a UUID, key, tag, selector, or transport set —
+        // otherwise an operator enabling it for one device would
+        // unknowingly rotate every other device's profile state.
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let normal_resp = oneshot_with_addr(state.clone(), "/sub/goodtoken?format=singbox").await;
+        let ytd_resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=singbox&compat=youtube-direct").await;
+        let normal_body = axum::body::to_bytes(normal_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let ytd_body = axum::body::to_bytes(ytd_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let normal: serde_json::Value = serde_json::from_slice(&normal_body).unwrap();
+        let ytd: serde_json::Value = serde_json::from_slice(&ytd_body).unwrap();
+        assert_eq!(normal["outbounds"], ytd["outbounds"]);
+        assert_eq!(normal["route"]["final"], ytd["route"]["final"]);
+        assert!(normal["route"].get("rules").is_none());
+        assert_eq!(ytd["route"]["rules"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compat_youtube_direct_with_uri_format_is_rejected_not_silently_degraded() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=uri&compat=youtube-direct").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn compat_youtube_direct_with_hiddify_format_is_rejected_not_silently_degraded() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp =
+            oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&compat=youtube-direct").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -1393,6 +1500,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            google_egress_hairpin: false,
             peer_credentials: Default::default(),
         };
         let state = make_state(vec![user]);
@@ -2016,6 +2124,7 @@ capabilities = ["tcp"]
             created_at: 0,
             expires_at: None,
             vision_off_experiment: false,
+            google_egress_hairpin: false,
             peer_credentials,
         }
     }

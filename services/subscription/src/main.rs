@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
     // declaration, so a failure here means the file changed underneath us.
     // Serving a partial endpoint set would silently withhold a peer that
     // users have credentials for.
-    let mut endpoints = cfg
+    let endpoints = cfg
         .served_endpoints(&public_key, &short_id, hysteria_obfs_password.as_deref())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if cfg.role == NodeRole::Relay {
@@ -195,29 +195,6 @@ async fn main() -> Result<()> {
         tracing::info!(
             access_paths = access_paths.len(),
             "serving non-secret operator-declared access-path metadata"
-        );
-    }
-
-    // Operator-declared endpoints on servers this deployment does not
-    // control (ADR-0009). Appended AFTER the local ones so a client's
-    // endpoint order still leads with this server's own, and so a
-    // deployment with no peers gets a byte-identical endpoint list.
-    //
-    // Fail closed: `DeploymentConfig::load` already validated every
-    // declaration, so a failure here means the file changed underneath us
-    // or an id collides. Serving a partial endpoint set would silently
-    // withhold a peer that users have credentials for.
-    for peer in &cfg.peer_endpoints {
-        endpoints.push(
-            peer.to_compat_endpoint().map_err(|e| {
-                anyhow::anyhow!("invalid [[peer_endpoints]] entry {:?}: {e}", peer.id)
-            })?,
-        );
-    }
-    if !cfg.peer_endpoints.is_empty() {
-        tracing::info!(
-            peer_endpoints = cfg.peer_endpoints.len(),
-            "serving operator-declared peer endpoints; each is offered only to users who have              a peer credential for it"
         );
     }
 

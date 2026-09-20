@@ -136,6 +136,7 @@ fn user() -> CompatUser {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         peer_credentials,
     }
 }
@@ -147,6 +148,7 @@ fn reality() -> RealityServerParams {
         short_ids: vec!["0a1b2c3d".into()],
         handshake_server: "www.example.com".into(),
         handshake_port: 443,
+        google_egress_hairpin_uuid: None,
     }
 }
 
@@ -1030,4 +1032,189 @@ fn fresh_install_templates_render_a_current_loadable_deployment_for_both_roles()
 
     // The relay template without its ingress declaration must not load.
     assert!(load(&render("relay", "ru1")).is_err());
+}
+
+// ----------------------------------------------------------------------
+// Google/YouTube egress hairpin (docs/YOUTUBE_FINAL_ROOT_CAUSE.md §16):
+// an EXIT can hold one relay user's credential and hairpin the Google/
+// YouTube domain set through a relay with better network peering to
+// Google's CDN. Never a client-facing feature — see
+// `CompatUser::google_egress_hairpin`'s doc comment.
+
+fn hairpin_user() -> CompatUser {
+    let mut u = user();
+    u.id = "u-hairpin".into();
+    u.name = "google-egress-hairpin".into();
+    u.vless_uuid = "55555555-5555-4555-8555-555555555555".into();
+    u.peer_credentials = Default::default();
+    u.google_egress_hairpin = true;
+    u
+}
+
+#[test]
+fn relay_hairpin_flag_off_leaves_relay_rendering_byte_identical() {
+    let relay = load(&paired_relay_toml()).unwrap();
+    let without = render(&relay, &[user()]);
+    let mut off = hairpin_user();
+    off.google_egress_hairpin = false;
+    let with_flag_off = render(&relay, &[user(), off]);
+    // The extra user still renders its own inbound entry, but the RULES
+    // (the fail-closed policy under test) must be identical: the second
+    // user is invisible to route generation when the flag is false.
+    assert_eq!(without["route"], with_flag_off["route"]);
+}
+
+#[test]
+fn relay_hairpin_user_gets_exactly_two_extra_rules_scoped_to_google_domains() {
+    // A hairpin user needs its OWN sniff step: the exit only sniffs to
+    // decide ITS OWN routing, then forwards whatever destination form it
+    // received from its own client — often a bare IP, since an iOS TUN
+    // core typically resolves DNS itself before sing-box ever sees the
+    // packet. Without recovering the domain again here, `domain_suffix`
+    // can never match an IP-only destination and the connection falls
+    // through to reject (see docs/YOUTUBE_FINAL_ROOT_CAUSE.md §16).
+    let relay = load(&paired_relay_toml()).unwrap();
+    let without = render(&relay, &[user()]);
+    let with_hairpin = render(&relay, &[user(), hairpin_user()]);
+    let without_rules = without["route"]["rules"].as_array().unwrap();
+    let with_rules = with_hairpin["route"]["rules"].as_array().unwrap();
+    assert_eq!(
+        with_rules.len(),
+        without_rules.len() + 2,
+        "the hairpin user must add exactly two rules (sniff, then route), changing nothing else"
+    );
+    let sniff_rule = &with_rules[1];
+    assert_eq!(sniff_rule["auth_user"], serde_json::json!(["u-hairpin"]));
+    assert_eq!(sniff_rule["action"], "sniff");
+    let hairpin_rule = &with_rules[2];
+    assert_eq!(hairpin_rule["auth_user"], serde_json::json!(["u-hairpin"]));
+    assert_eq!(hairpin_rule["outbound"], "direct");
+    assert_eq!(
+        hairpin_rule["domain_suffix"],
+        serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
+    );
+    // Every other rule (loopback health check, declared-exit forwarding,
+    // final reject) is untouched and in its original relative order.
+    assert_eq!(with_rules[0], without_rules[0]);
+    for i in 1..without_rules.len() {
+        assert_eq!(with_rules[i + 2], without_rules[i]);
+    }
+}
+
+#[test]
+fn relay_hairpin_user_still_falls_through_to_reject_for_non_google_destinations() {
+    // The hairpin rule matches on domain_suffix; anything that is not in
+    // the Google/YouTube set (including the declared exit's own host,
+    // which the hairpin user has no reason to reach) keeps hitting this
+    // relay's ordinary policy — forward-to-declared-exit if it matches,
+    // reject-all otherwise. This is enforced by sing-box's own rule
+    // evaluation order (first match wins), not by anything this test can
+    // observe directly in the rendered JSON — so this test instead pins
+    // down the one property that actually matters: the final rule is
+    // still an unconditional reject covering every inbound, unchanged by
+    // the hairpin user's presence.
+    let relay = load(&paired_relay_toml()).unwrap();
+    let with_hairpin = render(&relay, &[user(), hairpin_user()]);
+    let rules = with_hairpin["route"]["rules"].as_array().unwrap();
+    let last = rules.last().unwrap();
+    assert_eq!(last["action"], "reject");
+    assert!(last.get("domain_suffix").is_none());
+    assert!(last.get("auth_user").is_none());
+}
+
+fn exit_hairpin_deployment_toml() -> String {
+    format!(
+        "{}{}",
+        base("exit"),
+        r#"
+[google_egress_hairpin]
+relay_host = "ru1.example.test"
+relay_port = 443
+relay_server_name = "www.example.com"
+relay_reality_public_key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+relay_reality_short_id = "0a1b2c3d"
+"#
+    )
+}
+
+fn hairpin_reality() -> RealityServerParams {
+    let mut r = reality();
+    r.google_egress_hairpin_uuid = Some(SecretString::new("66666666-6666-4666-8666-666666666666"));
+    r
+}
+
+#[test]
+fn exit_without_hairpin_config_renders_exactly_as_before() {
+    let exit = load(&base("exit")).unwrap();
+    let doc =
+        render_server_config_for_deployment(&exit, &[user()], &reality(), &hysteria(), 0).unwrap();
+    assert!(doc.get("route").is_none());
+    assert!(doc["inbounds"][0].get("sniff").is_none());
+    assert_eq!(doc["outbounds"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn exit_with_hairpin_config_but_no_credential_still_renders_unchanged() {
+    // Public metadata alone (no secret UUID loaded) must not activate
+    // anything — half-configured must fail safe to "off", not "on
+    // without a credential".
+    let exit = load(&exit_hairpin_deployment_toml()).unwrap();
+    let doc =
+        render_server_config_for_deployment(&exit, &[user()], &reality(), &hysteria(), 0).unwrap();
+    assert!(doc.get("route").is_none());
+    assert_eq!(doc["outbounds"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule() {
+    let exit = load(&exit_hairpin_deployment_toml()).unwrap();
+    let doc = render_server_config_for_deployment(&exit, &[user()], &hairpin_reality(), &hysteria(), 0)
+        .unwrap();
+    // sing-box 1.13 removed per-inbound `sniff` as a legacy field; the
+    // unconditional sniff must instead be the first route.rules entry
+    // (the same shape Hiddify's own core emits).
+    for inbound in doc["inbounds"].as_array().unwrap() {
+        assert!(inbound.get("sniff").is_none(), "sniff must not be a legacy inbound field");
+    }
+    let outbounds = doc["outbounds"].as_array().unwrap();
+    assert_eq!(outbounds.len(), 2, "the original direct outbound stays, plus one hairpin outbound");
+    let hairpin_ob = outbounds
+        .iter()
+        .find(|o| o["tag"] == "google-egress-hairpin")
+        .expect("hairpin outbound present");
+    assert_eq!(hairpin_ob["type"], "vless");
+    assert_eq!(hairpin_ob["server"], "ru1.example.test");
+    assert_eq!(hairpin_ob["server_port"], 443);
+    assert_eq!(hairpin_ob["uuid"], "66666666-6666-4666-8666-666666666666");
+    assert_eq!(hairpin_ob["tls"]["reality"]["public_key"], "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8");
+    assert_eq!(hairpin_ob["tls"]["reality"]["short_id"], "0a1b2c3d");
+    let rules = doc["route"]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["action"], "sniff");
+    assert_eq!(rules[1]["outbound"], "google-egress-hairpin");
+    assert_eq!(
+        rules[1]["domain_suffix"],
+        serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
+    );
+    assert_eq!(doc["route"]["final"], "direct");
+}
+
+#[test]
+fn exit_hairpin_outbound_never_carries_this_exits_own_private_key() {
+    // The exit's OWN inbound legitimately embeds the exit's own private
+    // key (it is the exit's own listener identity) — that is not a leak.
+    // What must never happen is that key ending up in the NEW hairpin
+    // OUTBOUND, which only ever needs the hairpin credential (a UUID)
+    // and the relay's PUBLIC key.
+    let exit = load(&exit_hairpin_deployment_toml()).unwrap();
+    let doc = render_server_config_for_deployment(&exit, &[user()], &hairpin_reality(), &hysteria(), 0)
+        .unwrap();
+    let outbounds = doc["outbounds"].as_array().unwrap();
+    let hairpin_ob = outbounds
+        .iter()
+        .find(|o| o["tag"] == "google-egress-hairpin")
+        .unwrap();
+    let rendered = serde_json::to_string(hairpin_ob).unwrap();
+    assert!(!rendered.contains("SYNTHETIC-RELAY-PRIVATE-KEY"));
+    assert!(hairpin_ob.get("private_key").is_none());
 }

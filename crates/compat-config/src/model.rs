@@ -10,6 +10,32 @@ use crate::secret::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// The Google/YouTube consumer domain set used by both
+/// `render::youtube_direct_rule` (client-side, opt-in `compat=youtube-direct`)
+/// and `server::render_server_config_for_deployment`'s relay hairpin
+/// exception (`CompatUser::google_egress_hairpin`). One shared list so the
+/// two mechanisms — routing this traffic to the client's own line, or
+/// hairpinning it through a better-peered relay — can never silently drift
+/// apart on what counts as "Google/YouTube traffic". See
+/// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §15/§16 for why the set is this broad:
+/// auth, DRM/licensing, the player API, static assets and media each
+/// resolve to a different Google domain, and a hole in any of them breaks
+/// the feature both mechanisms exist to restore.
+pub const GOOGLE_EGRESS_DOMAINS: &[&str] = &[
+    "youtube.com",
+    "youtubekids.com",
+    "youtu.be",
+    "youtube-nocookie.com",
+    "googlevideo.com",
+    "ytimg.com",
+    "ggpht.com",
+    "googleusercontent.com",
+    "youtubei.googleapis.com",
+    "google.com",
+    "googleapis.com",
+    "gstatic.com",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompatTransport {
@@ -186,6 +212,30 @@ pub struct CompatUser {
     #[serde(default, skip_serializing_if = "is_false")]
     pub vision_off_experiment: bool,
 
+    /// Relay-role only, default `false`: this ONE user's traffic to the
+    /// Google/YouTube domain set (see `server::GOOGLE_EGRESS_DOMAINS`) is
+    /// allowed straight to this relay's own `direct` outbound instead of
+    /// being restricted to the declared exit-forwarding + reject-all
+    /// policy every other user gets (`server::render_server_config_for_deployment`,
+    /// `NodeRole::Relay` branch).
+    ///
+    /// This is not a client-facing feature: it exists so an EXIT can hold
+    /// this one user's credential and hairpin real end-user Google/YouTube
+    /// traffic through a relay with materially better network peering to
+    /// Google's CDN than the exit's own network — see
+    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16. A real end user is never
+    /// expected to hold this credential.
+    ///
+    /// Every other user, and every other destination for this one, keeps
+    /// the relay's existing fail-closed guarantee unchanged: this flag
+    /// only ever ADDS one narrowly-scoped allow rule ahead of the
+    /// existing policy, for one user id and one fixed domain set.
+    ///
+    /// Skipped during serialization when `false`, same treatment as
+    /// `vision_off_experiment`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub google_egress_hairpin: bool,
+
     /// This user's credentials for peer endpoints, keyed by peer endpoint
     /// id (ADR-0009 Option A: per-user, per-endpoint).
     ///
@@ -237,6 +287,22 @@ pub struct RealityServerParams {
     /// (sing-box `tls.reality.handshake.server`/`server_port`).
     pub handshake_server: String,
     pub handshake_port: u16,
+
+    /// This exit's own credential for the relay's
+    /// `google_egress_hairpin` user (see that field's doc comment and
+    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16) — the UUID an EXIT dials
+    /// the relay with so Google/YouTube traffic can egress from the
+    /// relay's network instead of the exit's own. `None` (the default)
+    /// on every deployment that has not opted into this: the exit then
+    /// renders exactly as it always has, with no new outbound and no new
+    /// route rule. Grouped with `RealityServerParams` purely so it reaches
+    /// `render_server_config_for_deployment` through an existing
+    /// parameter instead of widening that function's signature — it is
+    /// this exit's own outbound credential, not this exit's own REALITY
+    /// server identity, and is never mixed into `private_key_hex`/
+    /// `public_key_hex`/`short_ids` above.
+    #[serde(default)]
+    pub google_egress_hairpin_uuid: Option<SecretString>,
 }
 
 /// Server-side Hysteria2 TLS/obfuscation parameters.

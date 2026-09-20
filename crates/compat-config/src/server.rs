@@ -3,8 +3,9 @@
 //! for Xray later does not require rewriting user management or
 //! subscription logic — only a new backend impl of this trait.
 
-use crate::deployment::{DeploymentConfig, NodeRole};
+use crate::deployment::{DeploymentConfig, GoogleEgressHairpinSection, NodeRole};
 use crate::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
+use crate::secret::SecretString;
 use crate::CompatError;
 use serde_json::json;
 use std::path::Path;
@@ -67,6 +68,12 @@ pub fn render_server_config_for_deployment(
         now_unix,
     );
     if deployment.role == NodeRole::Exit {
+        if let (Some(hairpin), Some(uuid)) = (
+            &deployment.google_egress_hairpin,
+            &reality.google_egress_hairpin_uuid,
+        ) {
+            apply_google_egress_hairpin(&mut config, hairpin, uuid);
+        }
         return Ok(config);
     }
 
@@ -79,6 +86,52 @@ pub fn render_server_config_for_deployment(
         "action": "route",
         "outbound": "direct",
     })];
+    // One narrowly-scoped exception ahead of the fail-closed policy: a
+    // user with `google_egress_hairpin` set (never a real end user — see
+    // that field's doc comment) may reach ONLY the Google/YouTube domain
+    // set via this relay's own `direct` outbound. Every other user, and
+    // every other destination for this one, is unaffected — the loop
+    // below and the final reject-all still apply to everything else.
+    for hairpin_user in users
+        .iter()
+        .filter(|u| u.is_active(now_unix) && u.google_egress_hairpin)
+    {
+        // The exit forwards whatever destination form it received from
+        // its own client (often a bare IP: an iOS TUN core typically
+        // resolves DNS itself before the packet ever reaches sing-box,
+        // and sniffing on the exit only recovers the domain for the
+        // EXIT's own routing decision — it does not rewrite the
+        // destination it dials onward, see
+        // `route.Router.prepareMatchMetadata`/`actionSniff` in sing-box).
+        // Without recovering the domain again here, `domain_suffix`
+        // below can never match an IP-only destination
+        // (`route/rule/rule_item_domain.go`'s `DomainItem.Match` falls
+        // back to `metadata.Destination.Fqdn`, which is empty for an
+        // IP), and the connection falls through to the reject-all rule.
+        // Scoped to this one dedicated, non-client-facing hairpin
+        // credential only — every other relay connection is still
+        // routed by IP/port alone, per this function's no-sniffing
+        // invariant.
+        rules.push(json!({
+            "inbound": [reality_inbound],
+            "auth_user": [hairpin_user.id.clone()],
+            "action": "sniff",
+        }));
+        rules.push(json!({
+            "inbound": [reality_inbound],
+            // NOT "user" — that field matches the local OS process
+            // that originated the connection (`route/rule/rule_item_
+            // user.go`'s `metadata.ProcessInfo.UserName`, always empty
+            // for a remote proxy connection). The VLESS-authenticated
+            // identity this rule actually needs lives in
+            // `metadata.User`, which only `auth_user`
+            // (`route/rule/rule_item_auth_user.go`) matches against.
+            "auth_user": [hairpin_user.id.clone()],
+            "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
+            "action": "route",
+            "outbound": "direct",
+        }));
+    }
     for target in deployment.relay_targets() {
         let mut rule = json!({
             "inbound": [reality_inbound],
@@ -120,6 +173,60 @@ pub fn render_server_config_for_deployment(
     }));
     config["route"] = json!({ "rules": rules });
     Ok(config)
+}
+
+/// Mutates an already-rendered exit document to hairpin the Google/
+/// YouTube domain set through a relay with better network peering to
+/// Google's CDN than this exit's own network — see
+/// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16. Adds exactly one outbound (a
+/// VLESS+REALITY client dialing the relay's hairpin user) and two
+/// `route.rules` entries: an unconditional sniff (so a client that
+/// resolved DNS itself and sent a bare IP — common on mobile TUN
+/// clients — still gets matched by domain, from the TLS ClientHello
+/// SNI, exactly like a client that passed the domain through
+/// unresolved) and the domain-match rule itself. Per-inbound `sniff`
+/// is a legacy field removed in sing-box 1.13 (see
+/// <https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions>);
+/// a `{"action": "sniff"}` route rule — the same shape Hiddify's own
+/// core emits — is the current syntax. Every other destination keeps
+/// using the pre-existing `direct` outbound via `route.final`.
+fn apply_google_egress_hairpin(
+    config: &mut serde_json::Value,
+    hairpin: &GoogleEgressHairpinSection,
+    uuid: &SecretString,
+) {
+    let hairpin_tag = "google-egress-hairpin";
+    if let Some(outbounds) = config["outbounds"].as_array_mut() {
+        outbounds.push(json!({
+            "type": "vless",
+            "tag": hairpin_tag,
+            "server": hairpin.relay_host,
+            "server_port": hairpin.relay_port,
+            "uuid": uuid.expose(),
+            "flow": "xtls-rprx-vision",
+            "tls": {
+                "enabled": true,
+                "server_name": hairpin.relay_server_name,
+                "utls": { "enabled": true, "fingerprint": "chrome" },
+                "reality": {
+                    "enabled": true,
+                    "public_key": hairpin.relay_reality_public_key,
+                    "short_id": hairpin.relay_reality_short_id,
+                }
+            }
+        }));
+    }
+    config["route"] = json!({
+        "rules": [
+            { "action": "sniff" },
+            {
+                "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
+                "action": "route",
+                "outbound": hairpin_tag,
+            },
+        ],
+        "final": "direct",
+    });
 }
 
 /// Transport-level document builder: both inbounds for the active users
@@ -235,7 +342,25 @@ pub fn render_singbox_server_config(
                         "private_key": reality.private_key_hex.expose(),
                         "short_id": reality.short_ids,
                     }
-                }
+                },
+                // Accept (never require) client-initiated multiplexing.
+                // A client that never asks for it (the default profile,
+                // every existing client in the field) is byte-for-byte
+                // unaffected — this only adds a listener-side capability.
+                // Rationale: YouTube Shorts opens many short-lived
+                // connections to distinct googlevideo/youtubei hosts in
+                // quick succession; each one currently pays a full new
+                // REALITY handshake (measured ~300-800ms added per new
+                // destination versus a direct, unproxied connection from
+                // the same network — see docs/YOUTUBE_FINAL_ROOT_CAUSE.md
+                // §16), which a long-lived multiplexed connection avoids
+                // by reusing one already-established tunnel for many
+                // logical streams. NOT compatible with `xtls-rprx-vision`
+                // flow on the same connection (Vision needs direct access
+                // to the raw TLS record stream) — a client must pair this
+                // with the existing `vision_off_experiment` per-user flag
+                // to actually use it.
+                "multiplex": { "enabled": true }
             },
             hysteria_inbound
         ],
@@ -442,6 +567,7 @@ mod tests {
                 created_at: 0,
                 expires_at: None,
                 vision_off_experiment: false,
+                google_egress_hairpin: false,
                 peer_credentials: Default::default(),
             },
             CompatUser {
@@ -454,6 +580,7 @@ mod tests {
                 created_at: 0,
                 expires_at: None,
                 vision_off_experiment: false,
+                google_egress_hairpin: false,
                 peer_credentials: Default::default(),
             },
             CompatUser {
@@ -466,6 +593,7 @@ mod tests {
                 created_at: 0,
                 expires_at: Some(100),
                 vision_off_experiment: false,
+                google_egress_hairpin: false,
                 peer_credentials: Default::default(),
             },
         ]
@@ -478,6 +606,7 @@ mod tests {
             short_ids: vec!["0a1b2c3d".into()],
             handshake_server: "www.google.com".into(),
             handshake_port: 443,
+            google_egress_hairpin_uuid: None,
         }
     }
 
@@ -549,6 +678,7 @@ mod tests {
             created_at: 0,
             expires_at: None,
             vision_off_experiment: true,
+            google_egress_hairpin: false,
             peer_credentials: Default::default(),
         });
         let ports = ServerPorts {

@@ -410,6 +410,21 @@ enum UserCommands {
         #[arg(long)]
         off: bool,
     },
+    /// RELAY ROLE ONLY, and never for a real end user: mark this user as
+    /// the Google/YouTube egress hairpin credential (see
+    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16 and
+    /// `compat_config::model::CompatUser::google_egress_hairpin`). This
+    /// is meant to be run once, on a RELAY, against a dedicated user
+    /// created just for this — the resulting UUID then gets copied into
+    /// the paired EXIT's `[google_egress_hairpin]` credential file, never
+    /// handed to a real client. `--off` restores this relay's ordinary
+    /// fail-closed policy for that user (they revert to being an
+    /// ordinary, unpaired relay user with no forwarding target).
+    GoogleEgressHairpin {
+        user_id: String,
+        #[arg(long)]
+        off: bool,
+    },
     /// Print connection material for a user. The subscription URL itself
     /// requires the raw token, which (by design, spec §26) is not
     /// persisted — only shown at `create`/`rotate-token` time. This
@@ -512,6 +527,9 @@ fn main() -> Result<()> {
         }
         Commands::User(UserCommands::VisionOffExperiment { user_id, off }) => {
             cmd_user_vision_off_experiment(&cfg, &user_id, !off)
+        }
+        Commands::User(UserCommands::GoogleEgressHairpin { user_id, off }) => {
+            cmd_user_google_egress_hairpin(&cfg, &user_id, !off)
         }
         Commands::User(UserCommands::RotateToken { user_id, qr }) => {
             cmd_user_rotate_token(&cfg, &user_id, qr)
@@ -829,6 +847,13 @@ fn cmd_reality_rotate(cfg: &DeploymentConfig) -> Result<()> {
         short_ids: vec![candidate_sid.clone()],
         handshake_server: cfg.reality.handshake_server.clone(),
         handshake_port: cfg.reality.handshake_port,
+        // Rotation only replaces this exit's own key/short_id — carry
+        // the current hairpin credential (if any) through unchanged so
+        // the candidate render+validate faithfully covers the whole
+        // live document, not a version missing that outbound.
+        google_egress_hairpin_uuid: std::fs::read_to_string(cfg.google_egress_hairpin_uuid_file())
+            .ok()
+            .map(|s| SecretString::new(s.trim().to_string())),
     };
     let users = store::load_users(&cfg.users_file())?;
     let hysteria = load_hysteria_params(cfg);
@@ -1438,12 +1463,21 @@ fn load_reality_params(cfg: &DeploymentConfig) -> Result<RealityServerParams> {
     let short_id = std::fs::read_to_string(cfg.reality_dir().join("short_id.txt"))?
         .trim()
         .to_string();
+    // Optional: absent on every deployment that has not opted into the
+    // Google/YouTube egress hairpin (see
+    // `DeploymentConfig::google_egress_hairpin_uuid_file`) — a missing
+    // file means this exit renders exactly as it always has, not an
+    // error.
+    let google_egress_hairpin_uuid = std::fs::read_to_string(cfg.google_egress_hairpin_uuid_file())
+        .ok()
+        .map(|s| SecretString::new(s.trim().to_string()));
     Ok(RealityServerParams {
         private_key_hex: SecretString::new(private_key_hex),
         public_key_hex,
         short_ids: vec![short_id],
         handshake_server: cfg.reality.handshake_server.clone(),
         handshake_port: cfg.reality.handshake_port,
+        google_egress_hairpin_uuid,
     })
 }
 
@@ -2050,6 +2084,42 @@ fn subscription_url_quic_reject(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
+/// Opt-in YouTube-direct subscription URL
+/// (`?format=singbox&compat=youtube-direct`, see
+/// `compat_config::render::CompatibilityMode::YouTubeDirect`). Identical
+/// credentials, endpoints, flow and transports to the normal profile —
+/// the only difference is one `route.rules` entry that routes the
+/// Google/YouTube domain set to the client's `direct` outbound.
+///
+/// This is the profile for the real-device issue documented in
+/// `docs/YOUTUBE_INVESTIGATION_2026-09-17.md` and re-closed in
+/// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §14: YouTube Shorts play fine from
+/// the client's own broadband line but fail from every hosting/datacenter
+/// egress IP, whatever the transport, client, or exit. Routing the
+/// YouTube/Google domain set direct makes YouTube leave from the
+/// proven-working path while the rest of the tunnel is unchanged.
+///
+/// `?format=singbox` and NOT `?format=hiddify`, unlike every other link
+/// this app prints: a routing rule has no representation in
+/// `vless://`/`hysteria2://` share-link syntax at all, so the raw
+/// sing-box JSON profile is the only format that can carry it.
+///
+/// Same hard limitation as the QUIC-reject link: Hiddify discards any
+/// imported `route.rules` array (code-verified in §12 of the root-cause
+/// doc), so this mode only has an effect in a client that runs the config
+/// as given — sing-box MT, Shadowrocket, v2rayNG, Streisand, NekoBox.
+///
+/// Unlike the Vision-off link, this needs NO server-side opt-in and
+/// weakens no security property of the server side. It DOES trade privacy
+/// specifically for the Google/YouTube domain set: those destinations now
+/// see the client's real source address instead of the exit's.
+fn subscription_url_youtube_direct(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}?format=singbox&compat=youtube-direct",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
 /// Automated/CI callers (the lifecycle acceptance harness, in
 /// particular) run `user create`/`user rotate-token` for real, and the
 /// real subscription URL/QR this prints IS the bearer credential — the
@@ -2182,6 +2252,7 @@ fn cmd_user_create(
         created_at: UnixSeconds::now().0 as i64,
         expires_at,
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         peer_credentials: Default::default(),
     };
     users.push(user);
@@ -2209,6 +2280,9 @@ fn cmd_user_create(
             // The supported Hiddify import path; see
             // subscription_url_hiddify_pinned's doc comment.
             "subscription_url_hiddify_pinned": subscription_url_hiddify_pinned(cfg, &token),
+            // The real-device Shorts path; same limitation as quic-reject,
+            // same opt-in shape; see subscription_url_youtube_direct.
+            "subscription_url_youtube_direct": subscription_url_youtube_direct(cfg, &token),
         });
         return machine_stdout.write_document(&out);
     }
@@ -2287,6 +2361,19 @@ fn cmd_user_create(
         "  DOES NOTHING IN HIDDIFY. hiddify-core rebuilds routing and discards any imported \
          route rules, so this only has an effect in a client that runs the config as given \
          (a raw sing-box client). See docs/YOUTUBE_FINAL_ROOT_CAUSE.md."
+    );
+    println!();
+    println!(
+        "Raw-sing-box-only YouTube-Direct link (same credentials and transports, adds one route \
+         rule that sends the YouTube/Google domain set out the client's own line — the only \
+         demonstrated-working path for YouTube Shorts):"
+    );
+    println!("  {}", subscription_url_youtube_direct(cfg, &token));
+    println!(
+        "  DOES NOTHING IN HIDDIFY for the same reason as the QUIC-reject link (imported route \
+         rules are discarded). Use it in sing-box MT, Shadowrocket, v2rayNG, Streisand, or \
+         NekoBox. Trades privacy only for Google/YouTube traffic: those domains now see the \
+         client's real source address. See docs/YOUTUBE_FINAL_ROOT_CAUSE.md \u{a7}14."
     );
     if qr {
         println!();
@@ -2397,6 +2484,44 @@ fn cmd_user_vision_off_experiment(cfg: &DeploymentConfig, id: &str, on: bool) ->
         println!(
             "WARNING: the new config was written but NOT reloaded live (see the warning above) \
              — the RUNNING server still enforces the previous flow for this user."
+        );
+    }
+    Ok(())
+}
+
+/// See `UserCommands::GoogleEgressHairpin`. Run on a RELAY against a
+/// dedicated user; this user's UUID (printed here) then goes into the
+/// paired EXIT's `[google_egress_hairpin]` credential — this command
+/// never touches the exit itself.
+fn cmd_user_google_egress_hairpin(cfg: &DeploymentConfig, id: &str, on: bool) -> Result<()> {
+    let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
+    let user = find_user_mut(&mut users, id)?;
+    user.google_egress_hairpin = on;
+    let uuid = user.vless_uuid.clone();
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
+    println!("{id}: google_egress_hairpin={on}");
+    if on {
+        println!(
+            "This relay will now let ONLY this user reach the Google/YouTube domain set via \
+             this relay's own direct outbound; every other destination for this user, and \
+             every other user, keeps this relay's ordinary fail-closed policy unchanged."
+        );
+        println!(
+            "This user's VLESS UUID (copy into the paired exit's [google_egress_hairpin] \
+             credential file — never hand this to a real client):"
+        );
+        println!("  {uuid}");
+    } else {
+        println!(
+            "This user is back to this relay's ordinary policy — no Google/YouTube exception, \
+             no forwarding target unless one is declared for them."
+        );
+    }
+    if !went_live {
+        println!(
+            "WARNING: the new config was written but NOT reloaded live (see the warning above) \
+             — the RUNNING server still enforces the previous policy for this user."
         );
     }
     Ok(())
@@ -3128,7 +3253,22 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
     let rules = doc["route"]["rules"].as_array();
     match cfg.role {
         NodeRole::Exit => {
-            if rules.is_some() {
+            // The one legitimate exception: the Google/YouTube egress
+            // hairpin (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16) adds
+            // exactly one route.rules entry to an exit. Anything else —
+            // no hairpin configured but rules present, or rules present
+            // that don't match that exact shape — is the role/renderer
+            // mismatch this check exists to catch.
+            let is_expected_hairpin_shape = cfg.google_egress_hairpin.is_some()
+                && rules.is_some_and(|rules| {
+                    rules.len() == 2
+                        && rules[0]["action"] == "sniff"
+                        && rules[1]["outbound"] == "google-egress-hairpin"
+                        && rules[1]["domain_suffix"]
+                            == serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
+                        && doc["route"]["final"] == "direct"
+                });
+            if rules.is_some() && !is_expected_hairpin_shape {
                 report_check(
                     CheckStatus::Fail,
                     "L2",
@@ -3139,9 +3279,24 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
         }
         NodeRole::Relay => {
             let targets = cfg.relay_targets();
+            // Google-egress-hairpin rules (`CompatUser::google_egress_hairpin`)
+            // add two rules each (a scoped `sniff` plus the `domain_suffix`
+            // route), both identifiable by carrying `auth_user` - a field
+            // no other rule this renderer emits uses. Counted from the
+            // document itself rather than recomputed from `users`/
+            // `now_unix` (not available here) so this check can never
+            // drift from what the renderer actually did.
+            let hairpin_rule_count = rules
+                .map(|rules| {
+                    rules
+                        .iter()
+                        .filter(|rule| rule.get("auth_user").is_some())
+                        .count()
+                })
+                .unwrap_or(0);
             let fail_closed = rules.is_some_and(|rules| {
                 rules.last().is_some_and(|last| last["action"] == "reject")
-                    && rules.len() == targets.len() + 2
+                    && rules.len() == targets.len() + 2 + hairpin_rule_count
             });
             if fail_closed {
                 report_check(
@@ -5739,6 +5894,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         peer_credentials: Default::default(),
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();

@@ -81,6 +81,7 @@ fn a_user_with_no_peer_credentials_round_trips_byte_identically() {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         peer_credentials: Default::default(),
     };
     store::save_users_atomic(&path, &[user]).unwrap();
@@ -200,6 +201,7 @@ fn peer_credentials_round_trip_and_are_looked_up_by_endpoint_id() {
         created_at: 0,
         expires_at: None,
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         peer_credentials: Default::default(),
     };
     user.peer_credentials.insert(

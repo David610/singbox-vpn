@@ -44,6 +44,7 @@ fn test_user() -> CompatUser {
         hysteria2_password: SecretString::new("test-password"),
         subscription_token_hash_hex: "unused".into(),
         vision_off_experiment: false,
+        google_egress_hairpin: false,
         created_at: 0,
         expires_at: None,
         peer_credentials: Default::default(),

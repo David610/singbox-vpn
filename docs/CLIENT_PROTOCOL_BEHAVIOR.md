@@ -172,6 +172,23 @@ remains outside this contract.
   `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5a only — Vision is what
   hides a proxied TLS session's TLS-in-TLS pattern, so this profile is
   more fingerprintable and must not be used as a default.
+- **Also available, raw-sing-box only**: `?compat=youtube-direct`
+  (`CompatibilityMode::YouTubeDirect`), on `format=singbox` only — a
+  route rule has no `vless://`/`hysteria2://` share-link representation,
+  so `format=uri`/`format=hiddify` return 400. It renders byte-identically
+  to the normal profile (same UUIDs, keys, flows, selector, Hysteria2
+  offered) plus ONE `route.rules` entry routing the Google/YouTube domain
+  set to the client's `direct` outbound. This is the fixing profile for
+  the real-device Shorts failure (see `docs/YOUTUBE_FINAL_ROOT_CAUSE.md`
+  §14/§15): YouTube's Shorts playability decision rejects sessions that
+  egress from a hosting/datacenter IP, and only egress from the client's
+  own (broadband) line is demonstrated to work. **DOES NOTHING IN
+  HIDDIFY** — hiddify-core rebuilds routing and discards imported
+  `route.rules` (code-verified, §12 of the root-cause doc) — so it only
+  has an effect in a client that runs the config as given (sing-box MT,
+  Shadowrocket, v2rayNG, Streisand, NekoBox). It trades privacy
+  specifically for the Google/YouTube domain set: those destinations now
+  see the client's real source address instead of the exit's.
 - **On the first-party contract**, these same two diagnostics are
   reachable as `?diagnostic=tcp-only` / `?diagnostic=vision-off` on
   `/v1/provision/{token}`, and are advertised in the document's separate
