@@ -169,3 +169,39 @@ git commit -m "docs(evidence): record two-hop relay real-infrastructure acceptan
 - **Spec coverage:** covers item 9 in full — provisioning, pairing, the priority-ordered S1-S17 re-run, the leak/capture evidence loopback can't provide, and ledger recording per the project's own evidence rules.
 - **Placeholder scan:** `<release-url>` in Task 2 is a real variable the executor fills from the actual current release, not a stand-in for missing design — the release process itself is already defined elsewhere in this repo (`deploy/lib/versions.env`, release workflow) and out of scope to re-derive here.
 - **Deviation from standard task template noted deliberately:** this plan has no "write failing test, watch it fail, implement, watch it pass" cycle because there is no new source code — flagged explicitly in the header rather than forcing artificial test-writing steps onto infrastructure acceptance work.
+
+## Open Items / Still To Be Done
+
+This plan's five tasks are complete, but real acceptance work is
+inherently open-ended. What remains, in priority order:
+
+1. **Full NIC-level DNS/IPv6 leak capture.** This pass only got an OS-level
+   DNS-cache check (no admin-elevated capture tool on the test client).
+   Needs either an admin-elevated `pktmon`/Wireshark run, or a real
+   TUN-mode client (see item 2).
+2. **S16/S17 against the real Tamara client**, not a bare sing-box client.
+   This pass proved the *served subscription document* is safe; it did not
+   exercise Tamara's own route-selection/health-probe logic, which is what
+   an actual end user runs. Tamara isn't wired into this acceptance flow
+   yet.
+3. **Remaining loopback-only scenarios** (S1, S3-S5, S8-S11, S14-S15, the
+   three log-privacy rows) have not been re-run against real
+   infrastructure. Lower priority per this plan's own ordering, but still
+   open.
+4. **Russian mobile/fixed-network reachability.** Nothing in this pass
+   touched a restricted network; this needs real devices on real target
+   networks, which is out of scope for infrastructure this plan
+   provisioned.
+5. **`docs/SUPPORTED_PRODUCT.md` wording change** — deliberately withheld.
+   The gate (S2/S6/S7/S16/S17 pass with **both** packet-capture and leak
+   evidence) is not fully met until item 1 above closes.
+6. **Latency/throughput numbers are a single run**, not a statistically
+   rigorous benchmark — treat the recorded figures as a sanity check, not a
+   performance SLA.
+7. **Long-duration stability / soak testing** was never in this plan's
+   scope (see `docs/REACHABLE_FIRST_HOP_ARCHITECTURE.md` §15, "long-duration
+   stability" row) and remains UNVERIFIED.
+
+None of the above blocks Task 1-5 completion as written; they are the
+honest next steps for anyone continuing this acceptance work, not
+loose ends left mid-task.
