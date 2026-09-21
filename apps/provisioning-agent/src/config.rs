@@ -11,7 +11,7 @@ use std::path::Path;
 /// the other.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
-    /// Base URL of the vpn-web Worker API, e.g. "https://example.com" —
+    /// Base URL of the vpn-web Worker API, e.g. `https://example.com` —
     /// no trailing slash.
     pub worker_url: String,
     /// This agent's node_id, must match a row in vpn-web's `nodes` table.
