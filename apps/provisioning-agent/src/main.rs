@@ -1,4 +1,5 @@
 mod config;
+mod worker_client;
 
 use anyhow::{Context, Result};
 use clap::Parser;
