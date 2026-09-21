@@ -378,6 +378,11 @@ enum UserCommands {
         /// Print a terminal QR code of the new subscription URL.
         #[arg(long)]
         qr: bool,
+        /// Print `{"id","subscription_url"}` as JSON instead of the
+        /// human-readable form. Never includes server private keys —
+        /// same constraint as `create --json`.
+        #[arg(long)]
+        json: bool,
     },
     /// Rotate only the VLESS UUID. Applies + reloads sing-box so the
     /// previous UUID stops working immediately.
@@ -556,8 +561,8 @@ fn main() -> Result<()> {
         Commands::User(UserCommands::GoogleEgressHairpin { user_id, off }) => {
             cmd_user_google_egress_hairpin(&cfg, &user_id, !off)
         }
-        Commands::User(UserCommands::RotateToken { user_id, qr }) => {
-            cmd_user_rotate_token(&cfg, &user_id, qr)
+        Commands::User(UserCommands::RotateToken { user_id, qr, json }) => {
+            cmd_user_rotate_token(&cfg, &user_id, qr, json)
         }
         Commands::User(UserCommands::RotateVless { user_id }) => {
             cmd_user_rotate_vless(&cfg, &user_id)
@@ -2853,7 +2858,12 @@ fn cmd_user_peer_list(cfg: &DeploymentConfig, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
+fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool, json: bool) -> Result<()> {
+    let machine_stdout = if json {
+        Some(MachineStdout::divert_human_output_to_stderr()?)
+    } else {
+        None
+    };
     let mut users = store::load_users(&cfg.users_file())?;
     let token = credentials::generate_subscription_token();
     let hash = credentials::hash_token(&token);
@@ -2862,6 +2872,15 @@ fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<(
     // Token rotation does not change VLESS/Hysteria2 credentials, so the
     // sing-box config is unaffected — no re-render needed.
     let url = subscription_url(cfg, &token);
+
+    if let Some(machine_stdout) = machine_stdout {
+        let out = serde_json::json!({
+            "id": id,
+            "subscription_url": url,
+        });
+        return machine_stdout.write_document(&out);
+    }
+
     if suppress_onboarding_secrets() {
         println!(
             "SINGBOX_VPN_SUPPRESS_ONBOARDING_SECRETS is set — the new subscription URL and \
@@ -2904,7 +2923,7 @@ fn cmd_user_qr(cfg: &DeploymentConfig, id: &str) -> Result<()> {
          (any already-imported profile keeps connecting; see below)."
     );
     println!();
-    cmd_user_rotate_token(cfg, id, true)
+    cmd_user_rotate_token(cfg, id, true, false)
 }
 
 /// Every endpoint `vpn-subscription` serves: this deployment's own two
