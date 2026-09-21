@@ -1,4 +1,5 @@
 mod config;
+mod dispatch;
 mod worker_client;
 
 use anyhow::{Context, Result};
