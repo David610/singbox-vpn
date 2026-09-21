@@ -445,7 +445,7 @@ pub enum CompatibilityMode {
     /// selector as usual. It renders byte-identically to `Normal`
     /// (same UUIDs, keys, flows, selector, Hysteria2 offered) plus ONE
     /// `route.rules` entry that sends the Google/YouTube domain set to
-    /// the already-present `direct` outbound (see [`youtube_direct_rule`]
+    /// the already-present `direct` outbound (see `youtube_direct_rule`
     /// for the exact set and the rationale for its breadth).
     ///
     /// Two properties must not be overstated:
