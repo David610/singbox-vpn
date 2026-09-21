@@ -283,8 +283,14 @@ impl GoogleEgressHairpinSection {
         for (name, value) in [
             ("relay_host", self.relay_host.as_str()),
             ("relay_server_name", self.relay_server_name.as_str()),
-            ("relay_reality_public_key", self.relay_reality_public_key.as_str()),
-            ("relay_reality_short_id", self.relay_reality_short_id.as_str()),
+            (
+                "relay_reality_public_key",
+                self.relay_reality_public_key.as_str(),
+            ),
+            (
+                "relay_reality_short_id",
+                self.relay_reality_short_id.as_str(),
+            ),
         ] {
             if value.trim().is_empty() {
                 return Err(CompatError::Parse(format!(
