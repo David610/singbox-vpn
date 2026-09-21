@@ -891,8 +891,7 @@ mod tests {
         let plain_body = axum::body::to_bytes(plain_resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        let b64_resp =
-            oneshot_with_addr(state, "/sub/goodtoken?format=uri&encoding=base64").await;
+        let b64_resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri&encoding=base64").await;
         assert_eq!(b64_resp.status(), StatusCode::OK);
         let b64_body = axum::body::to_bytes(b64_resp.into_body(), usize::MAX)
             .await
@@ -911,8 +910,7 @@ mod tests {
         use base64::engine::general_purpose::STANDARD;
         use base64::Engine;
         let state = make_state(vec![user_with_token("goodtoken", true)]);
-        let resp =
-            oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&encoding=base64").await;
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&encoding=base64").await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
@@ -956,8 +954,7 @@ mod tests {
     #[tokio::test]
     async fn encoding_base64_with_singbox_format_is_rejected_not_silently_ignored() {
         let state = make_state(vec![user_with_token("goodtoken", true)]);
-        let resp =
-            oneshot_with_addr(state, "/sub/goodtoken?format=singbox&encoding=base64").await;
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=singbox&encoding=base64").await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
