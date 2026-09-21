@@ -28,8 +28,13 @@ pub struct WorkerClient {
 
 impl WorkerClient {
     pub fn new(cfg: &AgentConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("building reqwest client");
         Self {
-            http: reqwest::Client::new(),
+            http,
             base_url: cfg.worker_url.clone(),
             api_key: cfg.agent_api_key.clone(),
         }

@@ -9,6 +9,7 @@ use tokio::process::Command;
 
 const MAX_ATTEMPTS: u32 = 3;
 const RETRY_BACKOFF: Duration = Duration::from_secs(2);
+const VPN_ADMIN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Runs the vpn-admin subcommand for one job, retrying transient failures
 /// up to MAX_ATTEMPTS times before giving up. Returns the result payload
@@ -71,19 +72,23 @@ async fn create_user(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     let user_id = payload_str(job, "user_id")?;
     let expires_at = payload_expires_at_unix(job)?;
 
-    let output = vpn_admin_command(cfg)
-        .args([
-            "user",
-            "create",
-            "--name",
-            user_id,
-            "--expires-at",
-            &expires_at.to_string(),
-            "--json",
-        ])
-        .output()
-        .await
-        .context("spawning vpn-admin user create")?;
+    let output = tokio::time::timeout(
+        VPN_ADMIN_TIMEOUT,
+        vpn_admin_command(cfg)
+            .args([
+                "user",
+                "create",
+                "--name",
+                user_id,
+                "--expires-at",
+                &expires_at.to_string(),
+                "--json",
+            ])
+            .output(),
+    )
+    .await
+    .context("vpn-admin command timed out after 60s")?
+    .context("spawning vpn-admin user create")?;
     let parsed = parse_json_output(&output, "user create")?;
 
     let vpn_user_id = parsed
@@ -105,17 +110,21 @@ async fn set_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     let vpn_user_id = payload_str(job, "vpn_user_id")?;
     let expires_at = payload_expires_at_unix(job)?;
 
-    let output = vpn_admin_command(cfg)
-        .args([
-            "user",
-            "set-expiry",
-            vpn_user_id,
-            "--expires-at",
-            &expires_at.to_string(),
-        ])
-        .output()
-        .await
-        .context("spawning vpn-admin user set-expiry")?;
+    let output = tokio::time::timeout(
+        VPN_ADMIN_TIMEOUT,
+        vpn_admin_command(cfg)
+            .args([
+                "user",
+                "set-expiry",
+                vpn_user_id,
+                "--expires-at",
+                &expires_at.to_string(),
+            ])
+            .output(),
+    )
+    .await
+    .context("vpn-admin command timed out after 60s")?
+    .context("spawning vpn-admin user set-expiry")?;
     require_success(&output, "user set-expiry")?;
     Ok(serde_json::json!({}))
 }
@@ -123,11 +132,15 @@ async fn set_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
 async fn enable_or_disable(cfg: &AgentConfig, job: &Job, subcommand: &str) -> Result<Value> {
     let vpn_user_id = payload_str(job, "vpn_user_id")?;
 
-    let output = vpn_admin_command(cfg)
-        .args(["user", subcommand, vpn_user_id])
-        .output()
-        .await
-        .with_context(|| format!("spawning vpn-admin user {subcommand}"))?;
+    let output = tokio::time::timeout(
+        VPN_ADMIN_TIMEOUT,
+        vpn_admin_command(cfg)
+            .args(["user", subcommand, vpn_user_id])
+            .output(),
+    )
+    .await
+    .context("vpn-admin command timed out after 60s")?
+    .with_context(|| format!("spawning vpn-admin user {subcommand}"))?;
     require_success(&output, &format!("user {subcommand}"))?;
     Ok(serde_json::json!({}))
 }
@@ -135,11 +148,15 @@ async fn enable_or_disable(cfg: &AgentConfig, job: &Job, subcommand: &str) -> Re
 async fn rotate_token(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     let vpn_user_id = payload_str(job, "vpn_user_id")?;
 
-    let output = vpn_admin_command(cfg)
-        .args(["user", "rotate-token", vpn_user_id, "--json"])
-        .output()
-        .await
-        .context("spawning vpn-admin user rotate-token")?;
+    let output = tokio::time::timeout(
+        VPN_ADMIN_TIMEOUT,
+        vpn_admin_command(cfg)
+            .args(["user", "rotate-token", vpn_user_id, "--json"])
+            .output(),
+    )
+    .await
+    .context("vpn-admin command timed out after 60s")?
+    .context("spawning vpn-admin user rotate-token")?;
     let parsed = parse_json_output(&output, "user rotate-token")?;
 
     let subscription_url = parsed
@@ -150,10 +167,20 @@ async fn rotate_token(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     Ok(serde_json::json!({ "subscription_url": subscription_url }))
 }
 
+// Neither vpn-admin's stdout nor stderr is included verbatim in error
+// messages here: on failure they may contain a real subscription-URL
+// credential (a known pre-existing vpn-admin bug can emit one mixed
+// with unexpected prose on malformed --json output), and these error
+// messages eventually flow into plaintext storage and an operator
+// email alert via the Worker's /fail endpoint. Only lengths/descriptions
+// are included, which is enough to diagnose without leaking secrets.
 fn require_success(output: &std::process::Output, what: &str) -> Result<()> {
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("vpn-admin {what} exited with {}: {stderr}", output.status);
+        bail!(
+            "vpn-admin {what} exited with {} ({} bytes of stderr)",
+            output.status,
+            output.stderr.len()
+        );
     }
     Ok(())
 }
@@ -161,8 +188,12 @@ fn require_success(output: &std::process::Output, what: &str) -> Result<()> {
 fn parse_json_output(output: &std::process::Output, what: &str) -> Result<Value> {
     require_success(output, what)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout)
-        .with_context(|| format!("parsing vpn-admin {what} --json output: {stdout:?}"))
+    serde_json::from_str(&stdout).with_context(|| {
+        format!(
+            "parsing vpn-admin {what} --json output ({} bytes): does not look like valid JSON",
+            stdout.len()
+        )
+    })
 }
 
 #[cfg(test)]
