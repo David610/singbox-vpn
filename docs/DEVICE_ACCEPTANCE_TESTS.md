@@ -540,12 +540,19 @@ device row above — every cell there remains exactly as it was.
 
 Supersedes the two UNVERIFIED rows in the 2026-09-13 entry immediately above
 for the specific claims tested here (real second VPS, provider/ASN
-separation, packet captures, via-route S2/S6/S7/S12/S13, latency/throughput).
-Russian-network reachability and DNS/IPv6 leak testing remain UNVERIFIED —
-no restricted network or client-side capture tooling was available this
-pass; every other S1-S17 scenario not listed below (S1, S3-S5, S8-S11,
-S14-S15, the three log-privacy rows) was not re-run against real
-infrastructure this pass and remains at its existing loopback-only status.
+separation, packet captures, via-route S2/S6/S7/S12/S13/S16/S17,
+latency/throughput). Russian-network reachability and DNS/IPv6 leak testing
+remain UNVERIFIED — no restricted network or client-side capture tooling was
+available this pass; every other S1-S17 scenario not listed below (S1,
+S3-S5, S8-S11, S14-S15, the three log-privacy rows) was not re-run against
+real infrastructure this pass and remains at its existing loopback-only
+status.
+
+S16/S17 were tested against the actual **served subscription document**
+(fetched unmodified from the exit's `/sub/...?format=singbox` endpoint —
+the same selector + single-candidate `auto` urltest group a real client
+would import), not a hand-built config, and not yet the Tamara app itself
+(Tamara is not wired into this acceptance pass).
 
 Infrastructure: relay `de1` on Evolushost (Berlin, 91.244.71.165), exit
 `fi1-exit` on Hetzner (Helsinki, 62.238.46.190) — two different providers.
@@ -563,7 +570,17 @@ acceptance pass) and not loopback.
 | S6 — exit stopped -> via-route fails cleanly, no silent fallback to direct | Failure isolation | DEVICE-VERIFIED | `systemctl stop sing-box` on the exit; client SOCKS5 request failed ("Can't complete SOCKS5 connection"); exit restarted, route recovered on the next request (egress IP again `62.238.46.190`) | 2026-09-22 | `e328c3b` | same |
 | S7 — relay stopped -> via-route fails cleanly, independent of exit | Failure isolation | DEVICE-VERIFIED | Same pattern with `systemctl stop sing-box` on the relay instead; client SOCKS5 request failed; relay restarted, route recovered | 2026-09-22 | `e328c3b` | same |
 | S12/S13 — relay refuses to forward to an undeclared destination (not an open proxy) | Abuse control | DEVICE-VERIFIED | Second client outbound built with the relay's own first-hop credential but targeting `1.1.1.1:443` (never declared in the relay's `peer_endpoints`); connection failed (SOCKS5 connect failure), consistent with the relay's own `vpn doctor`-reported fail-closed policy | 2026-09-22 | `e328c3b` | same |
+| S16 — served profile (unmodified selector + single-candidate `auto` urltest group), used as-is with no client-side changes: real traffic through the default (via-relay) selection produces zero client-sourced connections at the exit | Served-document safety | DEVICE-VERIFIED | Simultaneous `tcpdump port 443` at the exit during real traffic through the fetched `?format=singbox` document's `select` outbound (default = via-relay): exit's capture shows only `91.244.71.165` (relay), `62.238.46.190` (itself) and Cloudflare decoy IPs — the client's real IP (`143.58.100.x`) never appears. **Control check** (methodology validity, not the served document): a deliberately mis-built client with a mixed Direct+via `auto` urltest group, run against the same live pair, DID show the client's real IP (`143.58.100.8`) at the exit — confirming this capture method would catch a real leak, so the served document's clean result is not a vacuous pass | 2026-09-22 | `e328c3b` | Real device + real 2-VPS pair; served document fetched live from the exit's subscription endpoint |
+| S17 — relay stopped, served profile's default (via-relay) selection: FAILS with zero packets reaching the exit at all; an explicit Direct choice made independently PASSES during the same outage | No Privacy+->Direct downgrade | DEVICE-VERIFIED | `systemctl stop sing-box` on relay; served-profile client request timed out (SOCKS5 failure); simultaneous exit-side `tcpdump` captured **zero packets on port 443** for the entire window (not just zero from the client — zero from anywhere); a separate client instance with `route.final` explicitly set to `Finland . Direct` succeeded (`62.238.46.190`) during the same relay outage; relay restarted, served-profile default route recovered | 2026-09-22 | `e328c3b` | same |
 | Packet-capture proof of provider/ASN separation: what each hop actually observes | Privacy/architecture claim | SERVER-VERIFIED | Simultaneous `tcpdump -i any port 443` on both VPS during a real S2 run: relay's capture shows the client's real IP (`143.58.100.8`) as source and `62.238.46.190` (exit) as the forwarded destination; exit's capture shows only `91.244.71.165` (relay) as peer — the client's real IP never appears in the exit's capture | 2026-09-22 | `e328c3b` | Real `tcpdump` on both real VPS |
 | Latency/throughput cost of the via-relay route vs. the direct route | Performance sanity (not a pass/fail gate) | DEVICE-VERIFIED | Single test run, same client/session: direct route TLS-connect time 0.23-0.73s (5 samples), 1MB download in 0.71s (~1.4MB/s); via-relay route TLS-connect time 0.30-0.58s on 4/5 samples plus one 6.01s outlier, 1MB download in 0.97s (~1.0MB/s). Numbers recorded as observed; no judgment rendered on whether the added cost is acceptable — that is a product decision once more runs exist | 2026-09-22 | `e328c3b` | same, single run, not a statistically rigorous benchmark |
 | DNS/IPv4/IPv6 leak behavior of the via-route on a real client | Leak testing | UNVERIFIED | Not performed this pass — no client-side packet-capture tool was available on the Windows test machine to independently confirm DNS resolution stayed inside the tunnel; `socks5h` forces remote-resolved DNS by the proxy protocol itself, but that was not independently verified by capture | — | — | Required: real device + client-side capture or a dnsleaktest.com-class multi-resolver check; relates to the separate Tamara DNS/kill-switch/IPv6 plan (items 5-7) |
 | Reachability from Russian mobile/fixed networks; restrictive-network/censorship-adversary behavior | Network/device behavior | UNVERIFIED (unchanged) | No such network was available for this pass | — | — | Required: real devices on target networks |
+
+**On `docs/SUPPORTED_PRODUCT.md`:** the plan gating a wording change there
+requires S2, S6, S7, S16, S17 to all pass **with real packet-capture AND
+leak evidence**. S2/S6/S7/S16/S17 now all pass with real packet-capture
+evidence, but DNS/IPv6 leak evidence is still UNVERIFIED (no capture
+tooling on the test client this pass) — the conjunction is not yet
+satisfied, so the "not yet a supported production path" wording is left
+unchanged. A DNS/IPv6 leak-test pass is the one remaining gate.
