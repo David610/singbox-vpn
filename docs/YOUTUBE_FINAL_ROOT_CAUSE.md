@@ -770,6 +770,58 @@ hairpin connection correctly reach the relay authenticated as the right
 user, requesting the right destination, and still fall through to the
 relay's final reject — until this was fixed.
 
+### 16.4.1 Setting this up on a new exit
+
+Applying this fix used to mean hand-editing `deployment.toml` and manually
+placing a credential file at the right path with the right permissions —
+error-prone and undocumented as a repeatable procedure. `vpn-admin` now has
+dedicated commands for both ends:
+
+1. **On the relay**, create a dedicated user for this pairing and mark it
+   (never reuse an existing hairpin user shared with a different exit's
+   config file, and never mark a real end-user's own account):
+
+   ```
+   vpn-admin user create --name google-egress-hairpin-<exit-name>
+   vpn-admin user google-egress-hairpin <the new user's id>
+   ```
+
+   The second command prints the user's VLESS UUID exactly once — this is
+   the secret credential the exit needs. It also never touches the relay's
+   `[[peer_endpoints]]` or any other user, so it's safe to run against a
+   relay that's already serving real traffic.
+
+2. **On the exit**, configure the pairing in one command (validates the
+   candidate config with the real `sing-box` binary, applies it, and
+   reloads — fully rolled back, both `deployment.toml` and the credential
+   file, on any failure):
+
+   ```
+   vpn-admin google-egress-hairpin set \
+     --relay-host <relay's public_host> \
+     --relay-port 443 \
+     --relay-server-name <relay's [reality].handshake_server> \
+     --relay-reality-public-key <relay's /etc/vpn/compat/reality/public.key> \
+     --relay-reality-short-id <relay's /etc/vpn/compat/reality/short_id.txt> \
+     --uuid-stdin
+   ```
+
+   (`--uuid-stdin` reads the credential from standard input instead of the
+   command line, so it never lands in shell history or `/proc` — the same
+   pattern as `user peer set --credential-stdin`. Pipe it in, or run
+   interactively and paste when prompted.) The relay's REALITY public key
+   and short-id are public connection metadata, not secrets — the same
+   class of value already published in every `[[peer_endpoints]]` entry.
+
+3. To undo, `vpn-admin google-egress-hairpin clear` on the exit — removes
+   the credential file and the `deployment.toml` section, reverting every
+   user on that exit to ordinary (non-hairpin) routing immediately.
+
+This applies automatically and immediately to **every** user already on the
+exit, with no subscription URL change, no client compat flag, and no
+per-user opt-in required — see §16.4 above for why that's the whole point
+of this fix over the client-cooperative `YouTubeDirect`/`QuicReject` modes.
+
 ### 16.5 Real-device-adjacent verification (this session)
 
 With the fix live on both nodes (exit `91.244.71.165`, relay

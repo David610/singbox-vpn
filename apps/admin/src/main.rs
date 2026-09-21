@@ -12,7 +12,7 @@ mod service;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use common::UnixSeconds;
-use compat_config::deployment::DeploymentConfig;
+use compat_config::deployment::{DeploymentConfig, GoogleEgressHairpinSection};
 use compat_config::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
 use compat_config::render::render_singbox_client_subscription;
 use compat_config::secret::SecretString;
@@ -217,6 +217,54 @@ enum Commands {
     User(UserCommands),
     #[command(subcommand)]
     Config(ConfigCommands),
+    #[command(subcommand)]
+    GoogleEgressHairpin(GoogleEgressHairpinCommands),
+}
+
+#[derive(Subcommand)]
+enum GoogleEgressHairpinCommands {
+    /// EXIT ROLE ONLY. Configure this exit to hairpin the Google/YouTube
+    /// domain set through a relay with better network peering to
+    /// Google's CDN than this exit's own network (see
+    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16). Applies automatically to
+    /// every user on this exit — no client cooperation, no subscription
+    /// URL parameter, no per-user opt-in. `--relay-*` are the relay's own
+    /// public REALITY connection metadata (never secret). The hairpin
+    /// credential's VLESS UUID (secret) is printed once by `vpn-admin
+    /// user google-egress-hairpin <id>` on the RELAY when that dedicated
+    /// user was created — copy it from there, never from a real client's
+    /// own credential — via `--uuid-stdin` (preferred: never in argv,
+    /// same as `user peer set --credential-stdin`) or `--uuid` (visible
+    /// in process listings and shell history). Validates the candidate
+    /// config with the real `sing-box` binary, applies it, and reloads
+    /// sing-box — fully rolled back (both `deployment.toml` and the
+    /// credential file) on any failure. Safe to re-run to change the
+    /// relay this exit pairs with.
+    Set {
+        #[arg(long)]
+        relay_host: String,
+        #[arg(long)]
+        relay_port: u16,
+        #[arg(long)]
+        relay_server_name: String,
+        #[arg(long)]
+        relay_reality_public_key: String,
+        #[arg(long)]
+        relay_reality_short_id: String,
+        /// Read the hairpin credential's VLESS UUID from stdin (one
+        /// line) instead of the command line.
+        #[arg(long, conflicts_with = "uuid")]
+        uuid_stdin: bool,
+        /// The hairpin credential's VLESS UUID. Visible in process
+        /// listings and shell history — prefer --uuid-stdin.
+        #[arg(long, required_unless_present = "uuid_stdin")]
+        uuid: Option<String>,
+    },
+    /// Remove this exit's `[google_egress_hairpin]` configuration and
+    /// credential file, restoring its ordinary (non-hairpin) routing.
+    /// Every user on this exit is affected immediately. Idempotent — a
+    /// no-op if nothing was configured.
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -533,6 +581,39 @@ fn main() -> Result<()> {
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
         Commands::Config(ConfigCommands::Validate) => cmd_config_validate(&cfg, &cli.config),
         Commands::Config(ConfigCommands::Migrate) => cmd_config_migrate(&cfg, &cli.config),
+        Commands::GoogleEgressHairpin(GoogleEgressHairpinCommands::Set {
+            relay_host,
+            relay_port,
+            relay_server_name,
+            relay_reality_public_key,
+            relay_reality_short_id,
+            uuid_stdin,
+            uuid,
+        }) => {
+            let uuid = if uuid_stdin {
+                read_secret_from_stdin(
+                    "Google-egress hairpin credential UUID (input hidden): ",
+                    "--uuid-stdin",
+                )?
+            } else {
+                uuid.expect("clap enforces --uuid when --uuid-stdin is absent")
+            };
+            cmd_google_egress_hairpin_set(
+                &cfg,
+                &cli.config,
+                GoogleEgressHairpinSection {
+                    relay_host,
+                    relay_port,
+                    relay_server_name,
+                    relay_reality_public_key,
+                    relay_reality_short_id,
+                },
+                &uuid,
+            )
+        }
+        Commands::GoogleEgressHairpin(GoogleEgressHairpinCommands::Clear) => {
+            cmd_google_egress_hairpin_clear(&cfg, &cli.config)
+        }
         Commands::User(UserCommands::Create {
             name,
             expires_at,
@@ -1395,6 +1476,228 @@ fn cmd_hysteria_obfs_rotate(cfg: &DeploymentConfig) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Atomically install `uuid` at `target` (0600, root-owned — this file is
+/// read only by `vpn-admin` itself, never by the live sing-box/
+/// vpn-subscription services directly, so no group ownership is needed):
+/// write to a sibling temp file, then rename over the target. Creates
+/// `target`'s parent directory if missing.
+fn install_google_egress_hairpin_uuid(target: &std::path::Path, uuid: &str) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut tmp = target.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp_path = std::path::PathBuf::from(tmp);
+    write_secret_file(&tmp_path, uuid)?;
+    std::fs::rename(&tmp_path, target)?;
+    if let Some(parent) = target.parent() {
+        fsync_dir(parent);
+    }
+    Ok(())
+}
+
+/// Restores both the hairpin credential file and `deployment.toml` from
+/// the backups `cmd_google_egress_hairpin_set`/`_clear` took before
+/// mutating either. Returns whether both restores succeeded.
+fn restore_google_egress_hairpin_state(
+    uuid_path: &std::path::Path,
+    uuid_existed_before: bool,
+    config_path: &std::path::Path,
+    toml_backup: &std::path::Path,
+) -> bool {
+    let uuid_ok = if uuid_existed_before {
+        restore_from_rotate_backup(uuid_path).is_ok()
+    } else {
+        std::fs::remove_file(uuid_path)
+            .or_else(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            })
+            .is_ok()
+    };
+    let toml_ok = std::fs::copy(toml_backup, config_path).is_ok();
+    uuid_ok && toml_ok
+}
+
+fn rollback_outcome_message(restore_ok: bool) -> &'static str {
+    if restore_ok {
+        "Previous state was restored — no client-visible change occurred."
+    } else {
+        "ROLLBACK ALSO FAILED — the server may be in a broken/inconsistent state. Manual \
+         intervention required: compare deployment.toml and the google-egress credential file \
+         against their backups."
+    }
+}
+
+/// EXIT ROLE ONLY. See `GoogleEgressHairpinCommands::Set`'s doc comment
+/// for the user-facing contract. Sequence: guard role -> back up + write
+/// the hairpin credential file -> back up + patch deployment.toml (via
+/// `compat_config::deployment::apply_google_egress_hairpin_toml`, which
+/// itself refuses to touch the file if anything other than
+/// `[google_egress_hairpin]` would change) -> render the candidate
+/// sing-box config from the now-current deployment.toml and apply/reload
+/// it through the same `render_and_apply_singbox_config` path every
+/// other mutating command uses (which has its own internal apply/reload
+/// rollback for the sing-box side). Any failure rolls the credential
+/// file and deployment.toml back to their pre-call contents — this only
+/// returns `Ok` once the live sing-box config was rendered from, and
+/// reloaded against, the new deployment.toml.
+fn cmd_google_egress_hairpin_set(
+    cfg: &DeploymentConfig,
+    config_path: &std::path::Path,
+    section: GoogleEgressHairpinSection,
+    uuid: &str,
+) -> Result<()> {
+    use compat_config::deployment::{apply_google_egress_hairpin_toml, NodeRole};
+
+    if cfg.role != NodeRole::Exit {
+        bail!(
+            "[google_egress_hairpin] only applies to role = \"exit\" deployments; this \
+             deployment's role is {:?} — refusing",
+            cfg.role.as_str()
+        );
+    }
+
+    let uuid_path = cfg.google_egress_hairpin_uuid_file();
+    let uuid_existed = uuid_path.exists();
+    let uuid_backup = backup_for_rotate(&uuid_path)
+        .context("failed to prepare hairpin credential backup; live state was not changed")?;
+
+    if let Err(e) = install_google_egress_hairpin_uuid(&uuid_path, uuid) {
+        if let Some(b) = uuid_backup {
+            let _ = std::fs::remove_file(b);
+        }
+        bail!("failed to write hairpin credential file: {e}; live state was not changed");
+    }
+
+    let toml_backup = match apply_google_egress_hairpin_toml(config_path, Some(&section)) {
+        Ok(b) => b,
+        Err(e) => {
+            let restore_ok = if uuid_existed {
+                restore_from_rotate_backup(&uuid_path).is_ok()
+            } else {
+                std::fs::remove_file(&uuid_path).is_ok()
+            };
+            remove_rotate_backup(&uuid_path);
+            bail!(
+                "failed to write [google_egress_hairpin] into deployment.toml: {e}. Hairpin \
+                 credential file {}",
+                rollback_outcome_message(restore_ok)
+            );
+        }
+    };
+
+    let outcome = (|| -> Result<()> {
+        let reloaded_cfg = DeploymentConfig::load(config_path)
+            .context("reloading deployment.toml after writing [google_egress_hairpin]")?;
+        let users = store::load_users(&reloaded_cfg.users_file())
+            .context("loading users to render the candidate config")?;
+        render_and_apply_singbox_config(&reloaded_cfg, &users, true)
+            .context("rendering/applying/reloading the candidate sing-box config")?;
+        Ok(())
+    })();
+
+    match outcome {
+        Ok(()) => {
+            remove_rotate_backup(&uuid_path);
+            println!(
+                "google_egress_hairpin configured: relay={}:{}. Applied and reloaded — every \
+                 user on this exit now hairpins Google/YouTube traffic through the relay.",
+                section.relay_host, section.relay_port
+            );
+            Ok(())
+        }
+        Err(e) => {
+            let restore_ok = restore_google_egress_hairpin_state(
+                &uuid_path,
+                uuid_existed,
+                config_path,
+                &toml_backup,
+            );
+            Err(e).context(format!(
+                "google_egress_hairpin set FAILED. {}",
+                rollback_outcome_message(restore_ok)
+            ))
+        }
+    }
+}
+
+/// EXIT ROLE ONLY (a no-op on a relay, since `[google_egress_hairpin]` is
+/// only ever set there in the first place). See
+/// `GoogleEgressHairpinCommands::Clear`'s doc comment. Same
+/// backup-then-commit-then-render-and-reload shape as
+/// `cmd_google_egress_hairpin_set`, in reverse: removes the credential
+/// file and the `[google_egress_hairpin]` deployment.toml section, then
+/// re-renders and reloads so the live server actually stops hairpinning.
+fn cmd_google_egress_hairpin_clear(
+    cfg: &DeploymentConfig,
+    config_path: &std::path::Path,
+) -> Result<()> {
+    use compat_config::deployment::apply_google_egress_hairpin_toml;
+
+    let uuid_path = cfg.google_egress_hairpin_uuid_file();
+    let uuid_existed = uuid_path.exists();
+    let uuid_backup = backup_for_rotate(&uuid_path)
+        .context("failed to prepare hairpin credential backup; live state was not changed")?;
+    if uuid_existed {
+        if let Err(e) = std::fs::remove_file(&uuid_path) {
+            if let Some(b) = uuid_backup {
+                let _ = std::fs::remove_file(b);
+            }
+            bail!("failed to remove hairpin credential file: {e}; live state was not changed");
+        }
+    }
+
+    let toml_backup = match apply_google_egress_hairpin_toml(config_path, None) {
+        Ok(b) => b,
+        Err(e) => {
+            let restore_ok = uuid_existed && restore_from_rotate_backup(&uuid_path).is_ok();
+            remove_rotate_backup(&uuid_path);
+            bail!(
+                "failed to remove [google_egress_hairpin] from deployment.toml: {e}. Hairpin \
+                 credential file {}",
+                rollback_outcome_message(restore_ok)
+            );
+        }
+    };
+
+    let outcome = (|| -> Result<()> {
+        let reloaded_cfg = DeploymentConfig::load(config_path)
+            .context("reloading deployment.toml after removing [google_egress_hairpin]")?;
+        let users = store::load_users(&reloaded_cfg.users_file())
+            .context("loading users to render the candidate config")?;
+        render_and_apply_singbox_config(&reloaded_cfg, &users, true)
+            .context("rendering/applying/reloading the candidate sing-box config")?;
+        Ok(())
+    })();
+
+    match outcome {
+        Ok(()) => {
+            remove_rotate_backup(&uuid_path);
+            println!(
+                "google_egress_hairpin cleared. Applied and reloaded — every user on this exit \
+                 is back to ordinary (non-hairpin) routing."
+            );
+            Ok(())
+        }
+        Err(e) => {
+            let restore_ok = restore_google_egress_hairpin_state(
+                &uuid_path,
+                uuid_existed,
+                config_path,
+                &toml_backup,
+            );
+            Err(e).context(format!(
+                "google_egress_hairpin clear FAILED. {}",
+                rollback_outcome_message(restore_ok)
+            ))
+        }
+    }
 }
 
 fn write_config_for_validation(path: &std::path::Path, doc: &serde_json::Value) -> Result<()> {
@@ -2697,13 +3000,14 @@ impl PeerCredentialSource {
 
 /// One line from stdin with the trailing newline removed. On a terminal the
 /// prompt goes to stderr and echo is switched off while typing, so the value
-/// is not shown on screen either.
-fn read_peer_credential_from_stdin() -> Result<String> {
+/// is not shown on screen either. `flag_name` is used only to name the
+/// input in the empty-value error message (e.g. `"--credential-stdin"`).
+fn read_secret_from_stdin(prompt: &str, flag_name: &str) -> Result<String> {
     use std::io::{BufRead, IsTerminal, Write};
     let stdin = std::io::stdin();
     let mut line = String::new();
     if stdin.is_terminal() {
-        eprint!("Credential issued by the peer server (input hidden): ");
+        eprint!("{prompt}");
         std::io::stderr().flush().ok();
         #[cfg(unix)]
         {
@@ -2718,7 +3022,7 @@ fn read_peer_credential_from_stdin() -> Result<String> {
     }
     let value = line.trim_end_matches(['\r', '\n']).to_string();
     if value.trim().is_empty() {
-        bail!("--credential-stdin: no credential was provided on standard input");
+        bail!("{flag_name}: no value was provided on standard input");
     }
     Ok(value)
 }
@@ -2770,7 +3074,10 @@ fn cmd_user_peer_set(
     let peer = find_peer_endpoint(cfg, endpoint_id)?;
     let (uuid, password) = match source {
         PeerCredentialSource::Stdin => {
-            let value = read_peer_credential_from_stdin()?;
+            let value = read_secret_from_stdin(
+                "Credential issued by the peer server (input hidden): ",
+                "--credential-stdin",
+            )?;
             match peer.transport {
                 compat_config::model::CompatTransport::VlessReality => (Some(value), None),
                 compat_config::model::CompatTransport::Hysteria2 => (None, Some(value)),
