@@ -535,3 +535,35 @@ device row above — every cell there remains exactly as it was.
 | Unpaired relay passes a real `doctor --protocol` first-hop handshake self-test | Protocol self-test | CI-VERIFIED | CI step "vpn-admin doctor --protocol against a real live UNPAIRED RELAY" | 2026-09-13 | branch `feat/privacy-plus-dev-gate` | CI runner loopback |
 | Relay forwarding on a real second VPS; provider/ASN separation; what the relay and exit can observe (packet captures) | Real infrastructure | UNVERIFIED | No real VPS used in this phase | — | — | Required: two real VPSs, separate providers |
 | Reachability of a relay from Russian mobile/fixed networks; IPv4/IPv6/DNS leaks, handover, YouTube/Telegram/calls, latency/throughput over the two-hop route | Network/device behaviour | UNVERIFIED | No device or restricted network used in this phase | — | — | Required: real devices on target networks |
+
+### 2026-09-22 — Privacy+ two-hop real-infrastructure acceptance
+
+Supersedes the two UNVERIFIED rows in the 2026-09-13 entry immediately above
+for the specific claims tested here (real second VPS, provider/ASN
+separation, packet captures, via-route S2/S6/S7/S12/S13, latency/throughput).
+Russian-network reachability and DNS/IPv6 leak testing remain UNVERIFIED —
+no restricted network or client-side capture tooling was available this
+pass; every other S1-S17 scenario not listed below (S1, S3-S5, S8-S11,
+S14-S15, the three log-privacy rows) was not re-run against real
+infrastructure this pass and remains at its existing loopback-only status.
+
+Infrastructure: relay `de1` on Evolushost (Berlin, 91.244.71.165), exit
+`fi1-exit` on Hetzner (Helsinki, 62.238.46.190) — two different providers.
+Both installed from the `main` branch dev channel (no tagged release
+contains the relay/exit role split yet); commit `e328c3b` at time of test.
+Client: bare sing-box 1.13.19 (pinned release binary, official GitHub
+release asset) run locally on a Windows 11 laptop — a real device on a real
+residential/ISP network, not Tamara (not yet integrated with this
+acceptance pass) and not loopback.
+
+| Claim | Scope | Status | Evidence | Date | Commit | Environment |
+|---|---|---|---|---|---|---|
+| Relay (`de1`) declares exit `fi1-exit` via `deployment.toml` `[[peer_endpoints]]` + credential B, renders a fail-closed policy, and passes its own first-hop protocol self-test | Real pairing | SERVER-VERIFIED | `vpn status` on relay: "1 direct peer route(s), 1 relay route(s)", "Relay pairing: 1 declared exit target(s)"; `vpn doctor` and `vpn doctor --protocol`: all checks OK including "relay forwarding policy is fail-closed: 1 declared exit target(s) allowed, everything else rejected" | 2026-09-22 | `e328c3b` (main, dev channel) | Real VPS pair, SSH-verified |
+| S2 — via-relay route (Core `detour` chain) works end-to-end over the real internet between the two real, separate-provider VPS; client egress IP is the exit's real IP | Real client, real infra | DEVICE-VERIFIED | bare sing-box client, `route.final` locked to the via-relay outbound, `curl -x socks5h://127.0.0.1:2080 https://api.ipify.org` returned `62.238.46.190` (the exit) on repeated real-world runs, vs. `143.58.100.11`/an IPv6 address for the same client's real direct connection | 2026-09-22 | `e328c3b` | Real device + real 2-VPS pair |
+| S6 — exit stopped -> via-route fails cleanly, no silent fallback to direct | Failure isolation | DEVICE-VERIFIED | `systemctl stop sing-box` on the exit; client SOCKS5 request failed ("Can't complete SOCKS5 connection"); exit restarted, route recovered on the next request (egress IP again `62.238.46.190`) | 2026-09-22 | `e328c3b` | same |
+| S7 — relay stopped -> via-route fails cleanly, independent of exit | Failure isolation | DEVICE-VERIFIED | Same pattern with `systemctl stop sing-box` on the relay instead; client SOCKS5 request failed; relay restarted, route recovered | 2026-09-22 | `e328c3b` | same |
+| S12/S13 — relay refuses to forward to an undeclared destination (not an open proxy) | Abuse control | DEVICE-VERIFIED | Second client outbound built with the relay's own first-hop credential but targeting `1.1.1.1:443` (never declared in the relay's `peer_endpoints`); connection failed (SOCKS5 connect failure), consistent with the relay's own `vpn doctor`-reported fail-closed policy | 2026-09-22 | `e328c3b` | same |
+| Packet-capture proof of provider/ASN separation: what each hop actually observes | Privacy/architecture claim | SERVER-VERIFIED | Simultaneous `tcpdump -i any port 443` on both VPS during a real S2 run: relay's capture shows the client's real IP (`143.58.100.8`) as source and `62.238.46.190` (exit) as the forwarded destination; exit's capture shows only `91.244.71.165` (relay) as peer — the client's real IP never appears in the exit's capture | 2026-09-22 | `e328c3b` | Real `tcpdump` on both real VPS |
+| Latency/throughput cost of the via-relay route vs. the direct route | Performance sanity (not a pass/fail gate) | DEVICE-VERIFIED | Single test run, same client/session: direct route TLS-connect time 0.23-0.73s (5 samples), 1MB download in 0.71s (~1.4MB/s); via-relay route TLS-connect time 0.30-0.58s on 4/5 samples plus one 6.01s outlier, 1MB download in 0.97s (~1.0MB/s). Numbers recorded as observed; no judgment rendered on whether the added cost is acceptable — that is a product decision once more runs exist | 2026-09-22 | `e328c3b` | same, single run, not a statistically rigorous benchmark |
+| DNS/IPv4/IPv6 leak behavior of the via-route on a real client | Leak testing | UNVERIFIED | Not performed this pass — no client-side packet-capture tool was available on the Windows test machine to independently confirm DNS resolution stayed inside the tunnel; `socks5h` forces remote-resolved DNS by the proxy protocol itself, but that was not independently verified by capture | — | — | Required: real device + client-side capture or a dnsleaktest.com-class multi-resolver check; relates to the separate Tamara DNS/kill-switch/IPv6 plan (items 5-7) |
+| Reachability from Russian mobile/fixed networks; restrictive-network/censorship-adversary behavior | Network/device behavior | UNVERIFIED (unchanged) | No such network was available for this pass | — | — | Required: real devices on target networks |
