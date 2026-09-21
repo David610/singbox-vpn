@@ -1368,6 +1368,147 @@ pub fn migrate_deployment_toml(path: &Path) -> Result<DeploymentMigrationOutcome
     Ok(DeploymentMigrationOutcome::Migrated { backup_path })
 }
 
+/// Byte range (in `lines`) spanning a top-level TOML table named
+/// `header` (e.g. `"[google_egress_hairpin]"`), from its header line up
+/// to (but not including) the next top-level table header or EOF. `None`
+/// if `header` does not appear as its own line.
+fn section_line_range(lines: &[&str], header: &str) -> Option<(usize, usize)> {
+    let start = lines.iter().position(|l| l.trim_end() == header)?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map(|i| start + 1 + i)
+        .unwrap_or(lines.len());
+    Some((start, end))
+}
+
+/// Pure text transform: returns `original` with `[google_egress_hairpin]`
+/// set to `section`, replacing an existing section in place or appending
+/// a new one. Callers must reparse and validate the result — this
+/// function does not know whether the resulting file is well-formed.
+fn set_google_egress_hairpin_toml_text(
+    original: &str,
+    section: &GoogleEgressHairpinSection,
+) -> String {
+    let header = "[google_egress_hairpin]";
+    let block: Vec<String> = vec![
+        header.to_string(),
+        format!("relay_host = {:?}", section.relay_host),
+        format!("relay_port = {}", section.relay_port),
+        format!("relay_server_name = {:?}", section.relay_server_name),
+        format!(
+            "relay_reality_public_key = {:?}",
+            section.relay_reality_public_key
+        ),
+        format!(
+            "relay_reality_short_id = {:?}",
+            section.relay_reality_short_id
+        ),
+    ];
+    let lines: Vec<&str> = original.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    if let Some((start, end)) = section_line_range(&lines, header) {
+        out.extend(lines[..start].iter().map(|s| s.to_string()));
+        out.extend(block);
+        out.extend(lines[end..].iter().map(|s| s.to_string()));
+    } else {
+        out.extend(lines.iter().map(|s| s.to_string()));
+        while out.last().is_some_and(|l| l.trim().is_empty()) {
+            out.pop();
+        }
+        out.push(String::new());
+        out.extend(block);
+    }
+    let mut result = out.join("\n");
+    result.push('\n');
+    result
+}
+
+/// Pure text transform: returns `original` with `[google_egress_hairpin]`
+/// removed if present, unchanged otherwise.
+fn clear_google_egress_hairpin_toml_text(original: &str) -> String {
+    let header = "[google_egress_hairpin]";
+    let lines: Vec<&str> = original.lines().collect();
+    let Some((start, end)) = section_line_range(&lines, header) else {
+        return original.to_string();
+    };
+    let mut out: Vec<String> = Vec::new();
+    out.extend(lines[..start].iter().map(|s| s.to_string()));
+    out.extend(lines[end..].iter().map(|s| s.to_string()));
+    let mut result = out.join("\n");
+    while result.contains("\n\n\n") {
+        result = result.replace("\n\n\n", "\n\n");
+    }
+    if !result.is_empty() && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+/// Set (`Some`) or clear (`None`) `[google_egress_hairpin]` in the
+/// `deployment.toml` at `path`. Refuses (leaving the file untouched) if
+/// the original does not parse, if the resulting text would change any
+/// field other than `google_egress_hairpin` (a bug in the text patcher,
+/// never an operator's other settings), or if `section` fails its own
+/// validation. Backs up before mutating (see `crate::migrate`), then
+/// commits atomically. Returns the backup path.
+///
+/// This only edits the file on disk — it does not render, validate
+/// against the real `sing-box` binary, or reload anything. Callers (see
+/// `apps/admin/src/main.rs`'s `google-egress-hairpin set`/`clear`
+/// commands) are responsible for doing that with the reparsed config
+/// before treating this as committed, and for rolling this file back if
+/// that later step fails.
+pub fn apply_google_egress_hairpin_toml(
+    path: &Path,
+    section: Option<&GoogleEgressHairpinSection>,
+) -> Result<PathBuf, CompatError> {
+    let original = std::fs::read_to_string(path).map_err(|e| CompatError::Io(e.to_string()))?;
+    let original_cfg: DeploymentConfig = toml::from_str(&original).map_err(|e| {
+        CompatError::Parse(format!(
+            "cannot patch {path:?}: existing file does not parse ({e}); no changes made"
+        ))
+    })?;
+    original_cfg.validate()?;
+
+    let patched = match section {
+        Some(s) => set_google_egress_hairpin_toml_text(&original, s),
+        None => clear_google_egress_hairpin_toml_text(&original),
+    };
+
+    let patched_cfg: DeploymentConfig = toml::from_str(&patched).map_err(|e| {
+        CompatError::Parse(format!(
+            "patched deployment.toml failed to reparse ({e}) — this is a bug, not applying"
+        ))
+    })?;
+    patched_cfg.validate()?;
+
+    let mut original_normalized =
+        serde_json::to_value(&original_cfg).map_err(|e| CompatError::Parse(e.to_string()))?;
+    let mut patched_normalized =
+        serde_json::to_value(&patched_cfg).map_err(|e| CompatError::Parse(e.to_string()))?;
+    for obj in [
+        original_normalized.as_object_mut(),
+        patched_normalized.as_object_mut(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        obj.remove("google_egress_hairpin");
+    }
+    if original_normalized != patched_normalized {
+        return Err(CompatError::Parse(
+            "patch would change a field other than [google_egress_hairpin] — refusing to apply \
+             (this is a bug in apply_google_egress_hairpin_toml)"
+                .to_string(),
+        ));
+    }
+
+    let backup_path = crate::migrate::backup_before_mutate(path)?;
+    crate::migrate::atomic_write(path, patched.as_bytes(), 0o644)?;
+    Ok(backup_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1612,5 +1753,133 @@ listen_port = 443
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    fn current_exit_toml() -> String {
+        format!(
+            "schema_version = {DEPLOYMENT_SCHEMA_VERSION}\nnode_id = \"test-node\"\nrole = \"exit\"\n{}",
+            legacy_toml()
+        )
+    }
+
+    fn sample_hairpin_section() -> GoogleEgressHairpinSection {
+        GoogleEgressHairpinSection {
+            relay_host: "relay.example.com".to_string(),
+            relay_port: 443,
+            relay_server_name: "www.cloudflare.com".to_string(),
+            relay_reality_public_key: "abcDEF123-_".to_string(),
+            relay_reality_short_id: "10330291".to_string(),
+        }
+    }
+
+    #[test]
+    fn set_google_egress_hairpin_toml_text_appends_when_absent() {
+        let original = current_exit_toml();
+        let patched = set_google_egress_hairpin_toml_text(&original, &sample_hairpin_section());
+        let cfg: DeploymentConfig = toml::from_str(&patched).unwrap();
+        let hairpin = cfg.google_egress_hairpin.expect("section should be set");
+        assert_eq!(hairpin.relay_host, "relay.example.com");
+        assert_eq!(hairpin.relay_port, 443);
+        assert_eq!(hairpin.relay_reality_short_id, "10330291");
+        // every other field is preserved
+        let original_cfg: DeploymentConfig = toml::from_str(&original).unwrap();
+        assert_eq!(cfg.public_host, original_cfg.public_host);
+    }
+
+    #[test]
+    fn set_google_egress_hairpin_toml_text_replaces_existing_section_in_place() {
+        let original = current_exit_toml();
+        let first_pass = set_google_egress_hairpin_toml_text(&original, &sample_hairpin_section());
+        let mut second_section = sample_hairpin_section();
+        second_section.relay_host = "relay2.example.com".to_string();
+        second_section.relay_port = 8443;
+        let second_pass = set_google_egress_hairpin_toml_text(&first_pass, &second_section);
+
+        let cfg: DeploymentConfig = toml::from_str(&second_pass).unwrap();
+        let hairpin = cfg.google_egress_hairpin.unwrap();
+        assert_eq!(hairpin.relay_host, "relay2.example.com");
+        assert_eq!(hairpin.relay_port, 8443);
+        // only one [google_egress_hairpin] header — a naive append-on-set
+        // bug would leave two
+        assert_eq!(second_pass.matches("[google_egress_hairpin]").count(), 1);
+    }
+
+    #[test]
+    fn clear_google_egress_hairpin_toml_text_removes_an_existing_section() {
+        let original = current_exit_toml();
+        let with_section =
+            set_google_egress_hairpin_toml_text(&original, &sample_hairpin_section());
+        let cleared = clear_google_egress_hairpin_toml_text(&with_section);
+        let cfg: DeploymentConfig = toml::from_str(&cleared).unwrap();
+        assert!(cfg.google_egress_hairpin.is_none());
+        assert!(!cleared.contains("[google_egress_hairpin]"));
+    }
+
+    #[test]
+    fn clear_google_egress_hairpin_toml_text_is_a_noop_when_absent() {
+        let original = current_exit_toml();
+        assert_eq!(clear_google_egress_hairpin_toml_text(&original), original);
+    }
+
+    #[test]
+    fn apply_google_egress_hairpin_toml_set_backs_up_and_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        let original = current_exit_toml();
+        std::fs::write(&path, &original).unwrap();
+
+        let backup_path =
+            apply_google_egress_hairpin_toml(&path, Some(&sample_hairpin_section())).unwrap();
+        assert!(backup_path.exists());
+        assert_eq!(std::fs::read_to_string(&backup_path).unwrap(), original);
+
+        let live = std::fs::read_to_string(&path).unwrap();
+        let cfg: DeploymentConfig = toml::from_str(&live).unwrap();
+        assert_eq!(
+            cfg.google_egress_hairpin.unwrap().relay_host,
+            "relay.example.com"
+        );
+    }
+
+    #[test]
+    fn apply_google_egress_hairpin_toml_clear_backs_up_and_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        let with_section =
+            set_google_egress_hairpin_toml_text(&current_exit_toml(), &sample_hairpin_section());
+        std::fs::write(&path, &with_section).unwrap();
+
+        apply_google_egress_hairpin_toml(&path, None).unwrap();
+
+        let live = std::fs::read_to_string(&path).unwrap();
+        let cfg: DeploymentConfig = toml::from_str(&live).unwrap();
+        assert!(cfg.google_egress_hairpin.is_none());
+    }
+
+    #[test]
+    fn apply_google_egress_hairpin_toml_refuses_corrupted_input_and_leaves_it_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        let corrupted = "this is not valid = = toml [[[";
+        std::fs::write(&path, corrupted).unwrap();
+
+        let err =
+            apply_google_egress_hairpin_toml(&path, Some(&sample_hairpin_section())).unwrap_err();
+        assert!(matches!(err, CompatError::Parse(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupted);
+    }
+
+    #[test]
+    fn apply_google_egress_hairpin_toml_refuses_an_invalid_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        let original = current_exit_toml();
+        std::fs::write(&path, &original).unwrap();
+
+        let mut invalid = sample_hairpin_section();
+        invalid.relay_host = String::new();
+        let err = apply_google_egress_hairpin_toml(&path, Some(&invalid)).unwrap_err();
+        assert!(matches!(err, CompatError::Parse(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 }
