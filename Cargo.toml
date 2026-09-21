@@ -11,6 +11,7 @@ members = [
     "crates/compat-config",
     "crates/provisioning-contract",
     "apps/admin",
+    "apps/provisioning-agent",
     "services/subscription",
 ]
 
