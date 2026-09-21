@@ -1,0 +1,20 @@
+[Unit]
+Description=Arcana VPN provisioning agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vpn-provisioning-agent --config /etc/vpn/provisioning-agent.toml
+Restart=on-failure
+RestartSec=5
+# No inbound network access needed — outbound HTTPS to the Worker only.
+# Runs as a dedicated non-root user with access to vpn-admin's
+# deployment.toml/users.json, same as any other vpn-admin operator
+# invocation on this box — this file documents the expected shape but
+# does not attempt to fully re-derive this repo's existing deployment
+# user/permissions setup, which is out of scope for this plan.
+User=vpn-admin-agent
+
+[Install]
+WantedBy=multi-user.target
