@@ -193,6 +193,18 @@ pub struct SubQuery {
     /// offered, so a typo here must not silently degrade someone's
     /// working subscription to a mode they didn't ask for.
     pub compat: Option<String>,
+    /// Opt-in body transform for `format=uri`/`format=hiddify` only:
+    /// `base64` returns the same share-link text, standard-base64-encoded
+    /// (conventional V2Ray/Shadowrocket subscription encoding). Several
+    /// import-by-URL clients (Shadowrocket confirmed) fail to import the
+    /// plain-text body `format=uri` has always returned; existing
+    /// consumers that already parse the plain body are unaffected because
+    /// this is opt-in and the plain body is unchanged when `encoding` is
+    /// absent. Not supported with `format=singbox` (JSON, not share-link
+    /// text) — rejected explicitly rather than silently ignored, same
+    /// rule as `compat`'s format-specific guards below. Any value other
+    /// than `base64` is rejected (400) rather than silently falling back.
+    pub encoding: Option<String>,
 }
 
 async fn get_subscription(
@@ -265,6 +277,7 @@ async fn get_subscription(
         format = ?query.format,
         profile = ?query.profile,
         compat = ?query.compat,
+        encoding = ?query.encoding,
         "subscription served"
     );
 
@@ -291,6 +304,26 @@ async fn get_subscription(
                     .into_response(),
             },
         };
+
+    let want_base64 = match query.encoding.as_deref() {
+        None => false,
+        Some("base64") => true,
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "unknown encoding value (expected \"base64\")",
+            )
+                .into_response()
+        }
+    };
+    if want_base64 && format == "singbox" {
+        return (
+            StatusCode::BAD_REQUEST,
+            "encoding=base64 is only supported with format=uri/hiddify — format=singbox \
+             already returns JSON, which no importer expects base64-wrapped",
+        )
+            .into_response();
+    }
 
     match format {
         "singbox" => {
@@ -423,12 +456,19 @@ async fn get_subscription(
             if compat_mode == render::CompatibilityMode::VisionOff {
                 return match render::render_vision_off_uri_list(&user, &share_endpoints) {
                     Ok(body) if body.is_empty() => no_selectable_route_response(),
-                    Ok(body) => (
-                        StatusCode::OK,
-                        [("content-type", "text/plain; charset=utf-8")],
-                        body,
-                    )
-                        .into_response(),
+                    Ok(body) => {
+                        let body = if want_base64 {
+                            compat_config::render::to_base64_subscription(&body)
+                        } else {
+                            body
+                        };
+                        (
+                            StatusCode::OK,
+                            [("content-type", "text/plain; charset=utf-8")],
+                            body,
+                        )
+                            .into_response()
+                    }
                     Err(e) => {
                         tracing::error!(error = %e, "failed to render vision-off uri list");
                         (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
@@ -437,12 +477,19 @@ async fn get_subscription(
             }
             match render::render_uri_list(&user, &share_endpoints) {
                 Ok(body) if body.is_empty() => no_selectable_route_response(),
-                Ok(body) => (
-                    StatusCode::OK,
-                    [("content-type", "text/plain; charset=utf-8")],
-                    body,
-                )
-                    .into_response(),
+                Ok(body) => {
+                    let body = if want_base64 {
+                        compat_config::render::to_base64_subscription(&body)
+                    } else {
+                        body
+                    };
+                    (
+                        StatusCode::OK,
+                        [("content-type", "text/plain; charset=utf-8")],
+                        body,
+                    )
+                        .into_response()
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to render uri list");
                     (StatusCode::INTERNAL_SERVER_ERROR, "render error").into_response()
@@ -825,6 +872,101 @@ mod tests {
 
     #[tokio::test]
     async fn uri_format_returns_plaintext_share_links() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.starts_with("vless://"));
+    }
+
+    #[tokio::test]
+    async fn uri_format_with_encoding_base64_returns_decodable_body() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let plain_resp = oneshot_with_addr(state.clone(), "/sub/goodtoken?format=uri").await;
+        let plain_body = axum::body::to_bytes(plain_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let b64_resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri&encoding=base64").await;
+        assert_eq!(b64_resp.status(), StatusCode::OK);
+        let b64_body = axum::body::to_bytes(b64_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let decoded = STANDARD
+            .decode(&b64_body)
+            .expect("encoding=base64 body must be valid standard base64");
+        assert_eq!(
+            decoded, plain_body,
+            "decoding the base64 body must reproduce exactly the format=uri plain body"
+        );
+    }
+
+    #[tokio::test]
+    async fn hiddify_format_with_encoding_base64_returns_decodable_body() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=hiddify&encoding=base64").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let decoded = STANDARD.decode(&body).expect("valid standard base64");
+        assert!(String::from_utf8(decoded).unwrap().starts_with("vless://"));
+    }
+
+    #[tokio::test]
+    async fn vision_off_with_encoding_base64_returns_decodable_body_without_flow() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(
+            state,
+            "/sub/goodtoken?format=uri&compat=vision-off&encoding=base64",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let decoded = STANDARD.decode(&body).expect("valid standard base64");
+        let s = String::from_utf8(decoded).unwrap();
+        let reality_line = s.lines().find(|l| l.starts_with("vless://")).unwrap();
+        assert!(!reality_line.contains("flow="));
+    }
+
+    #[tokio::test]
+    async fn unknown_encoding_value_returns_400() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri&encoding=garbage").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.contains("unknown encoding value"));
+    }
+
+    #[tokio::test]
+    async fn encoding_base64_with_singbox_format_is_rejected_not_silently_ignored() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let resp = oneshot_with_addr(state, "/sub/goodtoken?format=singbox&encoding=base64").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let s = String::from_utf8(body.to_vec()).unwrap();
+        assert!(s.contains("only supported with format=uri/hiddify"));
+    }
+
+    #[tokio::test]
+    async fn absent_encoding_leaves_uri_format_byte_identical_to_before() {
+        // Regression guard: adding the encoding parameter must not change
+        // the default (no `encoding`) behavior at all.
         let state = make_state(vec![user_with_token("goodtoken", true)]);
         let resp = oneshot_with_addr(state, "/sub/goodtoken?format=uri").await;
         assert_eq!(resp.status(), StatusCode::OK);

@@ -355,6 +355,24 @@ enum UserCommands {
     Disable {
         user_id: String,
     },
+    /// Set (or replace) this user's expiry. Used for subscription
+    /// renewals — unlike `create`, which only takes an expiry at
+    /// account-creation time, this is the only way to move an existing
+    /// user's expiry forward (or into the past, which immediately makes
+    /// `CompatUser::is_active` treat them as expired). Same
+    /// validate-apply-reload path as `enable`/`disable`.
+    SetExpiry {
+        user_id: String,
+        /// Unix-seconds expiry timestamp.
+        #[arg(long)]
+        expires_at: i64,
+    },
+    /// Remove this user's expiry entirely (they no longer expire on
+    /// their own; `disable`/`remove` are still separate, explicit
+    /// actions).
+    ClearExpiry {
+        user_id: String,
+    },
     RotateToken {
         user_id: String,
         /// Print a terminal QR code of the new subscription URL.
@@ -524,6 +542,13 @@ fn main() -> Result<()> {
         }
         Commands::User(UserCommands::Disable { user_id }) => {
             cmd_user_set_enabled(&cfg, &user_id, false)
+        }
+        Commands::User(UserCommands::SetExpiry {
+            user_id,
+            expires_at,
+        }) => cmd_user_set_expiry(&cfg, &user_id, Some(expires_at)),
+        Commands::User(UserCommands::ClearExpiry { user_id }) => {
+            cmd_user_set_expiry(&cfg, &user_id, None)
         }
         Commands::User(UserCommands::VisionOffExperiment { user_id, off }) => {
             cmd_user_vision_off_experiment(&cfg, &user_id, !off)
@@ -2444,6 +2469,40 @@ fn cmd_user_set_enabled(cfg: &DeploymentConfig, id: &str, enabled: bool) -> Resu
                  until that reload actually happens. Do not treat this as revoked yet."
             );
         }
+    }
+    Ok(())
+}
+
+/// Same shape as `cmd_user_set_enabled`: load, mutate one field, then the
+/// standard validate-apply-reload-save path. `expires_at: None` clears the
+/// expiry (the user no longer expires on their own); `Some(t)` sets/replaces
+/// it, including to a value in the past, which `CompatUser::is_active`
+/// immediately treats as expired — same effective blast radius as
+/// `disable`, but expressed through the existing expiry mechanism rather
+/// than a second flag.
+fn cmd_user_set_expiry(cfg: &DeploymentConfig, id: &str, expires_at: Option<i64>) -> Result<()> {
+    let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
+    find_user_mut(&mut users, id)?.expires_at = expires_at;
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
+    match expires_at {
+        Some(t) => println!("{id}: expires_at={t}"),
+        None => println!("{id}: expires_at=none"),
+    }
+    if let Some(t) = expires_at {
+        if t < UnixSeconds::now().0 as i64 {
+            println!(
+                "This expiry is already in the past: once reloaded live, this user is dropped \
+                 from the rendered sing-box authorization config, same as `user disable`."
+            );
+        }
+    }
+    if !went_live {
+        println!(
+            "WARNING: the new config was written but NOT reloaded live (see the warning \
+             above) — this user's previous expiry (or lack of one) is still what the RUNNING \
+             server enforces. Do not treat this as applied yet."
+        );
     }
     Ok(())
 }
