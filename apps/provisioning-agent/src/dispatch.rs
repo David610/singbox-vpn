@@ -235,7 +235,10 @@ mod tests {
 
     #[test]
     fn payload_expires_at_unix_errors_on_malformed_timestamp() {
-        let j = job("SET_EXPIRY", serde_json::json!({"expires_at": "not-a-date"}));
+        let j = job(
+            "SET_EXPIRY",
+            serde_json::json!({"expires_at": "not-a-date"}),
+        );
         assert!(payload_expires_at_unix(&j).is_err());
     }
 

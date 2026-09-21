@@ -38,8 +38,8 @@ impl AgentConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading agent config from {path:?}"))?;
-        let cfg: AgentConfig = toml::from_str(&text)
-            .with_context(|| format!("parsing agent config from {path:?}"))?;
+        let cfg: AgentConfig =
+            toml::from_str(&text).with_context(|| format!("parsing agent config from {path:?}"))?;
         Ok(cfg)
     }
 }
@@ -67,7 +67,10 @@ vpn_admin_config = "/etc/vpn/deployment.toml"
         let cfg = AgentConfig::load(&path).unwrap();
         assert_eq!(cfg.worker_url, "http://127.0.0.1:8788");
         assert_eq!(cfg.node_id, "node-1");
-        assert_eq!(cfg.poll_interval_secs, 15, "default should apply when omitted");
+        assert_eq!(
+            cfg.poll_interval_secs, 15,
+            "default should apply when omitted"
+        );
     }
 
     #[test]

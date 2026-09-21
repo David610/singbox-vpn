@@ -69,7 +69,10 @@ impl WorkerClient {
     pub async fn complete(&self, job_id: i64, result: Value) -> Result<()> {
         let res = self
             .http
-            .post(format!("{}/api/agent/jobs/{job_id}/complete", self.base_url))
+            .post(format!(
+                "{}/api/agent/jobs/{job_id}/complete",
+                self.base_url
+            ))
             .bearer_auth(&self.api_key)
             .json(&serde_json::json!({ "result": result }))
             .send()

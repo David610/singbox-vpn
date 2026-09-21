@@ -94,7 +94,11 @@ async fn poll_once(cfg: &AgentConfig, client: &WorkerClient) -> Result<()> {
 /// caller, which must not crash the poll loop over this — see finding #1
 /// in the final review: a job that actually succeeded must never be lost
 /// just because reporting it hit a transient error).
-async fn report_complete_with_retry(client: &WorkerClient, job: &worker_client::Job, result: Value) -> bool {
+async fn report_complete_with_retry(
+    client: &WorkerClient,
+    job: &worker_client::Job,
+    result: Value,
+) -> bool {
     for attempt in 1..=REPORT_MAX_ATTEMPTS {
         match client.complete(job.id, result.clone()).await {
             Ok(()) => return true,
@@ -110,7 +114,11 @@ async fn report_complete_with_retry(client: &WorkerClient, job: &worker_client::
 }
 
 /// Same retry shape as report_complete_with_retry, for client.fail.
-async fn report_fail_with_retry(client: &WorkerClient, job: &worker_client::Job, message: &str) -> bool {
+async fn report_fail_with_retry(
+    client: &WorkerClient,
+    job: &worker_client::Job,
+    message: &str,
+) -> bool {
     for attempt in 1..=REPORT_MAX_ATTEMPTS {
         match client.fail(job.id, message).await {
             Ok(()) => return true,
