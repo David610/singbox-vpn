@@ -1168,16 +1168,24 @@ fn exit_with_hairpin_config_but_no_credential_still_renders_unchanged() {
 #[test]
 fn exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule() {
     let exit = load(&exit_hairpin_deployment_toml()).unwrap();
-    let doc = render_server_config_for_deployment(&exit, &[user()], &hairpin_reality(), &hysteria(), 0)
-        .unwrap();
+    let doc =
+        render_server_config_for_deployment(&exit, &[user()], &hairpin_reality(), &hysteria(), 0)
+            .unwrap();
     // sing-box 1.13 removed per-inbound `sniff` as a legacy field; the
     // unconditional sniff must instead be the first route.rules entry
     // (the same shape Hiddify's own core emits).
     for inbound in doc["inbounds"].as_array().unwrap() {
-        assert!(inbound.get("sniff").is_none(), "sniff must not be a legacy inbound field");
+        assert!(
+            inbound.get("sniff").is_none(),
+            "sniff must not be a legacy inbound field"
+        );
     }
     let outbounds = doc["outbounds"].as_array().unwrap();
-    assert_eq!(outbounds.len(), 2, "the original direct outbound stays, plus one hairpin outbound");
+    assert_eq!(
+        outbounds.len(),
+        2,
+        "the original direct outbound stays, plus one hairpin outbound"
+    );
     let hairpin_ob = outbounds
         .iter()
         .find(|o| o["tag"] == "google-egress-hairpin")
@@ -1186,7 +1194,10 @@ fn exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule() {
     assert_eq!(hairpin_ob["server"], "ru1.example.test");
     assert_eq!(hairpin_ob["server_port"], 443);
     assert_eq!(hairpin_ob["uuid"], "66666666-6666-4666-8666-666666666666");
-    assert_eq!(hairpin_ob["tls"]["reality"]["public_key"], "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8");
+    assert_eq!(
+        hairpin_ob["tls"]["reality"]["public_key"],
+        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    );
     assert_eq!(hairpin_ob["tls"]["reality"]["short_id"], "0a1b2c3d");
     let rules = doc["route"]["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 2);
@@ -1207,8 +1218,9 @@ fn exit_hairpin_outbound_never_carries_this_exits_own_private_key() {
     // OUTBOUND, which only ever needs the hairpin credential (a UUID)
     // and the relay's PUBLIC key.
     let exit = load(&exit_hairpin_deployment_toml()).unwrap();
-    let doc = render_server_config_for_deployment(&exit, &[user()], &hairpin_reality(), &hysteria(), 0)
-        .unwrap();
+    let doc =
+        render_server_config_for_deployment(&exit, &[user()], &hairpin_reality(), &hysteria(), 0)
+            .unwrap();
     let outbounds = doc["outbounds"].as_array().unwrap();
     let hairpin_ob = outbounds
         .iter()
