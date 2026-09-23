@@ -1,7 +1,7 @@
 use crate::config::AgentConfig;
 use serde_json::{json, Value};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
 struct CpuSample {
@@ -96,7 +96,10 @@ fn read_uptime_seconds() -> Option<u64> {
 fn read_cpu_sample() -> Option<CpuSample> {
     let text = std::fs::read_to_string("/proc/stat").ok()?;
     let line = text.lines().find(|line| line.starts_with("cpu "))?;
-    let mut parts = line.split_whitespace().skip(1).filter_map(|v| v.parse::<u64>().ok());
+    let mut parts = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|v| v.parse::<u64>().ok());
     let user = parts.next()?;
     let nice = parts.next()?;
     let system = parts.next()?;
@@ -176,7 +179,13 @@ fn configured_user_count(cfg: &AgentConfig) -> Option<u64> {
     }
     let stdout = String::from_utf8(output.stdout).ok()?;
     // vpn-admin's human list has one header row followed by one user row.
-    Some(stdout.lines().skip(1).filter(|line| !line.trim().is_empty()).count() as u64)
+    Some(
+        stdout
+            .lines()
+            .skip(1)
+            .filter(|line| !line.trim().is_empty())
+            .count() as u64,
+    )
 }
 
 fn command_first_version(binary: &str, args: &[&str]) -> Option<String> {
