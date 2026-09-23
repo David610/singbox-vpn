@@ -140,8 +140,7 @@ fn find_user_by_token(users: &[CompatUser], token: &str, now_unix: i64) -> Optio
     let presented_hash = credentials::hash_token(token);
     let mut found = None;
     for u in users {
-        let matches =
-            credentials::token_hash_eq(&presented_hash, &u.subscription_token_hash_hex);
+        let matches = credentials::token_hash_eq(&presented_hash, &u.subscription_token_hash_hex);
         if matches && u.is_active(now_unix) {
             found = Some(u.clone());
         }
