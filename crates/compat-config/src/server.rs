@@ -638,6 +638,44 @@ mod tests {
         assert_eq!(vless_users[0]["name"], "u-active");
     }
 
+    #[test]
+    fn renders_five_hundred_active_users_without_truncation() {
+        let many_users: Vec<CompatUser> = (0..500)
+            .map(|i| CompatUser {
+                id: format!("load-user-{i:03}"),
+                name: format!("Load User {i:03}"),
+                enabled: true,
+                vless_uuid: format!("00000000-0000-4000-8000-{i:012x}"),
+                hysteria2_password: SecretString::new(format!("load-password-{i:03}")),
+                subscription_token_hash_hex: format!("load-token-hash-{i:03}"),
+                created_at: 0,
+                expires_at: None,
+                vision_off_experiment: false,
+                google_egress_hairpin: false,
+                peer_credentials: Default::default(),
+            })
+            .collect();
+
+        let cfg = render_singbox_server_config(
+            &many_users,
+            &reality(),
+            &hysteria(),
+            ServerPorts {
+                vless_reality_port: 443,
+                hysteria2_port: 443,
+            },
+            1000,
+        );
+
+        let vless_users = cfg["inbounds"][0]["users"].as_array().unwrap();
+        let hysteria_users = cfg["inbounds"][1]["users"].as_array().unwrap();
+        assert_eq!(vless_users.len(), 500);
+        assert_eq!(hysteria_users.len(), 500);
+        assert_eq!(vless_users.first().unwrap()["name"], "load-user-000");
+        assert_eq!(vless_users.last().unwrap()["name"], "load-user-499");
+        assert_eq!(hysteria_users.last().unwrap()["name"], "load-user-499");
+    }
+
     /// Default, unchanged behavior: every user's inbound entry keeps the
     /// production `xtls-rprx-vision` flow. This is the guarantee the
     /// EXPERIMENTAL per-user Vision-off toggle must never regress.

@@ -17,8 +17,10 @@
 # sees every request as coming from 127.0.0.1 once it's behind this
 # proxy, so its own per-IP limiter would collapse to one global bucket.
 # nginx sees the real client IP because it terminates the actual client
-# TCP connection, so this is the trustworthy place to do it.
-limit_req_zone $binary_remote_addr zone=vpn_subscription:10m rate=5r/s;
+# TCP connection, so this is the trustworthy place to do it. Keep the
+# allowance large enough for carrier-grade NAT: many unrelated mobile users
+# can legitimately share one public IPv4 address and refresh together.
+limit_req_zone $binary_remote_addr zone=vpn_subscription:10m rate=20r/s;
 
 server {
     listen {{SUBSCRIPTION_PORT}} ssl;
@@ -54,7 +56,7 @@ server {
     add_header Strict-Transport-Security "max-age=31536000" always;
 
     location /sub/ {
-        limit_req zone=vpn_subscription burst=10 nodelay;
+        limit_req zone=vpn_subscription burst=100 nodelay;
 
         # /sub/<token> — the URI itself IS a bearer credential. Never let
         # it reach an access log (docs/FINAL_PRODUCTION_AUDIT.md P0-12):
@@ -85,7 +87,7 @@ server {
     }
 
     location /v1/provision/ {
-        limit_req zone=vpn_subscription burst=10 nodelay;
+        limit_req zone=vpn_subscription burst=100 nodelay;
 
         # /v1/provision/<token> is the documented first-party provisioning
         # API (README.md, docs/CLIENT_PROTOCOL_BEHAVIOR.md) — the URI is a
