@@ -32,7 +32,7 @@ struct ConnectionsResponse {
 ///
 /// These are per-NODE totals. sing-box's per-user statistics live behind its
 /// v2ray_api, which official builds do not compile in
-/// (release/DEFAULT_BUILD_TAGS for v1.13.19 lists with_clash_api but not
+/// (release/DEFAULT_BUILD_TAGS for v1.14.1 lists with_clash_api but not
 /// with_v2ray_api, and the binary rejects the config outright). The Clash
 /// API that IS available carries no user attribution — a connection from a
 /// named VLESS user reports only source/destination/network — so per-user
