@@ -53,8 +53,16 @@ fn generate_self_signed_cert(
     // production shape here instead of disabling Chrome-parrot in the client.
     let status = std::process::Command::new("openssl")
         .args([
-            "req", "-x509", "-newkey", "ec", "-pkeyopt",
-            "ec_paramgen_curve:prime256v1", "-days", "1", "-nodes", "-keyout",
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-days",
+            "1",
+            "-nodes",
+            "-keyout",
         ])
         .arg(&key)
         .arg("-out")
