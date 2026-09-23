@@ -6,7 +6,7 @@ of these; do not track `latest` in production.
 
 | Component | Version pinned | Source | Checked |
 |---|---|---|---|
-| sing-box | `1.13.19` (latest stable, non-beta) | https://github.com/SagerNet/sing-box/releases | 2026-08-17 |
+| sing-box | `1.14.1` (stable, non-beta) | https://github.com/SagerNet/sing-box/releases | 2026-09-23 |
 | Hysteria2 | bundled inbound inside sing-box (not the standalone `apernet/hysteria` binary) | https://sing-box.sagernet.org/configuration/inbound/hysteria2/ | 2026-08-09 |
 | Xray-core | not used this phase (sing-box chosen instead, see ADR below) | https://github.com/XTLS/Xray-core | 2026-08-09 |
 | Hiddify (Android) | any current release supporting sing-box-format subscriptions (client-side, not pinned by us) | https://github.com/hiddify/hiddify-app | 2026-08-09 |
@@ -53,6 +53,10 @@ risk identified; verified with the real pinned 1.13.19 binary's
 `sing-box check` against every config shape this project generates (see
 the interop test suite) before pinning.
 
+## 1.13.19 -> 1.14.1 validation
+
+The production pin was moved to 1.14.1 after upstream made 1.14 the stable track. Upstream 1.14 removes deprecated features, updates QUIC/uTLS and adds new Hysteria2 options, so this is treated as a compatibility-sensitive minor upgrade rather than a blind patch bump. Arcana's generated server config already uses route-action sniffing instead of removed legacy inbound sniff fields, and the Hysteria2 fields used here remain documented in 1.14. The repository's blocking CI downloads this exact pinned binary and validates generated configs with the real `sing-box check`; protocol/interop tests remain the merge gate. The official v1.14.1 release metadata publishes SHA-256 digests matching `deploy/lib/versions.env`.
+
 ## Why sing-box, not Xray-core, for this phase
 
 An earlier design pass (native adaptive stack, removed from `main` --
@@ -89,7 +93,7 @@ engine only through an explicit `core=xray`/`xvless://` import syntax
 that this project's generated links never set, so the label could not
 have selected an engine. See `docs/PROVISIONING_CONTRACT.md`.
 
-## Configuration syntax checked (sing-box 1.13.x)
+## Configuration syntax checked (sing-box 1.14.x)
 
 - VLESS inbound: `type: "vless"`, `users[]` with `uuid` + `flow`
   (`xtls-rprx-vision`), `tls.reality` sub-object.
@@ -128,7 +132,7 @@ assumed compatible by spec conformance.
 `Cargo.toml`/root license file — it never links, statically or
 dynamically, against sing-box.
 
-**sing-box** (`SagerNet/sing-box`, pinned `v1.13.19`) is licensed
+**sing-box** (`SagerNet/sing-box`, pinned `v1.14.1`) is licensed
 **GPL-3.0-only** upstream — verify against the `LICENSE` file at that
 exact tag in the SagerNet/sing-box repository before relying on this
 statement for anything beyond this project's own documentation; this is
