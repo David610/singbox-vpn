@@ -35,6 +35,7 @@ async fn run_job_once(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     match job.job_type.as_str() {
         "CREATE_USER" => create_user(cfg, job).await,
         "SET_EXPIRY" => set_expiry(cfg, job).await,
+        "CLEAR_EXPIRY" => clear_expiry(cfg, job).await,
         "ENABLE_USER" => enable_or_disable(cfg, job, "enable").await,
         "DISABLE_USER" => enable_or_disable(cfg, job, "disable").await,
         "ROTATE_SUBSCRIPTION_TOKEN" => rotate_token(cfg, job).await,
@@ -144,6 +145,22 @@ async fn set_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     .context("vpn-admin command timed out after 60s")?
     .context("spawning vpn-admin user set-expiry")?;
     require_success(&output, "user set-expiry")?;
+    Ok(serde_json::json!({}))
+}
+
+async fn clear_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
+    let vpn_user_id = payload_str(job, "vpn_user_id")?;
+
+    let output = tokio::time::timeout(
+        VPN_ADMIN_TIMEOUT,
+        vpn_admin_command(cfg)
+            .args(["user", "clear-expiry", vpn_user_id])
+            .output(),
+    )
+    .await
+    .context("vpn-admin command timed out after 60s")?
+    .context("spawning vpn-admin user clear-expiry")?;
+    require_success(&output, "user clear-expiry")?;
     Ok(serde_json::json!({}))
 }
 
