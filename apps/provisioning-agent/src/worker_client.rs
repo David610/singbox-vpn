@@ -6,8 +6,8 @@ use serde_json::Value;
 /// A job claimed from the Worker's /api/agent/claim endpoint. Field names
 /// match that endpoint's response body exactly (see the vpn-web
 /// provisioning-worker-api plan, Task 3) — job_type is one of
-/// "CREATE_USER" | "SET_EXPIRY" | "ENABLE_USER" | "DISABLE_USER" |
-/// "ROTATE_SUBSCRIPTION_TOKEN".
+/// "CREATE_USER" | "SET_EXPIRY" | "CLEAR_EXPIRY" | "ENABLE_USER" |
+/// "DISABLE_USER" | "ROTATE_SUBSCRIPTION_TOKEN" | "ROTATE_CREDENTIALS".
 #[derive(Debug, Clone, Deserialize)]
 pub struct Job {
     pub id: i64,
@@ -60,6 +60,25 @@ impl WorkerClient {
             .await
             .context("parsing /api/agent/claim response body")?;
         Ok(parsed.job)
+    }
+
+    /// Sends a privacy-safe operational heartbeat. Failure is returned to
+    /// the caller but never stops provisioning; main logs and retries on the
+    /// next heartbeat interval.
+    pub async fn heartbeat(&self, payload: &Value) -> Result<()> {
+        let res = self
+            .http
+            .post(format!("{}/api/agent/heartbeat", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(payload)
+            .send()
+            .await
+            .context("POST /api/agent/heartbeat request failed")?;
+
+        if !res.status().is_success() {
+            bail!("POST /api/agent/heartbeat returned {}", res.status());
+        }
+        Ok(())
     }
 
     /// Reports a job as successfully completed. `result` is whatever
