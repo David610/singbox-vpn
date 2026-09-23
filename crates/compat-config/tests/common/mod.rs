@@ -141,9 +141,12 @@ pub fn socks5_http_get_is_200(socks_port: u16, host: &str, port: u16) -> bool {
 ///   * negotiate TLS **1.3** (`hs.hello.supportedVersion != VersionTLS13` aborts);
 ///   * offer an **X25519** (or X25519MLKEM768) key share — OpenSSL's default;
 ///   * emit the middlebox-compat **ChangeCipherSpec of exactly 6 bytes** —
-///     OpenSSL does this by default;
-///   * keep every TLS record at or under metacubex/utls's hard-coded
-///     `realitySize` budget of **8192 bytes**.
+///     OpenSSL does this by default.
+///
+/// The old 1.13.x pin additionally required every TLS record to stay under
+/// an 8192-byte REALITY budget. The 1.14.1 interop suite deliberately keeps
+/// a second, much larger certificate fixture to prove that limitation does
+/// not regress.
 ///
 /// The SNI must be a hostname, not an IP literal (uTLS omits SNI for IPs, and
 /// the REALITY server matches `config.ServerNames[clientHello.serverName]`),
@@ -162,15 +165,14 @@ impl Drop for LocalDecoy {
     }
 }
 
-/// How large a certificate the decoy should present. This is the single
-/// variable that decides whether sing-box's REALITY server accepts the
-/// decoy's flight or aborts with "processed invalid connection".
+/// How large a certificate the decoy should present. The large shape
+/// reproduces the certificate flight that broke the historical 1.13.x path.
 pub enum DecoyCertSize {
     /// A minimal single self-signed cert — every record stays well under
     /// the 8192-byte budget.
     Small,
     /// Inflated with hundreds of SANs so the Certificate record exceeds
-    /// 8192 bytes, reproducing the historical CI failure deterministically.
+    /// the historical 8192-byte limit. Current sing-box must still carry it.
     OverBudget,
 }
 
@@ -203,7 +205,7 @@ pub fn spawn_local_tls13_decoy(size: DecoyCertSize) -> Option<LocalDecoy> {
         .arg("/CN=localhost");
     if let DecoyCertSize::OverBudget = size {
         // Each SAN adds ~20 bytes to the leaf certificate; enough of them
-        // push the Certificate record past REALITY's 8192-byte budget.
+        // push the Certificate record past the historical 8192-byte budget.
         //
         // The count is deliberately well past the threshold rather than
         // just over it: DER encoding of the serial and signature varies by

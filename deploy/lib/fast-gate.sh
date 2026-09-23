@@ -138,7 +138,7 @@ else
     if [ -n "$SINGBOX_BIN" ]; then
       STATE="$GATE_TMP/state"
       mkdir -p "$STATE/hysteria"
-      if openssl req -x509 -newkey ed25519 -days 1 -nodes \
+      if openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 1 -nodes \
           -keyout "$STATE/hysteria/key.pem" -out "$STATE/hysteria/cert.pem" \
           -subj "/CN=fast-gate.example.com" >/dev/null 2>&1; then
         cat > "$GATE_TMP/deployment.toml" <<EOF

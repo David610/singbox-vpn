@@ -343,7 +343,7 @@ jobs:
           mkdir -p "$STATE/hysteria"
           # sing-box check requires a syntactically valid cert/key pair to
           # exist at the configured paths even in a check-only run.
-          openssl req -x509 -newkey ed25519 -days 1 -nodes \
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 1 -nodes \
             -keyout "$STATE/hysteria/key.pem" -out "$STATE/hysteria/cert.pem" \
             -subj "/CN=ci-test.example.com"
 
@@ -484,7 +484,7 @@ jobs:
             > /dev/null 2>&1 &
           echo $! > "$RUNNER_TEMP/decoy.pid"
 
-          openssl req -x509 -newkey ed25519 -days 1 -nodes \
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 1 -nodes \
             -keyout "$STATE/hysteria/key.pem" -out "$STATE/hysteria/cert.pem" \
             -subj "/CN=ci-test.example.com"
 
@@ -549,7 +549,7 @@ jobs:
             -key "$RUNNER_TEMP/decoy-key.pem" -tls1_3 -quiet -naccept 100 \
             > /dev/null 2>&1 &
           echo $! > "$RUNNER_TEMP/relay-decoy.pid"
-          openssl req -x509 -newkey ed25519 -days 1 -nodes \
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 1 -nodes \
             -keyout "$STATE/hysteria/key.pem" -out "$STATE/hysteria/cert.pem" \
             -subj "/CN=relay.ci-test.example.com"
           CFG="$RUNNER_TEMP/relay-selftest-deployment.toml"

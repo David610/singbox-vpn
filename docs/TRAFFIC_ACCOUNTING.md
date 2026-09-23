@@ -18,7 +18,7 @@ configured under `experimental.v2ray_api.stats`.
 
 It is **not compiled into official sing-box builds.**
 
-Checked against the pinned version (1.13.19, see `COMPATIBILITY_VERSIONS.md`):
+Checked against the pinned release line (1.14.1, see `COMPATIBILITY_VERSIONS.md`):
 
 ```
 $ sing-box check -c with-v2ray-api.json
@@ -27,7 +27,7 @@ FATAL create v2ray-server: v2ray api is not included in this build,
 ```
 
 And upstream's own manifest of what ships in a release confirms it —
-`release/DEFAULT_BUILD_TAGS_OTHERS` at v1.13.19:
+the official 1.14.1 release build:
 
 ```
 with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,

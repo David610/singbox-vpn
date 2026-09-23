@@ -1,47 +1,16 @@
-//! Regression test for the REALITY decoy record-size budget — the confirmed
-//! root cause of the recurring `singbox-validate` CI failure.
+//! Regression test for the REALITY decoy certificate-flight limitation that
+//! affected the previous sing-box 1.13.x pin.
 //!
-//! ## The mechanism
+//! On 1.13.19 a decoy whose TLS Certificate record exceeded the historical
+//! 8192-byte REALITY budget authenticated the client but then aborted the
+//! hijack as `REALITY: processed invalid connection`. That made ordinary
+//! third-party decoy certificate growth capable of breaking every user.
 //!
-//! sing-box's REALITY server (via `github.com/metacubex/utls`, `reality.go`)
-//! relays the client's ClientHello to the configured `handshake_server`
-//! ("decoy"), then walks the decoy's TLS response record by record to decide
-//! whether it can hijack the handshake. That walk is bounded:
-//!
-//! ```text
-//! const realitySize uint16 = 8192
-//! ...
-//! if handshakeLen > int(realitySize) { break f }
-//! ```
-//!
-//! `handshakeLen` is `5 + <wire record length>`, read from the 5-byte TLS
-//! record header — REALITY never decrypts the decoy's flight, it only
-//! measures records and names them positionally. If ANY record in the
-//! decoy's response exceeds 8192 bytes, the walk aborts, `hs.handshake()` is
-//! never called, `isHandshakeComplete` stays false, and the server returns:
-//!
-//! ```text
-//! REALITY: processed invalid connection
-//! ```
-//!
-//! ## Why this test exists
-//!
-//! That error string was misread three separate times as evidence of a
-//! REALITY key/short_id mismatch, producing three commits each claiming a
-//! different "root cause" (external egress blocked, a urltest probe racing,
-//! an IPv6 decoy dial) — none of which was correct. The string is emitted
-//! for ANY connection that fails to complete the hijack, including a
-//! perfectly authenticated client whose decoy simply returned an oversized
-//! certificate.
-//!
-//! So this test pins the semantics: with a decoy whose certificate flight
-//! exceeds the budget, traffic must fail **while REALITY authentication
-//! succeeds**. Asserting `hs.c.conn == conn: true` in the failing case is
-//! the whole point — it is what makes the diagnosis unambiguous next time.
-//!
-//! It is also the test that would have caught the production exposure: the
-//! shipped default `handshake_server` is a third-party CDN whose record
-//! framing this project does not control.
+//! sing-box 1.14.1 no longer exhibits that failure in the real-binary interop
+//! harness: the same deliberately large (~16 KiB Certificate record) decoy
+//! completes the tunnel after REALITY authentication succeeds. Keep this test
+//! as a forward regression guard. If a future data-plane update reintroduces
+//! the old record-size failure, CI must catch it before release.
 
 mod common;
 
@@ -93,12 +62,10 @@ fn generate_reality_keypair(sb: &common::SingBox) -> (String, String) {
     )
 }
 
-/// A decoy whose TLS certificate flight exceeds REALITY's 8192-byte record
-/// budget must break the tunnel — and must do so with REALITY authentication
-/// having SUCCEEDED, so the failure is never again misattributed to the key
-/// material.
+/// A certificate flight that broke the historical 1.13.x REALITY path must
+/// remain usable on the current data plane, with authentication completing.
 #[test]
-fn oversized_decoy_certificate_breaks_the_tunnel_even_though_reality_auth_succeeds() {
+fn historically_oversized_decoy_certificate_remains_usable() {
     let Some(sb) = common::SingBox::find() else {
         if std::env::var("SINGBOX_VPN_REQUIRE_REAL_INTEROP").is_ok() {
             panic!("SINGBOX_VPN_REQUIRE_REAL_INTEROP is set but no sing-box binary is available");
@@ -228,25 +195,19 @@ fn oversized_decoy_certificate_breaks_the_tunnel_even_though_reality_auth_succee
     let server_log_text = common::read_log(&server_log);
 
     assert!(
-        !relay_ok,
-        "an over-budget decoy certificate was expected to break the tunnel, but traffic \
-         flowed. If sing-box raised `realitySize` above 8192, this test and the \
-         `DecoyUnsuitable` diagnosis in `vpn-admin doctor` both need revisiting.\n\
+        relay_ok,
+        "the historically over-budget decoy certificate regressed to breaking REALITY; \
+         1.14.1 is expected to carry this large certificate flight successfully.\n\
          --- server log ---\n{server_log_text}"
     );
-
-    // THE POINT OF THIS TEST. The tunnel is broken, and yet REALITY
-    // authentication succeeded — so `processed invalid connection` here says
-    // nothing whatsoever about the key material.
     assert!(
         saw_auth_ok,
-        "expected REALITY authentication to SUCCEED and the failure to come from the \
-         decoy's oversized record; instead auth itself did not complete, so this test \
-         is no longer reproducing the documented mechanism.\n--- server log ---\n{server_log_text}"
+        "traffic flowed without the expected REALITY-authenticated handshake marker.\n\
+         --- server log ---\n{server_log_text}"
     );
     assert!(
-        saw_invalid,
-        "expected the over-budget decoy to produce REALITY's `processed invalid \
-         connection`.\n--- server log ---\n{server_log_text}"
+        !saw_invalid,
+        "the historically over-budget decoy unexpectedly produced \
+         `processed invalid connection` again.\n--- server log ---\n{server_log_text}"
     );
 }

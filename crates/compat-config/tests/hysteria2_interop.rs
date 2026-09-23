@@ -45,9 +45,24 @@ fn generate_self_signed_cert(
     // legacy CN with no SAN ("x509: certificate relies on legacy Common
     // Name field, use SANs instead") — a bare `-subj "/CN=..."` alone
     // produces exactly that rejected shape.
+    // sing-box 1.14's Hysteria2 client imitates Chrome's QUIC handshake by
+    // default. Chrome does not advertise Ed25519 certificate support, so an
+    // Ed25519-only test certificate fails before Hysteria authentication.
+    // Production certificates come from Certbot/Let's Encrypt (RSA or NIST
+    // ECDSA; Certbot defaults new certificates to P-256), so mirror that
+    // production shape here instead of disabling Chrome-parrot in the client.
     let status = std::process::Command::new("openssl")
         .args([
-            "req", "-x509", "-newkey", "ed25519", "-days", "1", "-nodes", "-keyout",
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-days",
+            "1",
+            "-nodes",
+            "-keyout",
         ])
         .arg(&key)
         .arg("-out")
@@ -136,6 +151,13 @@ fn build_configs(
         .as_array_mut()
         .unwrap()
         .retain(|ib| ib["tag"] == "hysteria2-in");
+
+    // Test-only diagnostics. Production deliberately logs at fatal to avoid
+    // persisting client addresses/credentials/destinations, but an interop
+    // fixture contains only throwaway loopback data. Raising this fixture to
+    // debug makes an upstream TLS/QUIC incompatibility explain itself in CI
+    // without weakening the deployed server's privacy boundary.
+    server_cfg["log"]["level"] = serde_json::json!("debug");
 
     let endpoint = compat_config::model::CompatEndpoint {
         id: "hysteria2-1".into(),
