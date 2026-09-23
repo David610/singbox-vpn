@@ -9,7 +9,7 @@ use std::path::Path;
 /// which credential) are unrelated to VPN deployment topology, and
 /// keeping them in separate files means neither can accidentally corrupt
 /// the other.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct AgentConfig {
     /// Base URL of the vpn-web Worker API, e.g. `https://example.com` —
     /// no trailing slash.
@@ -28,6 +28,40 @@ pub struct AgentConfig {
     /// Path to the `deployment.toml` this agent's `vpn-admin` invocations
     /// should use — passed as `vpn-admin --config <this>`.
     pub vpn_admin_config: String,
+    /// Base URL of sing-box's Clash API, e.g. `http://127.0.0.1:9090`.
+    ///
+    /// Absent (the default) disables traffic reporting entirely, so an
+    /// agent deployed before sing-box has `experimental.clash_api`
+    /// configured behaves exactly as it did before this feature existed
+    /// rather than logging an error every poll.
+    #[serde(default)]
+    pub clash_api_url: Option<String>,
+    /// The Clash API's `secret`, if one is configured. Never logged: it
+    /// grants read access to sing-box's runtime state, so `Debug` for this
+    /// struct redacts it below.
+    #[serde(default)]
+    pub clash_api_secret: Option<String>,
+}
+
+// Derived Debug would print clash_api_secret and agent_api_key verbatim,
+// and this struct is logged on unexpected-config errors. Implement it by
+// hand so a credential cannot reach the journal that way.
+impl std::fmt::Debug for AgentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConfig")
+            .field("worker_url", &self.worker_url)
+            .field("node_id", &self.node_id)
+            .field("agent_api_key", &"<redacted>")
+            .field("poll_interval_secs", &self.poll_interval_secs)
+            .field("vpn_admin_binary", &self.vpn_admin_binary)
+            .field("vpn_admin_config", &self.vpn_admin_config)
+            .field("clash_api_url", &self.clash_api_url)
+            .field(
+                "clash_api_secret",
+                &self.clash_api_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 fn default_poll_interval_secs() -> u64 {

@@ -1,5 +1,6 @@
 mod config;
 mod dispatch;
+mod stats;
 mod worker_client;
 
 use anyhow::{Context, Result};
@@ -30,7 +31,16 @@ async fn main() -> Result<()> {
     let client = WorkerClient::new(&cfg);
     let poll_interval = Duration::from_secs(cfg.poll_interval_secs);
 
+    if cfg.clash_api_url.is_none() {
+        tracing::info!("clash_api_url not configured — traffic reporting disabled for this node");
+    }
+
     loop {
+        // Traffic first, and never allowed to short-circuit job handling:
+        // provisioning is what customers are waiting on, and a broken or
+        // unconfigured stats endpoint must not stop users being created.
+        report_traffic_once(&cfg, &client).await;
+
         if let Err(err) = poll_once(&cfg, &client).await {
             // A poll-loop-level error (Worker unreachable, auth failure,
             // etc) is logged and the loop continues — this agent has no
@@ -42,6 +52,46 @@ async fn main() -> Result<()> {
         }
         tokio::time::sleep(poll_interval).await;
     }
+}
+
+/// Reads sing-box's traffic counters and reports them, swallowing every
+/// failure.
+///
+/// Deliberately infallible from the caller's point of view. A sample is
+/// worth far less than a provisioning job, and the counters are cumulative,
+/// so a lost report costs only resolution — the next one carries the same
+/// running total. Logging at warn rather than error keeps a node with no
+/// clash_api configured from filling the journal.
+async fn report_traffic_once(cfg: &AgentConfig, client: &WorkerClient) {
+    let Some(clash_url) = cfg.clash_api_url.as_deref() else {
+        return;
+    };
+
+    let sample = match stats::read_traffic(
+        client.http(),
+        clash_url,
+        cfg.clash_api_secret.as_deref(),
+    )
+    .await
+    {
+        Ok(sample) => sample,
+        Err(err) => {
+            tracing::warn!(error = %err, "reading sing-box traffic counters failed");
+            return;
+        }
+    };
+
+    if let Err(err) = client.report_traffic(&sample).await {
+        tracing::warn!(error = %err, "reporting traffic sample failed");
+        return;
+    }
+
+    tracing::debug!(
+        bytes_up = sample.bytes_up,
+        bytes_down = sample.bytes_down,
+        connections_open = sample.connections_open,
+        "reported traffic sample"
+    );
 }
 
 async fn poll_once(cfg: &AgentConfig, client: &WorkerClient) -> Result<()> {
