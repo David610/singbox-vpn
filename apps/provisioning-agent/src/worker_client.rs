@@ -1,6 +1,6 @@
 use crate::config::AgentConfig;
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A job claimed from the Worker's /api/agent/claim endpoint. Field names
@@ -60,6 +60,24 @@ impl WorkerClient {
             .await
             .context("parsing /api/agent/claim response body")?;
         Ok(parsed.job)
+    }
+
+    /// Reports best-effort node health. Heartbeat failure must never block
+    /// provisioning; the caller logs and continues polling jobs.
+    pub async fn heartbeat<T: Serialize + ?Sized>(&self, payload: &T) -> Result<()> {
+        let res = self
+            .http
+            .post(format!("{}/api/agent/heartbeat", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(payload)
+            .send()
+            .await
+            .context("POST /api/agent/heartbeat request failed")?;
+
+        if !res.status().is_success() {
+            bail!("POST /api/agent/heartbeat returned {}", res.status());
+        }
+        Ok(())
     }
 
     /// Reports a job as successfully completed. `result` is whatever
