@@ -66,6 +66,7 @@ impl TelemetrySampler {
         Some(((busy as f64 / total_delta as f64) * 100.0).clamp(0.0, 100.0))
     }
 
+    /// Host NIC throughput in bits per second, matching the *_bps API fields.
     fn network_bps(&mut self) -> (Option<u64>, Option<u64>) {
         let now = Instant::now();
         let Some(current) = read_net_sample() else {
@@ -81,8 +82,8 @@ impl TelemetrySampler {
         let rx = current.rx.saturating_sub(previous.rx);
         let tx = current.tx.saturating_sub(previous.tx);
         (
-            Some((rx as f64 / elapsed).round() as u64),
-            Some((tx as f64 / elapsed).round() as u64),
+            Some(((rx as f64 * 8.0) / elapsed).round() as u64),
+            Some(((tx as f64 * 8.0) / elapsed).round() as u64),
         )
     }
 }
