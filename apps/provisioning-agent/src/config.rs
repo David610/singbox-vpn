@@ -65,7 +65,7 @@ impl std::fmt::Debug for AgentConfig {
 }
 
 fn default_poll_interval_secs() -> u64 {
-    15
+    3
 }
 
 impl AgentConfig {
@@ -102,7 +102,7 @@ vpn_admin_config = "/etc/vpn/deployment.toml"
         assert_eq!(cfg.worker_url, "http://127.0.0.1:8788");
         assert_eq!(cfg.node_id, "node-1");
         assert_eq!(
-            cfg.poll_interval_secs, 15,
+            cfg.poll_interval_secs, 3,
             "default should apply when omitted"
         );
     }

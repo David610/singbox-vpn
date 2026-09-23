@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use worker_client::WorkerClient;
 
-const REPORT_MAX_ATTEMPTS: u32 = 3;
-const REPORT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+const TRAFFIC_INTERVAL: Duration = Duration::from_secs(15);
+const REPORT_BACKOFF_MAX_SECS: u64 = 30;
 
 #[derive(Parser)]
 struct Cli {
@@ -31,16 +31,21 @@ async fn main() -> Result<()> {
     tracing::info!(node_id = %cfg.node_id, worker_url = %cfg.worker_url, "provisioning agent starting");
 
     let client = WorkerClient::new(&cfg);
-    let poll_interval = Duration::from_secs(cfg.poll_interval_secs);
+    // Never permit a bad config value to become a CPU-burning busy loop or a
+    // multi-minute provisioning delay.
+    let poll_interval = Duration::from_secs(cfg.poll_interval_secs.clamp(1, 60));
     let mut telemetry = telemetry::TelemetrySampler::new();
     let mut next_heartbeat = Instant::now();
+    let mut next_traffic = Instant::now();
 
     if cfg.clash_api_url.is_none() {
         tracing::info!("clash_api_url not configured — traffic reporting disabled for this node");
     }
 
     loop {
-        if Instant::now() >= next_heartbeat {
+        let now = Instant::now();
+
+        if now >= next_heartbeat {
             let payload = telemetry.collect(&cfg);
             if let Err(err) = client.heartbeat(&payload).await {
                 tracing::warn!(error = %err, "node heartbeat failed");
@@ -48,32 +53,30 @@ async fn main() -> Result<()> {
             next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
         }
 
-        // Traffic first, and never allowed to short-circuit job handling:
-        // provisioning is what customers are waiting on, and a broken or
-        // unconfigured stats endpoint must not stop users being created.
-        report_traffic_once(&cfg, &client).await;
-
-        if let Err(err) = poll_once(&cfg, &client).await {
-            // A poll-loop-level error (Worker unreachable, auth failure,
-            // etc) is logged and the loop continues — this agent has no
-            // "give up" state, since the alternative (crashing) just
-            // means systemd restarts it into the same situation. Job-
-            // level failures are handled inside poll_once itself, via
-            // client.fail(...), and never reach this branch.
-            tracing::error!(error = %err, "poll iteration failed");
+        if now >= next_traffic {
+            report_traffic_once(&cfg, &client).await;
+            next_traffic = Instant::now() + TRAFFIC_INTERVAL;
         }
-        tokio::time::sleep(poll_interval).await;
+
+        match poll_once(&cfg, &client).await {
+            Ok(true) => {
+                // A job was processed. Immediately claim the next one instead
+                // of sleeping for the idle poll interval; this lets a single
+                // node drain a signup/renewal burst as fast as vpn-admin can
+                // safely apply the jobs.
+                continue;
+            }
+            Ok(false) => {
+                tokio::time::sleep(poll_interval).await;
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "poll iteration failed");
+                tokio::time::sleep(poll_interval).await;
+            }
+        }
     }
 }
 
-/// Reads sing-box's traffic counters and reports them, swallowing every
-/// failure.
-///
-/// Deliberately infallible from the caller's point of view. A sample is
-/// worth far less than a provisioning job, and the counters are cumulative,
-/// so a lost report costs only resolution — the next one carries the same
-/// running total. Logging at warn rather than error keeps a node with no
-/// clash_api configured from filling the journal.
 async fn report_traffic_once(cfg: &AgentConfig, client: &WorkerClient) {
     let Some(clash_url) = cfg.clash_api_url.as_deref() else {
         return;
@@ -106,91 +109,87 @@ async fn report_traffic_once(cfg: &AgentConfig, client: &WorkerClient) {
     );
 }
 
-async fn poll_once(cfg: &AgentConfig, client: &WorkerClient) -> Result<()> {
+/// Returns true when a job was claimed/processed and false when the queue was
+/// empty. The caller uses this to drain bursts without an artificial sleep.
+async fn poll_once(cfg: &AgentConfig, client: &WorkerClient) -> Result<bool> {
     let Some(job) = client.claim().await.context("claiming a job")? else {
-        return Ok(());
+        return Ok(false);
     };
     tracing::info!(job_id = job.id, job_type = %job.job_type, "claimed job");
 
     match dispatch::run_job(cfg, &job).await {
         Ok(result) => {
-            if report_complete_with_retry(client, &job, result).await {
-                tracing::info!(job_id = job.id, "job completed");
-            } else {
-                // The job itself succeeded (e.g. vpn-admin really did
-                // create the VPN user) but we could not tell the Worker
-                // after repeated retries. Do NOT propagate this as an
-                // error — that would just send poll_once's caller back
-                // around to the next claim immediately with the job
-                // stuck `claimed` forever and no operator visibility.
-                // Logging job id/type (never the result payload, which
-                // may hold the one-time subscription_url) is the best
-                // recovery signal we can leave behind.
-                tracing::error!(
-                    job_id = job.id,
-                    job_type = %job.job_type,
-                    "job succeeded but reporting completion to the Worker failed after retries; \
-                     job remains claimed in the Worker's DB and needs manual recovery"
-                );
-            }
+            // Once vpn-admin has changed state, never move on to another job
+            // until the Worker acknowledges the result. Retrying the report
+            // is safe; rerunning the side effect is not.
+            report_complete_until_ack(client, &job, result).await;
+            tracing::info!(job_id = job.id, "job completed");
         }
         Err(err) => {
             let message = err.to_string();
             tracing::error!(job_id = job.id, error = %message, "job failed after retries");
-            if !report_fail_with_retry(client, &job, &message).await {
-                tracing::error!(
-                    job_id = job.id,
-                    job_type = %job.job_type,
-                    "job failed and reporting that failure to the Worker also failed after \
-                     retries; job remains claimed in the Worker's DB and needs manual recovery"
-                );
-            }
+            report_fail_until_ack(client, &job, &message).await;
         }
     }
-    Ok(())
+
+    Ok(true)
 }
 
-/// Retries `client.complete` up to REPORT_MAX_ATTEMPTS times with a fixed
-/// backoff between attempts. Returns true if the Worker acknowledged the
-/// completion, false if every attempt failed (already logged by the
-/// caller, which must not crash the poll loop over this — see finding #1
-/// in the final review: a job that actually succeeded must never be lost
-/// just because reporting it hit a transient error).
-async fn report_complete_with_retry(
-    client: &WorkerClient,
-    job: &worker_client::Job,
-    result: Value,
-) -> bool {
-    for attempt in 1..=REPORT_MAX_ATTEMPTS {
+fn report_backoff(attempt: u32) -> Duration {
+    let shift = attempt.min(5);
+    Duration::from_secs((1_u64 << shift).min(REPORT_BACKOFF_MAX_SECS))
+}
+
+async fn report_complete_until_ack(client: &WorkerClient, job: &worker_client::Job, result: Value) {
+    let mut attempt = 1_u32;
+    loop {
         match client.complete(job.id, result.clone()).await {
-            Ok(()) => return true,
+            Ok(()) => return,
             Err(err) => {
-                tracing::warn!(job_id = job.id, attempt, error = %err, "reporting job completion failed");
-                if attempt < REPORT_MAX_ATTEMPTS {
-                    tokio::time::sleep(REPORT_RETRY_BACKOFF).await;
-                }
+                let delay = report_backoff(attempt);
+                tracing::warn!(
+                    job_id = job.id,
+                    attempt,
+                    retry_in_seconds = delay.as_secs(),
+                    error = %err,
+                    "reporting job completion failed; retrying without rerunning vpn-admin"
+                );
+                tokio::time::sleep(delay).await;
+                attempt = attempt.saturating_add(1);
             }
         }
     }
-    false
 }
 
-/// Same retry shape as report_complete_with_retry, for client.fail.
-async fn report_fail_with_retry(
-    client: &WorkerClient,
-    job: &worker_client::Job,
-    message: &str,
-) -> bool {
-    for attempt in 1..=REPORT_MAX_ATTEMPTS {
+async fn report_fail_until_ack(client: &WorkerClient, job: &worker_client::Job, message: &str) {
+    let mut attempt = 1_u32;
+    loop {
         match client.fail(job.id, message).await {
-            Ok(()) => return true,
+            Ok(()) => return,
             Err(err) => {
-                tracing::warn!(job_id = job.id, attempt, error = %err, "reporting job failure failed");
-                if attempt < REPORT_MAX_ATTEMPTS {
-                    tokio::time::sleep(REPORT_RETRY_BACKOFF).await;
-                }
+                let delay = report_backoff(attempt);
+                tracing::warn!(
+                    job_id = job.id,
+                    attempt,
+                    retry_in_seconds = delay.as_secs(),
+                    error = %err,
+                    "reporting job failure failed; retrying"
+                );
+                tokio::time::sleep(delay).await;
+                attempt = attempt.saturating_add(1);
             }
         }
     }
-    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_backoff_is_capped() {
+        assert_eq!(report_backoff(1), Duration::from_secs(2));
+        assert_eq!(report_backoff(2), Duration::from_secs(4));
+        assert_eq!(report_backoff(10), Duration::from_secs(30));
+    }
 }
