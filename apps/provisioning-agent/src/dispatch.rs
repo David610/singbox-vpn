@@ -38,6 +38,7 @@ async fn run_job_once(cfg: &AgentConfig, job: &Job) -> Result<Value> {
         "ENABLE_USER" => enable_or_disable(cfg, job, "enable").await,
         "DISABLE_USER" => enable_or_disable(cfg, job, "disable").await,
         "ROTATE_SUBSCRIPTION_TOKEN" => rotate_token(cfg, job).await,
+        "ROTATE_CREDENTIALS" => rotate_credentials(cfg, job).await,
         other => bail!("unknown job_type {other:?} (job {})", job.id),
     }
 }
@@ -151,6 +152,26 @@ async fn enable_or_disable(cfg: &AgentConfig, job: &Job, subcommand: &str) -> Re
     .context("vpn-admin command timed out after 60s")?
     .with_context(|| format!("spawning vpn-admin user {subcommand}"))?;
     require_success(&output, &format!("user {subcommand}"))?;
+    Ok(serde_json::json!({}))
+}
+
+async fn rotate_credentials(cfg: &AgentConfig, job: &Job) -> Result<Value> {
+    let vpn_user_id = payload_str(job, "vpn_user_id")?;
+
+    let output = tokio::time::timeout(
+        VPN_ADMIN_TIMEOUT,
+        vpn_admin_command(cfg)
+            .args(["user", "rotate-credentials", vpn_user_id])
+            .output(),
+    )
+    .await
+    .context("vpn-admin command timed out after 60s")?
+    .context("spawning vpn-admin user rotate-credentials")?;
+    require_success(&output, "user rotate-credentials")?;
+
+    // The subscription/provisioning token is deliberately unchanged. The
+    // same first-party URL becomes the recovery channel for fetching the new
+    // VLESS/Hysteria2 credentials after the old ones are invalidated.
     Ok(serde_json::json!({}))
 }
 
