@@ -1,6 +1,7 @@
 mod config;
 mod dispatch;
 mod stats;
+mod telemetry;
 mod worker_client;
 
 use anyhow::{Context, Result};
@@ -8,11 +9,12 @@ use clap::Parser;
 use config::AgentConfig;
 use serde_json::Value;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use worker_client::WorkerClient;
 
 const REPORT_MAX_ATTEMPTS: u32 = 3;
 const REPORT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
 struct Cli {
@@ -30,12 +32,22 @@ async fn main() -> Result<()> {
 
     let client = WorkerClient::new(&cfg);
     let poll_interval = Duration::from_secs(cfg.poll_interval_secs);
+    let mut telemetry = telemetry::TelemetrySampler::new();
+    let mut next_heartbeat = Instant::now();
 
     if cfg.clash_api_url.is_none() {
         tracing::info!("clash_api_url not configured — traffic reporting disabled for this node");
     }
 
     loop {
+        if Instant::now() >= next_heartbeat {
+            let payload = telemetry.collect(&cfg);
+            if let Err(err) = client.heartbeat(&payload).await {
+                tracing::warn!(error = %err, "node heartbeat failed");
+            }
+            next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
+        }
+
         // Traffic first, and never allowed to short-circuit job handling:
         // provisioning is what customers are waiting on, and a broken or
         // unconfigured stats endpoint must not stop users being created.
