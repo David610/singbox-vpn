@@ -140,11 +140,7 @@ fn report_backoff(attempt: u32) -> Duration {
     Duration::from_secs((1_u64 << shift).min(REPORT_BACKOFF_MAX_SECS))
 }
 
-async fn report_complete_until_ack(
-    client: &WorkerClient,
-    job: &worker_client::Job,
-    result: Value,
-) {
+async fn report_complete_until_ack(client: &WorkerClient, job: &worker_client::Job, result: Value) {
     let mut attempt = 1_u32;
     loop {
         match client.complete(job.id, result.clone()).await {
@@ -165,11 +161,7 @@ async fn report_complete_until_ack(
     }
 }
 
-async fn report_fail_until_ack(
-    client: &WorkerClient,
-    job: &worker_client::Job,
-    message: &str,
-) {
+async fn report_fail_until_ack(client: &WorkerClient, job: &worker_client::Job, message: &str) {
     let mut attempt = 1_u32;
     loop {
         match client.fail(job.id, message).await {
