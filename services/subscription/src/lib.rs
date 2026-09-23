@@ -133,15 +133,9 @@ impl RateLimiter {
 /// enumerable "which user does this token belong to" side channel
 /// (spec §26: no user enumeration).
 fn find_user_by_token(users: &[CompatUser], token: &str, now_unix: i64) -> Option<CompatUser> {
-    // Hash the presented 160-bit token exactly once, then constant-time
-    // compare that digest against every stored digest. The previous loop
-    // recomputed the identical SHA-256 once per user, making lookup CPU grow
-    // needlessly with account count while providing no extra security.
-    let presented_hash = credentials::hash_token(token);
     let mut found = None;
     for u in users {
-        let matches =
-            credentials::token_hash_eq(&presented_hash, &u.subscription_token_hash_hex);
+        let matches = credentials::verify_token(token, &u.subscription_token_hash_hex);
         if matches && u.is_active(now_unix) {
             found = Some(u.clone());
         }
