@@ -141,7 +141,8 @@ pub fn socks5_http_get_is_200(socks_port: u16, host: &str, port: u16) -> bool {
 ///   * negotiate TLS **1.3** (`hs.hello.supportedVersion != VersionTLS13` aborts);
 ///   * offer an **X25519** (or X25519MLKEM768) key share — OpenSSL's default;
 ///   * emit the middlebox-compat **ChangeCipherSpec of exactly 6 bytes** —
-///     OpenSSL does this by default;
+///     OpenSSL does this by default.
+///
 /// The old 1.13.x pin additionally required every TLS record to stay under
 /// an 8192-byte REALITY budget. The 1.14.1 interop suite deliberately keeps
 /// a second, much larger certificate fixture to prove that limitation does
