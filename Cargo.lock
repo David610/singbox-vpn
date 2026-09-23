@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "admin"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -320,7 +320,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "common"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "proptest",
  "serde",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "compat-config"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "base64",
  "common",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "provisioning-agent"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "provisioning-contract"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1663,7 +1663,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "subscription"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "axum",
