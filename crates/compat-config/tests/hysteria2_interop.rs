@@ -45,9 +45,16 @@ fn generate_self_signed_cert(
     // legacy CN with no SAN ("x509: certificate relies on legacy Common
     // Name field, use SANs instead") — a bare `-subj "/CN=..."` alone
     // produces exactly that rejected shape.
+    // sing-box 1.14's Hysteria2 client imitates Chrome's QUIC handshake by
+    // default. Chrome does not advertise Ed25519 certificate support, so an
+    // Ed25519-only test certificate fails before Hysteria authentication.
+    // Production certificates come from Certbot/Let's Encrypt (RSA or NIST
+    // ECDSA; Certbot defaults new certificates to P-256), so mirror that
+    // production shape here instead of disabling Chrome-parrot in the client.
     let status = std::process::Command::new("openssl")
         .args([
-            "req", "-x509", "-newkey", "ed25519", "-days", "1", "-nodes", "-keyout",
+            "req", "-x509", "-newkey", "ec", "-pkeyopt",
+            "ec_paramgen_curve:prime256v1", "-days", "1", "-nodes", "-keyout",
         ])
         .arg(&key)
         .arg("-out")
