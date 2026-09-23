@@ -1,5 +1,6 @@
 mod config;
 mod dispatch;
+mod telemetry;
 mod worker_client;
 
 use anyhow::{Context, Result};
@@ -7,11 +8,12 @@ use clap::Parser;
 use config::AgentConfig;
 use serde_json::Value;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use worker_client::WorkerClient;
 
 const REPORT_MAX_ATTEMPTS: u32 = 3;
 const REPORT_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
 struct Cli {
@@ -29,8 +31,18 @@ async fn main() -> Result<()> {
 
     let client = WorkerClient::new(&cfg);
     let poll_interval = Duration::from_secs(cfg.poll_interval_secs);
+    let mut telemetry = telemetry::TelemetrySampler::new();
+    let mut next_heartbeat = Instant::now();
 
     loop {
+        if Instant::now() >= next_heartbeat {
+            let payload = telemetry.collect(&cfg);
+            if let Err(err) = client.heartbeat(&payload).await {
+                tracing::warn!(error = %err, "node heartbeat failed");
+            }
+            next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
+        }
+
         if let Err(err) = poll_once(&cfg, &client).await {
             // A poll-loop-level error (Worker unreachable, auth failure,
             // etc) is logged and the loop continues — this agent has no
