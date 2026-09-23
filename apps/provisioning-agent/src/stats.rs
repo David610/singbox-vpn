@@ -32,7 +32,7 @@ struct ConnectionsResponse {
 ///
 /// These are per-NODE totals. sing-box's per-user statistics live behind its
 /// v2ray_api, which official builds do not compile in
-/// (release/DEFAULT_BUILD_TAGS for v1.13.19 lists with_clash_api but not
+/// (the official v1.14.1 release includes with_clash_api but not
 /// with_v2ray_api, and the binary rejects the config outright). The Clash
 /// API that IS available carries no user attribution — a connection from a
 /// named VLESS user reports only source/destination/network — so per-user
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn parses_a_real_clash_api_payload() {
-        // Captured verbatim from sing-box 1.13.19's /connections.
+        // Captured from sing-box's official Clash API /connections response.
         let parsed =
             parse(r#"{"connections":[],"downloadTotal":5345,"memory":2899968,"uploadTotal":841}"#)
                 .unwrap();
