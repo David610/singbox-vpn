@@ -109,4 +109,41 @@ impl WorkerClient {
         }
         Ok(())
     }
+
+    /// Reports one traffic sample.
+    ///
+    /// Counters are sent as sing-box reports them — cumulative since its
+    /// process started — and the Worker differences them against the
+    /// previous sample. A failed report is therefore safe to drop rather
+    /// than retry: the next one carries the same running total, so nothing
+    /// is double-counted and nothing is lost but resolution.
+    pub async fn report_traffic(&self, sample: &crate::stats::TrafficSample) -> Result<()> {
+        let res = self
+            .http
+            .post(format!("{}/api/agent/traffic", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&serde_json::json!({
+                "bytes_up": sample.bytes_up,
+                "bytes_down": sample.bytes_down,
+                "connections_open": sample.connections_open,
+                "sampled_at": time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .context("formatting sampled_at")?,
+            }))
+            .send()
+            .await
+            .context("POST /api/agent/traffic request failed")?;
+
+        if !res.status().is_success() {
+            bail!("POST /api/agent/traffic returned {}", res.status());
+        }
+        Ok(())
+    }
+
+    /// Exposes the shared HTTP client so the traffic poller reuses this
+    /// agent's one connection pool and timeout policy rather than building
+    /// a second client with different behaviour.
+    pub fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
 }
