@@ -35,9 +35,11 @@ async fn run_job_once(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     match job.job_type.as_str() {
         "CREATE_USER" => create_user(cfg, job).await,
         "SET_EXPIRY" => set_expiry(cfg, job).await,
+        "CLEAR_EXPIRY" => clear_expiry(cfg, job).await,
         "ENABLE_USER" => enable_or_disable(cfg, job, "enable").await,
         "DISABLE_USER" => enable_or_disable(cfg, job, "disable").await,
         "ROTATE_SUBSCRIPTION_TOKEN" => rotate_token(cfg, job).await,
+        "ROTATE_CREDENTIALS" => rotate_credentials(cfg, job).await,
         other => bail!("unknown job_type {other:?} (job {})", job.id),
     }
 }
@@ -62,33 +64,46 @@ fn payload_str<'a>(job: &'a Job, key: &str) -> Result<&'a str> {
 /// as written by the Stripe webhook's `new Date(...).toISOString()`);
 /// vpn-admin's --expires-at takes unix seconds.
 fn payload_expires_at_unix(job: &Job) -> Result<i64> {
-    let raw = payload_str(job, "expires_at")?;
+    payload_optional_expires_at_unix(job)?
+        .ok_or_else(|| anyhow!("job {} payload missing string field \"expires_at\"", job.id))
+}
+
+fn payload_optional_expires_at_unix(job: &Job) -> Result<Option<i64>> {
+    let Some(value) = job.payload.get("expires_at") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let raw = value.as_str().ok_or_else(|| {
+        anyhow!(
+            "job {} payload field \"expires_at\" is not a string",
+            job.id
+        )
+    })?;
     let parsed = OffsetDateTime::parse(raw, &Rfc3339)
         .with_context(|| format!("parsing expires_at {raw:?} as RFC3339 (job {})", job.id))?;
-    Ok(parsed.unix_timestamp())
+    Ok(Some(parsed.unix_timestamp()))
 }
 
 async fn create_user(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     let user_id = payload_str(job, "user_id")?;
-    let expires_at = payload_expires_at_unix(job)?;
+    let expires_at = payload_optional_expires_at_unix(job)?;
 
-    let output = tokio::time::timeout(
-        VPN_ADMIN_TIMEOUT,
-        vpn_admin_command(cfg)
-            .args([
-                "user",
-                "create",
-                "--name",
-                user_id,
-                "--expires-at",
-                &expires_at.to_string(),
-                "--json",
-            ])
-            .output(),
-    )
-    .await
-    .context("vpn-admin command timed out after 60s")?
-    .context("spawning vpn-admin user create")?;
+    // A paid/trial entitlement supplies an expiry. An indefinite support
+    // grant intentionally omits it, which vpn-admin represents as a user
+    // with no expiry rather than by inventing a far-future timestamp.
+    let mut command = vpn_admin_command(cfg);
+    command.args(["user", "create", "--name", user_id]);
+    if let Some(expires_at) = expires_at {
+        command.arg("--expires-at").arg(expires_at.to_string());
+    }
+    command.arg("--json");
+
+    let output = tokio::time::timeout(VPN_ADMIN_TIMEOUT, command.output())
+        .await
+        .context("vpn-admin command timed out after 60s")?
+        .context("spawning vpn-admin user create")?;
     let parsed = parse_json_output(&output, "user create")?;
 
     let vpn_user_id = parsed
@@ -135,6 +150,38 @@ async fn set_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     .context("vpn-admin command timed out after 60s")?
     .context("spawning vpn-admin user set-expiry")?;
     require_success(&output, "user set-expiry")?;
+    Ok(serde_json::json!({}))
+}
+
+async fn clear_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
+    let vpn_user_id = payload_str(job, "vpn_user_id")?;
+
+    let output = tokio::time::timeout(
+        VPN_ADMIN_TIMEOUT,
+        vpn_admin_command(cfg)
+            .args(["user", "clear-expiry", vpn_user_id])
+            .output(),
+    )
+    .await
+    .context("vpn-admin command timed out after 60s")?
+    .context("spawning vpn-admin user clear-expiry")?;
+    require_success(&output, "user clear-expiry")?;
+    Ok(serde_json::json!({}))
+}
+
+async fn rotate_credentials(cfg: &AgentConfig, job: &Job) -> Result<Value> {
+    let vpn_user_id = payload_str(job, "vpn_user_id")?;
+
+    let output = tokio::time::timeout(
+        VPN_ADMIN_TIMEOUT,
+        vpn_admin_command(cfg)
+            .args(["user", "rotate-credentials", vpn_user_id])
+            .output(),
+    )
+    .await
+    .context("vpn-admin command timed out after 60s")?
+    .context("spawning vpn-admin user rotate-credentials")?;
+    require_success(&output, "user rotate-credentials")?;
     Ok(serde_json::json!({}))
 }
 
@@ -247,6 +294,21 @@ mod tests {
         );
         // 2027-01-01T00:00:00Z is a fixed, known unix timestamp.
         assert_eq!(payload_expires_at_unix(&j).unwrap(), 1_798_761_600);
+    }
+
+    #[test]
+    fn optional_expiry_allows_an_indefinite_create_user() {
+        let j = job("CREATE_USER", serde_json::json!({"user_id": "user-1"}));
+        assert_eq!(payload_optional_expires_at_unix(&j).unwrap(), None);
+    }
+
+    #[test]
+    fn optional_expiry_still_rejects_a_non_string_value() {
+        let j = job(
+            "CREATE_USER",
+            serde_json::json!({"user_id": "user-1", "expires_at": 123}),
+        );
+        assert!(payload_optional_expires_at_unix(&j).is_err());
     }
 
     #[test]
