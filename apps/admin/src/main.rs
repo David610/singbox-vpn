@@ -3184,6 +3184,9 @@ fn cmd_user_rotate_token(cfg: &DeploymentConfig, id: &str, qr: bool, json: bool)
         let out = serde_json::json!({
             "id": id,
             "subscription_url": url,
+            // Added to match the create --json shape so the provisioning
+            // agent can forward the correct first-party URL to vpn-web.
+            "provisioning_url": provisioning_url(cfg, &token),
         });
         return machine_stdout.write_document(&out);
     }

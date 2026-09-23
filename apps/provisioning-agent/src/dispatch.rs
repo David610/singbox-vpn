@@ -99,10 +99,19 @@ async fn create_user(cfg: &AgentConfig, job: &Job) -> Result<Value> {
         .get("subscription_url")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("user create --json output missing subscription_url"))?;
+    // provisioning_url is the first-party /v1/provision/<token> endpoint
+    // used by the Tamara client. It is present in the --json output
+    // alongside subscription_url; include it in the completion payload so
+    // vpn-web can store and serve the correct URL to each client type.
+    let provisioning_url = parsed
+        .get("provisioning_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("user create --json output missing provisioning_url"))?;
 
     Ok(serde_json::json!({
         "vpn_user_id": vpn_user_id,
         "subscription_url": subscription_url,
+        "provisioning_url": provisioning_url,
     }))
 }
 
@@ -163,8 +172,15 @@ async fn rotate_token(cfg: &AgentConfig, job: &Job) -> Result<Value> {
         .get("subscription_url")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("user rotate-token --json output missing subscription_url"))?;
+    let provisioning_url = parsed
+        .get("provisioning_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("user rotate-token --json output missing provisioning_url"))?;
 
-    Ok(serde_json::json!({ "subscription_url": subscription_url }))
+    Ok(serde_json::json!({
+        "subscription_url": subscription_url,
+        "provisioning_url": provisioning_url,
+    }))
 }
 
 // Neither vpn-admin's stdout nor stderr is included verbatim in error
