@@ -122,8 +122,9 @@ mod tests {
 
     #[test]
     fn handles_counters_beyond_u32() {
-        let parsed = parse(r#"{"downloadTotal":9007199254740993,"uploadTotal":5000000000,"memory":0}"#)
-            .unwrap();
+        let parsed =
+            parse(r#"{"downloadTotal":9007199254740993,"uploadTotal":5000000000,"memory":0}"#)
+                .unwrap();
         assert_eq!(parsed.download_total, 9_007_199_254_740_993);
         assert_eq!(parsed.upload_total, 5_000_000_000);
     }
@@ -266,7 +267,9 @@ mod tests {
             .expect("sing-box never became readable with the correct secret");
 
         assert!(
-            read_traffic(&http, base, Some("wrong-secret")).await.is_err(),
+            read_traffic(&http, base, Some("wrong-secret"))
+                .await
+                .is_err(),
             "a wrong Clash API secret must fail rather than silently reporting \
              zeroes, which the Worker would record as a counter reset"
         );

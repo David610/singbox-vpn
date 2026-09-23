@@ -32,9 +32,7 @@ async fn main() -> Result<()> {
     let poll_interval = Duration::from_secs(cfg.poll_interval_secs);
 
     if cfg.clash_api_url.is_none() {
-        tracing::info!(
-            "clash_api_url not configured — traffic reporting disabled for this node"
-        );
+        tracing::info!("clash_api_url not configured — traffic reporting disabled for this node");
     }
 
     loop {
@@ -69,8 +67,12 @@ async fn report_traffic_once(cfg: &AgentConfig, client: &WorkerClient) {
         return;
     };
 
-    let sample = match stats::read_traffic(client.http(), clash_url, cfg.clash_api_secret.as_deref())
-        .await
+    let sample = match stats::read_traffic(
+        client.http(),
+        clash_url,
+        cfg.clash_api_secret.as_deref(),
+    )
+    .await
     {
         Ok(sample) => sample,
         Err(err) => {
