@@ -86,22 +86,17 @@ pub fn hash_token(token: &str) -> String {
     hex::encode(digest)
 }
 
-/// Constant-time comparison between two already-computed token hashes.
-pub fn token_hash_eq(computed_hash_hex: &str, stored_hash_hex: &str) -> bool {
-    let computed_bytes = computed_hash_hex.as_bytes();
-    let stored_bytes = stored_hash_hex.as_bytes();
-    if computed_bytes.len() != stored_bytes.len() {
-        return false;
-    }
-    computed_bytes.ct_eq(stored_bytes).into()
-}
-
 /// Constant-time comparison between a presented token and a stored hash,
 /// so subscription lookups cannot be timed to leak information about
 /// which prefix bytes matched.
 pub fn verify_token(token: &str, stored_hash_hex: &str) -> bool {
     let computed = hash_token(token);
-    token_hash_eq(&computed, stored_hash_hex)
+    let computed_bytes = computed.as_bytes();
+    let stored_bytes = stored_hash_hex.as_bytes();
+    if computed_bytes.len() != stored_bytes.len() {
+        return false;
+    }
+    computed_bytes.ct_eq(stored_bytes).into()
 }
 
 /// Derive the REALITY/X25519 public key from the private key encoding used
