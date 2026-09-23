@@ -75,9 +75,12 @@ fn payload_optional_expires_at_unix(job: &Job) -> Result<Option<i64>> {
     if value.is_null() {
         return Ok(None);
     }
-    let raw = value
-        .as_str()
-        .ok_or_else(|| anyhow!("job {} payload field \"expires_at\" is not a string", job.id))?;
+    let raw = value.as_str().ok_or_else(|| {
+        anyhow!(
+            "job {} payload field \"expires_at\" is not a string",
+            job.id
+        )
+    })?;
     let parsed = OffsetDateTime::parse(raw, &Rfc3339)
         .with_context(|| format!("parsing expires_at {raw:?} as RFC3339 (job {})", job.id))?;
     Ok(Some(parsed.unix_timestamp()))
@@ -97,13 +100,10 @@ async fn create_user(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     }
     command.arg("--json");
 
-    let output = tokio::time::timeout(
-        VPN_ADMIN_TIMEOUT,
-        command.output(),
-    )
-    .await
-    .context("vpn-admin command timed out after 60s")?
-    .context("spawning vpn-admin user create")?;
+    let output = tokio::time::timeout(VPN_ADMIN_TIMEOUT, command.output())
+        .await
+        .context("vpn-admin command timed out after 60s")?
+        .context("spawning vpn-admin user create")?;
     let parsed = parse_json_output(&output, "user create")?;
 
     let vpn_user_id = parsed
