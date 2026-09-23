@@ -137,6 +137,13 @@ fn build_configs(
         .unwrap()
         .retain(|ib| ib["tag"] == "hysteria2-in");
 
+    // Test-only diagnostics. Production deliberately logs at fatal to avoid
+    // persisting client addresses/credentials/destinations, but an interop
+    // fixture contains only throwaway loopback data. Raising this fixture to
+    // debug makes an upstream TLS/QUIC incompatibility explain itself in CI
+    // without weakening the deployed server's privacy boundary.
+    server_cfg["log"]["level"] = serde_json::json!("debug");
+
     let endpoint = compat_config::model::CompatEndpoint {
         id: "hysteria2-1".into(),
         transport: compat_config::model::CompatTransport::Hysteria2,
