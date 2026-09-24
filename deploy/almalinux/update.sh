@@ -121,6 +121,25 @@ restore_deployment_toml_snapshot() {
 }
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/binary-version-check.sh"
+
+# Refreshes the fleet provisioning agent binary, when the target release
+# ships one, AFTER the update has committed. Deliberately outside the
+# rollback transaction: the agent does not affect sing-box/subscription
+# state, so a failed agent swap must never undo a good VPN update (it only
+# warns). The running agent keeps its old inode until the non-blocking
+# try-restart below, which is a no-op on hosts not running the agent.
+refresh_provisioning_agent_binary() {
+  local src="$1"
+  [ -x "$src" ] || return 0
+  if install -m 0755 "$src" "$BIN_DIR/vpn-provisioning-agent.update-new" \
+      && mv -f "$BIN_DIR/vpn-provisioning-agent.update-new" "$BIN_DIR/vpn-provisioning-agent"; then
+    systemctl --no-block try-restart vpn-provisioning-agent.service >/dev/null 2>&1 || true
+    log "provisioning agent binary refreshed."
+  else
+    rm -f "$BIN_DIR/vpn-provisioning-agent.update-new"
+    warn "provisioning agent binary refresh failed; VPN update itself succeeded."
+  fi
+}
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/test-isolation.sh"
 
@@ -361,7 +380,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   # --locked matches every CI build/test job: without it, this could
   # silently resolve a different dependency set than the one committed
   # Cargo.lock records and cargo audit gates in CI.
-  ( cd "$REPO_ROOT" && cargo build --release --locked -p admin -p subscription )
+  ( cd "$REPO_ROOT" && cargo build --release --locked -p admin -p subscription -p provisioning-agent )
 
   install -d -m 0700 -o root -g root "$BACKUP_ROOT"
   install -d -m 0700 -o root -g root "$BACKUP_DIR"
@@ -534,6 +553,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   committed=1
   trap - ERR INT TERM EXIT
   rm -rf "$BACKUP_DIR"
+  refresh_provisioning_agent_binary "$REPO_ROOT/target/release/vpn-provisioning-agent"
   perf_tuning_apply || warn "kernel network tuning re-apply failed; update itself still succeeded."
   log "dev-rebuild update complete."
   exit 0
@@ -691,6 +711,9 @@ stage_prebuilt_binaries() {
   [ -d "$extracted" ] || die "release asset $asset did not contain the expected singbox-vpn-${TARGET_RUST_TARGET}/ directory — packaging bug, not a transient failure. Nothing live has been changed."
   install -m 0755 "$extracted/vpn-admin" "$STAGED_BIN_DIR/vpn-admin"
   install -m 0755 "$extracted/subscription" "$STAGED_BIN_DIR/vpn-subscription-svc"
+  if [ -f "$extracted/vpn-provisioning-agent" ]; then
+    install -m 0755 "$extracted/vpn-provisioning-agent" "$STAGED_BIN_DIR/vpn-provisioning-agent"
+  fi
   log "staged prebuilt singbox-vpn $TARGET_VERSION binaries ($TARGET_RUST_TARGET) — no Rust compiler needed."
   return 0
 }
@@ -708,6 +731,9 @@ fi
 staged_version_context="for $TARGET_VERSION. Nothing live has been changed."
 check_binary_version "$STAGED_BIN_DIR/vpn-admin" "$expected_package_version" "vpn-admin" "$staged_version_context"
 check_binary_version "$STAGED_BIN_DIR/vpn-subscription-svc" "$expected_package_version" "subscription" "$staged_version_context"
+if [ -f "$STAGED_BIN_DIR/vpn-provisioning-agent" ]; then
+  check_binary_version "$STAGED_BIN_DIR/vpn-provisioning-agent" "$expected_package_version" "vpn-provisioning-agent" "$staged_version_context"
+fi
 
 # ---- STAGE: sing-box, only if the target release pins a different
 # version than what's currently installed. Same checksum-verification
@@ -1085,6 +1111,8 @@ mv -f "$INSTALL_STATE_MANIFEST.tmp" "$INSTALL_STATE_MANIFEST"
 
 committed=1
 trap - ERR INT TERM EXIT
+
+refresh_provisioning_agent_binary "$STAGED_BIN_DIR/vpn-provisioning-agent"
 
 # Transaction-only backups exist only to restore the previous release if
 # this update failed — remove them now that it did not (checkpoint-3
