@@ -216,10 +216,10 @@ main() {
     cp -a "$HOST_CARGO_REGISTRY_DIR" "$RELEASE_CARGO_HOME/registry"
   fi
 
-  echo "== compiling release binaries (vpn-admin, subscription) =="
+  echo "== compiling release binaries (vpn-admin, subscription, vpn-provisioning-agent) =="
   run_in_container '
     set -euo pipefail
-    cargo build --locked --release --target x86_64-unknown-linux-gnu -p admin -p subscription
+    cargo build --locked --release --target x86_64-unknown-linux-gnu -p admin -p subscription -p provisioning-agent
   '
 }
 

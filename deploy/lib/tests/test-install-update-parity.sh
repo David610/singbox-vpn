@@ -63,10 +63,10 @@ fi
 # comparison on purpose, not an oversight.
 install_helpers="$(grep -oE '\$BIN_DIR/[A-Za-z0-9_.-]+"' "$INSTALL_SH" \
   | sed -E 's#\$BIN_DIR/##; s/"$//' \
-  | grep -vE '^(vpn-admin|vpn|vpn-subscription-svc|sing-box|sing-box\.LICENSE)$' | sort -u)"
+  | grep -vE '^(vpn-admin|vpn|vpn-subscription-svc|vpn-provisioning-agent|sing-box|sing-box\.LICENSE)$' | sort -u)"
 update_helpers="$(grep -oE '"\$BIN_DIR/[A-Za-z0-9_.-]+\.update-new"' "$UPDATE_SH" \
   | sed -E 's#"\$BIN_DIR/##; s/\.update-new"$//' \
-  | grep -vE '^(vpn-admin|vpn|vpn-subscription-svc)$' | sort -u)"
+  | grep -vE '^(vpn-admin|vpn|vpn-subscription-svc|vpn-provisioning-agent)$' | sort -u)"
 assert_eq "helper scripts installed by install.sh match helper scripts synced by update.sh" \
   "$install_helpers" "$update_helpers"
 

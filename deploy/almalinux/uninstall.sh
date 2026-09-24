@@ -205,6 +205,18 @@ restore_or_remove_fixed_path /etc/systemd/system/vpn-service-watchdog.timer WATC
 systemctl daemon-reload
 systemctl reset-failed sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service vpn-service-watchdog.timer vpn-service-watchdog.service >/dev/null 2>&1 || true
 
+# The provisioning agent binary is removed only if the installer installed
+# it and nothing occupied the path before (see install.sh's
+# install_provisioning_agent_binary). Its unit belongs to the fleet
+# bootstrap, but the service cannot run without the binary, so stop it.
+if [ "$(ownership_get AGENT_BINARY_INSTALLED "0")" = "1" ] && [ "$(ownership_get AGENT_BINARY_PRE_EXISTED "0")" != "1" ]; then
+  systemctl disable --now vpn-provisioning-agent.service >/dev/null 2>&1 || true
+  if [ -e /usr/local/bin/vpn-provisioning-agent ]; then
+    rm -f /usr/local/bin/vpn-provisioning-agent
+    note_removed
+  fi
+fi
+
 log "removing installed binaries..."
 for f in vpn-admin vpn vpn-subscription-svc vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
   if [ -e "/usr/local/bin/$f" ]; then

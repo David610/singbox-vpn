@@ -16,7 +16,10 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const TRAFFIC_INTERVAL: Duration = Duration::from_secs(15);
 const REPORT_BACKOFF_MAX_SECS: u64 = 30;
 
+// `version` makes `--version` print "vpn-provisioning-agent <x.y.z>", the
+// shape deploy/lib/binary-version-check.sh verifies for every shipped binary.
 #[derive(Parser)]
+#[command(name = "vpn-provisioning-agent", version)]
 struct Cli {
     #[arg(long, default_value = "/etc/vpn/provisioning-agent.toml")]
     config: PathBuf,
