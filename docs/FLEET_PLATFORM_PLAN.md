@@ -191,5 +191,29 @@ phases unreviewed.
 - [x] PR #19 merged to `vpn-web@main`
 - [x] This plan (`docs/FLEET_PLATFORM_PLAN.md`)
 - [x] ADR-0010 (fleet platform foundations)
-- [ ] Phase 1 domain/schema foundation — not started; requires its own
-      brainstorming/planning pass before migrations are written.
+
+## 6. Phase 1 checklist (domain/schema foundation)
+
+- [x] `locations`, `devices`, `connection_profiles`,
+      `device_profile_assignments`, `allowed_paths`,
+      `fleet_operations`/`operation_steps` added
+      (`vpn-web@20260924000000_fleet_foundations.sql`)
+- [x] `nodes` extended with lifecycle/role/provider/failure-domain and
+      desired/observed revision columns
+- [x] `vpn_accounts.device_id` added (additive, nullable) and every
+      existing row backfilled to a "Legacy device"; no credential rotated
+- [x] `scripts/test-fleet-foundations-migration.sh` added and wired into
+      CI unconditionally
+- [x] Four review rounds found and fixed real bugs before merge: a
+      device-backfill mis-pairing bug in the original set-based backfill,
+      a `lifecycle_state` column default that would have silently
+      defaulted every future node insert to READY instead of
+      PROVISIONING, missing DB-level constraints on `connection_profiles`
+      (exit-location-required, distinct-hops), an `ON DELETE` gap that
+      would have broken the live `accept_member_invite` RPC path, a
+      `register-node.mjs` breakage plus a TOCTOU race introduced while
+      fixing it, and a missing same-account invariant on
+      `device_profile_assignments` (closed with a trigger mirroring
+      `enforce_member_invite_identity`)
+- [x] CI green, merged to `vpn-web@main` (PR #20)
+- [ ] Phase 2 (fleet registry/admin) — not started
