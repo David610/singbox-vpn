@@ -201,6 +201,47 @@ enum Commands {
     /// this deployment was set up some other way, run its own
     /// `update.sh --repair` directly instead.
     Repair,
+    /// Phase 6 (fleet platform): apply a declarative revision fetched by
+    /// the provisioning-agent from `GET /api/agent/revision/:revision`
+    /// (vpn-web). `--input` is a local JSON file the agent already wrote
+    /// the fetched `config` document to — this binary never speaks HTTP
+    /// itself (see `docs/FLEET_PLATFORM_PLAN.md` §Phase 6). The document's
+    /// shape is exactly what `store::parse_users_bytes` already accepts
+    /// for `users.json` (the versioned `{"schema_version":1,"users":[...]}`
+    /// envelope, or a bare `[...]` array) — reusing that existing
+    /// (de)serialization rather than inventing a new schema, since a
+    /// revision is a full desired-state snapshot of this node's user
+    /// store. Goes through the exact same `apply_users_and_save` path
+    /// every other user mutation uses: fail-closed, rolls back to the
+    /// previous live config (and leaves `users.json` untouched) if the
+    /// candidate cannot be rendered, validated, or reloaded live. Only on
+    /// success is the revision number stamped locally so the next
+    /// heartbeat can report `observed_revision`.
+    ApplyRevision {
+        /// The revision number being applied (vpn-web's `nodes` table
+        /// tracks this per-node as `desired_revision`/`observed_revision`).
+        #[arg(long)]
+        revision: u64,
+        /// Path to the JSON document fetched from
+        /// `GET /api/agent/revision/:revision`.
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Print the most recently successfully applied revision (Phase 6),
+    /// or nothing if this node has never applied one — e.g. a node
+    /// running an agent build from before this feature existed, or one
+    /// that has only ever been managed through the legacy per-user job
+    /// types. Read by the provisioning-agent before each heartbeat so it
+    /// can report `observed_revision`; omitting the field entirely (never
+    /// coercing to 0) is what `POST /api/agent/heartbeat` expects for
+    /// "unknown", so this prints nothing (not `0`) when no revision has
+    /// ever been applied.
+    RevisionStatus {
+        /// Machine-readable `{"revision": N}` (or `{"revision": null}`)
+        /// instead of the human-readable line.
+        #[arg(long)]
+        json: bool,
+    },
     /// Enable (first run) or rotate (subsequent runs) the shared Hysteria2
     /// salamander obfuscation password. Obfuscation hides the Hysteria2/
     /// QUIC handshake's protocol signature from DPI/traffic classifiers —
@@ -531,6 +572,7 @@ fn command_mutates_state(cmd: &Commands) -> bool {
             | Commands::User(UserCommands::Subscription { .. })
             | Commands::Config(ConfigCommands::Validate)
             | Commands::Repair
+            | Commands::RevisionStatus { .. }
     )
 }
 
@@ -578,6 +620,8 @@ fn main() -> Result<()> {
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::Repair => cmd_repair(),
+        Commands::ApplyRevision { revision, input } => cmd_apply_revision(&cfg, revision, &input),
+        Commands::RevisionStatus { json } => cmd_revision_status(&cfg, json),
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
         Commands::Config(ConfigCommands::Validate) => cmd_config_validate(&cfg, &cli.config),
         Commands::Config(ConfigCommands::Migrate) => cmd_config_migrate(&cfg, &cli.config),
@@ -3469,6 +3513,116 @@ fn apply_users_and_save(
         );
     }
     Ok(went_live)
+}
+
+/// Phase 6 (fleet platform): where the most recently successfully
+/// applied revision number is stamped, next to `users.json` (same
+/// directory/lifecycle as `applied_config_stamp_path`, but this tracks
+/// the vpn-web revision number, not a content fingerprint — the two are
+/// independent and both matter: the fingerprint stamp answers "does the
+/// live config match what render() would produce right now", this one
+/// answers "which vpn-web revision does the current users.json
+/// correspond to").
+fn applied_revision_stamp_path(cfg: &DeploymentConfig) -> PathBuf {
+    cfg.users_file().with_file_name("applied_revision.json")
+}
+
+/// Returns `None` both when no revision has ever been applied (fresh
+/// node, or a node only ever driven by the legacy per-user job types)
+/// and when the stamp is present but unreadable/corrupt — either way,
+/// "unknown" is the honest answer, and the heartbeat caller's job is to
+/// omit `observed_revision` rather than report a wrong number.
+fn read_applied_revision(cfg: &DeploymentConfig) -> Option<u64> {
+    let text = std::fs::read_to_string(applied_revision_stamp_path(cfg)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("revision")?.as_u64()
+}
+
+fn commit_applied_revision_stamp(cfg: &DeploymentConfig, revision: u64) -> Result<()> {
+    let stamp = applied_revision_stamp_path(cfg);
+    let tmp = stamp.with_extension(format!("tmp.{}", std::process::id()));
+    let body = serde_json::to_string(&json!({ "revision": revision }))?;
+    write_secret_file(&tmp, &body)?;
+    std::fs::rename(&tmp, &stamp)?;
+    if let Some(parent) = stamp.parent() {
+        fsync_dir(parent);
+    }
+    Ok(())
+}
+
+/// Phase 6: apply a declarative revision. Reuses `apply_users_and_save`
+/// (and, inside it, `render_and_apply_singbox_config`) completely
+/// unchanged — a revision is just a full candidate user-store snapshot,
+/// exactly the same shape `user create`/`rotate-*`/`restore` already
+/// push through that pipeline. That pipeline is already fail-closed
+/// (fingerprint short-circuit, `sing-box check` validation, atomic
+/// rename, reload+verify, rollback-from-backup on failure), so a bad or
+/// unreloadable revision leaves this node on its previous config and
+/// previous `users.json` — this function adds nothing beyond stamping
+/// the revision number on success.
+fn cmd_apply_revision(
+    cfg: &DeploymentConfig,
+    revision: u64,
+    input: &std::path::Path,
+) -> Result<()> {
+    // Coalescing/staleness guard: vpn-web's queue never lets more than one
+    // pending APPLY_NODE_REVISION job exist per node, but a retried/
+    // reordered delivery of an OLDER revision arriving after a NEWER one
+    // was already applied is still possible (e.g. the agent's own retry
+    // loop re-running a job whose /complete report was lost, racing a
+    // fresher one claimed afterward). The fingerprint short-circuit inside
+    // render_and_apply_singbox_config only catches a revision whose
+    // rendered content happens to be byte-identical to what's already
+    // live — it does NOT know about revision ORDERING, so a stale
+    // revision with genuinely different (older) content would otherwise
+    // be applied over a newer one. Guard on revision number explicitly.
+    if let Some(applied) = read_applied_revision(cfg) {
+        if revision <= applied {
+            println!(
+                "revision {revision} is not newer than the already-applied revision {applied}; \
+                 skipping (no-op) rather than applying a stale/duplicate revision."
+            );
+            return Ok(());
+        }
+    }
+
+    let bytes = std::fs::read(input)
+        .with_context(|| format!("reading revision {revision} document from {input:?}"))?;
+    let candidate_users = store::parse_users_bytes(&bytes).with_context(|| {
+        format!(
+            "revision {revision} document at {input:?} is not a valid users-store document \
+             (expected the same shape as users.json: a versioned \
+             {{\"schema_version\":1,\"users\":[...]}} envelope or a bare [...] array)"
+        )
+    })?;
+
+    let previous_users = store::load_users(&cfg.users_file())
+        .context("loading this node's current users.json to roll back to on failure")?;
+
+    apply_users_and_save(cfg, &previous_users, &candidate_users)
+        .with_context(|| format!("applying revision {revision}"))?;
+
+    commit_applied_revision_stamp(cfg, revision)
+        .with_context(|| format!("revision {revision} was applied live, but recording it locally failed — the next heartbeat may under-report observed_revision until this succeeds"))?;
+
+    println!(
+        "revision {revision} applied ({} user(s)).",
+        candidate_users.len()
+    );
+    Ok(())
+}
+
+fn cmd_revision_status(cfg: &DeploymentConfig, json: bool) -> Result<()> {
+    let revision = read_applied_revision(cfg);
+    if json {
+        println!("{}", json!({ "revision": revision }));
+    } else {
+        match revision {
+            Some(r) => println!("applied revision: {r}"),
+            None => println!("no revision has ever been applied on this node"),
+        }
+    }
+    Ok(())
 }
 
 fn cmd_user_remove(cfg: &DeploymentConfig, id: &str) -> Result<()> {

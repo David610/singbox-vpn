@@ -117,7 +117,7 @@ async fn poll_once(cfg: &AgentConfig, client: &WorkerClient) -> Result<bool> {
     };
     tracing::info!(job_id = job.id, job_type = %job.job_type, "claimed job");
 
-    match dispatch::run_job(cfg, &job).await {
+    match dispatch::run_job(cfg, client, &job).await {
         Ok(result) => {
             // Once vpn-admin has changed state, never move on to another job
             // until the Worker acknowledges the result. Retrying the report

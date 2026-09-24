@@ -1,5 +1,5 @@
 use crate::config::AgentConfig;
-use crate::worker_client::Job;
+use crate::worker_client::{Job, WorkerClient};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use std::time::Duration;
@@ -14,10 +14,10 @@ const VPN_ADMIN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Runs the vpn-admin subcommand for one job, retrying transient failures
 /// up to MAX_ATTEMPTS times before giving up. Returns the result payload
 /// to report to the Worker's /complete endpoint.
-pub async fn run_job(cfg: &AgentConfig, job: &Job) -> Result<Value> {
+pub async fn run_job(cfg: &AgentConfig, client: &WorkerClient, job: &Job) -> Result<Value> {
     let mut last_err = None;
     for attempt in 1..=MAX_ATTEMPTS {
-        match run_job_once(cfg, job).await {
+        match run_job_once(cfg, client, job).await {
             Ok(result) => return Ok(result),
             Err(err) => {
                 tracing::warn!(job_id = job.id, attempt, error = %err, "vpn-admin invocation failed");
@@ -31,7 +31,7 @@ pub async fn run_job(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     Err(last_err.unwrap_or_else(|| anyhow!("job failed with no recorded error")))
 }
 
-async fn run_job_once(cfg: &AgentConfig, job: &Job) -> Result<Value> {
+async fn run_job_once(cfg: &AgentConfig, client: &WorkerClient, job: &Job) -> Result<Value> {
     match job.job_type.as_str() {
         "CREATE_USER" => create_user(cfg, job).await,
         "SET_EXPIRY" => set_expiry(cfg, job).await,
@@ -40,8 +40,66 @@ async fn run_job_once(cfg: &AgentConfig, job: &Job) -> Result<Value> {
         "DISABLE_USER" => enable_or_disable(cfg, job, "disable").await,
         "ROTATE_SUBSCRIPTION_TOKEN" => rotate_token(cfg, job).await,
         "ROTATE_CREDENTIALS" => rotate_credentials(cfg, job).await,
+        "APPLY_NODE_REVISION" => apply_node_revision(cfg, client, job).await,
         other => bail!("unknown job_type {other:?} (job {})", job.id),
     }
+}
+
+fn payload_u64(job: &Job, key: &str) -> Result<u64> {
+    job.payload.get(key).and_then(Value::as_u64).ok_or_else(|| {
+        anyhow!(
+            "job {} payload missing non-negative integer field {key:?}",
+            job.id
+        )
+    })
+}
+
+/// Phase 6 (fleet platform): fetches the revision's config document from
+/// vpn-web, writes it to a private temp file, and hands that path to
+/// `vpn-admin apply-revision`. The fetch happens HERE (in the agent, which
+/// already holds the HTTP client/auth for every other Worker call) rather
+/// than inside `vpn-admin`, which is — and stays — a purely local-file CLI
+/// with no HTTP client dependency of its own (see
+/// `docs/FLEET_PLATFORM_PLAN.md` §Phase 6 and `apps/admin/Cargo.toml`,
+/// which has no HTTP crate). This keeps the existing division of
+/// responsibility intact: the agent talks to vpn-web, `vpn-admin` only
+/// ever touches local state.
+async fn apply_node_revision(cfg: &AgentConfig, client: &WorkerClient, job: &Job) -> Result<Value> {
+    let revision = payload_u64(job, "revision")?;
+    let config = client
+        .fetch_revision_config(revision)
+        .await
+        .with_context(|| format!("fetching revision {revision} config (job {})", job.id))?;
+
+    let tmp_dir = tempfile::Builder::new()
+        .prefix("vpn-revision-")
+        .tempdir()
+        .context("creating a temp dir for the fetched revision document")?;
+    let input_path = tmp_dir.path().join("revision.json");
+    tokio::fs::write(
+        &input_path,
+        serde_json::to_vec(&config).context("serializing fetched revision config")?,
+    )
+    .await
+    .with_context(|| format!("writing fetched revision {revision} document to {input_path:?}"))?;
+
+    let output = tokio::time::timeout(
+        VPN_ADMIN_TIMEOUT,
+        vpn_admin_command(cfg)
+            .args([
+                "apply-revision",
+                "--revision",
+                &revision.to_string(),
+                "--input",
+            ])
+            .arg(&input_path)
+            .output(),
+    )
+    .await
+    .context("vpn-admin command timed out after 60s")?
+    .context("spawning vpn-admin apply-revision")?;
+    require_success(&output, "apply-revision")?;
+    Ok(serde_json::json!({ "revision": revision }))
 }
 
 /// Every vpn-admin invocation goes through this one helper, so the
@@ -318,6 +376,24 @@ mod tests {
             serde_json::json!({"expires_at": "not-a-date"}),
         );
         assert!(payload_expires_at_unix(&j).is_err());
+    }
+
+    #[test]
+    fn payload_u64_reads_a_present_non_negative_integer() {
+        let j = job("APPLY_NODE_REVISION", serde_json::json!({"revision": 7}));
+        assert_eq!(payload_u64(&j, "revision").unwrap(), 7);
+    }
+
+    #[test]
+    fn payload_u64_errors_on_missing_field() {
+        let j = job("APPLY_NODE_REVISION", serde_json::json!({}));
+        assert!(payload_u64(&j, "revision").is_err());
+    }
+
+    #[test]
+    fn payload_u64_errors_on_negative_value() {
+        let j = job("APPLY_NODE_REVISION", serde_json::json!({"revision": -1}));
+        assert!(payload_u64(&j, "revision").is_err());
     }
 
     #[cfg(unix)]
