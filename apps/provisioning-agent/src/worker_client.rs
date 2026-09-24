@@ -1,5 +1,5 @@
 use crate::config::AgentConfig;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -7,7 +7,10 @@ use serde_json::Value;
 /// match that endpoint's response body exactly (see the vpn-web
 /// provisioning-worker-api plan, Task 3) — job_type is one of
 /// "CREATE_USER" | "SET_EXPIRY" | "CLEAR_EXPIRY" | "ENABLE_USER" |
-/// "DISABLE_USER" | "ROTATE_SUBSCRIPTION_TOKEN" | "ROTATE_CREDENTIALS".
+/// "DISABLE_USER" | "ROTATE_SUBSCRIPTION_TOKEN" | "ROTATE_CREDENTIALS" |
+/// "APPLY_NODE_REVISION" (Phase 6 — payload is `{"revision": N}`, never
+/// the config content inline; the content is fetched separately via
+/// `fetch_revision_config`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Job {
     pub id: i64,
@@ -125,6 +128,42 @@ impl WorkerClient {
             bail!("POST /api/agent/heartbeat returned {}", res.status());
         }
         Ok(())
+    }
+
+    /// Fetches a declarative revision's config document (Phase 6:
+    /// `APPLY_NODE_REVISION`). vpn-web's contract is deliberately
+    /// schema-agnostic about `config`'s shape — this repo decides what
+    /// it expects (see `dispatch::apply_node_revision`) and validates it
+    /// once handed to `vpn-admin apply-revision`; this method just fetches
+    /// the raw JSON `config` value node-scoped, same Bearer auth as every
+    /// other agent endpoint.
+    pub async fn fetch_revision_config(&self, revision: u64) -> Result<Value> {
+        let res = self
+            .http
+            .get(format!("{}/api/agent/revision/{revision}", self.base_url))
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .context("GET /api/agent/revision/:revision request failed")?;
+
+        if !res.status().is_success() {
+            bail!(
+                "GET /api/agent/revision/{revision} returned {}",
+                res.status()
+            );
+        }
+
+        let body: Value = res
+            .json()
+            .await
+            .context("parsing /api/agent/revision/:revision response body")?;
+        match body.get("config") {
+            None | Some(Value::Null) => Err(anyhow!(
+                "revision {revision} response body is missing (or has a null) \"config\" — \
+                 the server has no config for this revision"
+            )),
+            Some(config) => Ok(config.clone()),
+        }
     }
 
     /// Reports one traffic sample.

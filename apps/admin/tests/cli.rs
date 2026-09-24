@@ -3325,3 +3325,348 @@ fn user_create_json_stdout_is_one_document_and_progress_goes_to_stderr() {
         "the credential must appear only in the JSON document, never on stderr"
     );
 }
+
+// --- Phase 6: `apply-revision` (fleet platform declarative reconciliation) ---
+//
+// Reuses the same fake-binary, assert-on-real-side-effects style as the
+// rest of this file (see `apply_users_and_save`/`render_and_apply_singbox_config`
+// tests above), not mocks: `apply-revision` is a thin wrapper around the
+// exact same `apply_users_and_save` path `user create`/`restore` already
+// go through, so these tests drive the real compiled binary end to end.
+
+/// A minimal, valid revision document in the same shape `users.json`
+/// itself uses (`store::parse_users_bytes` accepts both this versioned
+/// envelope and a bare array) - the config shape decision this phase
+/// made: a revision IS a full users-store snapshot, nothing new invented.
+///
+/// `#[cfg(unix)]`: only the live-apply tests below (which need a fake
+/// `systemctl`, unix-only like the rest of this file's reload/rollback
+/// tests) use this; the cross-platform malformed-document test doesn't.
+#[cfg(unix)]
+fn revision_document(user_names: &[&str]) -> serde_json::Value {
+    let users: Vec<serde_json::Value> = user_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            serde_json::json!({
+                "id": format!("user-{i}"),
+                "name": name,
+                "enabled": true,
+                "vless_uuid": format!("11111111-1111-4111-8111-11111111{i:04}"),
+                "hysteria2_password": "pw",
+                "subscription_token_hash_hex": "deadbeef",
+                "created_at": 0,
+                "expires_at": null
+            })
+        })
+        .collect();
+    serde_json::json!({ "schema_version": 1, "users": users })
+}
+
+#[cfg(unix)]
+fn write_json(dir: &Path, name: &str, value: &serde_json::Value) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
+    path
+}
+
+/// End-to-end success: applying a revision actually renders/reloads the
+/// real (faked) sing-box config with the revision's users, and stamps the
+/// revision number so a later `revision-status` (what the agent's
+/// heartbeat reads) reports it - real side-effect evidence, not just a
+/// zero exit code.
+#[test]
+#[cfg(unix)]
+fn apply_revision_end_to_end_applies_config_and_stamps_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| -> assert_cmd::assert::Assert {
+        admin(dir.path(), &cfg_path)
+            .env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SYSTEMCTL_LOG", &log_path)
+            .args(args)
+            .assert()
+    };
+    run(&["init"]).success();
+
+    // Before any revision: revision-status must report unknown (no
+    // stamp), and the machine-readable form must omit - not zero - the
+    // revision so a heartbeat built on top of it never looks like a
+    // rollback to 0.
+    let before = run(&["revision-status", "--json"]).success();
+    let before_json: serde_json::Value =
+        serde_json::from_slice(&before.get_output().stdout).unwrap();
+    assert_eq!(before_json["revision"], serde_json::Value::Null);
+
+    let revision_doc = revision_document(&["alice", "bob"]);
+    let input_path = write_json(dir.path(), "revision-7.json", &revision_doc);
+
+    run(&[
+        "apply-revision",
+        "--revision",
+        "7",
+        "--input",
+        input_path.to_str().unwrap(),
+    ])
+    .success();
+
+    let config_path = dir.path().join("state/sing-box/config.json");
+    let config_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    let vless_user_count = config_json["inbounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ib| ib["type"] == "vless")
+        .and_then(|ib| ib["users"].as_array())
+        .map(|u| u.len())
+        .unwrap_or(0);
+    assert_eq!(
+        vless_user_count, 2,
+        "the reloaded live config must actually contain the revision's 2 users"
+    );
+
+    let users_path = dir.path().join("state/users/users.json");
+    let users_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&users_path).unwrap()).unwrap();
+    assert_eq!(users_json["users"].as_array().unwrap().len(), 2);
+
+    let status = run(&["revision-status", "--json"]).success();
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status.get_output().stdout).unwrap();
+    assert_eq!(
+        status_json["revision"], 7,
+        "the applied revision must be stamped so the agent's heartbeat can report observed_revision"
+    );
+}
+
+/// The single most important test in this phase: a revision whose reload
+/// fails must leave the node on its PREVIOUS working config and PREVIOUS
+/// users.json - proving `apply-revision` genuinely reuses
+/// `render_and_apply_singbox_config`'s existing fail-closed rollback
+/// unchanged, not a fragile reimplementation of it. Also asserts the
+/// revision stamp is NOT advanced on failure, so a later heartbeat still
+/// correctly reports the last-good revision, not the one that failed.
+#[test]
+#[cfg(unix)]
+fn apply_revision_reload_failure_rolls_back_config_users_and_stamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let log_path = dir.path().join("systemctl.log");
+
+    // Phase 1: establish a known-good baseline at revision 1 with a
+    // systemctl that always succeeds.
+    let good_systemctl = fake_systemctl(dir.path());
+    let good_path = std::env::join_paths(
+        std::iter::once(good_systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &good_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &good_systemctl)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .arg("init")
+        .assert()
+        .success();
+
+    let baseline_doc = revision_document(&["alice"]);
+    let baseline_input = write_json(dir.path(), "revision-1.json", &baseline_doc);
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &good_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &good_systemctl)
+        .env("SYSTEMCTL_LOG", &log_path)
+        .args([
+            "apply-revision",
+            "--revision",
+            "1",
+            "--input",
+            baseline_input.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let config_path = dir.path().join("state/sing-box/config.json");
+    let users_path = dir.path().join("state/users/users.json");
+    let baseline_config = std::fs::read_to_string(&config_path).unwrap();
+    let baseline_users = std::fs::read_to_string(&users_path).unwrap();
+
+    // Phase 2: a genuinely different revision (2 users, not 1 - so the
+    // fingerprint short-circuit cannot mask this as a no-op) whose
+    // reload fails.
+    let bad_systemctl = fake_systemctl_failing_reload_on_call(dir.path(), 1);
+    let bad_path = std::env::join_paths(
+        std::iter::once(bad_systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    let bad_doc = revision_document(&["alice", "mallory"]);
+    let bad_input = write_json(dir.path(), "revision-2.json", &bad_doc);
+    admin(dir.path(), &cfg_path)
+        .env("PATH", &bad_path)
+        .env("SINGBOX_VPN_SYSTEMCTL", &bad_systemctl)
+        .env("SYSTEMCTL_LOG", dir.path().join("systemctl-bad.log"))
+        .args([
+            "apply-revision",
+            "--revision",
+            "2",
+            "--input",
+            bad_input.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("did NOT take effect"));
+
+    let config_after_failure = std::fs::read_to_string(&config_path).unwrap();
+    assert_eq!(
+        config_after_failure, baseline_config,
+        "a failed revision apply must restore the exact previous working config"
+    );
+    let users_after_failure = std::fs::read_to_string(&users_path).unwrap();
+    assert_eq!(
+        users_after_failure, baseline_users,
+        "a failed revision apply must never commit the new (unreloadable) users.json"
+    );
+
+    let status = admin(dir.path(), &cfg_path)
+        .args(["revision-status", "--json"])
+        .assert()
+        .success();
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status.get_output().stdout).unwrap();
+    assert_eq!(
+        status_json["revision"], 1,
+        "the revision stamp must stay at the last SUCCESSFULLY applied revision, not the \
+         one that just failed - otherwise a heartbeat built on this would over-report progress"
+    );
+}
+
+/// Coalescing/staleness guard: a revision number that is not newer than
+/// the already-applied one must be skipped as a no-op rather than
+/// re-applied - covers the case the plain content-fingerprint
+/// short-circuit inside `render_and_apply_singbox_config` does not (a
+/// stale revision whose CONTENT genuinely differs from the currently
+/// live one, e.g. an out-of-order retry racing a newer revision).
+#[test]
+#[cfg(unix)]
+fn apply_revision_skips_a_stale_or_duplicate_revision_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| -> assert_cmd::assert::Assert {
+        admin(dir.path(), &cfg_path)
+            .env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SYSTEMCTL_LOG", &log_path)
+            .args(args)
+            .assert()
+    };
+    run(&["init"]).success();
+
+    let doc_5 = revision_document(&["alice", "bob", "carol"]);
+    let input_5 = write_json(dir.path(), "revision-5.json", &doc_5);
+    run(&[
+        "apply-revision",
+        "--revision",
+        "5",
+        "--input",
+        input_5.to_str().unwrap(),
+    ])
+    .success();
+    let restarts_after_5 = count_reload_or_restart_calls(&log_path);
+
+    // An older revision (3) with genuinely different content arrives
+    // after 5 - e.g. a retried/reordered job delivery. It must be
+    // skipped: no additional reload, stamp stays at 5.
+    let doc_3 = revision_document(&["mallory"]);
+    let input_3 = write_json(dir.path(), "revision-3.json", &doc_3);
+    run(&[
+        "apply-revision",
+        "--revision",
+        "3",
+        "--input",
+        input_3.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicates::str::contains("skipping"));
+
+    assert_eq!(
+        count_reload_or_restart_calls(&log_path),
+        restarts_after_5,
+        "a stale revision must not trigger another sing-box restart"
+    );
+    let status = run(&["revision-status", "--json"]).success();
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status.get_output().stdout).unwrap();
+    assert_eq!(
+        status_json["revision"], 5,
+        "the stamp must stay at the newer, already-applied revision"
+    );
+
+    // The exact same revision number arriving again (duplicate delivery)
+    // must equally be a no-op.
+    run(&[
+        "apply-revision",
+        "--revision",
+        "5",
+        "--input",
+        input_5.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicates::str::contains("skipping"));
+    assert_eq!(count_reload_or_restart_calls(&log_path), restarts_after_5);
+}
+
+/// A malformed revision document (not the users-store shape at all) must
+/// be rejected before anything is touched, with a clear error - not a
+/// panic, and not a partially-applied state.
+#[test]
+fn apply_revision_rejects_a_malformed_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+
+    let bad_input = dir.path().join("bad-revision.json");
+    std::fs::write(&bad_input, b"{\"not\": \"a users document\"}").unwrap();
+
+    admin(dir.path(), &cfg_path)
+        .args([
+            "apply-revision",
+            "--revision",
+            "1",
+            "--input",
+            bad_input.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+}

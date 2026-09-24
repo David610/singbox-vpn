@@ -33,8 +33,7 @@ impl TelemetrySampler {
     pub fn collect(&mut self, cfg: &AgentConfig) -> Value {
         let cpu_percent = self.cpu_percent();
         let (network_rx_bps, network_tx_bps) = self.network_bps();
-
-        json!({
+        let mut payload = json!({
             "agent_version": env!("CARGO_PKG_VERSION"),
             // vpn-admin is part of the same workspace/release as this agent.
             "vpn_version": env!("CARGO_PKG_VERSION"),
@@ -51,7 +50,21 @@ impl TelemetrySampler {
             // per-user active-session source. Null is intentionally
             // different from zero.
             "active_users_recent": Value::Null,
-        })
+        });
+        // Phase 6 (fleet platform): report the last revision this node
+        // actually applied live, so vpn-web's `nodes.observed_revision`
+        // reflects reality rather than the desired/dispatched revision.
+        // `POST /api/agent/heartbeat` treats an OMITTED or invalid
+        // `observed_revision` as "leave the stored value untouched" — it
+        // never coerces a missing/unreadable value to 0 — so an agent
+        // build without this feature (or a node that has never applied a
+        // revision) must genuinely omit the field here, not send `null`
+        // or `0`, either of which could look like "this node just rolled
+        // back to revision zero" to an operator reading `nodes`.
+        if let Some(revision) = configured_applied_revision(cfg) {
+            payload["observed_revision"] = json!(revision);
+        }
+        payload
     }
 
     fn cpu_percent(&mut self) -> Option<f64> {
@@ -187,6 +200,36 @@ fn configured_user_count(cfg: &AgentConfig) -> Option<u64> {
             .filter(|line| !line.trim().is_empty())
             .count() as u64,
     )
+}
+
+/// Phase 6: the revision `vpn-admin apply-revision` most recently applied
+/// live on this node, via `vpn-admin revision-status --json`
+/// (`{"revision": N}` or `{"revision": null}`). `None` — never `0` — for
+/// a node that has not applied one, so `collect` can correctly omit
+/// `observed_revision` entirely rather than reporting a false rollback.
+///
+/// Deliberately shells out to `vpn-admin` rather than reading the stamp
+/// file directly (even though this process and `vpn-admin` share a
+/// filesystem): this agent has no dependency on `compat-config`'s
+/// `DeploymentConfig`/stamp-path logic, and `configured_user_count`
+/// immediately below already establishes the same "ask `vpn-admin`, not
+/// the file" convention for exactly the same reason — a heartbeat tick
+/// every 60s is not latency-sensitive enough to justify a second,
+/// independently-maintained path-construction implementation here that
+/// could drift from `apps/admin/src/main.rs::applied_revision_stamp_path`.
+fn configured_applied_revision(cfg: &AgentConfig) -> Option<u64> {
+    let output = Command::new(&cfg.vpn_admin_binary)
+        .arg("--config")
+        .arg(&cfg.vpn_admin_config)
+        .args(["revision-status", "--json"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let value: Value = serde_json::from_str(stdout.trim()).ok()?;
+    value.get("revision")?.as_u64()
 }
 
 fn command_first_version(binary: &str, args: &[&str]) -> Option<String> {
