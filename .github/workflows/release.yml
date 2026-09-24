@@ -330,7 +330,8 @@ jobs:
           set -euo pipefail
           bash deploy/lib/check-glibc-baseline.sh "$RELEASE_GLIBC_BASELINE" \
             "target/x86_64-unknown-linux-gnu/release/vpn-admin" \
-            "target/x86_64-unknown-linux-gnu/release/subscription"
+            "target/x86_64-unknown-linux-gnu/release/subscription" \
+            "target/x86_64-unknown-linux-gnu/release/vpn-provisioning-agent"
 
       - name: Package
         run: |
@@ -339,6 +340,7 @@ jobs:
           mkdir -p "$out"
           cp "target/x86_64-unknown-linux-gnu/release/vpn-admin" "$out/vpn-admin"
           cp "target/x86_64-unknown-linux-gnu/release/subscription" "$out/subscription"
+          cp "target/x86_64-unknown-linux-gnu/release/vpn-provisioning-agent" "$out/vpn-provisioning-agent"
           cp README.md LICENSE "$out/"
           tar -czf "${out}.tar.gz" "$out"
           sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
@@ -408,6 +410,7 @@ jobs:
           test -d "$extracted" || { echo "::error::archive did not contain singbox-vpn-x86_64-unknown-linux-gnu/ — install.sh's fetch_release_binaries() expects exactly this layout"; exit 1; }
           test -x "$extracted/vpn-admin" || { echo "::error::vpn-admin missing or not executable in archive"; exit 1; }
           test -x "$extracted/subscription" || { echo "::error::subscription missing or not executable in archive"; exit 1; }
+          test -x "$extracted/vpn-provisioning-agent" || { echo "::error::vpn-provisioning-agent missing or not executable in archive"; exit 1; }
           test -f "$extracted/LICENSE" || { echo "::error::LICENSE missing from release archive"; exit 1; }
           # Sanity check on the runner's own (newer) glibc — glibc is
           # backward compatible, so this only proves forward-compat, not
@@ -418,6 +421,7 @@ jobs:
           # 8/9 against this exact packaged archive).
           "$extracted/vpn-admin" --version
           "$extracted/subscription" --version
+          "$extracted/vpn-provisioning-agent" --version
           rm -rf "$tmp"
           echo "archive/installer contract OK: layout matches deploy/almalinux/install.sh's fetch_release_binaries()"
 
@@ -502,6 +506,7 @@ jobs:
           tar -xzf dist/singbox-vpn-x86_64-unknown-linux-gnu.tar.gz -C extracted
           test -x extracted/singbox-vpn-x86_64-unknown-linux-gnu/vpn-admin
           test -x extracted/singbox-vpn-x86_64-unknown-linux-gnu/subscription
+          test -x extracted/singbox-vpn-x86_64-unknown-linux-gnu/vpn-provisioning-agent
 
       # A bare, unmodified distro image (no other vpn-admin/subscription
       # anywhere on its PATH) invoked purely by absolute path — this
@@ -518,6 +523,8 @@ jobs:
               /artifact/vpn-admin --version
               echo "--- /artifact/subscription --version ---"
               /artifact/subscription --version
+              echo "--- /artifact/vpn-provisioning-agent --version ---"
+              /artifact/vpn-provisioning-agent --version
             '
 
   publish:

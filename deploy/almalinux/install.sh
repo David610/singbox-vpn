@@ -1528,6 +1528,13 @@ fetch_release_binaries() {
   install -m 0755 "$extracted/vpn-admin" "$BIN_DIR/vpn-admin"
   install -m 0755 "$extracted/vpn-admin" "$BIN_DIR/vpn"
   install -m 0755 "$extracted/subscription" "$BIN_DIR/vpn-subscription-svc"
+  # The fleet provisioning agent ships in every release from v1.1.0 on.
+  # Older archives simply lack it; a fleet bootstrap that needs it checks
+  # for $BIN_DIR/vpn-provisioning-agent itself and fails loudly there.
+  if [ -f "$extracted/vpn-provisioning-agent" ]; then
+    check_binary_version "$extracted/vpn-provisioning-agent" "$expected_package_version" "vpn-provisioning-agent" "$version_context"
+    install_provisioning_agent_binary "$extracted/vpn-provisioning-agent"
+  fi
   rm -rf "$tmp"
   log "installed prebuilt singbox-vpn $version binaries ($target) — no Rust compiler needed."
   return 0
@@ -1650,14 +1657,15 @@ build_binaries_from_source() {
     install_rustup_noninteractive
   fi
   ensure_pinned_toolchain_installed
-  log "building release binaries from source (admin, subscription)..."
+  log "building release binaries from source (admin, subscription, provisioning-agent)..."
   # --locked matches every CI build/test job: without it, this install-time
   # build could silently resolve a different dependency set than the one
   # committed Cargo.lock records and cargo audit gates in CI.
-  ( cd "$REPO_ROOT" && cargo build --release --locked -p admin -p subscription )
+  ( cd "$REPO_ROOT" && cargo build --release --locked -p admin -p subscription -p provisioning-agent )
   install -m 0755 "$REPO_ROOT/target/release/vpn-admin" "$BIN_DIR/vpn-admin"
   install -m 0755 "$REPO_ROOT/target/release/vpn" "$BIN_DIR/vpn"
   install -m 0755 "$REPO_ROOT/target/release/subscription" "$BIN_DIR/vpn-subscription-svc"
+  install_provisioning_agent_binary "$REPO_ROOT/target/release/vpn-provisioning-agent"
 }
 
 binaries_stage() {
@@ -1793,6 +1801,20 @@ singbox_install_stage() {
 # files are static installer-owned templates with no placeholders and
 # no dependency on state created by any other stage, so installing them
 # this early is safe.
+# The fleet provisioning agent binary. Its systemd unit and config are NOT
+# installed here: they belong to the fleet bootstrap (vpn-web's cloud-init),
+# which is the only thing holding the node's enrollment token. Ownership is
+# recorded so uninstall.sh removes the binary only when THIS installer put it
+# there -- never a hand-installed agent that predates this release.
+install_provisioning_agent_binary() {
+  local src="$1"
+  if [ -e "$BIN_DIR/vpn-provisioning-agent" ] && ! ownership_is_marked AGENT_BINARY_INSTALLED; then
+    ownership_set AGENT_BINARY_PRE_EXISTED 1
+  fi
+  install -m 0755 "$src" "$BIN_DIR/vpn-provisioning-agent"
+  ownership_mark AGENT_BINARY_INSTALLED
+}
+
 install_systemd_units() {
   log "installing systemd units..."
   # Each is a FIXED path — install_fixed_path_with_ownership() backs up

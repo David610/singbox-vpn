@@ -1,21 +1,33 @@
 [Unit]
 Description=Arcana VPN provisioning agent
-After=network-online.target
+After=network-online.target sing-box.service
 Wants=network-online.target
+# Never start half-configured: the fleet bootstrap writes this file (mode
+# 0600, holding the node's permanent API key) before enabling the unit.
+ConditionPathExists=/etc/vpn/provisioning-agent.toml
 
 [Service]
 Type=simple
 Environment=RUST_LOG=info
 ExecStart=/usr/local/bin/vpn-provisioning-agent --config /etc/vpn/provisioning-agent.toml
-Restart=on-failure
+Restart=always
 RestartSec=5
-# No inbound network access needed — outbound HTTPS to the Worker only.
-# Runs as a dedicated non-root user with access to vpn-admin's
-# deployment.toml/users.json, same as any other vpn-admin operator
-# invocation on this box — this file documents the expected shape but
-# does not attempt to fully re-derive this repo's existing deployment
-# user/permissions setup, which is out of scope for this plan.
-User=vpn-admin-agent
+# Runs as root: every job shells out to vpn-admin, which rewrites sing-box's
+# config under /etc and restarts sing-box/vpn-subscription. This matches how
+# node-1 has always run the agent. Dropping root requires a narrowly-scoped
+# privilege model for vpn-admin first (tracked in the fleet security review);
+# until then the hardening below limits what a compromised agent process can
+# reach beyond what vpn-admin itself legitimately needs.
+User=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
