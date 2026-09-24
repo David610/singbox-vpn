@@ -207,6 +207,16 @@ fn configured_user_count(cfg: &AgentConfig) -> Option<u64> {
 /// (`{"revision": N}` or `{"revision": null}`). `None` — never `0` — for
 /// a node that has not applied one, so `collect` can correctly omit
 /// `observed_revision` entirely rather than reporting a false rollback.
+///
+/// Deliberately shells out to `vpn-admin` rather than reading the stamp
+/// file directly (even though this process and `vpn-admin` share a
+/// filesystem): this agent has no dependency on `compat-config`'s
+/// `DeploymentConfig`/stamp-path logic, and `configured_user_count`
+/// immediately below already establishes the same "ask `vpn-admin`, not
+/// the file" convention for exactly the same reason — a heartbeat tick
+/// every 60s is not latency-sensitive enough to justify a second,
+/// independently-maintained path-construction implementation here that
+/// could drift from `apps/admin/src/main.rs::applied_revision_stamp_path`.
 fn configured_applied_revision(cfg: &AgentConfig) -> Option<u64> {
     let output = Command::new(&cfg.vpn_admin_binary)
         .arg("--config")

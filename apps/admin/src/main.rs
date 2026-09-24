@@ -3531,11 +3531,44 @@ fn applied_revision_stamp_path(cfg: &DeploymentConfig) -> PathBuf {
 /// node, or a node only ever driven by the legacy per-user job types)
 /// and when the stamp is present but unreadable/corrupt — either way,
 /// "unknown" is the honest answer, and the heartbeat caller's job is to
-/// omit `observed_revision` rather than report a wrong number.
+/// omit `observed_revision` rather than report a wrong number. Used by
+/// `revision-status`; `cmd_apply_revision`'s staleness guard uses
+/// `read_applied_revision_state` instead, which distinguishes "missing"
+/// from "corrupt" — collapsing those two here would be safe for a
+/// best-effort status report but NOT for that guard (see its doc
+/// comment).
 fn read_applied_revision(cfg: &DeploymentConfig) -> Option<u64> {
-    let text = std::fs::read_to_string(applied_revision_stamp_path(cfg)).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    value.get("revision")?.as_u64()
+    match read_applied_revision_state(cfg) {
+        RevisionStampState::Present(revision) => Some(revision),
+        RevisionStampState::Missing | RevisionStampState::Corrupt => None,
+    }
+}
+
+/// Distinguishes "no stamp exists yet" from "a stamp exists but could not
+/// be parsed" — the staleness guard in `cmd_apply_revision` must treat
+/// these two differently (a corrupt stamp must fail closed, not be
+/// silently treated as "no prior revision, anything goes").
+enum RevisionStampState {
+    Missing,
+    Present(u64),
+    Corrupt,
+}
+
+fn read_applied_revision_state(cfg: &DeploymentConfig) -> RevisionStampState {
+    let path = applied_revision_stamp_path(cfg);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return RevisionStampState::Missing,
+        Err(_) => return RevisionStampState::Corrupt,
+    };
+    match serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("revision").cloned())
+        .and_then(|v| v.as_u64())
+    {
+        Some(revision) => RevisionStampState::Present(revision),
+        None => RevisionStampState::Corrupt,
+    }
 }
 
 fn commit_applied_revision_stamp(cfg: &DeploymentConfig, revision: u64) -> Result<()> {
@@ -3576,13 +3609,24 @@ fn cmd_apply_revision(
     // live — it does NOT know about revision ORDERING, so a stale
     // revision with genuinely different (older) content would otherwise
     // be applied over a newer one. Guard on revision number explicitly.
-    if let Some(applied) = read_applied_revision(cfg) {
-        if revision <= applied {
+    match read_applied_revision_state(cfg) {
+        RevisionStampState::Present(applied) if revision <= applied => {
             println!(
                 "revision {revision} is not newer than the already-applied revision {applied}; \
                  skipping (no-op) rather than applying a stale/duplicate revision."
             );
             return Ok(());
+        }
+        RevisionStampState::Present(_) | RevisionStampState::Missing => {}
+        RevisionStampState::Corrupt => {
+            bail!(
+                "refusing to apply revision {revision}: the local revision stamp at {:?} exists \
+                 but could not be read/parsed. Applying blindly here could apply a stale \
+                 revision over a newer one that is genuinely already live — fix or remove the \
+                 stamp file (after confirming the actually-applied revision by other means) \
+                 before retrying.",
+                applied_revision_stamp_path(cfg)
+            );
         }
     }
 

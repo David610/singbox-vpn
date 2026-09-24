@@ -157,9 +157,13 @@ impl WorkerClient {
             .json()
             .await
             .context("parsing /api/agent/revision/:revision response body")?;
-        body.get("config")
-            .cloned()
-            .ok_or_else(|| anyhow!("revision {revision} response body missing \"config\""))
+        match body.get("config") {
+            None | Some(Value::Null) => Err(anyhow!(
+                "revision {revision} response body is missing (or has a null) \"config\" — \
+                 the server has no config for this revision"
+            )),
+            Some(config) => Ok(config.clone()),
+        }
     }
 
     /// Reports one traffic sample.

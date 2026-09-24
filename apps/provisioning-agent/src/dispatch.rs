@@ -71,17 +71,39 @@ async fn apply_node_revision(cfg: &AgentConfig, client: &WorkerClient, job: &Job
         .await
         .with_context(|| format!("fetching revision {revision} config (job {})", job.id))?;
 
+    // The fetched document carries per-user secrets (vless_uuid,
+    // hysteria2_password, etc. — see the config-shape decision in
+    // `worker_client::WorkerClient::fetch_revision_config`'s doc comment),
+    // so it must never land on disk with the process umask's default
+    // (potentially world/group-readable) permissions, even briefly.
+    // `tempfile`'s directory/file permissions are not guaranteed
+    // restrictive across platforms, so set them explicitly here rather
+    // than relying on the umask, matching `write_secret_file`'s intent on
+    // the `vpn-admin` side of this same pipeline.
     let tmp_dir = tempfile::Builder::new()
         .prefix("vpn-revision-")
         .tempdir()
         .context("creating a temp dir for the fetched revision document")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(tmp_dir.path(), std::fs::Permissions::from_mode(0o700))
+            .context("restricting permissions on the revision temp dir")?;
+    }
     let input_path = tmp_dir.path().join("revision.json");
-    tokio::fs::write(
-        &input_path,
-        serde_json::to_vec(&config).context("serializing fetched revision config")?,
-    )
-    .await
-    .with_context(|| format!("writing fetched revision {revision} document to {input_path:?}"))?;
+    let payload = serde_json::to_vec(&config).context("serializing fetched revision config")?;
+    tokio::fs::write(&input_path, &payload)
+        .await
+        .with_context(|| {
+            format!("writing fetched revision {revision} document to {input_path:?}")
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&input_path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .context("restricting permissions on the fetched revision document")?;
+    }
 
     let output = tokio::time::timeout(
         VPN_ADMIN_TIMEOUT,
