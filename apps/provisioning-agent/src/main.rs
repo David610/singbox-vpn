@@ -1,5 +1,6 @@
 mod config;
 mod dispatch;
+mod health_probe;
 mod stats;
 mod telemetry;
 mod worker_client;
