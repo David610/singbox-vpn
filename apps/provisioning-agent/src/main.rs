@@ -1,5 +1,6 @@
 mod config;
 mod dispatch;
+mod health_probe;
 mod stats;
 mod telemetry;
 mod worker_client;
@@ -49,7 +50,14 @@ async fn main() -> Result<()> {
         let now = Instant::now();
 
         if now >= next_heartbeat {
-            let payload = telemetry.collect(&cfg);
+            let (probe_ok, probe_latency_ms) = health_probe::probe_data_plane(
+                client.http(),
+                cfg.clash_api_url.as_deref(),
+                cfg.clash_api_secret.as_deref(),
+                cfg.clash_probe_outbound.as_deref(),
+            )
+            .await;
+            let payload = telemetry.collect(&cfg, probe_ok, probe_latency_ms);
             if let Err(err) = client.heartbeat(&payload).await {
                 tracing::warn!(error = %err, "node heartbeat failed");
             }
