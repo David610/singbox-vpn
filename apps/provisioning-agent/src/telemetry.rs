@@ -30,7 +30,7 @@ impl TelemetrySampler {
         }
     }
 
-    pub fn collect(&mut self, cfg: &AgentConfig) -> Value {
+    pub fn collect(&mut self, cfg: &AgentConfig, probe_ok: Option<bool>, probe_latency_ms: Option<u64>) -> Value {
         let cpu_percent = self.cpu_percent();
         let (network_rx_bps, network_tx_bps) = self.network_bps();
         let mut payload = json!({
@@ -63,6 +63,12 @@ impl TelemetrySampler {
         // back to revision zero" to an operator reading `nodes`.
         if let Some(revision) = configured_applied_revision(cfg) {
             payload["observed_revision"] = json!(revision);
+        }
+        if let Some(ok) = probe_ok {
+            payload["probe_ok"] = json!(ok);
+        }
+        if let Some(latency) = probe_latency_ms {
+            payload["probe_latency_ms"] = json!(latency);
         }
         payload
     }
