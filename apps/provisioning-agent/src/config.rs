@@ -41,6 +41,13 @@ pub struct AgentConfig {
     /// struct redacts it below.
     #[serde(default)]
     pub clash_api_secret: Option<String>,
+    /// Overrides the outbound tag `health_probe::probe_data_plane` probes
+    /// via the Clash API delay-test endpoint. Absent (the default) probes
+    /// `"direct"`, the tag every server-side sing-box config actually
+    /// renders (`crates/compat-config/src/server.rs`). Only needed if an
+    /// operator later changes the server-side outbound topology.
+    #[serde(default)]
+    pub clash_probe_outbound: Option<String>,
 }
 
 // Derived Debug would print clash_api_secret and agent_api_key verbatim,
@@ -60,6 +67,7 @@ impl std::fmt::Debug for AgentConfig {
                 "clash_api_secret",
                 &self.clash_api_secret.as_ref().map(|_| "<redacted>"),
             )
+            .field("clash_probe_outbound", &self.clash_probe_outbound)
             .finish()
     }
 }

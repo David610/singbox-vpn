@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
                 client.http(),
                 cfg.clash_api_url.as_deref(),
                 cfg.clash_api_secret.as_deref(),
+                cfg.clash_probe_outbound.as_deref(),
             )
             .await;
             let payload = telemetry.collect(&cfg, probe_ok, probe_latency_ms);

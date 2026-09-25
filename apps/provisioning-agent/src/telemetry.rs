@@ -255,6 +255,58 @@ fn command_first_version(binary: &str, args: &[&str]) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Mirrors config.rs's own test pattern: a minimal `AgentConfig` built
+    /// from a temp TOML file, since `AgentConfig` only loads that way.
+    fn test_config() -> AgentConfig {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            r#"
+worker_url = "http://127.0.0.1:8788"
+node_id = "node-1"
+agent_api_key = "test-key"
+vpn_admin_binary = "/usr/local/bin/vpn-admin"
+vpn_admin_config = "/etc/vpn/deployment.toml"
+"#,
+        )
+        .unwrap();
+        AgentConfig::load(&path).unwrap()
+    }
+
+    #[test]
+    fn collect_omits_probe_fields_entirely_when_none() {
+        let cfg = test_config();
+        let mut sampler = TelemetrySampler::new();
+        let payload = sampler.collect(&cfg, None, None);
+        assert!(
+            payload.get("probe_ok").is_none(),
+            "probe_ok must be omitted, not emitted as null"
+        );
+        assert!(
+            payload.get("probe_latency_ms").is_none(),
+            "probe_latency_ms must be omitted, not emitted as null"
+        );
+    }
+
+    #[test]
+    fn collect_includes_probe_ok_false_without_latency() {
+        let cfg = test_config();
+        let mut sampler = TelemetrySampler::new();
+        let payload = sampler.collect(&cfg, Some(false), None);
+        assert_eq!(payload["probe_ok"], false);
+        assert!(payload.get("probe_latency_ms").is_none());
+    }
+
+    #[test]
+    fn collect_includes_both_probe_fields_when_present() {
+        let cfg = test_config();
+        let mut sampler = TelemetrySampler::new();
+        let payload = sampler.collect(&cfg, Some(true), Some(42));
+        assert_eq!(payload["probe_ok"], true);
+        assert_eq!(payload["probe_latency_ms"], 42);
+    }
+
     #[test]
     fn proc_readers_never_produce_out_of_range_percentages() {
         if let Some(value) = read_memory_percent() {
