@@ -98,30 +98,62 @@ implementation plan extends `ALLOWED_TRANSITIONS` to add these two edges,
 with a comment marking them as the Phase 8 health-automation additions.
 This is a prerequisite for the rest of this section to be implementable.
 
-After telemetry is recorded (existing disk/memory alert logic unchanged),
-evaluate the probe result against the node's current streak counters.
-`probe_ok = null` (node has no `clash_api_url` configured) leaves streak
-counters and lifecycle state untouched entirely — an unconfigured node is
-neither penalized nor credited, it simply doesn't participate in
-automated transitions yet:
+**Amended 2026-09-25 (post-implementation, final review)**: the original
+text below assumed `canTransitionLifecycle()` (the admin-authorized
+transition table) was itself a sufficient guard for automated transitions.
+It is not: `ALLOWED_TRANSITIONS` legitimately permits an admin to move
+MAINTENANCE/DRAINING/WARMING_UP → READY and PROVISIONING/WARMING_UP →
+FAILED, and reusing that same table as automation's filter let a passing
+probe streak silently undo an admin's MAINTENANCE/DRAINING, and let a
+failing probe streak push a PROVISIONING/WARMING_UP node to FAILED and
+break node creation. The shipped implementation (`node-health-transition.js`)
+instead hardcodes the automation-eligible source states explicitly,
+narrower than what the table alone would allow:
 
-- `probe_ok = true`: increment `consecutive_probe_successes`, reset
-  `consecutive_probe_failures` to 0. If successes ≥ 5 and
-  `lifecycle_state = DEGRADED`, transition to `READY` via
-  `canTransitionLifecycle()`.
-- `probe_ok = false`: increment `consecutive_probe_failures`, reset
-  `consecutive_probe_successes` to 0. If failures ≥ 3 and
-  `lifecycle_state = READY`, transition to `DEGRADED`.
-- `FAILED → READY` recovery: a single subsequent heartbeat with
-  `probe_ok = true` is sufficient to exit `FAILED` (since `FAILED` is only
-  entered via silence, first sign of life resumes normal streak evaluation
-  on following beats — it does not itself count as 5 successes).
+- `probe_ok = true` while `lifecycle_state = DEGRADED`: increment
+  `consecutive_probe_successes`, reset failures to 0; at successes ≥ 5,
+  transition to `READY`. Automation never recovers FROM MAINTENANCE,
+  DRAINING, WARMING_UP, or PROVISIONING, regardless of streak — only a
+  DEGRADED node recovers this way.
+- `probe_ok = false` while `lifecycle_state = READY`: increment
+  `consecutive_probe_failures`, reset successes to 0; at failures ≥ 3,
+  transition to `DEGRADED`. Automation never pushes any other state
+  (DEGRADED, WARMING_UP, PROVISIONING, etc.) to `FAILED` via the probe
+  path — only `READY → DEGRADED` exists on the failure side.
+- `probe_ok = null` (no `clash_api_url` configured): streak counters are
+  left untouched for a `READY`/`DEGRADED` node, as originally specified —
+  **except** when `lifecycle_state = FAILED`: a single authenticated
+  heartbeat, regardless of probe result (there is none), recovers
+  FAILED → READY. A node with no probe capability has no other evidence
+  of health to offer, so "it is heartbeating again" is treated as
+  sufficient — see the FAILED→READY note below, which applies uniformly
+  regardless of probe configuration.
+- `FAILED → READY` recovery: a single successful probe (`probe_ok = true`
+  while `lifecycle_state = FAILED`) is sufficient, as a distinct case from
+  the DEGRADED-recovery threshold above — it does not require 5 successes.
 
-All transitions call the existing `canTransitionLifecycle()` guard, so
-`QUARANTINED`, `RETIRED`, `MAINTENANCE`, `DRAINING`, `PROVISIONING` are
-never touched by automated logic — only `READY ↔ DEGRADED ↔ FAILED`.
-Manual admin-triggered transitions continue to work unchanged and act as
-an override at any time.
+**Known limitation, not fixed by this phase**: `FAILED` is not silence-only
+in this codebase as originally assumed — `fleet-operations.js`'s
+`failNodeIfBooting` also sets `WARMING_UP`/`PROVISIONING → FAILED` when
+node creation's readiness check fails or times out, and an admin can set
+`FAILED` by hand. The FAILED→READY recovery rules above apply uniformly to
+any FAILED node, meaning a node that failed its readiness check (or was
+manually failed) can be auto-promoted back to READY on its next successful
+heartbeat, skipping the check it failed or overriding the admin. This is a
+pre-existing risk sharpened by this phase (previously bounded by the
+5-success DEGRADED threshold for probe-capable nodes; now immediate for
+both probe-capable and null-probe nodes). **This is a hard precondition,
+not yet satisfied, for enabling `FEATURE_AUTO_NODE_HEALTH` in any real
+environment**: distinguish silence-caused FAILED from other-caused FAILED
+(e.g. a `failed_reason` column, set only by the silence-detection path) and
+gate the FAILED→READY rules on it. Requires a migration; out of scope for
+this implementation pass.
+
+Automation's transitions still call `canTransitionLifecycle()` as a second
+guard (defense in depth), but the primary safety mechanism is the explicit
+automation-eligible-state list above, not the shared admin table.
+Manual admin-triggered transitions continue to work unchanged via the
+unmodified `ALLOWED_TRANSITIONS` table and act as an override at any time.
 
 ### 4.4 Silence detection (no heartbeat received)
 
@@ -130,14 +162,24 @@ so it's checked lazily rather than via a new scheduler, since neither repo
 has a cron/job system today and this phase should not introduce one just
 for this:
 
-Any incoming heartbeat request from another node, or the admin dashboard's
-node-list read, also evaluates `now() - last_seen_at` for all nodes not
-already `FAILED`/`RETIRED`/`QUARANTINED`. Past a threshold (3× the expected
-heartbeat interval), the node is transitioned directly to `FAILED`
-regardless of prior streak state — silence is treated as immediate failure
-exhaustion, not counted against the 3-failure threshold. Worst-case
-detection latency is bounded by whichever comes first: the next heartbeat
-from any other node, or the next admin dashboard load.
+**Amended 2026-09-25**: silence-eligible states are narrower than
+originally specified. Any incoming heartbeat request from another node, or
+the admin dashboard's node-list read, evaluates `now() - last_seen_at`
+only for nodes currently `READY` or `DEGRADED` — not "all nodes except
+FAILED/RETIRED/QUARANTINED" as originally written, which would have let a
+stale `PROVISIONING`/`WARMING_UP` node (e.g. one mid-re-enrollment, whose
+`last_seen_at` predates a fresh enrollment token) get silence-transitioned
+to `FAILED`, breaking re-enrollment. Both call sites share one source of
+truth (`isNodeSilent` in `node-health-transition.js`, via a shared
+`functions/lib/node-silence-failover.js` helper) rather than each
+filtering their own candidate query independently — a prior version of
+this implementation had them diverge, which was itself a bug. Past a
+threshold (3× the expected heartbeat interval), an eligible node is
+transitioned directly to `FAILED` regardless of prior streak state —
+silence is treated as immediate failure exhaustion, not counted against
+the 3-failure threshold. Worst-case detection latency is bounded by
+whichever comes first: the next heartbeat from any other node, or the
+next admin dashboard load.
 
 ### 4.5 Failover (passive drain)
 
