@@ -44,19 +44,32 @@ written.
 
 ### 4.1 Data-plane probe (agent side — `singbox-vpn`)
 
-`apps/provisioning-agent/src/telemetry.rs`'s `collect()` gains a probe step
-that runs before building the heartbeat payload: the agent performs a real
-client-style VLESS/Hysteria2 handshake through its own local sing-box
-instance and confirms egress succeeds — the same check a real device would
-perform, run locally so no new network exposure is required. Result is
-added to the existing heartbeat payload as:
+**Amended 2026-09-25**: rather than embedding a VLESS/Hysteria2 client
+library in the agent (a large new dependency for this increment), the
+probe uses sing-box's Clash API, which the agent already optionally
+connects to (`AgentConfig::clash_api_url`, `worker_client.rs` stats
+reporting). Sing-box's Clash API exposes `GET /proxies/{name}/delay?url=
+<test-url>&timeout=<ms>`, which actively drives the configured outbound
+to fetch a real URL and reports success/latency or failure — a genuine
+data-plane egress test, not a mock.
+
+`apps/provisioning-agent/src/telemetry.rs`'s `collect()` gains a probe
+step that runs before building the heartbeat payload: if `clash_api_url`
+is configured, call the delay-test endpoint against the node's outbound
+proxy group and a fixed low-cost test URL; record success/failure and
+latency. If `clash_api_url` is not configured (older/unconfigured nodes),
+omit the probe fields entirely — `null`, never coerced to `false` —
+matching the existing `active_users_recent` null-vs-false convention, so
+an unconfigured node cannot look identical to a genuinely failing one.
+Result is added to the existing heartbeat payload as:
 
 ```rust
-probe_ok: bool,
+probe_ok: Option<bool>,
 probe_latency_ms: Option<u64>,
 ```
 
-No new endpoint. No DNS/HTTP/multi-region matrix in this increment.
+No new endpoint, no new dependency, no DNS/HTTP/multi-region matrix in
+this increment.
 
 ### 4.2 Schema (`vpn-web`)
 
@@ -75,8 +88,22 @@ No backfill required; existing nodes populate on their next heartbeat.
 
 ### 4.3 Transition logic (`vpn-web`, inline in `functions/api/agent/heartbeat.js`)
 
+**Amended 2026-09-25**: `node-lifecycle.js`'s current `ALLOWED_TRANSITIONS`
+does not yet include `DEGRADED → FAILED` or `FAILED → READY` — today
+`FAILED` is reachable only from `PROVISIONING`/`WARMING_UP` and only
+returns to `PROVISIONING`/`QUARANTINED`/`RETIRED`. The file's own header
+comment already anticipates this ("automated health-based transitions...
+are Phase 8 and are not modeled here yet"), so Task 1 of the
+implementation plan extends `ALLOWED_TRANSITIONS` to add these two edges,
+with a comment marking them as the Phase 8 health-automation additions.
+This is a prerequisite for the rest of this section to be implementable.
+
 After telemetry is recorded (existing disk/memory alert logic unchanged),
-evaluate the probe result against the node's current streak counters:
+evaluate the probe result against the node's current streak counters.
+`probe_ok = null` (node has no `clash_api_url` configured) leaves streak
+counters and lifecycle state untouched entirely — an unconfigured node is
+neither penalized nor credited, it simply doesn't participate in
+automated transitions yet:
 
 - `probe_ok = true`: increment `consecutive_probe_successes`, reset
   `consecutive_probe_failures` to 0. If successes ≥ 5 and
