@@ -30,7 +30,12 @@ impl TelemetrySampler {
         }
     }
 
-    pub fn collect(&mut self, cfg: &AgentConfig, probe_ok: Option<bool>, probe_latency_ms: Option<u64>) -> Value {
+    pub fn collect(
+        &mut self,
+        cfg: &AgentConfig,
+        probe_ok: Option<bool>,
+        probe_latency_ms: Option<u64>,
+    ) -> Value {
         let cpu_percent = self.cpu_percent();
         let (network_rx_bps, network_tx_bps) = self.network_bps();
         let mut payload = json!({

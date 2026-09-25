@@ -115,7 +115,9 @@ mod tests {
             .and(path_regex(r"^/proxies/direct/delay$"))
             .and(query_param("timeout", PROBE_TIMEOUT_MS.to_string()))
             .and(query_param("url", PROBE_TEST_URL))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "delay": 42 })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "delay": 42 })),
+            )
             .mount(&server)
             .await;
         let http = reqwest::Client::new();
@@ -149,7 +151,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path_regex(r"^/proxies/custom-outbound/delay$"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "delay": 7 })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "delay": 7 })),
+            )
             .mount(&server)
             .await;
         let http = reqwest::Client::new();
@@ -263,8 +267,15 @@ mod tests {
         );
 
         let result = probe_data_plane(&http, Some(base), Some(secret), None).await;
-        assert_eq!(result.0, Some(true), "the default outbound is \"direct\", which a real server-side config always renders");
-        assert!(result.1.is_some(), "a successful probe must report a latency");
+        assert_eq!(
+            result.0,
+            Some(true),
+            "the default outbound is \"direct\", which a real server-side config always renders"
+        );
+        assert!(
+            result.1.is_some(),
+            "a successful probe must report a latency"
+        );
     }
 
     #[tokio::test]
@@ -293,8 +304,7 @@ mod tests {
         // This is the case that would have caught the original "PROXY" bug:
         // a tag that a real server-side sing-box config never exposes
         // must 404, not silently succeed.
-        let result =
-            probe_data_plane(&http, Some(base), Some(secret), Some("PROXY")).await;
+        let result = probe_data_plane(&http, Some(base), Some(secret), Some("PROXY")).await;
         assert_eq!(result, (Some(false), None));
     }
 }
