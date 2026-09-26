@@ -130,7 +130,7 @@ impl Default for ProtocolProbeConfig {
             singbox_binary: "sing-box".into(),
             interval_secs: 60,
             timeout_secs: 8,
-            probe_user_name: "arcana-probe".into(),
+            probe_user_name: compat_config::model::PROBE_USER_NAME.into(),
             publish_self: true,
             fetch_targets: true,
             self_probe: true,

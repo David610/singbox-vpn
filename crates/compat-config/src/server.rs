@@ -74,6 +74,7 @@ pub fn render_server_config_for_deployment(
         ) {
             apply_google_egress_hairpin(&mut config, hairpin, uuid);
         }
+        apply_probe_user_confinement(&mut config, users, now_unix);
         return Ok(config);
     }
 
@@ -172,7 +173,100 @@ pub fn render_server_config_for_deployment(
         "method": "default",
     }));
     config["route"] = json!({ "rules": rules });
+    apply_probe_user_confinement(&mut config, users, now_unix);
     Ok(config)
+}
+
+/// Confines the reserved protocol-probe user(s) (name ==
+/// [`crate::model::PROBE_USER_NAME`]) so the probe credential — whose share
+/// links are handed to peer agents — is not an open proxy. Prepends, ahead
+/// of every other rule (hairpin, relay forwarding, final reject):
+///
+/// 1. allow `auth_user` → TCP/[`PROBE_ALLOWED_PORT`] to
+///    [`PROBE_ALLOWED_IP_CIDRS`] via `direct`;
+/// 2. allow `auth_user` → TCP/[`PROBE_ALLOWED_PORT`] to the exact
+///    [`PROBE_ALLOWED_DOMAINS`] via `direct` (the prober sends these as
+///    domain destinations via socks5h, so no sniffing is needed; a
+///    connection to a bare IP never matches a `domain` item);
+/// 3. reject everything else for `auth_user`.
+///
+/// `auth_user` (sing-box `route/rule/rule_item_auth_user.go`) matches
+/// `metadata.User`, which the VLESS/Hysteria2 inbounds set to the user's
+/// `name` field — rendered as the user's `id`, so ids are listed here.
+/// Customer users never match any of these rules and are unaffected.
+/// sing-box has no per-user rate/bandwidth limit in route rules; see
+/// `docs/HEALTH_PROBE_EVIDENCE.md` for why that is acceptable here.
+///
+/// [`PROBE_ALLOWED_PORT`]: crate::model::PROBE_ALLOWED_PORT
+/// [`PROBE_ALLOWED_IP_CIDRS`]: crate::model::PROBE_ALLOWED_IP_CIDRS
+/// [`PROBE_ALLOWED_DOMAINS`]: crate::model::PROBE_ALLOWED_DOMAINS
+fn apply_probe_user_confinement(
+    config: &mut serde_json::Value,
+    users: &[CompatUser],
+    now_unix: i64,
+) {
+    use crate::model::{
+        PROBE_ALLOWED_DOMAINS, PROBE_ALLOWED_IP_CIDRS, PROBE_ALLOWED_PORT, PROBE_USER_NAME,
+    };
+    let ids: Vec<String> = users
+        .iter()
+        .filter(|u| u.is_active(now_unix) && u.name == PROBE_USER_NAME)
+        .map(|u| u.id.clone())
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let probe_rules = [
+        json!({
+            "auth_user": ids,
+            "network": "tcp",
+            "port": PROBE_ALLOWED_PORT,
+            "ip_cidr": PROBE_ALLOWED_IP_CIDRS,
+            "action": "route",
+            "outbound": "direct",
+        }),
+        json!({
+            "auth_user": ids,
+            "network": "tcp",
+            "port": PROBE_ALLOWED_PORT,
+            "domain": PROBE_ALLOWED_DOMAINS,
+            "action": "route",
+            "outbound": "direct",
+        }),
+        json!({
+            "auth_user": ids,
+            "action": "reject",
+            "method": "default",
+        }),
+    ];
+    if !config["route"].is_object() {
+        config["route"] = json!({});
+    }
+    let mut rules: Vec<serde_json::Value> = probe_rules.into();
+    if let Some(existing) = config["route"]["rules"].as_array() {
+        rules.extend(existing.iter().cloned());
+    }
+    config["route"]["rules"] = json!(rules);
+}
+
+/// Number of leading `route.rules` entries that
+/// [`apply_probe_user_confinement`] prepended (0 or 3), so `doctor` can
+/// validate the rest of the document exactly as before.
+pub fn probe_confinement_rule_count(doc: &serde_json::Value) -> usize {
+    let Some(rules) = doc["route"]["rules"].as_array() else {
+        return 0;
+    };
+    let is_probe = |r: &serde_json::Value| {
+        r.get("auth_user").is_some()
+            && (r["action"] == "reject" || r.get("ip_cidr").is_some() || r.get("domain").is_some())
+            && r.get("domain_suffix").is_none()
+            && r.get("inbound").is_none()
+    };
+    if rules.len() >= 3 && rules[..3].iter().all(is_probe) && rules[2]["action"] == "reject" {
+        3
+    } else {
+        0
+    }
 }
 
 /// Mutates an already-rendered exit document to hairpin the Google/

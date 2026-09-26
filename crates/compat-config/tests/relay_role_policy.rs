@@ -1230,3 +1230,147 @@ fn exit_hairpin_outbound_never_carries_this_exits_own_private_key() {
     assert!(!rendered.contains("SYNTHETIC-RELAY-PRIVATE-KEY"));
     assert!(hairpin_ob.get("private_key").is_none());
 }
+
+// ----------------------------------------------------------------------
+// Reserved protocol-probe user confinement (not an open proxy)
+// ----------------------------------------------------------------------
+
+fn probe_user() -> CompatUser {
+    let mut u = user();
+    u.id = "u-probe".into();
+    u.name = compat_config::model::PROBE_USER_NAME.into();
+    u.vless_uuid = "66666666-6666-4666-8666-666666666666".into();
+    u.peer_credentials = Default::default();
+    u
+}
+
+fn url_host(url: &str) -> &str {
+    url.trim_start_matches("https://")
+        .split(['/', ':'])
+        .next()
+        .unwrap()
+}
+
+#[test]
+fn probe_urls_are_exactly_covered_by_the_probe_allowlist() {
+    use compat_config::model::*;
+    for url in [PROBE_TRACE_V4_URL, PROBE_DNS_URL, PROBE_V6_ONLY_URL] {
+        assert!(
+            url.starts_with("https://"),
+            "{url} must be HTTPS (port 443)"
+        );
+        let host = url_host(url);
+        let allowed = match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => PROBE_ALLOWED_IP_CIDRS.contains(&format!("{ip}/32").as_str()),
+            Err(_) => PROBE_ALLOWED_DOMAINS.contains(&host),
+        };
+        assert!(allowed, "probe URL host {host} missing from the allowlist");
+    }
+    assert_eq!(PROBE_ALLOWED_PORT, 443);
+    // Nothing extra either: every allowlisted entry is used by a URL.
+    let hosts: Vec<&str> = [PROBE_TRACE_V4_URL, PROBE_DNS_URL, PROBE_V6_ONLY_URL]
+        .into_iter()
+        .map(url_host)
+        .collect();
+    for d in PROBE_ALLOWED_DOMAINS {
+        assert!(hosts.contains(d), "unused allowlisted domain {d}");
+    }
+    for c in PROBE_ALLOWED_IP_CIDRS {
+        assert!(
+            hosts.contains(&c.trim_end_matches("/32")),
+            "unused cidr {c}"
+        );
+    }
+}
+
+fn assert_probe_rules_lead(rules: &[serde_json::Value]) {
+    use compat_config::model::*;
+    let ids = serde_json::json!(["u-probe"]);
+    assert_eq!(rules[0]["auth_user"], ids);
+    assert_eq!(rules[0]["network"], "tcp");
+    assert_eq!(rules[0]["port"], 443);
+    assert_eq!(
+        rules[0]["ip_cidr"],
+        serde_json::json!(PROBE_ALLOWED_IP_CIDRS)
+    );
+    assert_eq!(rules[0]["outbound"], "direct");
+    assert_eq!(rules[1]["auth_user"], ids);
+    assert_eq!(rules[1]["domain"], serde_json::json!(PROBE_ALLOWED_DOMAINS));
+    assert!(rules[1].get("domain_suffix").is_none(), "exact hosts only");
+    assert_eq!(rules[1]["outbound"], "direct");
+    assert_eq!(rules[2]["auth_user"], ids);
+    assert_eq!(rules[2]["action"], "reject");
+    assert_eq!(
+        rules[2].as_object().unwrap().len(),
+        3,
+        "unconditional for that user"
+    );
+}
+
+#[test]
+fn exit_confines_probe_user_and_leaves_customers_unrouted() {
+    let exit = load(&base("exit")).unwrap();
+    // No probe user: byte-identical to before (no route at all).
+    let customers_only = render(&exit, &[user()]);
+    assert!(customers_only["route"].is_null());
+    assert_eq!(
+        compat_config::server::probe_confinement_rule_count(&customers_only),
+        0
+    );
+
+    let with_probe = render(&exit, &[user(), probe_user()]);
+    let rules = with_probe["route"]["rules"].as_array().unwrap();
+    assert_eq!(
+        rules.len(),
+        3,
+        "only the probe rules; customers keep default direct egress"
+    );
+    assert_probe_rules_lead(rules);
+    // No customer id appears in any rule.
+    assert!(!with_probe["route"].to_string().contains("\"u1\""));
+    assert!(with_probe["route"].get("final").is_none());
+    assert_eq!(
+        compat_config::server::probe_confinement_rule_count(&with_probe),
+        3
+    );
+}
+
+#[test]
+fn disabled_probe_user_gets_no_rules() {
+    let exit = load(&base("exit")).unwrap();
+    let mut p = probe_user();
+    p.enabled = false;
+    assert!(render(&exit, &[user(), p])["route"].is_null());
+}
+
+#[test]
+fn probe_rules_precede_exit_hairpin_rules() {
+    let exit = load(&exit_hairpin_deployment_toml()).unwrap();
+    let mut r = reality();
+    r.google_egress_hairpin_uuid = Some(SecretString::new("77777777-7777-4777-8777-777777777777"));
+    let without =
+        render_server_config_for_deployment(&exit, &[user()], &r, &hysteria(), 1_000).unwrap();
+    let with =
+        render_server_config_for_deployment(&exit, &[user(), probe_user()], &r, &hysteria(), 1_000)
+            .unwrap();
+    let rules = with["route"]["rules"].as_array().unwrap();
+    assert_probe_rules_lead(rules);
+    assert_eq!(
+        &rules[3..],
+        without["route"]["rules"].as_array().unwrap().as_slice()
+    );
+    assert_eq!(with["route"]["final"], "direct");
+}
+
+#[test]
+fn probe_rules_precede_relay_policy_which_is_otherwise_unchanged() {
+    let relay = load(&paired_relay_toml()).unwrap();
+    let without = render(&relay, &[user()]);
+    let with = render(&relay, &[user(), probe_user()]);
+    let rules = with["route"]["rules"].as_array().unwrap();
+    assert_probe_rules_lead(rules);
+    assert_eq!(
+        &rules[3..],
+        without["route"]["rules"].as_array().unwrap().as_slice()
+    );
+}

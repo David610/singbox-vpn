@@ -57,6 +57,79 @@ also on the next start if a hard kill left it behind. That sweep was added
 after this run found one orphaned directory from a `systemctl stop` that
 landed mid-probe.
 
+## Probe user egress confinement (fix: probe credential is not an open proxy)
+
+**Problem.** Before this fix `arcana-probe` was an ordinary user with
+unlimited egress. Its share links go to up to 3 peer agents, so anyone who
+held one (a compromised peer, or a leaked link) had a free, unaccounted
+proxy.
+
+**Fix.** `compat_config::server::apply_probe_user_confinement` runs at the
+end of `render_server_config_for_deployment` for both roles. When an active
+user named `compat_config::model::PROBE_USER_NAME` (`arcana-probe`) exists,
+it prepends three `route.rules` entries keyed on that user's rendered id.
+They sit ahead of every other rule: the exit hairpin rules, the relay
+forwarding rules and the relay's final reject.
+
+1. `auth_user` + `network: tcp` + `port: 443` + `ip_cidr: ["1.1.1.1/32"]`
+   route to `direct`
+2. `auth_user` + `network: tcp` + `port: 443` +
+   `domain: ["www.gstatic.com", "ipv6.icanhazip.com"]` (exact hosts, not
+   suffixes) route to `direct`
+3. `auth_user` → `reject`, which covers everything else, UDP included
+
+`auth_user` is the sing-box 1.14.1 route rule field that matches
+`metadata.User` (`route/rule/rule_item_auth_user.go`). The VLESS and
+Hysteria2 inbounds set that field from the user's `name`, which this renderer
+fills with the user id. The allowlist is built from the same constants the
+prober fetches: `PROBE_TRACE_V4_URL`, `PROBE_DNS_URL`, `PROBE_V6_ONLY_URL`,
+`PROBE_ALLOWED_*` in `crates/compat-config/src/model.rs`.
+`protocol_probe.rs` imports those constants, and a unit test fails if a URL
+host and the allowlist drift apart in either direction. The agent now
+refuses to publish a probe credential when `probe_user_name` is not the
+reserved name, because only that name is confined. `vpn-admin doctor`
+ignores the three leading probe rules when it checks the exit or relay
+policy shape. Users without that name get no new rules, and without a probe
+user the rendered document is byte-identical to before. Tests:
+`exit_confines_probe_user_and_leaves_customers_unrouted`,
+`probe_rules_precede_exit_hairpin_rules`,
+`probe_rules_precede_relay_policy_which_is_otherwise_unchanged`,
+`disabled_probe_user_gets_no_rules`,
+`probe_urls_are_exactly_covered_by_the_probe_allowlist`.
+
+**Rate and bandwidth.** sing-box 1.14.1 has no per-user connection-rate or
+bandwidth limit in route rules. Hysteria2 `up_mbps`/`down_mbps` apply to the
+whole inbound, and there is no per-user equivalent for VLESS. So no limit
+is rendered. The residual exposure is bounded instead. A holder of the link
+can only fetch three fixed, tiny HTTPS endpoints (a trace page, a 204 and an
+IP echo) on third-party CDNs. That gives no general egress and no way to
+choose a destination. It also cannot be used for amplification toward
+arbitrary targets. Per-user throttling would need a sing-box feature that
+does not exist in the pinned version.
+
+**Real test (vps2, sing-box 1.14.1, isolated rig in `/root/pc`, port
+2543 tcp+udp, unit `pc-singbox`; no existing service was touched).** A
+debug `vpn-admin` built from this branch ran `init`, then `user create
+--name arcana-probe`, then `user create --name customer1`, then
+`render-config`. `sing-box check` passed on the rendered config. The route
+contained exactly the three rules above for the probe user's id, and
+nothing for `customer1`. Two local sing-box clients were built from each
+user's own share links, one over VLESS+REALITY and one over Hysteria2. curl
+ran through each client's SOCKS inbound (`socks5h` for hostnames), and each
+row shows the HTTP status or the curl failure:
+
+| URL | probe / REALITY | probe / Hysteria2 | customer / REALITY | customer / Hysteria2 |
+|---|---|---|---|---|
+| `https://1.1.1.1/cdn-cgi/trace` | 200 | 200 | 200 | 200 |
+| `https://www.gstatic.com/generate_204` | 204 | 204 | 204 | 204 |
+| `https://ipv6.icanhazip.com` | 200 | 200 | 200 | 200 |
+| `https://example.com` | refused (curl 35) | refused (curl 35) | 200 | 200 |
+| `https://8.8.8.8` (raw IP not listed) | refused (curl 35) | refused (curl 35) | 302 | 302 |
+| `http://1.1.1.1/` (allowed IP, port 80) | refused (curl 52) | refused (curl 52) | 301 | 301 |
+| `https://gstatic.com/` (suffix, not exact host) | refused (curl 35) | refused (curl 35) | 204 | 204 |
+
+The rig was stopped and its unit file removed afterwards.
+
 ## Scenario results
 
 Thresholds come from `node-health-transition.js`: 3 consecutive failures take

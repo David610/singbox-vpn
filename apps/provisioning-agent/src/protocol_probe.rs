@@ -23,8 +23,11 @@
 //! `vpn-admin user create` path. Its share links are published to the
 //! control plane (`POST /api/agent/probe-credential`), which hands them only
 //! to other authenticated agents (`GET /api/agent/probe-targets`). A probe
-//! credential grants proxy egress on one node and nothing else: it is not
-//! tied to any customer, subscription, device or traffic record.
+//! credential is not tied to any customer, subscription, device or traffic
+//! record, and it is NOT an open proxy: the server renderer confines the
+//! user named `compat_config::model::PROBE_USER_NAME` to exactly the three
+//! probe URLs' destinations (TCP/443) and rejects everything else for it.
+//! Keep `probe_user_name` at its default, or the confinement does not apply.
 //!
 //! Secrets (UUIDs, passwords, obfs passwords) are never logged: errors are
 //! reduced to short classes before they reach `tracing` or the report.
@@ -40,12 +43,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const TRACE_V4_URL: &str = "https://1.1.1.1/cdn-cgi/trace";
-/// AAAA-only hostname: resolved by the server (socks5h), so success proves
-/// the server's IPv6 egress. (An IPv6 *literal* through reqwest's socks5
-/// proxy is not sent as an address, so a literal cannot be used here.)
-const V6_ONLY_URL: &str = "https://ipv6.icanhazip.com";
-const DNS_URL: &str = "https://www.gstatic.com/generate_204";
+// Shared with the server renderer's probe-user allowlist
+// (`compat_config::server` confines the probe user to exactly these hosts):
+// changing a URL here without the allowlist is caught by a unit test there.
+use compat_config::model::{
+    PROBE_DNS_URL as DNS_URL, PROBE_TRACE_V4_URL as TRACE_V4_URL, PROBE_V6_ONLY_URL as V6_ONLY_URL,
+};
 const SAMPLES: usize = 3;
 /// Temp dirs holding a probe client config (which carries the probe
 /// credential) use this prefix so a dir orphaned by a hard kill mid-probe
@@ -708,6 +711,14 @@ fn parse_openssl_date(s: &str) -> Option<i64> {
 /// Ensures this node's reserved probe user exists and returns its links
 /// as a self-target. Idempotent: an existing user of that name is reused.
 fn ensure_probe_user(cfg: &AgentConfig, pcfg: &ProtocolProbeConfig) -> Result<ProbeTarget> {
+    // The server only confines a user with the reserved name; any other
+    // name would publish an unconfined (open-proxy) credential to peers.
+    if pcfg.probe_user_name != compat_config::model::PROBE_USER_NAME {
+        bail!(
+            "probe_user_name must be {:?}: only that user is egress-confined by the server",
+            compat_config::model::PROBE_USER_NAME
+        );
+    }
     let admin = |args: &[&str]| -> Result<String> {
         let out = Command::new(&cfg.vpn_admin_binary)
             .arg("--config")
