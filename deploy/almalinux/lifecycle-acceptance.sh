@@ -1167,10 +1167,12 @@ echo "CERT_LOOKUP:OK:$host"
   # actually has installed — probed live via `certbot --help renew`
   # rather than hardcoded from a version guess, so a real run's log shows
   # which case actually applied instead of silently assuming one.
-  no_random_sleep_flag=""
-  if ssh_run 'sudo certbot --help renew 2>&1 | grep -q -- "--no-random-sleep-on-renew"' 2>/dev/null; then
-    no_random_sleep_flag=" --no-random-sleep-on-renew"
-  fi
+  # Non-interactive `certbot renew` (no TTY, as over this SSH session)
+  # sleeps a random 0-480s before renewing, which alone can exceed the
+  # 300s inner timeout. --no-random-sleep-on-renew has existed since
+  # certbot 0.29 but is not listed in any `--help` output (certbot 3.1.0),
+  # so the old help-grep detection never enabled it. Always pass it.
+  no_random_sleep_flag=" --no-random-sleep-on-renew"
   cert_name_q="$(printf '%q' "$cert_name")"
   # Single-quoted local variable for the parts with no local
   # interpolation, then re-opened as a double-quoted string only for the

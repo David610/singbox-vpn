@@ -1251,23 +1251,23 @@ else
   fail "(A) --no-random-sleep-on-renew was not added even though the mocked certbot advertises support for it"
 fi
 
-echo "  - (K) certbot lacks --no-random-sleep-on-renew support -> the flag is omitted, never blindly assumed"
+echo "  - (K) certbot does not advertise --no-random-sleep-on-renew in --help (true of certbot 3.1.0) -> the flag is still sent"
 out_k="$(run_certbot_scenario no_random_sleep_unsupported)"
 # Note: SSH_LOG's own PROBE command line legitimately contains the literal
 # string "--no-random-sleep-on-renew" (it's grepping FOR that flag in
 # certbot's --help output) — so the assertion must target the actual
 # renewal invocation line specifically, not just search the whole log for
 # that substring.
-if grep -q -- 'certbot renew --dry-run --cert-name example.test$' "$SSH_LOG"; then
-  ok "(K) the flag is correctly omitted against an older certbot that doesn't advertise it"
+if grep -q -- 'certbot renew --dry-run --cert-name example.test --no-random-sleep-on-renew$' "$SSH_LOG"; then
+  ok "(K) the flag is sent even when certbot's --help does not list it (the random 0-480s sleep would otherwise exceed the 300s timeout)"
 else
-  fail "(K) the flag was sent even though the mocked certbot's --help renew doesn't advertise support for it: $(grep -- 'certbot renew --dry-run' "$SSH_LOG")"
+  fail "(K) the flag was not sent when certbot's --help does not list it: $(grep -- 'certbot renew --dry-run' "$SSH_LOG")"
 fi
 stage18_k="$(sed -n '/=== 18\./,/=== 19\./p' <<< "$out_k")"
 if grep -qE '\[PASS\][[:space:]]+certbot renew --dry-run' <<< "$stage18_k"; then
-  ok "(K) the renewal itself still PASSes normally without the flag"
+  ok "(K) the renewal itself still PASSes normally"
 else
-  fail "(K) omitting the flag broke the otherwise-healthy renewal: $stage18_k"
+  fail "(K) the renewal did not PASS: $stage18_k"
 fi
 
 echo "  - (D-new) no current-deployment certificate lineage exists -> FAIL, classified CERT_LINEAGE_LOOKUP_FAILED, and certbot is NEVER invoked globally"
