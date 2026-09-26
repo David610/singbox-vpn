@@ -250,7 +250,7 @@ fn apply_probe_user_confinement(
 }
 
 /// Number of leading `route.rules` entries that
-/// [`apply_probe_user_confinement`] prepended (0 or 3), so `doctor` can
+/// `apply_probe_user_confinement` prepended (0 or 3), so `doctor` can
 /// validate the rest of the document exactly as before.
 pub fn probe_confinement_rule_count(doc: &serde_json::Value) -> usize {
     let Some(rules) = doc["route"]["rules"].as_array() else {
