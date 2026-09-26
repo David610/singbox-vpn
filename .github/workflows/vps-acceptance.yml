@@ -118,7 +118,9 @@ jobs:
           umask 077
           printf '%s\n' "$SSH_KEY" > ~/.ssh/vps_acceptance_key
           chmod 600 ~/.ssh/vps_acceptance_key
-          eval "$(ssh-agent -s)" >> "$GITHUB_ENV"
+          eval "$(ssh-agent -s)" >/dev/null
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
           ssh-add ~/.ssh/vps_acceptance_key
 
       - name: Run the destructive lifecycle acceptance gate
