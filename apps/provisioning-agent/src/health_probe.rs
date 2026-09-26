@@ -232,13 +232,24 @@ mod tests {
         Some(SingBox { child, _dir: dir })
     }
 
+    /// Waits until the Clash API actually answers. `probe_data_plane` is not
+    /// usable as the readiness check: it maps "connection refused" to
+    /// `Some(false)`, so polling it for `is_some()` returned on the first
+    /// attempt, before sing-box had bound its port, and the real probe then
+    /// raced sing-box's startup (a timing-dependent failure).
     async fn wait_until_probeable(http: &reqwest::Client, base: &str, secret: &str) -> bool {
-        for _ in 0..40 {
-            let (ok, _) = probe_data_plane(http, Some(base), Some(secret), None).await;
-            if ok.is_some() {
+        for _ in 0..80 {
+            let ready = http
+                .get(format!("{base}/version"))
+                .bearer_auth(secret)
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+            if ready {
                 return true;
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(125)).await;
         }
         false
     }
