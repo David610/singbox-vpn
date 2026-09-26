@@ -48,6 +48,18 @@ else
   failures=$((failures + 1))
 fi
 
+# Both paths must leave /opt/singbox-vpn root-owned and not group/world
+# writable (tar as root restores the archive's 775/664 modes; the
+# uninstaller refuses such a tree). Regression: v1.1.0-rc.4 -> rc.5 update.
+for f in "$INSTALL_SH" "$UPDATE_SH"; do
+  if grep -q 'chown -R root:root' "$f" && grep -q 'chmod -R go-w' "$f" && grep -q -- '-perm /022' "$f"; then
+    echo "ok: $(basename "$(dirname "$f")")/$(basename "$f") normalizes source ownership/permissions and verifies them"
+  else
+    echo "FAIL: $f does not normalize (chown root, chmod go-w) and verify (-perm /022) the source tree it installs"
+    failures=$((failures + 1))
+  fi
+done
+
 # --- $BIN_DIR helper scripts ---
 # install.sh: literal `install -m 0<mode> "$REPO_ROOT/<src>" "$BIN_DIR/<name>"` lines
 # for the non-core-binary helper scripts (vpn-health-check, vpn-benchmark,

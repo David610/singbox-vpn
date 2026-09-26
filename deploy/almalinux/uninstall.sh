@@ -57,7 +57,7 @@ assert_root_controlled_path() {
   group_digit="${mode: -2:1}"
   other_digit="${mode: -1:1}"
   if [ $(( group_digit & 2 )) -ne 0 ] || [ $(( other_digit & 2 )) -ne 0 ]; then
-    die "refusing to run: $label ($path) is group- or world-writable (mode $mode) — this must not be writable by anyone but root before running an uninstaller that deletes state as root."
+    die "refusing to run: $label ($path) is group- or world-writable (mode $mode) — this must not be writable by anyone but root before running an uninstaller that deletes state as root. Hosts updated in place from singbox-vpn v1.1.0-rc.5 or earlier can be left like this by that release's update.sh; if you are the only administrator of this host, repair with: chown -R root:root $path && chmod -R go-w $path"
   fi
 }
 # Only enforced for the canonical persistent-install location this check

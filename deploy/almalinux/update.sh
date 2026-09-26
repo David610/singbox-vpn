@@ -665,6 +665,17 @@ STAGED_SRC_DIR="$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '
   || die "downloaded release source for $TARGET_VERSION does not look like a valid singbox-vpn source tree. Nothing live has been changed."
 [ -f "$STAGED_SRC_DIR/deploy/lib/versions.env" ] \
   || die "downloaded release source for $TARGET_VERSION is missing deploy/lib/versions.env. Nothing live has been changed."
+# tar run as root restores the archive's own modes, and release source
+# archives carry group-writable (775/664) entries. Normalize exactly like
+# install.sh's persisted-source step before this tree becomes
+# /opt/singbox-vpn: a group-writable tree there makes the root-run
+# uninstaller (correctly) refuse, and would let a non-root writer plant
+# files that later run as root.
+chown -R root:root "$STAGED_SRC_DIR"
+chmod -R go-w "$STAGED_SRC_DIR"
+if [ -n "$(find "$STAGED_SRC_DIR" \( ! -user root -o -perm /022 \) -print -quit)" ]; then
+  die "downloaded release source for $TARGET_VERSION failed the root-owned/not-group-or-world-writable trust check after normalization. Nothing live has been changed."
+fi
 expected_package_version="${TARGET_VERSION#v}"
 expected_package_version="${expected_package_version%%-*}"
 # apps/admin/Cargo.toml declares version.workspace = true (no literal
