@@ -28,6 +28,9 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 UMask=0077
+# ADR-0003 lease table (/var/lib/vpn-provisioning-agent/lease-pool.json).
+StateDirectory=vpn-provisioning-agent
+StateDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target

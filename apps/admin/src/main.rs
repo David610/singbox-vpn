@@ -6,6 +6,7 @@
 //! at `create` or `rotate-token` time, because only its hash is persisted
 //! (spec §26).
 
+mod lease_pool;
 mod lock;
 mod service;
 
@@ -260,6 +261,28 @@ enum Commands {
     Config(ConfigCommands),
     #[command(subcommand)]
     GoogleEgressHairpin(GoogleEgressHairpinCommands),
+    /// ADR-0003 ephemeral managed authorization: the provisioning agent's
+    /// bounded lease pool of pseudonymous credential slots.
+    #[command(subcommand)]
+    LeasePool(LeasePoolCommands),
+}
+
+#[derive(Subcommand)]
+enum LeasePoolCommands {
+    /// Replace the full set of lease-pool users (`lease-NNNN`) with the
+    /// slots in `--input` (JSON `{"slots":[{"slot","vless_uuid",
+    /// "hysteria2_password","expires_at"}]}`, written 0600 by the agent),
+    /// then render, `sing-box check`, atomically install and reload in ONE
+    /// apply — the same fail-closed path as every user mutation. Non-lease
+    /// users are never touched. Each slot user carries `expires_at`, so the
+    /// rendered config drops it once expired on any later render (agent
+    /// sweeper or the expiry-reconcile timer). Prints
+    /// `{"live","slots","hysteria2_obfs_password"}` as JSON on stdout; the
+    /// slot secrets are never printed.
+    Sync {
+        #[arg(long)]
+        input: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -623,6 +646,7 @@ fn main() -> Result<()> {
         Commands::ApplyRevision { revision, input } => cmd_apply_revision(&cfg, revision, &input),
         Commands::RevisionStatus { json } => cmd_revision_status(&cfg, json),
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
+        Commands::LeasePool(LeasePoolCommands::Sync { input }) => cmd_lease_pool_sync(&cfg, &input),
         Commands::Config(ConfigCommands::Validate) => cmd_config_validate(&cfg, &cli.config),
         Commands::Config(ConfigCommands::Migrate) => cmd_config_migrate(&cfg, &cli.config),
         Commands::GoogleEgressHairpin(GoogleEgressHairpinCommands::Set {
@@ -2775,6 +2799,33 @@ fn cmd_user_create(
     println!("Full walkthrough and troubleshooting: docs/clients/HIDDIFY_IOS.md");
     println!("Run `vpn-admin doctor --client` for an interactive on-device acceptance checklist.");
     Ok(())
+}
+
+fn cmd_lease_pool_sync(cfg: &DeploymentConfig, input: &std::path::Path) -> Result<()> {
+    let machine_stdout = MachineStdout::divert_human_output_to_stderr()?;
+    let text = std::fs::read_to_string(input)
+        .with_context(|| format!("reading lease-pool input {input:?}"))?;
+    let parsed: lease_pool::LeasePoolInput =
+        serde_json::from_str(&text).context("parsing lease-pool input (contents not shown)")?;
+    let users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
+    let now = UnixSeconds::now().0 as i64;
+    let (next, changed) = lease_pool::reconcile(&users, &parsed, now)?;
+    let went_live = if !changed {
+        // Nothing changed in the store; still make sure the live config
+        // reflects it (e.g. an expired slot must be rendered out).
+        render_and_apply_singbox_config(cfg, &next, true)?
+    } else {
+        apply_users_and_save(cfg, &previous_users, &next)?
+    };
+    let obfs = load_hysteria_params(cfg)
+        .obfs_password
+        .map(|p| p.expose().to_string());
+    machine_stdout.write_document(&json!({
+        "live": went_live,
+        "slots": parsed.slots.len(),
+        "hysteria2_obfs_password": obfs,
+    }))
 }
 
 fn cmd_user_list(cfg: &DeploymentConfig) -> Result<()> {
