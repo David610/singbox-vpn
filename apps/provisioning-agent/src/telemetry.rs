@@ -203,14 +203,22 @@ fn configured_user_count(cfg: &AgentConfig) -> Option<u64> {
         return None;
     }
     let stdout = String::from_utf8(output.stdout).ok()?;
-    // vpn-admin's human list has one header row followed by one user row.
-    Some(
-        stdout
-            .lines()
-            .skip(1)
-            .filter(|line| !line.trim().is_empty())
-            .count() as u64,
-    )
+    let probe_user = cfg
+        .protocol_probe
+        .as_ref()
+        .map(|p| p.probe_user_name.as_str());
+    Some(count_customer_users(&stdout, probe_user))
+}
+
+/// vpn-admin's human list has one header row followed by one user row.
+/// The reserved protocol-probe user is not a customer and must not inflate
+/// `configured_users`, which the control plane schedules on.
+fn count_customer_users(list: &str, probe_user: Option<&str>) -> u64 {
+    list.lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| probe_user.is_none_or(|p| line.split_whitespace().nth(1) != Some(p)))
+        .count() as u64
 }
 
 /// Phase 6: the revision `vpn-admin apply-revision` most recently applied
@@ -327,5 +335,17 @@ vpn_admin_config = "/etc/vpn/deployment.toml"
         if cfg!(target_os = "linux") {
             assert!(read_uptime_seconds().unwrap_or(0) > 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod probe_user_count_tests {
+    use super::count_customer_users;
+
+    #[test]
+    fn probe_user_is_not_counted_as_a_customer() {
+        let list = "ID NAME ENABLED\nabc alice true\ndef arcana-probe true\n\n";
+        assert_eq!(count_customer_users(list, Some("arcana-probe")), 1);
+        assert_eq!(count_customer_users(list, None), 2);
     }
 }

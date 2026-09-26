@@ -304,6 +304,9 @@ pub struct ProbeResult {
 pub struct ProbeReport {
     pub version: u32,
     pub round: u64,
+    /// Surfaced to the control plane so an insecure probe config cannot
+    /// run unnoticed.
+    pub tls_insecure_for_tests: bool,
     pub hysteria2_cert_days_remaining: Option<i64>,
     pub results: Vec<ProbeResult>,
 }
@@ -330,6 +333,12 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
     let mut own: Option<ProbeTarget> = None;
     let mut published = false;
     let mut round = 0_u64;
+    if pcfg.tls_insecure_for_tests {
+        tracing::error!(
+            "protocol_probe.tls_insecure_for_tests is ON: Hysteria2 certificates are NOT verified; \
+             test rigs only, never production"
+        );
+    }
     let swept = sweep_stale_probe_dirs(&std::env::temp_dir());
     if swept > 0 {
         tracing::info!(swept, "removed stale probe config dirs");
@@ -340,6 +349,11 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
                 Ok(t) => own = Some(t),
                 Err(e) => tracing::warn!(error = %e, "ensuring the reserved probe user failed"),
             }
+        }
+        // Republish periodically: the control plane may have dropped the
+        // row (or rejected an early publish) and must converge.
+        if round.is_multiple_of(30) {
+            published = false;
         }
         if let (false, Some(t)) = (published, own.as_ref()) {
             match publish_credential(&http, &cfg, t).await {
@@ -381,6 +395,7 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
         let report = ProbeReport {
             version: 1,
             round,
+            tls_insecure_for_tests: pcfg.tls_insecure_for_tests,
             hysteria2_cert_days_remaining: pcfg
                 .hysteria2_cert_path
                 .as_deref()
