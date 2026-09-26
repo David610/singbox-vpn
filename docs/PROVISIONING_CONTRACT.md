@@ -583,20 +583,39 @@ This repo's side:
 - **Agent lease store + sweeper** (`apps/provisioning-agent/src/lease_pool.rs`),
   run every poll iteration. Config (`provisioning-agent.toml`):
   `lease_pool_size` (default 32, max 1024, `0` disables),
-  `lease_slot_lifetime_secs` (default 1800, clamped 900..7200),
+  `lease_slot_lifetime_secs` (default 1800, clamped to
+  `max(900, 600 + batch + 60)..7200`),
+  `rotation_batch_interval_secs` (default 600, clamped 60..3600),
   `lease_state_file` (default `/var/lib/vpn-provisioning-agent/lease-pool.json`,
   0600, atomic; the unit sets `StateDirectory=vpn-provisioning-agent`).
-  Order is always persist → apply → (only if `live`) report. Rotates slots
-  that expired, were revoked, or are confirmed unleased past their leasable
-  window; expiry needs no control plane and survives agent restarts.
+  Order is always persist → apply → (only if `live`) report. Every
+  `valid_until` is `floor(now + lifetime)` on the batch grid, so expiries
+  fall on batch boundaries. Rotation rules: expired → now (no control plane
+  needed, survives agent restarts); revoked with `urgent` → now; revoked
+  without it, or confirmed unleased past the leasable window → at the first
+  poll after the next grid boundary since the last rotation. Any forced
+  rotation takes all pending ones along. Net: at most one rotation apply
+  (= one sing-box restart) per batch window, plus one per urgent revocation.
+  **Renewal:** for a leased slot whose sync entry carries `extend_to` (same
+  generation), the agent moves `valid_until` to `min(floor(extend_to),
+  floor(now + lifetime))` — never backwards, never for an expired,
+  revoked, active or superseded generation — and re-runs `lease-pool sync`.
+  Only `expires_at` in the user store changes; the rendered sing-box config
+  is byte-identical, so vpn-admin reports "already current" and does not
+  restart sing-box.
 - **Worker API**: `POST /api/agent/leases/sync`, node Bearer auth.
   Request `{ slots: [{ slot, generation, valid_until (RFC3339),
-  vless_uuid?, hysteria2_password? }], hysteria2_obfs_password?: string|null }`
-  (secrets only for generations the control plane has not stored yet).
+  vless_uuid?, hysteria2_password? }], hysteria2_obfs_password?: string|null,
+  policy: { rotation_batch_interval_secs, slot_lifetime_secs } }`
+  (secrets only for generations the control plane has not stored yet; the
+  policy lets the control plane compute renewal targets on this node's grid).
   Response `{ as_of, min_remaining_seconds, obfs_stored, need_secret: [slot],
-  slots: [{ slot, generation, state: "active"|"leased"|"revoked" }] }`.
+  slots: [{ slot, generation, state: "active"|"leased"|"revoked",
+  urgent: bool, extend_to: RFC3339|null }] }`.
   Not a job type: it is a continuous reconciliation, not a queued command.
 
-Operational consequence (measured): every pool apply restarts sing-box and
-drops all open connections on the node, not only the rotated slot's. See
-the ADR's "Connections at expiry" section.
+Operational consequence (measured, `docs/B2_EPHEMERAL_AUTH_EVIDENCE.md`):
+every rotation apply restarts sing-box and drops all open connections on
+the node, not only the rotated slot's; SIGHUP (in-process reload) drops
+them too, so it is not used. Renewals cost no restart; rotations are
+batched as above. See the ADR's "Bounding disruption" section.

@@ -12,6 +12,7 @@ vpn_admin_config = "/etc/vpn/deployment.toml"
 poll_interval_secs = 3
 lease_pool_size = 4
 lease_slot_lifetime_secs = 900
+rotation_batch_interval_secs = 120
 lease_state_file = "/var/lib/vpn-provisioning-agent/lease-pool.json"
 T
 systemd-run --unit=b2-mockcp --collect /usr/bin/python3 /root/b2/mockcp.py

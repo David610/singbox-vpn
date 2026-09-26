@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Minimal stand-in for vpn-web's agent API (B2 real test only).
 Implements /api/agent/leases/sync with the same semantics as the
-agent_sync_lease_slots RPC. Secrets go only to a 0600 file; nothing
-secret is ever printed or logged."""
+agent_sync_lease_slots RPC (incl. renewal `extend_to`, `urgent`
+revocations and adopted valid_until). Secrets go only to a 0600 file;
+nothing secret is ever printed or logged."""
 import json, os, datetime, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 D = "/root/b2"; os.makedirs(D, mode=0o700, exist_ok=True)
@@ -30,6 +31,9 @@ class H(BaseHTTPRequestHandler):
             need, seen = [], set()
             for it in body["slots"]:
                 k = str(it["slot"]); seen.add(k); row = state.get(k)
+                if row and row["generation"] == it["generation"] and it["valid_until"] > row["valid_until"]:
+                    row["valid_until"] = it["valid_until"]  # node adopted a renewal
+                    secrets[k]["valid_until"] = it["valid_until"]
                 if row and row["generation"] >= it["generation"]: continue
                 if "vless_uuid" not in it: need.append(it["slot"]); continue
                 state[k] = {"generation": it["generation"], "state": "active", "valid_until": it["valid_until"]}
@@ -37,11 +41,16 @@ class H(BaseHTTPRequestHandler):
                               "hysteria2_password": it["hysteria2_password"], "valid_until": it["valid_until"]}
             for k in list(state):
                 if k not in seen: del state[k]
-            # control: {"lease":[slot], "revoke":[slot]} applied to the CURRENT generation
+            # control: {"lease":[slot], "revoke":[slot], "revoke_urgent":[slot],
+            #           "extend":{slot: rfc3339}} applied to the CURRENT generation
             for s in ctrl.pop("lease", []):
                 if str(s) in state and state[str(s)]["state"] == "active": state[str(s)]["state"] = "leased"
             for s in ctrl.pop("revoke", []):
                 if str(s) in state: state[str(s)]["state"] = "revoked"
+            for s in ctrl.pop("revoke_urgent", []):
+                if str(s) in state: state[str(s)].update(state="revoked", urgent=True)
+            for s, t in ctrl.pop("extend", {}).items():
+                if s in state and state[s]["state"] == "leased": state[s]["extend_to"] = t
             if "hysteria2_obfs_password" in body:
                 secrets["_obfs"] = body["hysteria2_obfs_password"]
             save(SECRETS, secrets); save(STATE, state); save(CTRL, ctrl)
@@ -51,5 +60,6 @@ class H(BaseHTTPRequestHandler):
             self.reply({"as_of": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
                         "min_remaining_seconds": 600, "obfs_stored": "hysteria2_obfs_password" in body,
                         "need_secret": need,
-                        "slots": [{"slot": int(k), "generation": v["generation"], "state": v["state"]} for k, v in sorted(state.items(), key=lambda kv: int(kv[0]))]})
+                        "slots": [{"slot": int(k), "generation": v["generation"], "state": v["state"],
+                                   "urgent": v.get("urgent", False), "extend_to": v.get("extend_to")} for k, v in sorted(state.items(), key=lambda kv: int(kv[0]))]})
 ThreadingHTTPServer(("127.0.0.1", 8788), H).serve_forever()

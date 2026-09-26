@@ -63,6 +63,17 @@ pub struct AgentConfig {
     /// restarts so expiry/rotation continues across them.
     #[serde(default = "default_lease_state_file")]
     pub lease_state_file: String,
+    /// Rotation batch window, seconds (clamped 60..=3600). Every slot's
+    /// valid_until lies on this grid; non-urgent rotations (each of which
+    /// restarts sing-box and drops every open connection on the node) are
+    /// coalesced to at most one apply per window. Expiry and urgent
+    /// revocations are never deferred.
+    #[serde(default = "default_rotation_batch_interval_secs")]
+    pub rotation_batch_interval_secs: u64,
+}
+
+fn default_rotation_batch_interval_secs() -> u64 {
+    crate::lease_pool::DEFAULT_BATCH_SECS as u64
 }
 
 fn default_lease_pool_size() -> usize {
@@ -98,6 +109,10 @@ impl std::fmt::Debug for AgentConfig {
             .field("lease_pool_size", &self.lease_pool_size)
             .field("lease_slot_lifetime_secs", &self.lease_slot_lifetime_secs)
             .field("lease_state_file", &self.lease_state_file)
+            .field(
+                "rotation_batch_interval_secs",
+                &self.rotation_batch_interval_secs,
+            )
             .finish()
     }
 }
