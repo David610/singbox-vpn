@@ -150,7 +150,19 @@ done
 [ "$(id -u)" -eq 0 ] || die "must run as root — try: curl -fsSL https://raw.githubusercontent.com/$SINGBOX_VPN_REPO/main/install.sh | sudo bash"
 
 command -v curl >/dev/null 2>&1 || die "curl is required but not found. Install curl and re-run."
-command -v tar >/dev/null 2>&1 || die "tar is required but not found. Install tar and re-run."
+# Minimal cloud images (e.g. Hetzner's AlmaLinux 9) ship without tar, which
+# this bootstrap needs to unpack the verified release archive. Install it
+# from the distribution's own signed repositories rather than failing.
+if ! command -v tar >/dev/null 2>&1; then
+  if command -v dnf >/dev/null 2>&1; then
+    dnf -y -q install tar >&2 || die "tar is required but not found, and 'dnf install tar' failed. Install tar and re-run."
+  elif command -v yum >/dev/null 2>&1; then
+    yum -y -q install tar >&2 || die "tar is required but not found, and 'yum install tar' failed. Install tar and re-run."
+  elif command -v apt-get >/dev/null 2>&1; then
+    { apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -y -qq install tar; } >&2 || die "tar is required but not found, and 'apt-get install tar' failed. Install tar and re-run."
+  fi
+  command -v tar >/dev/null 2>&1 || die "tar is required but not found. Install tar and re-run."
+fi
 
 [ -f /etc/os-release ] || die "cannot detect OS (/etc/os-release missing) — singbox-vpn requires a modern systemd Linux distribution."
 

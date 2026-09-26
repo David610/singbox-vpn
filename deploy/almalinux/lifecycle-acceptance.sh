@@ -585,11 +585,17 @@ section "0b. bootstrap prerequisites (bash, curl, tar)"
 # unrelated-looking failures.
 BOOTSTRAP_READY=0
 missing_tools=""
-for tool in bash curl tar; do
+for tool in bash curl; do
   ssh_run "command -v $tool" >/dev/null 2>&1 || missing_tools="$missing_tools $tool"
 done
+# install.sh installs tar itself via dnf/yum/apt-get when it is missing
+# (minimal cloud images omit it), so tar only blocks when neither tar nor
+# one of those package managers exists on the target.
+if ! ssh_run "command -v tar || command -v dnf || command -v yum || command -v apt-get" >/dev/null 2>&1; then
+  missing_tools="$missing_tools tar"
+fi
 if [ -z "$missing_tools" ]; then
-  pass "bootstrap prerequisites present (bash, curl, tar)"
+  pass "bootstrap prerequisites present (bash, curl, tar or a package manager to install it)"
   BOOTSTRAP_READY=1
 else
   fail_required "bootstrap prerequisites" "missing:$missing_tools"
