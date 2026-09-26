@@ -36,6 +36,32 @@ pub const GOOGLE_EGRESS_DOMAINS: &[&str] = &[
     "gstatic.com",
 ];
 
+/// Default name of the reserved, non-customer protocol-probe user each
+/// node creates for peer health probing (`provisioning-agent`'s
+/// `protocol_probe`). The server renderer confines any user with this name
+/// to [`PROBE_ALLOWED_IP_CIDRS`] / [`PROBE_ALLOWED_DOMAINS`] on
+/// [`PROBE_ALLOWED_PORT`] and rejects everything else for it, so the
+/// credential (handed to peer agents) is never an open proxy.
+pub const PROBE_USER_NAME: &str = "arcana-probe";
+
+/// The exact URLs the protocol prober fetches through the tunnel. Single
+/// source of truth for both the prober and the server-side allowlist
+/// below (a unit test pins every URL's host into that allowlist).
+///
+/// IP literal, no DNS needed: `https_ipv4`, `egress_ipv4`, latency.
+pub const PROBE_TRACE_V4_URL: &str = "https://1.1.1.1/cdn-cgi/trace";
+/// Resolved by the server (socks5h): the `dns` dimension.
+pub const PROBE_DNS_URL: &str = "https://www.gstatic.com/generate_204";
+/// AAAA-only host resolved by the server (socks5h): the `ipv6` dimension.
+pub const PROBE_V6_ONLY_URL: &str = "https://ipv6.icanhazip.com";
+
+/// Destinations the probe user may reach (IP-literal URLs above).
+pub const PROBE_ALLOWED_IP_CIDRS: &[&str] = &["1.1.1.1/32"];
+/// Destinations the probe user may reach (exact host names, not suffixes).
+pub const PROBE_ALLOWED_DOMAINS: &[&str] = &["www.gstatic.com", "ipv6.icanhazip.com"];
+/// The only destination port the probe user may reach (all URLs are HTTPS).
+pub const PROBE_ALLOWED_PORT: u16 = 443;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompatTransport {

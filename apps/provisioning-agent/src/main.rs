@@ -2,6 +2,7 @@ mod config;
 mod dispatch;
 mod health_probe;
 mod lease_pool;
+mod protocol_probe;
 mod stats;
 mod telemetry;
 mod worker_client;
@@ -14,7 +15,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use worker_client::WorkerClient;
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const TRAFFIC_INTERVAL: Duration = Duration::from_secs(15);
 const REPORT_BACKOFF_MAX_SECS: u64 = 30;
 
@@ -42,6 +42,14 @@ async fn main() -> Result<()> {
     let mut telemetry = telemetry::TelemetrySampler::new();
     let mut next_heartbeat = Instant::now();
     let mut next_traffic = Instant::now();
+    let heartbeat_interval = Duration::from_secs(cfg.heartbeat_interval_secs.clamp(10, 60));
+    let protocol_report: protocol_probe::SharedReport = Default::default();
+    if cfg.protocol_probe.is_some() {
+        tokio::spawn(protocol_probe::run_loop(
+            cfg.clone(),
+            protocol_report.clone(),
+        ));
+    }
 
     let mut lease_pool = match lease_pool::LeasePool::open(&cfg) {
         Ok(pool) => Some(pool),
@@ -69,11 +77,14 @@ async fn main() -> Result<()> {
                 cfg.clash_probe_outbound.as_deref(),
             )
             .await;
-            let payload = telemetry.collect(&cfg, probe_ok, probe_latency_ms);
+            let mut payload = telemetry.collect(&cfg, probe_ok, probe_latency_ms);
+            if let Some(report) = protocol_probe::take_report(&protocol_report) {
+                payload["protocol_probe"] = report;
+            }
             if let Err(err) = client.heartbeat(&payload).await {
                 tracing::warn!(error = %err, "node heartbeat failed");
             }
-            next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
+            next_heartbeat = Instant::now() + heartbeat_interval;
         }
 
         if now >= next_traffic {

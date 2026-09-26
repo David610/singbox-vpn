@@ -3888,8 +3888,15 @@ fn print_node_identity(cfg: &DeploymentConfig) {
 fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures: &mut u32) {
     use compat_config::deployment::NodeRole;
     let rules = doc["route"]["rules"].as_array();
+    // Leading probe-user confinement rules (`arcana-probe`, see
+    // `compat_config::server::probe_confinement_rule_count`) are
+    // role-independent; the exit shape check below ignores them.
+    let probe_rules = compat_config::server::probe_confinement_rule_count(doc);
     match cfg.role {
         NodeRole::Exit => {
+            let rules = rules
+                .map(|rules| &rules[probe_rules..])
+                .filter(|rules| !rules.is_empty());
             // The one legitimate exception: the Google/YouTube egress
             // hairpin (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16) adds
             // exactly one route.rules entry to an exit. Anything else —
