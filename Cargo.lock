@@ -1243,6 +1243,7 @@ version = "1.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "compat-config",
  "reqwest",
  "serde",
  "serde_json",

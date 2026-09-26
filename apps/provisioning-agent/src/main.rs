@@ -1,6 +1,7 @@
 mod config;
 mod dispatch;
 mod health_probe;
+mod lease_pool;
 mod stats;
 mod telemetry;
 mod worker_client;
@@ -42,6 +43,17 @@ async fn main() -> Result<()> {
     let mut next_heartbeat = Instant::now();
     let mut next_traffic = Instant::now();
 
+    let mut lease_pool = match lease_pool::LeasePool::open(&cfg) {
+        Ok(pool) => Some(pool),
+        Err(err) => {
+            // Never start without the persisted table: forgetting live
+            // secrets would stop them from being rotated. Keep the rest of
+            // the agent running and surface the problem loudly.
+            tracing::error!(error = %err, "lease pool state unreadable; lease pool disabled until fixed");
+            None
+        }
+    };
+
     if cfg.clash_api_url.is_none() {
         tracing::info!("clash_api_url not configured — traffic reporting disabled for this node");
     }
@@ -67,6 +79,14 @@ async fn main() -> Result<()> {
         if now >= next_traffic {
             report_traffic_once(&cfg, &client).await;
             next_traffic = Instant::now() + TRAFFIC_INTERVAL;
+        }
+
+        if let Some(pool) = lease_pool.as_mut() {
+            // Runs every iteration: expiry enforcement is bounded by the
+            // poll interval, and does not depend on the control plane.
+            if let Err(err) = pool.tick(&cfg, &client).await {
+                tracing::warn!(error = %err, "lease pool tick failed");
+            }
         }
 
         match poll_once(&cfg, &client).await {

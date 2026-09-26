@@ -21,6 +21,7 @@ anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 time = { version = "0.3", features = ["parsing", "formatting"] }
 tempfile = "3"
+compat-config = { path = "../../crates/compat-config" }
 
 [dev-dependencies]
 tempfile = "3"

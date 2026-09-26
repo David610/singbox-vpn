@@ -558,3 +558,45 @@ network, Russian networks included — see
 `docs/RUSSIA_PRODUCTION_INVESTIGATION.md`, whose findings remain
 UNVERIFIED and are not upgraded by anything here. Real-device and
 real-network status lives in `docs/DEVICE_ACCEPTANCE_TESTS.md`.
+
+## Ephemeral managed authorization: the lease pool (ADR-0003)
+
+Managed (tamara-next) clients no longer receive long-lived `CREATE_USER`
+identities. Design and rationale: vpn-web
+`docs/ADR/0003-ephemeral-managed-authorization.md`; real-server evidence:
+[`B2_EPHEMERAL_AUTH_EVIDENCE.md`](B2_EPHEMERAL_AUTH_EVIDENCE.md). The
+subscription-URL flow above is unchanged for legacy clients.
+
+This repo's side:
+
+- **`vpn-admin lease-pool sync --input FILE`** (`apps/admin/src/lease_pool.rs`).
+  Input (0600, written by the agent):
+  `{"slots":[{"slot":N,"vless_uuid":"...","hysteria2_password":"...","expires_at":<unix>}]}`.
+  Replaces exactly the users whose id starts with `lease-` (`lease-NNNN`,
+  name = id, random discarded subscription token) and never touches any
+  other user; validates uuids/passwords, rejects duplicates and uuid
+  collisions with existing users; then one fail-closed apply (state lock,
+  render, `sing-box check`, atomic install, reload, verify, rollback).
+  Each slot user carries `expires_at`, so every later render drops it once
+  expired. Stdout (JSON): `{"live": bool, "slots": n,
+  "hysteria2_obfs_password": string|null}` — slot secrets are never printed.
+- **Agent lease store + sweeper** (`apps/provisioning-agent/src/lease_pool.rs`),
+  run every poll iteration. Config (`provisioning-agent.toml`):
+  `lease_pool_size` (default 32, max 1024, `0` disables),
+  `lease_slot_lifetime_secs` (default 1800, clamped 900..7200),
+  `lease_state_file` (default `/var/lib/vpn-provisioning-agent/lease-pool.json`,
+  0600, atomic; the unit sets `StateDirectory=vpn-provisioning-agent`).
+  Order is always persist → apply → (only if `live`) report. Rotates slots
+  that expired, were revoked, or are confirmed unleased past their leasable
+  window; expiry needs no control plane and survives agent restarts.
+- **Worker API**: `POST /api/agent/leases/sync`, node Bearer auth.
+  Request `{ slots: [{ slot, generation, valid_until (RFC3339),
+  vless_uuid?, hysteria2_password? }], hysteria2_obfs_password?: string|null }`
+  (secrets only for generations the control plane has not stored yet).
+  Response `{ as_of, min_remaining_seconds, obfs_stored, need_secret: [slot],
+  slots: [{ slot, generation, state: "active"|"leased"|"revoked" }] }`.
+  Not a job type: it is a continuous reconciliation, not a queued command.
+
+Operational consequence (measured): every pool apply restarts sing-box and
+drops all open connections on the node, not only the rotated slot's. See
+the ADR's "Connections at expiry" section.

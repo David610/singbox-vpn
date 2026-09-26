@@ -127,7 +127,7 @@ async fn apply_node_revision(cfg: &AgentConfig, client: &WorkerClient, job: &Job
 /// Every vpn-admin invocation goes through this one helper, so the
 /// binary path / config path / working-directory setup happens in
 /// exactly one place.
-fn vpn_admin_command(cfg: &AgentConfig) -> Command {
+pub(crate) fn vpn_admin_command(cfg: &AgentConfig) -> Command {
     let mut cmd = Command::new(&cfg.vpn_admin_binary);
     cmd.arg("--config").arg(&cfg.vpn_admin_config);
     cmd
@@ -328,7 +328,7 @@ fn require_success(output: &std::process::Output, what: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_json_output(output: &std::process::Output, what: &str) -> Result<Value> {
+pub(crate) fn parse_json_output(output: &std::process::Output, what: &str) -> Result<Value> {
     require_success(output, what)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout).with_context(|| {

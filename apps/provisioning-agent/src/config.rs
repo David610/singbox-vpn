@@ -48,6 +48,33 @@ pub struct AgentConfig {
     /// operator later changes the server-side outbound topology.
     #[serde(default)]
     pub clash_probe_outbound: Option<String>,
+    /// ADR-0003: number of pre-provisioned pseudonymous lease slots this
+    /// node keeps live for `/v1/vpn/authorize`. Bounded (at most 1024);
+    /// `0` disables the lease pool entirely (the node then removes any
+    /// lease-slot users on its next tick).
+    #[serde(default = "default_lease_pool_size")]
+    pub lease_pool_size: usize,
+    /// Hard lifetime of one slot generation, seconds (clamped 900..=7200).
+    /// A leased credential never outlives its generation: the node renders
+    /// it out and rotates the secret at `valid_until`, control plane or not.
+    #[serde(default = "default_lease_slot_lifetime_secs")]
+    pub lease_slot_lifetime_secs: u64,
+    /// Where the node persists its lease table (0600). Survives agent
+    /// restarts so expiry/rotation continues across them.
+    #[serde(default = "default_lease_state_file")]
+    pub lease_state_file: String,
+}
+
+fn default_lease_pool_size() -> usize {
+    32
+}
+
+fn default_lease_slot_lifetime_secs() -> u64 {
+    1800
+}
+
+fn default_lease_state_file() -> String {
+    "/var/lib/vpn-provisioning-agent/lease-pool.json".to_string()
 }
 
 // Derived Debug would print clash_api_secret and agent_api_key verbatim,
@@ -68,6 +95,9 @@ impl std::fmt::Debug for AgentConfig {
                 &self.clash_api_secret.as_ref().map(|_| "<redacted>"),
             )
             .field("clash_probe_outbound", &self.clash_probe_outbound)
+            .field("lease_pool_size", &self.lease_pool_size)
+            .field("lease_slot_lifetime_secs", &self.lease_slot_lifetime_secs)
+            .field("lease_state_file", &self.lease_state_file)
             .finish()
     }
 }

@@ -196,6 +196,26 @@ impl WorkerClient {
         Ok(())
     }
 
+    /// ADR-0003 lease-pool reconciliation (`POST /api/agent/leases/sync`).
+    /// The body can carry slot secrets; neither it nor the response is
+    /// ever logged, and errors only name the status code.
+    pub async fn sync_leases(&self, body: &Value) -> Result<Value> {
+        let res = self
+            .http
+            .post(format!("{}/api/agent/leases/sync", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(body)
+            .send()
+            .await
+            .context("POST /api/agent/leases/sync request failed")?;
+        if !res.status().is_success() {
+            bail!("POST /api/agent/leases/sync returned {}", res.status());
+        }
+        res.json()
+            .await
+            .context("parsing /api/agent/leases/sync response body")
+    }
+
     /// Exposes the shared HTTP client so the traffic poller reuses this
     /// agent's one connection pool and timeout policy rather than building
     /// a second client with different behaviour.
