@@ -70,6 +70,15 @@ pub struct AgentConfig {
     /// revocations are never deferred.
     #[serde(default = "default_rotation_batch_interval_secs")]
     pub rotation_batch_interval_secs: u64,
+    /// Heartbeat cadence in seconds, clamped to 10..=60. Defaults to 60,
+    /// which vpn-web's silence detection (3 x 60 s) assumes; shorter is
+    /// always safe for that rule.
+    #[serde(default = "default_heartbeat_interval_secs")]
+    pub heartbeat_interval_secs: u64,
+    /// Protocol-level synthetic probing (REALITY/Hysteria2 handshakes to
+    /// peers and self). Absent disables it entirely.
+    #[serde(default)]
+    pub protocol_probe: Option<ProtocolProbeConfig>,
 }
 
 fn default_rotation_batch_interval_secs() -> u64 {
@@ -86,6 +95,62 @@ fn default_lease_slot_lifetime_secs() -> u64 {
 
 fn default_lease_state_file() -> String {
     "/var/lib/vpn-provisioning-agent/lease-pool.json".to_string()
+}
+
+/// `[protocol_probe]` — see `protocol_probe.rs` for what each dimension
+/// measures and how probe credentials are provisioned.
+#[derive(Clone, Deserialize)]
+#[serde(default)]
+pub struct ProtocolProbeConfig {
+    pub singbox_binary: String,
+    pub interval_secs: u64,
+    pub timeout_secs: u64,
+    /// Name of this node's reserved, non-customer probe user.
+    pub probe_user_name: String,
+    /// Create/reuse the probe user and publish its links to the control
+    /// plane so peers can probe this node.
+    pub publish_self: bool,
+    /// Ask the control plane for peer targets.
+    pub fetch_targets: bool,
+    /// Also probe this node's own listeners over loopback (fallback when
+    /// no peer covers it; the control plane prefers peer results).
+    pub self_probe: bool,
+    pub self_probe_host: String,
+    pub hysteria2_cert_path: Option<String>,
+    /// Skip Hysteria2 certificate verification. Test rigs with
+    /// self-signed certificates only; production certificates verify.
+    pub tls_insecure_for_tests: bool,
+    /// Extra targets from local config (tests / offline operation).
+    pub static_targets: Vec<StaticProbeTarget>,
+}
+
+impl Default for ProtocolProbeConfig {
+    fn default() -> Self {
+        Self {
+            singbox_binary: "sing-box".into(),
+            interval_secs: 60,
+            timeout_secs: 8,
+            probe_user_name: "arcana-probe".into(),
+            publish_self: true,
+            fetch_targets: true,
+            self_probe: true,
+            self_probe_host: "127.0.0.1".into(),
+            hysteria2_cert_path: Some("/etc/vpn/compat/hysteria/cert.pem".into()),
+            tls_insecure_for_tests: false,
+            static_targets: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+pub struct StaticProbeTarget {
+    pub node_id: String,
+    #[serde(default)]
+    pub expected_ipv4: Option<String>,
+    #[serde(default)]
+    pub reality_uri: Option<String>,
+    #[serde(default)]
+    pub hysteria2_uri: Option<String>,
 }
 
 // Derived Debug would print clash_api_secret and agent_api_key verbatim,
@@ -113,8 +178,17 @@ impl std::fmt::Debug for AgentConfig {
                 "rotation_batch_interval_secs",
                 &self.rotation_batch_interval_secs,
             )
+            .field("heartbeat_interval_secs", &self.heartbeat_interval_secs)
+            .field(
+                "protocol_probe",
+                &self.protocol_probe.as_ref().map(|_| "<configured>"),
+            )
             .finish()
     }
+}
+
+fn default_heartbeat_interval_secs() -> u64 {
+    60
 }
 
 fn default_poll_interval_secs() -> u64 {
@@ -179,6 +253,35 @@ vpn_admin_config = "/etc/vpn/deployment.toml"
 
         let cfg = AgentConfig::load(&path).unwrap();
         assert_eq!(cfg.poll_interval_secs, 5);
+    }
+
+    #[test]
+    fn protocol_probe_section_parses_with_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            r#"
+worker_url = "http://127.0.0.1:8788"
+node_id = "node-1"
+agent_api_key = "test-key"
+vpn_admin_binary = "/usr/local/bin/vpn-admin"
+vpn_admin_config = "/etc/vpn/deployment.toml"
+[protocol_probe]
+interval_secs = 30
+[[protocol_probe.static_targets]]
+node_id = "peer"
+reality_uri = "vless://secret-uuid@h:1?security=reality&pbk=k"
+"#,
+        )
+        .unwrap();
+        let cfg = AgentConfig::load(&path).unwrap();
+        assert_eq!(cfg.heartbeat_interval_secs, 60);
+        let p = cfg.protocol_probe.as_ref().unwrap();
+        assert_eq!(p.interval_secs, 30);
+        assert!(p.publish_self && p.self_probe && !p.tls_insecure_for_tests);
+        assert_eq!(p.static_targets.len(), 1);
+        assert!(!format!("{cfg:?}").contains("secret-uuid"));
     }
 
     #[test]
