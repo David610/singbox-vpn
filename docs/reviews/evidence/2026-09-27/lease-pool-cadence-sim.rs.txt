@@ -1,0 +1,38 @@
+mod audit_sim {
+    use super::*;
+    // Default agent config written by vpn-web's node bootstrap: lease_pool_size=32 (default),
+    // lease_slot_lifetime_secs=1800, rotation_batch_interval_secs=600. Every rotation => one
+    // `vpn-admin lease-pool sync` apply that changes the rendered config => sing-box restart.
+    fn run(remote_mode: &str) -> (usize, Vec<i64>) {
+        let grid = clamp_batch_interval(600);
+        let life = clamp_lifetime(1800, grid);
+        let t0: i64 = 1_790_000_000 + 17; // arbitrary
+        let mut st = LeaseState::default();
+        plan(&mut st, 32, &[], t0, life, grid);
+        let mut restarts = vec![t0]; // first apply renders 32 new users
+        let mut t = t0;
+        while t < t0 + 6 * 3600 {
+            t += 5; // poll interval
+            let remote = match remote_mode {
+                "none" => None, // control plane does not implement /leases/sync (or is down)
+                _ => {
+                    // control plane stored every generation, none leased ("active")
+                    for s in &mut st.slots { s.reported = true; }
+                    Some(RemoteView { as_of: t, min_remaining: 600,
+                        slots: st.slots.iter().map(|s| (s.slot, RemoteSlot { generation: s.generation, state: "active".into(), urgent: false, extend_to: None })).collect() })
+                }
+            };
+            let rotate = slots_to_rotate(&st, remote.as_ref(), t, grid);
+            if !rotate.is_empty() { st.last_rotation_at = t; }
+            if plan(&mut st, 32, &rotate, t, life, grid) { restarts.push(t); }
+        }
+        (restarts.len(), restarts.windows(2).map(|w| w[1]-w[0]).collect())
+    }
+    #[test]
+    fn default_pool_restart_cadence() {
+        for mode in ["none", "active"] {
+            let (n, gaps) = run(mode);
+            eprintln!("AUDIT-SIM mode={mode}: config-changing applies in 6h = {n}; gaps(s) = {:?}", &gaps[..gaps.len().min(8)]);
+        }
+    }
+}

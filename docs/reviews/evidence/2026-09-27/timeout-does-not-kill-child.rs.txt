@@ -1,0 +1,10 @@
+use std::time::Duration;
+#[tokio::main]
+async fn main() {
+    // Mirrors apps/provisioning-agent/src/dispatch.rs: timeout(VPN_ADMIN_TIMEOUT, command.output())
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.args(["-c", "sleep 4; echo MUTATION-APPLIED-AFTER-TIMEOUT > /tmp/killdrop-marker"]);
+    let r = tokio::time::timeout(Duration::from_secs(1), cmd.output()).await;
+    println!("agent saw: {}", if r.is_err() { "timed out -> reports job FAILED" } else { "completed" });
+    tokio::time::sleep(Duration::from_secs(5)).await;
+}
