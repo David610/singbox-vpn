@@ -86,7 +86,11 @@ fn default_rotation_batch_interval_secs() -> u64 {
 }
 
 fn default_lease_pool_size() -> usize {
-    32
+    // Fail safe: unmanaged/self-host nodes must not synthesize lease users
+    // (and restart sing-box to rotate them) merely because the setting was
+    // omitted. Fleet bootstrap opts in explicitly when managed leases are
+    // actually enabled for the node.
+    0
 }
 
 fn default_lease_slot_lifetime_secs() -> u64 {
@@ -231,6 +235,10 @@ vpn_admin_config = "/etc/vpn/deployment.toml"
         assert_eq!(
             cfg.poll_interval_secs, 3,
             "default should apply when omitted"
+        );
+        assert_eq!(
+            cfg.lease_pool_size, 0,
+            "lease pool must be opt-in; an omitted setting must not create periodic node-wide restarts"
         );
     }
 
