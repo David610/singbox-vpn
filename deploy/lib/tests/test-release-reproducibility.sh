@@ -99,15 +99,22 @@ if ! sha256sum -c <(echo "$BAD_SHA256  $TMPDIR_TEST/fake-asset.tar.gz") >/dev/nu
 else
   fail "invalid checksum unexpectedly verified"
 fi
-if grep -q 'expected_sha256" ] || die "no upstream checksums.txt' "$INSTALL_SH"; then
-  ok "install_singbox() fails closed (die) when neither upstream checksums.txt nor a pinned digest is available"
+if grep -q 'expected_sha256" ] || die "no pinned expected SHA256' "$INSTALL_SH"; then
+  ok "install_singbox() fails closed (die) when the Arcana pinned digest is unavailable"
 else
-  fail "install_singbox() no longer has a fail-closed no-digest-available guard"
+  fail "install_singbox() no longer has a fail-closed no-pinned-digest guard"
 fi
 if grep -q 'checksum verification failed for \$tarball: expected \$expected_sha256' "$INSTALL_SH"; then
   ok "install_singbox() fails closed (die) on a pinned-digest mismatch"
 else
   fail "install_singbox() no longer dies on a pinned-digest checksum mismatch"
+fi
+pin_line="$(grep -n 'actual_sha256=.*sha256sum.*\$tmpdir/\$tarball' "$INSTALL_SH" | head -1 | cut -d: -f1)"
+upstream_line="$(grep -n 'preflight_curl_retry .*checksums.txt' "$INSTALL_SH" | head -1 | cut -d: -f1)"
+if [ -n "$pin_line" ] && [ -n "$upstream_line" ] && [ "$pin_line" -lt "$upstream_line" ]; then
+  ok "Arcana's pinned digest is verified before optional upstream checksums.txt"
+else
+  fail "upstream checksums.txt can be consulted before the immutable Arcana pin"
 fi
 
 echo

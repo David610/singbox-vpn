@@ -757,19 +757,21 @@ if [ "$TARGET_SINGBOX_VERSION" != "$CURRENT_SINGBOX_PINNED" ]; then
   curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$STAGING_ROOT/$singbox_tarball" "$singbox_url" \
     || die "download failed: $singbox_url. Nothing live has been changed."
   sums_url="https://github.com/SagerNet/sing-box/releases/download/v${TARGET_SINGBOX_VERSION}/sing-box_${TARGET_SINGBOX_VERSION}_checksums.txt"
+  expected_sha256=""
+  case "$ARCH" in
+    amd64) expected_sha256="$TARGET_SINGBOX_SHA256_AMD64" ;;
+    arm64) expected_sha256="$TARGET_SINGBOX_SHA256_ARM64" ;;
+  esac
+  [ -n "$expected_sha256" ] || die "no pinned expected SHA256 for sing-box ${TARGET_SINGBOX_VERSION}/${ARCH} in the target release. Nothing live has been changed."
+  actual_sha256="$(sha256sum "$STAGING_ROOT/$singbox_tarball" | awk '{print $1}')"
+  [ "$actual_sha256" = "$expected_sha256" ] \
+    || die "checksum verification failed for $singbox_tarball: expected $expected_sha256, got $actual_sha256. Nothing live has been changed."
+
+  # Upstream sums are a second check only. They can never replace the
+  # immutable digest shipped in the target Arcana release.
   if curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$STAGING_ROOT/singbox-checksums.txt" "$sums_url" 2>/dev/null; then
     ( cd "$STAGING_ROOT" && sha256sum --ignore-missing -c singbox-checksums.txt ) \
-      || die "checksum verification failed for $singbox_tarball (upstream checksums.txt). Nothing live has been changed."
-  else
-    expected_sha256=""
-    case "$ARCH" in
-      amd64) expected_sha256="$TARGET_SINGBOX_SHA256_AMD64" ;;
-      arm64) expected_sha256="$TARGET_SINGBOX_SHA256_ARM64" ;;
-    esac
-    [ -n "$expected_sha256" ] || die "no upstream checksums.txt and no pinned expected SHA256 for sing-box ${TARGET_SINGBOX_VERSION}/${ARCH} in the target release. Nothing live has been changed."
-    actual_sha256="$(sha256sum "$STAGING_ROOT/$singbox_tarball" | awk '{print $1}')"
-    [ "$actual_sha256" = "$expected_sha256" ] \
-      || die "checksum verification failed for $singbox_tarball: expected $expected_sha256, got $actual_sha256. Nothing live has been changed."
+      || die "upstream checksums.txt disagrees for $singbox_tarball. Nothing live has been changed."
   fi
   tar -xzf "$STAGING_ROOT/$singbox_tarball" -C "$STAGING_ROOT"
   extracted_singbox="$STAGING_ROOT/sing-box-${TARGET_SINGBOX_VERSION}-linux-${ARCH}"
