@@ -586,3 +586,12 @@ evidence, but DNS/IPv6 leak evidence is still UNVERIFIED (no capture
 tooling on the test client this pass) — the conjunction is not yet
 satisfied, so the "not yet a supported production path" wording is left
 unchanged. A DNS/IPv6 leak-test pass is the one remaining gate.
+
+### 2026-09-27 — v1.1.0-rc.6 release acceptance (VPS + real device)
+
+- **Release tag / commit:** `v1.1.0-rc.6` / `48b82a49a3ceb02c7ac611a695bbd6812d388ca9`.
+- **VPS (SERVER-VERIFIED):** `.github/workflows/vps-acceptance.yml` against the exact immutable RC on a disposable Hetzner Cloud cx23, AlmaLinux 9.8 x86_64, hel1, domain `accept-a.nodes.sustechnologies.eu` — LIFECYCLE GATE: PASS, 0 failing stages ([run](https://github.com/David610/singbox-vpn/actions/runs/36276778793)). Certificate renewal (`certbot renew --dry-run`, TCP/80 firewall pre/post hooks, nginx stop/restart) PASS.
+- **Device (DEVICE-VERIFIED, maintainer-reported):** iPhone, iOS 18.7, Hiddify, against rc.6 freshly installed via the public bootstrap on a second Hetzner AlmaLinux 9.8 host (hel1, `accept-b.nodes.sustechnologies.eu`). REALITY and Hysteria2 connect; ipleak.net shows only the server's IPv4 `62.238.46.190` and IPv6 `2a01:4f9:c014:13bd::1`; DNS resolvers were the server's upstream (Google, Finland), no client ISP resolver; no WebRTC address; browsing, sustained transfer, subscription refresh, idle/resume and Wi-Fi/cellular handover PASS.
+- **Rejected RCs in this cycle:** rc.3 (acceptance workflow wrote ssh-agent output into `GITHUB_ENV`), rc.4 (certbot dry-run random sleep exceeded the harness timeout; installer required a preinstalled `tar`), rc.5 (update.sh left the source tree group-writable after in-place update; uninstaller refused).
+- **UNVERIFIED here:** reachability from a censoring network; update transition from this RC is exercised separately after stable publication (rc.6 -> v1.1.0).
+
