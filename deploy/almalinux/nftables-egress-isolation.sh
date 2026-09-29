@@ -14,14 +14,10 @@
 # version regression in route-rule evaluation, etc.) does not silently
 # reopen access to node-local services, RFC1918, or cloud metadata.
 #
-# Deliberately NOT invoked by install.sh/update.sh yet and NOT applied to
-# any live host by this change — it is config + a systemd oneshot unit,
-# reviewed and enabled by an operator explicitly. Wiring it into the
-# install/update flow (and validating it does not regress the acceptance
-# suite) is left to a later batch; see the branch survey's "still open"
-# notes.
+# Installed and enabled by the normal lifecycle. `--remove` is used by
+# uninstall and rollback and deletes only this project's dedicated table.
 #
-# Idempotent: flushes and recreates its own dedicated table
+# Idempotent: deletes and recreates its own dedicated table
 # (`inet arcana_egress_isolation`) only — never touches firewalld's
 # tables/zones (deploy/almalinux/firewall.sh's inbound policy) or any
 # other nftables table on the host.
@@ -31,6 +27,20 @@ set -euo pipefail
 command -v nft >/dev/null 2>&1 || { echo "[nftables-egress-isolation] nft not installed" >&2; exit 1; }
 
 log() { echo "[nftables-egress-isolation] $*"; }
+
+case "${1:-apply}" in
+  apply) ;;
+  --remove)
+    if nft list table inet arcana_egress_isolation >/dev/null 2>&1; then
+      nft delete table inet arcana_egress_isolation
+      log "removed table inet arcana_egress_isolation; unrelated nftables state was not changed."
+    else
+      log "table inet arcana_egress_isolation is already absent."
+    fi
+    exit 0
+    ;;
+  *) echo "usage: $0 [--remove]" >&2; exit 2 ;;
+esac
 
 SING_BOX_USER="${SING_BOX_USER:-sing-box}"
 id -u "$SING_BOX_USER" >/dev/null 2>&1 \
@@ -56,9 +66,9 @@ SING_BOX_UID="$(id -u "$SING_BOX_USER")"
 IPV4_DENY="0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24, 192.168.0.0/16, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4"
 IPV6_DENY="::ffff:0:0/96, 64:ff9b::/96, 100::/64, 2001:db8::/32, fc00::/7, fe80::/10, ff00::/8, fd00:ec2::254/128"
 
+# Never flush the ruleset. Remove only our table, tolerating a first install.
+nft delete table inet arcana_egress_isolation 2>/dev/null || true
 nft -f - <<EOF
-table inet arcana_egress_isolation
-delete table inet arcana_egress_isolation
 table inet arcana_egress_isolation {
   chain output {
     type filter hook output priority filter; policy accept;

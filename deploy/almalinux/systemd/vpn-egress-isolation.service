@@ -1,16 +1,9 @@
 [Unit]
 Description=Arcana host-layer C-16 egress isolation (nftables, defence in depth)
 Documentation=file:///opt/vpn/deploy/almalinux/nftables-egress-isolation.sh
-After=network.target sing-box.service
+After=network.target
+Before=sing-box.service
 Wants=network.target
-
-# Not enabled/started by install.sh/update.sh as of this change — an
-# operator opts in explicitly (`systemctl enable --now
-# vpn-egress-isolation.service`) after reviewing
-# nftables-egress-isolation.sh. The primary enforcement point is the
-# sing-box-rendered route policy (crates/compat-config/src/server.rs);
-# this unit is secondary, host-level defence in depth. See that script's
-# header comment for the full rationale and the exact CIDR set.
 
 [Service]
 Type=oneshot
@@ -20,6 +13,7 @@ ExecStart=/opt/vpn/deploy/almalinux/nftables-egress-isolation.sh
 # table), so a restart safely re-applies rather than erroring on
 # already-present state.
 ExecReload=/opt/vpn/deploy/almalinux/nftables-egress-isolation.sh
+ExecStop=/opt/vpn/deploy/almalinux/nftables-egress-isolation.sh --remove
 
 [Install]
 WantedBy=multi-user.target

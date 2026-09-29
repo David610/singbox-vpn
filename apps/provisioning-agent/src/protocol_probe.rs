@@ -298,6 +298,11 @@ pub struct ProbeResult {
     pub latency_ms: Option<u64>,
     pub loss_pct: u8,
     pub failure_streak: u32,
+    /// Hysteretic readiness classification. The first failed round is
+    /// `degraded`; only two consecutive failures become `failed`.
+    pub status: &'static str,
+    /// Stable machine-readable code; never contains an endpoint or secret.
+    pub reason_code: Option<&'static str>,
     pub error: Option<&'static str>,
 }
 
@@ -311,6 +316,8 @@ pub struct ProbeReport {
     /// run unnoticed.
     pub tls_insecure_for_tests: bool,
     pub hysteria2_cert_days_remaining: Option<i64>,
+    /// `healthy`, `expiring`, `expired`, or `unknown`.
+    pub certificate_status: &'static str,
     pub results: Vec<ProbeResult>,
 }
 
@@ -393,16 +400,25 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
             let s = streaks.entry(key).or_insert(0);
             *s = if r.ok { 0 } else { s.saturating_add(1) };
             r.failure_streak = *s;
+            r.status = hysteretic_status(r.ok, *s);
+            r.reason_code = r.error;
         }
         round += 1;
+        let cert_days = pcfg
+            .hysteria2_cert_path
+            .as_deref()
+            .and_then(cert_days_remaining);
         let report = ProbeReport {
             version: 1,
             round,
             tls_insecure_for_tests: pcfg.tls_insecure_for_tests,
-            hysteria2_cert_days_remaining: pcfg
-                .hysteria2_cert_path
-                .as_deref()
-                .and_then(cert_days_remaining),
+            hysteria2_cert_days_remaining: cert_days,
+            certificate_status: match cert_days {
+                Some(days) if days < 0 => "expired",
+                Some(days) if days < 14 => "expiring",
+                Some(_) => "healthy",
+                None => "unknown",
+            },
             results,
         };
         tracing::info!(
@@ -414,6 +430,16 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
             *slot = Some(report);
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+fn hysteretic_status(ok: bool, failure_streak: u32) -> &'static str {
+    if ok {
+        "healthy"
+    } else if failure_streak < 2 {
+        "degraded"
+    } else {
+        "failed"
     }
 }
 
@@ -515,6 +541,8 @@ pub async fn probe_endpoint(
         latency_ms: None,
         loss_pct: 100,
         failure_streak: 0,
+        status: "pending",
+        reason_code: None,
         error: None,
     };
 
@@ -849,6 +877,13 @@ mod tests {
 
     const VLESS: &str = "vless://11111111-1111-4111-8111-111111111111@vpn.example.com:443?encryption=none&security=reality&sni=www.cloudflare.com&fp=chrome&pbk=PUBKEY&sid=abcd&type=tcp&flow=xtls-rprx-vision#n1";
     const HY2: &str = "hysteria2://hy2%2Bpass@vpn.example.com:8443?sni=vpn.example.com&insecure=0&obfs=salamander&obfs-password=ob#n1";
+
+    #[test]
+    fn one_transient_failure_is_degraded_not_failed() {
+        assert_eq!(hysteretic_status(true, 0), "healthy");
+        assert_eq!(hysteretic_status(false, 1), "degraded");
+        assert_eq!(hysteretic_status(false, 2), "failed");
+    }
 
     #[test]
     fn parses_reality_share_link() {

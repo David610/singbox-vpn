@@ -480,6 +480,7 @@ check_no_ambiguous_preexisting_residue() {
     [/etc/systemd/system/vpn-subscription.service]=VPNSUB_UNIT
     [/etc/systemd/system/vpn-expiry-reconcile.service]=EXPIRY_SVC_UNIT
     [/etc/systemd/system/vpn-expiry-reconcile.timer]=EXPIRY_TIMER_UNIT
+    [/etc/systemd/system/vpn-egress-isolation.service]=EGRESS_ISOLATION_UNIT
     [/etc/systemd/system/vpn-service-watchdog.service]=WATCHDOG_SVC_UNIT
     [/etc/systemd/system/vpn-service-watchdog.timer]=WATCHDOG_TIMER_UNIT
   )
@@ -1822,6 +1823,7 @@ install_systemd_units() {
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service VPNSUB_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.service" /etc/systemd/system/vpn-expiry-reconcile.service EXPIRY_SVC_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.timer" /etc/systemd/system/vpn-expiry-reconcile.timer EXPIRY_TIMER_UNIT
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-egress-isolation.service" /etc/systemd/system/vpn-egress-isolation.service EGRESS_ISOLATION_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-service-watchdog.service" /etc/systemd/system/vpn-service-watchdog.service WATCHDOG_SVC_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-service-watchdog.timer" /etc/systemd/system/vpn-service-watchdog.timer WATCHDOG_TIMER_UNIT
   install -m 0755 "$REPO_ROOT/deploy/almalinux/service-watchdog.sh" "$BIN_DIR/vpn-service-watchdog"
@@ -2594,7 +2596,9 @@ enable_and_start_services() {
   # idempotent no-op, not redundant risk — it's still restarted
   # explicitly rather than relying on that earlier reload alone, so this
   # function's behavior does not depend on stage ordering elsewhere.
-  systemctl enable sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-service-watchdog.timer
+  systemctl enable sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-service-watchdog.timer vpn-egress-isolation.service
+  systemctl restart vpn-egress-isolation.service \
+    || die "host C-16 egress isolation failed to apply"
   systemctl reload-or-restart sing-box.service \
     || die "sing-box failed to (re)start — check: journalctl -u sing-box --no-pager -n 100"
   systemctl reload-or-restart vpn-subscription.service \

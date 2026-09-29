@@ -194,16 +194,23 @@ for unit in sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer
     note_removed
   fi
 done
+# Never stop a pre-existing or ownership-ambiguous unit merely because it
+# has our expected filename: ExecStop removes the Arcana table. Only the
+# install manifest may authorize that mutation.
+if [ "$(ownership_get FIXEDPATH_EGRESS_ISOLATION_UNIT_PRE_EXISTED "")" = "0" ]; then
+  systemctl disable --now vpn-egress-isolation.service >/dev/null 2>&1 || true
+fi
 
 log "removing/restoring singbox-vpn systemd units..."
 restore_or_remove_fixed_path /etc/systemd/system/sing-box.service SINGBOX_UNIT
 restore_or_remove_fixed_path /etc/systemd/system/vpn-subscription.service VPNSUB_UNIT
 restore_or_remove_fixed_path /etc/systemd/system/vpn-expiry-reconcile.service EXPIRY_SVC_UNIT
 restore_or_remove_fixed_path /etc/systemd/system/vpn-expiry-reconcile.timer EXPIRY_TIMER_UNIT
+restore_or_remove_fixed_path /etc/systemd/system/vpn-egress-isolation.service EGRESS_ISOLATION_UNIT
 restore_or_remove_fixed_path /etc/systemd/system/vpn-service-watchdog.service WATCHDOG_SVC_UNIT
 restore_or_remove_fixed_path /etc/systemd/system/vpn-service-watchdog.timer WATCHDOG_TIMER_UNIT
 systemctl daemon-reload
-systemctl reset-failed sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service vpn-service-watchdog.timer vpn-service-watchdog.service >/dev/null 2>&1 || true
+systemctl reset-failed sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service vpn-service-watchdog.timer vpn-service-watchdog.service vpn-egress-isolation.service >/dev/null 2>&1 || true
 
 # The provisioning agent binary is removed only if the installer installed
 # it and nothing occupied the path before (see install.sh's
@@ -638,6 +645,7 @@ declare -A singbox_vpn_unit_keys=(
   [/etc/systemd/system/vpn-subscription.service]=VPNSUB_UNIT
   [/etc/systemd/system/vpn-expiry-reconcile.service]=EXPIRY_SVC_UNIT
   [/etc/systemd/system/vpn-expiry-reconcile.timer]=EXPIRY_TIMER_UNIT
+  [/etc/systemd/system/vpn-egress-isolation.service]=EGRESS_ISOLATION_UNIT
   [/etc/systemd/system/vpn-service-watchdog.service]=WATCHDOG_SVC_UNIT
   [/etc/systemd/system/vpn-service-watchdog.timer]=WATCHDOG_TIMER_UNIT
 )
@@ -695,7 +703,7 @@ fi
 # ambiguous pre-existing fixed path left alone, a userdel that failed)
 # is reported as non-critical and does not change the exit status.
 # ---------------------------------------------------------------------
-for unit in sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service vpn-service-watchdog.timer vpn-service-watchdog.service; do
+for unit in sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service vpn-service-watchdog.timer vpn-service-watchdog.service vpn-egress-isolation.service; do
   systemctl is-active --quiet "$unit" 2>/dev/null && CRITICAL_RESIDUE+=("$unit is still active")
 done
 for unit_path in "${!singbox_vpn_unit_keys[@]}"; do

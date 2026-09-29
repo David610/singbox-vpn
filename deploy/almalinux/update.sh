@@ -50,7 +50,7 @@ SINGBOX_BIN="$BIN_DIR/sing-box"
 # necessity, since this is bash, not shared code; if you add a unit to
 # one, add it to the other in the same commit — deploy/lib/tests/
 # test-install-update-parity.sh fails loudly if these two lists drift).
-SYSTEMD_UNITS=(sing-box.service vpn-subscription.service vpn-expiry-reconcile.service vpn-expiry-reconcile.timer vpn-service-watchdog.service vpn-service-watchdog.timer)
+SYSTEMD_UNITS=(sing-box.service vpn-subscription.service vpn-expiry-reconcile.service vpn-expiry-reconcile.timer vpn-service-watchdog.service vpn-service-watchdog.timer vpn-egress-isolation.service)
 
 log() { echo "[update] $*"; }
 warn() { echo "[update] WARNING: $*" >&2; }
@@ -390,8 +390,11 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
     cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
   done
   for u in "${SYSTEMD_UNITS[@]}"; do
-    [ -f "$SYSTEMD_DIR/$u" ] || die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update"
-    cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
+    if [ -f "$SYSTEMD_DIR/$u" ]; then
+      cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
+    elif [ "$u" != "vpn-egress-isolation.service" ]; then
+      die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update"
+    fi
   done
   for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
     [ -f "$BIN_DIR/$f" ] && cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
@@ -432,10 +435,17 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
       if [ -f "$BACKUP_DIR/systemd/$u" ]; then
         install -m 0644 "$BACKUP_DIR/systemd/$u" "$SYSTEMD_DIR/$u.rollback" || failed=1
         mv -f "$SYSTEMD_DIR/$u.rollback" "$SYSTEMD_DIR/$u" || failed=1
+      else
+        rm -f "$SYSTEMD_DIR/$u" || failed=1
       fi
       rm -f "$SYSTEMD_DIR/$u.update-new"
     done
     systemctl daemon-reload || failed=1
+    if [ -f "$SYSTEMD_DIR/vpn-egress-isolation.service" ]; then
+      systemctl restart vpn-egress-isolation.service || failed=1
+    else
+      "$REPO_ROOT/deploy/almalinux/nftables-egress-isolation.sh" --remove || failed=1
+    fi
     restore_deployment_toml_snapshot || failed=1
     for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
       if [ -f "$BACKUP_DIR/$f" ]; then
@@ -837,8 +847,11 @@ for f in vpn-admin vpn vpn-subscription-svc; do
   cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
 done
 for u in "${SYSTEMD_UNITS[@]}"; do
-  [ -f "$SYSTEMD_DIR/$u" ] || die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update. Nothing live has been changed."
-  cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
+  if [ -f "$SYSTEMD_DIR/$u" ]; then
+    cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
+  elif [ "$u" != "vpn-egress-isolation.service" ]; then
+    die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update. Nothing live has been changed."
+  fi
 done
 for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
   [ -f "$BIN_DIR/$f" ] && cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
@@ -892,6 +905,8 @@ rollback_update() {
     if [ -f "$BACKUP_DIR/systemd/$u" ]; then
       install -m 0644 "$BACKUP_DIR/systemd/$u" "$SYSTEMD_DIR/$u.rollback" || failed=1
       mv -f "$SYSTEMD_DIR/$u.rollback" "$SYSTEMD_DIR/$u" || failed=1
+    else
+      rm -f "$SYSTEMD_DIR/$u" || failed=1
     fi
     rm -f "$SYSTEMD_DIR/$u.update-new"
   done
@@ -921,6 +936,11 @@ rollback_update() {
   fi
 
   systemctl daemon-reload || failed=1
+  if [ -f "$SYSTEMD_DIR/vpn-egress-isolation.service" ]; then
+    systemctl restart vpn-egress-isolation.service || failed=1
+  else
+    /opt/singbox-vpn/deploy/almalinux/nftables-egress-isolation.sh --remove || failed=1
+  fi
 
   # deployment.toml IS rewound when this transaction migrated it: the
   # restored (older) binaries may not understand the migrated schema, and
@@ -1021,6 +1041,9 @@ fi
 # =======================================================================
 log "reloading systemd unit definitions..."
 systemctl daemon-reload
+systemctl enable vpn-egress-isolation.service
+systemctl restart vpn-egress-isolation.service \
+  || die "host C-16 egress isolation failed to apply"
 
 log "install mode: UPDATE ${CURRENT_VERSION:-unknown} -> $TARGET_VERSION — checking persistent state schema before rendering..."
 schema_rc=0

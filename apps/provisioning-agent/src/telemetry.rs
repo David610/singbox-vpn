@@ -1,6 +1,7 @@
 use crate::config::AgentConfig;
 use serde_json::{json, Value};
 use std::process::Command;
+use std::process::Stdio;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
@@ -39,6 +40,11 @@ impl TelemetrySampler {
         let cpu_percent = self.cpu_percent();
         let (network_rx_bps, network_tx_bps) = self.network_bps();
         let mut payload = json!({
+            // Receipt of this authenticated payload proves the agent is
+            // alive; keep it explicit so dashboards need not conflate that
+            // fact with protocol readiness.
+            "agent_alive": true,
+            "singbox_alive": systemd_unit_active("sing-box.service"),
             "agent_version": env!("CARGO_PKG_VERSION"),
             // vpn-admin is part of the same workspace/release as this agent.
             "vpn_version": env!("CARGO_PKG_VERSION"),
@@ -262,6 +268,16 @@ fn command_first_version(binary: &str, args: &[&str]) -> Option<String> {
         .split_whitespace()
         .find(|part| part.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
     Some(version.to_string())
+}
+
+fn systemd_unit_active(unit: &str) -> Option<bool> {
+    Command::new("systemctl")
+        .args(["is-active", "--quiet", unit])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()
+        .map(|status| status.success())
 }
 
 #[cfg(test)]

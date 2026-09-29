@@ -1770,6 +1770,62 @@ fn render_config_noop_reconcile_does_not_restart_singbox() {
     );
 }
 
+/// Extending an authorization deadline while the user remains active only
+/// changes persisted metadata. It must not restart the node-wide data plane;
+/// crossing into expired state is still an urgent revocation and must apply.
+#[test]
+#[cfg(unix)]
+fn future_expiry_extension_does_not_restart_but_expiry_revocation_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    let command = || {
+        let mut cmd = admin(dir.path(), &cfg_path);
+        cmd.env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SYSTEMCTL_LOG", &log_path);
+        cmd
+    };
+    command().arg("init").assert().success();
+    let output = command()
+        .args(["user", "create", "--name", "expiry-test", "--json"])
+        .assert()
+        .success();
+    let created: serde_json::Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
+    let id = created["id"].as_str().unwrap();
+    let baseline = count_reload_or_restart_calls(&log_path);
+
+    command()
+        .args(["user", "set-expiry", id, "--expires-at", "4102444800"])
+        .assert()
+        .success();
+    command()
+        .args(["user", "set-expiry", id, "--expires-at", "4102448400"])
+        .assert()
+        .success();
+    command()
+        .args(["user", "clear-expiry", id])
+        .assert()
+        .success();
+    assert_eq!(count_reload_or_restart_calls(&log_path), baseline);
+
+    command()
+        .args(["user", "set-expiry", id, "--expires-at", "1"])
+        .assert()
+        .success();
+    assert_eq!(count_reload_or_restart_calls(&log_path), baseline + 1);
+}
+
 /// `deploy/almalinux/systemd/vpn-expiry-reconcile.timer` fires
 /// `render-config --require-applied` on every tick for the lifetime of
 /// the deployment, not just once — a fix that only holds for a single
