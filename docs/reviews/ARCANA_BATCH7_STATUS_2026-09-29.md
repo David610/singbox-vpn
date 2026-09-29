@@ -497,7 +497,10 @@ since it's a different alert than what was assigned.
 
 ## Task 2 — Static-config revision apply
 
-**Status: NOT ATTEMPTED this batch — scoped out honestly rather than
+**Superseded — implemented in Batch 7d (see the "Batch 7d" section at the
+end of this document).** The original 7c note is kept below for history.
+
+**Status (7c): NOT ATTEMPTED this batch — scoped out honestly rather than
 producing a partial/unverified implementation.**
 
 Per this batch's own stated discipline ("if you cannot finish both with
@@ -572,3 +575,228 @@ in-flight jobs to wait on since no new commit was pushed).
 - Areas 1 (protocol health) and 5 (nftables lifecycle) remain untouched,
   as instructed — still the two remaining areas before real two-VPS
   acceptance.
+
+
+---
+
+# Batch 7d — 2026-09-29 (static-config revision apply: IMPLEMENTED)
+
+**Status: FIXED (singbox-vpn side, Linux-CI-verified) + vpn-web contract
+side implemented on a separate branch (not merged, no PR opened).**
+
+## Architecture traced (re-verified this session)
+
+- singbox-vpn: `APPLY_NODE_REVISION` job payload is `{"revision": N}`; the
+  agent (`apps/provisioning-agent/src/dispatch.rs::apply_node_revision`)
+  fetches `GET /api/agent/revision/N` (node-scoped bearer auth), writes the
+  response's `config` value to a 0600 temp file and runs
+  `vpn-admin apply-revision --revision N --input <file>`. Before this batch,
+  `cmd_apply_revision` only accepted a `users.json`-shaped document and
+  never wrote `deployment.toml`.
+- vpn-web (`D:\David610\vpn-web`, branch `claude/arcana-control-plane-remediation`
+  @ `1b8f52b`): `node_revisions` table (immutable, `(node_id, revision)`
+  unique, `config jsonb`), `functions/lib/node-revisions.js::createNodeRevision`
+  (insert row → `nodes.desired_revision` → coalesced `APPLY_NODE_REVISION`
+  job with idempotency key `apply-revision:<node>:<rev>`),
+  `POST /api/admin/nodes/:id/revisions` (admin, non-readonly, audited),
+  `GET /api/agent/revision/:revision` (returns `{revision, config}` scoped to
+  the authenticated node), `observed_revision` written only from the node's
+  heartbeat. vpn-web had **no static-config concept**: `config` was any JSON
+  object, validated only as "is an object".
+- Design decision: reuse that exact wire path (no new job type, no new
+  endpoint). A static revision is just a different `config` document shape,
+  sharing the same per-node monotonic revision number.
+- Re-verified: C-16 egress policy and reserved-probe confinement are still
+  derived from `cfg.role` (+ `public_host`/`public_ipv4`/`public_ipv6`) at
+  render time (`crates/compat-config/src/server.rs`), so role/public identity
+  stay non-revisable here.
+
+## Wire format / schema
+
+```json
+{ "revision_schema": 1,
+  "static_config": {
+    "reality":   { "handshake_server": "www.example.org" },
+    "hysteria2": { "up_mbps": 200, "down_mbps": 200 },
+    "udp_probe": { "ipv4_resolvers": ["1.1.1.1"], "ipv6_resolvers": [],
+                   "retries": 2, "timeout_ms": 2000, "delay_ms": 250 } } }
+```
+
+- Only `revision_schema` + `static_config` at top level; any other key
+  (including `users`) rejects. Static and dynamic changes are separate
+  revisions — a static revision never carries or touches users.
+- `revision_schema` must be exactly integer `1`; anything else rejects.
+- Present field = desired value; absent field = unchanged.
+  `hysteria2.up_mbps`/`down_mbps` must be sent together (both numbers, or
+  both `null` to clear).
+- Max document size 16 KiB; at least one field required.
+- Backward safety: an older `vpn-admin` fails to parse this document as a
+  users store (no `schema_version`/`users` array) and rejects the revision,
+  rather than silently "succeeding" with no static change.
+- Routing is by presence of `revision_schema` or `static_config`; the whole
+  document is parsed before routing, so an oversized document carrying
+  `static_config` can never fall through to the users path.
+
+## Field classification
+
+**Allowed (routine-revisable, schema 1):**
+`reality.handshake_server`; `hysteria2.up_mbps`, `hysteria2.down_mbps`;
+`udp_probe.ipv4_resolvers`, `udp_probe.ipv6_resolvers`, `udp_probe.retries`,
+`udp_probe.timeout_ms`, `udp_probe.delay_ms`.
+
+Value validation: bandwidth 1..=100000; retries 1..=10; timeout_ms
+100..=30000; delay_ms 0..=10000; IPv4 resolvers 1..=8, IPv6 0..=8, each a
+public unicast literal of the right family, no duplicates (loopback,
+RFC1918, link-local incl. 169.254.169.254, CGNAT, ULA, multicast,
+documentation, IPv4-mapped-private all refused). `handshake_server` must be
+a lowercase public DNS name — no IP literals, single labels or
+local/reserved suffixes (`.internal`, `.local`, `localhost`, …) — because
+REALITY forwards every unauthenticated connection to it.
+
+**Forbidden (privileged reprovision only — out of scope):** `schema_version`,
+`node_id`, `role`, `public_host`, `subscription_host`, `public_ipv4`,
+`public_ipv6`, `state_dir`, `singbox_binary`, `access_paths`,
+`peer_endpoints`, `google_egress_hairpin`, `subscription`. `role` is
+therefore NOT remotely mutable: no exit↔relay conversion via this path.
+
+**Recognized but deferred (rejected in schema 1):** `reality.listen_port`,
+`reality.handshake_port`, `hysteria2.listen_port`. A listener port move also
+needs host-firewall changes, relay-peer forwarding changes (relay nft rules
+target the exit's port) and client-profile rollout; this node-local
+operation cannot apply or verify those atomically. Needs its own design.
+
+**Dynamic state (never touched by this path):** customer credentials, lease
+users, reserved probe principal, temporary authorization, route/mode
+credentials — all in `users.json`, which the static path reads but never
+writes; usage/accounting state is not in scope of the files touched.
+
+Unknown section / unknown field / forbidden field → the WHOLE revision is
+rejected before any disk write (fail closed, never partially applied).
+
+## Atomic apply flow (`apps/admin/src/static_apply.rs`)
+
+1. staleness guard (shared stamp; see below) → 2. parse + validate schema,
+size, allowlist, values → 3. recover an interrupted earlier static apply if
+its fixed-name backup exists (restore toml, re-render/reload, restart
+subscription) → 4. plan candidate `deployment.toml` in memory
+(`plan_static_revision`: reparse + `validate()` + structural check that the
+normalized config differs ONLY in allowlisted fields) → 5. load
+`users.json` (dynamic snapshot, read-only) → 6. pre-flight: render current
+and candidate sing-box documents with the same users/time and refuse unless
+`route`, `outbounds` and `dns` are identical (C-16, probe confinement,
+relay forwarding policy cannot change) → 7. write fixed-name backup
+`deployment.toml.static-revision.bak` (0600), atomically write candidate
+(original mode/ownership preserved) → 8. `render_and_apply_singbox_config`
+(render → `sing-box check` → atomic swap → reload + verify → REALITY
+self-test, with its own config.json rollback) → 9. if Hysteria2
+bandwidth/handshake server changed, restart `vpn-subscription` (it caches
+endpoints at startup) → 10. commit revision stamp, delete backup.
+
+**Rollback:** any failure in 8–10 restores the original `deployment.toml`,
+re-renders and reloads sing-box from the old static config with the
+unchanged users, restarts `vpn-subscription` again if it had been
+restarted, and leaves the stamp unchanged. Security policy is never weaker
+at any point: the pre-flight guarantees the candidate's route/outbound
+policy is identical to the current one, and `role`/identity cannot change.
+If rollback itself fails, the backup is kept and the next static revision
+restores from it first; the error says so explicitly.
+
+## Idempotency / stale handling
+
+- Shared monotonic stamp (`users/applied_revision.json`) with users
+  revisions. Revision `<=` applied → no-op with a "not newer than the
+  already-applied revision" message, exit 0 (existing semantics; the job
+  completes, `observed_revision` stays at the newer number). Corrupt stamp →
+  fail closed (existing).
+- New revision number whose values are already in effect → stamp only, no
+  file rewrite, no reload, no restart.
+- No timestamped backups; the single fixed-name backup exists only during
+  an apply. No credential rotation happens on this path at all.
+
+## Tests
+
+| Required test | Test | Where verified |
+|---|---|---|
+| 1 dynamic-state preservation | `static_revision_preserves_all_dynamic_state_and_applies_new_static_values` | `#[cfg(unix)]` — Linux CI + WSL |
+| 2 failed apply (`sing-box check`) | `static_revision_rejected_by_singbox_check_leaves_everything_unchanged` | unix — CI + WSL |
+| 2 failed apply (service restart) | `static_revision_service_failure_rolls_back_static_and_runtime_config` | unix — CI + WSL |
+| 2 invalid port / protocol setting | `static_revision_unknown_field_or_invalid_value_rejects_entire_revision` | cross-platform — Windows + CI |
+| 3 idempotency | `static_revision_is_idempotent` | unix — CI + WSL |
+| 4 stale revision | `static_revision_stale_revision_is_not_applied` | unix — CI + WSL |
+| 5 forbidden field (role etc.) | `static_revision_forbidden_role_change_is_rejected_fail_closed` | cross-platform — Windows + CI |
+| 6 allowlist enforcement | `static_revision_unknown_field_or_invalid_value_rejects_entire_revision` | cross-platform — Windows + CI |
+| crash recovery | `static_revision_recovers_an_interrupted_apply_first` | unix — CI + WSL |
+| schema unit tests | `compat_config::static_revision::tests` (11) | Windows + CI |
+| cross-repo contract | `crates/compat-config/tests/static_revision_contract.rs` (shared fixture, 6 valid / 53 invalid docs) | Windows + CI |
+| agent pass-through | `apply_node_revision_passes_a_static_revision_document_through_verbatim` | unix — CI + WSL |
+
+## vpn-web dependency
+
+Branch `claude/node-static-revision-contract` in `David610/vpn-web`
+(based on `claude/arcana-control-plane-remediation` @ `1b8f52b`), commit
+`7192cce`, pushed; **no PR opened, nothing merged**. Adds
+`functions/lib/static-revision.js` (same allowlist/forbidden/deferred
+lists and value rules), makes `POST /api/admin/nodes/:id/revisions` return
+400 for an invalid static revision (no row, no desired_revision bump, no
+job, no audit), audits accepted ones with `kind: "static"`, and asserts the
+byte-identical fixture `functions/lib/__tests__/fixtures/static-revision-v1-contract.json`.
+Existing vpn-web semantics already satisfy the rest: desired state is
+stored as an immutable revision row + `desired_revision`; the agent job is
+authenticated and coalesced; `observed_revision` only advances from the
+node's heartbeat after the node stamps a successful apply (never at job
+creation); job success/failure flows through the existing
+`/api/agent/jobs/:id/complete|fail`; a stale job cannot regress the node
+because the node-side stamp is monotonic.
+
+Cross-repo dependency: the singbox-vpn node side is safe without the
+vpn-web branch (it validates independently and a static apply can only be
+triggered by a document of this exact shape); the vpn-web branch is needed
+so invalid static revisions are refused at creation rather than becoming
+unconvergeable desired state. Both fixture copies must change together.
+Known residual on the vpn-web side (not changed): `heartbeat.js` writes
+whatever `observed_revision` the node reports; a delayed out-of-order
+heartbeat HTTP request could briefly show an older observed value until the
+next heartbeat (display only; the node never regresses).
+
+Local vpn-web validation: `npx vitest run` 102 files / 1079 tests pass;
+`npm run lint` 0 errors (11 pre-existing warnings, none in changed files);
+`npm run build` OK.
+
+## Local validation (7d)
+
+- Windows: `cargo fmt --all -- --check` clean; `cargo clippy --locked
+  --workspace --all-targets -- -D warnings` clean; `cargo audit` clean
+  (265 deps); `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`
+  clean; cross-platform static-revision tests + compat-config unit/contract
+  tests pass.
+- WSL Ubuntu 24.04 (real Linux, no CAP_NET_ADMIN): all 8 new admin CLI
+  static-revision tests pass (incl. the 6 `#[cfg(unix)]` ones);
+  `cargo fmt --check` + clippy clean; full workspace run green except the
+  pre-existing `two_hop_system` suite, which needs passwordless
+  `sudo ip link add` (environmental, unrelated — CI runs it).
+- No shell scripts touched.
+
+## Real CI (7d)
+
+First push (`a1aa5eb`): every job passed on both parallel runs — including
+`test` (Linux, executes the `#[cfg(unix)]` tests), `clippy`, `docs`,
+`audit`, `shell`, `singbox-validate`, `codeql-rust`, `secret-logging-check`.
+The `CodeQL` summary check reported 2 "new" alerts: one genuinely mine
+(`apps/admin/tests/cli.rs`, a test-fixture UUID interpolated into an assert
+message) — fixed in the follow-up commit by naming the principal instead;
+the other is the pre-existing alert #38 (`main.rs` probe-creation
+`println!`, same code, only moved down by this batch's inserted lines),
+still awaiting the fix-or-dismiss decision flagged in 7b/7c.
+
+## Human input needed (7d)
+
+- Merge/PR decision for vpn-web `claude/node-static-revision-contract`
+  (pushed, no PR opened).
+- Listener-port revisions (`reality.listen_port`, `hysteria2.listen_port`,
+  `reality.handshake_port`) are deliberately deferred: they need a
+  coordinated firewall + relay-peer + client rollout design.
+- `reality.handshake_server` residual: syntactic public-DNS check only; a
+  control-plane-chosen public name could still resolve to an internal
+  address on the operator's fixed handshake port. Decide whether to add
+  apply-time resolution checks or remove it from the allowlist.
+- CodeQL alert #38 triage (pre-existing) still open.

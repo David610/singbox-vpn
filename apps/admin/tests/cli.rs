@@ -4517,14 +4517,14 @@ fn static_revision_preserves_all_dynamic_state_and_applies_new_static_values() {
         uuids_after, uuids_before,
         "every dynamic identity must still be authorized"
     );
-    for uuid in [
-        "11111111-1111-4111-8111-111111110001",
-        "11111111-1111-4111-8111-111111110002",
-        "11111111-1111-4111-8111-111111119001",
+    for (principal, uuid) in [
+        ("customer A", "11111111-1111-4111-8111-111111110001"),
+        ("customer B", "11111111-1111-4111-8111-111111110002"),
+        ("lease user", "11111111-1111-4111-8111-111111119001"),
     ] {
         assert!(
             uuids_after.iter().any(|u| u == uuid),
-            "{uuid} missing after static apply"
+            "{principal} lost its authorization after the static apply"
         );
     }
     assert_eq!(
