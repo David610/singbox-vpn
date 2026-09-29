@@ -351,6 +351,22 @@ fn spawn_subscription_binary(cfg_path: &Path) -> std::process::Child {
 /// second writer's `users.json` overwrite the first writer's user out of
 /// existence. Uses a dedicated `SINGBOX_VPN_LOCK_PATH` so this test never
 /// contends with other tests or a real host's `/run/lock/singbox-vpn.lock`.
+///
+/// Unix-only. `apps/admin/src/lock.rs::acquire_state_lock` is a real
+/// `flock(2)` on Unix but a deliberate no-op on every other target
+/// (`singbox-vpn` only ships for systemd Linux hosts — see that
+/// function's own doc comment): it just opens a throwaway `tempfile()`
+/// and returns immediately, providing no mutual exclusion at all. On
+/// Windows that makes this test fail deterministically — not because of
+/// a lost-update bug, but because the two spawned `vpn-admin` processes
+/// genuinely race with no lock between them, which is exactly what the
+/// no-op is documented to accept on a platform this project doesn't
+/// deploy to. Root-caused in docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29.md:
+/// reproduced failing on Windows and passing on real Linux (WSL Ubuntu
+/// 24.04) with the identical test body and no code changes, confirming
+/// the flock path itself is correct and this is a platform gap in test
+/// coverage, not a production concurrency bug.
+#[cfg(unix)]
 #[test]
 fn concurrent_user_creates_do_not_lose_an_update() {
     let dir = tempfile::tempdir().unwrap();
@@ -1633,7 +1649,7 @@ fn render_config_require_applied_succeeds_on_true_noop() {
         .args(["render-config", "--require-applied"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("already current"));
+        .stderr(predicates::str::contains("already current"));
 }
 
 /// Counts how many times the fake `systemctl` in `fake_systemctl`/
@@ -1745,7 +1761,7 @@ fn render_config_noop_reconcile_does_not_restart_singbox() {
         .args(["render-config", "--require-applied"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("already current"));
+        .stderr(predicates::str::contains("already current"));
     assert_eq!(
         count_reload_or_restart_calls(&log_path),
         calls_after_first_apply,
