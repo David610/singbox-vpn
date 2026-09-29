@@ -3665,8 +3665,9 @@ fn apply_revision_preserves_reserved_probe_confinement_and_c16_policy_across_rea
 
         let probe_rules = compat_config::server::probe_confinement_rule_count(&config_json);
         assert_eq!(
-            probe_rules, 3,
-            "the reserved probe user's 3-rule confinement block must survive the revision apply"
+            probe_rules, 4,
+            "the exit's loopback self-test exception (1 rule) plus the reserved probe user's \
+             3-rule confinement block must survive the revision apply"
         );
         // c16_egress_policy_rule_count expects to be called on a document
         // whose leading rules are its own - skip past the probe block
@@ -3679,29 +3680,30 @@ fn apply_revision_preserves_reserved_probe_confinement_and_c16_policy_across_rea
             "the C-16 egress deny-list's 4 rules must survive the revision apply"
         );
 
-        // Ordering: probe rules occupy [0..3), C-16 rules occupy [3..7),
-        // and — critically — the C-16 `reject`/`resolve` rules must not
-        // have been pushed AFTER some unrelated allow/direct rule that
-        // would let traffic bypass them. Assert the first 7 rules are
-        // exactly [probe x3, c16 x4] with no interloper.
+        // Ordering: the loopback exception plus probe rules occupy
+        // [0..4), C-16 rules occupy [4..8), and — critically — the C-16
+        // `reject`/`resolve` rules must not have been pushed AFTER some
+        // unrelated allow/direct rule that would let traffic bypass
+        // them. Assert the first 8 rules are exactly [loopback + probe
+        // x3, c16 x4] with no interloper.
         assert!(
-            rules.len() >= 7,
-            "expected at least 7 leading rules (3 probe + 4 C-16), got {}",
+            rules.len() >= 8,
+            "expected at least 8 leading rules (1 loopback + 3 probe + 4 C-16), got {}",
             rules.len()
         );
-        for (i, rule) in rules.iter().take(3).enumerate() {
+        for (i, rule) in rules.iter().take(4).enumerate() {
             assert!(
                 rule.get("auth_user").is_some(),
-                "rule {i} was expected to be part of the probe confinement block: {rule}"
+                "rule {i} was expected to be part of the loopback/probe confinement block: {rule}"
             );
         }
-        for (i, rule) in rules.iter().skip(3).take(4).enumerate() {
+        for (i, rule) in rules.iter().skip(4).take(4).enumerate() {
             assert!(
                 rule.get("auth_user").is_none(),
                 "rule {} (index {}) was expected to be a C-16 rule (no auth_user), not \
                  something reordered ahead of it: {rule}",
                 i,
-                i + 3
+                i + 4
             );
         }
 

@@ -4089,30 +4089,25 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
                 })
                 .unwrap_or(0);
             // The reserved-probe loopback self-test exception (server.rs's
-            // `render_server_config_for_deployment`) is conditional on at
-            // least one active reserved-probe user existing - it is
-            // identifiable by carrying both `auth_user` and `ip_cidr`
-            // (the hairpin rules never carry `ip_cidr`, and no other rule
-            // this renderer emits for a relay carries `auth_user` at all).
-            // Before the reserved-probe principal (Phase 4) this rule was
-            // unconditional, and this check's arithmetic used to hardcode
-            // it as always present (`+ 2` = probe rule + final reject);
-            // that went stale the moment the rule became conditional,
-            // making this check wrongly FAIL a correctly fail-closed relay
-            // that has no reserved-probe user yet (e.g. an unpaired relay
-            // before `vpn-admin user create-probe` has run).
-            let probe_loopback_rule_present = rules.is_some_and(|rules| {
-                rules
-                    .iter()
-                    .any(|rule| rule.get("auth_user").is_some() && rule.get("ip_cidr").is_some())
-            });
+            // `render_server_config_for_deployment`) AND `apply_probe_
+            // user_confinement`'s 3 confinement rules are conditional on
+            // at least one active reserved-probe user existing, and
+            // always travel together immediately ahead of everything
+            // else this renderer emits for a relay (same leading shape
+            // as an exit's document — see `probe_confinement_rule_count`'s
+            // doc comment). `probe_rules` (computed once above, shared
+            // with the Exit branch) already accounts for the full 0/3/4
+            // count; an earlier version of this check only ever added
+            // 0 or 1 for the loopback rule alone and silently ignored
+            // the 3 confinement rules whenever a probe user was present,
+            // wrongly FAILing a correctly fail-closed, probe-provisioned
+            // relay in real CI (`##[error]doctor did not confirm the
+            // relay policy`) — the same stale-arithmetic class of bug as
+            // the L2 exit check fixed in
+            // `docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29_ADDENDUM4.md`.
             let fail_closed = rules.is_some_and(|rules| {
                 rules.last().is_some_and(|last| last["action"] == "reject")
-                    && rules.len()
-                        == targets.len()
-                            + 1
-                            + hairpin_rule_count
-                            + usize::from(probe_loopback_rule_present)
+                    && rules.len() == targets.len() + 1 + hairpin_rule_count + probe_rules
             });
             if fail_closed {
                 report_check(
