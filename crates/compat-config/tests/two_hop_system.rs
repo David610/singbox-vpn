@@ -7,13 +7,14 @@
 //! clock, so provider separation, packet-capture knowledge separation,
 //! real reachability, latency and leak behaviour are out of scope here.
 //!
-//! Topology (distinct loopback addresses, deterministic roles):
+//! Topology (distinct addresses on a private dummy interface, deterministic
+//! roles):
 //!
 //! ```text
-//! client (sing-box, SOCKS on 127.0.0.1, dials from 127.0.0.6)
-//!   ├─ "Germany · Direct"      ─────────────────────► tap ─► exit 127.0.0.3 ─► target 127.0.0.4
-//!   └─ "Germany · via Russia"  ─► relay 127.0.0.2 ───► tap ─► exit 127.0.0.3 ─► target 127.0.0.4
-//! undeclared destinations: 127.0.0.5, other ports on 127.0.0.3/127.0.0.4
+//! client (sing-box, SOCKS on 127.0.0.1, dials from 192.88.99.6)
+//!   ├─ "Germany · Direct"      ─────────────────────► tap ─► exit 192.88.99.3 ─► target 192.88.99.4
+//!   └─ "Germany · via Russia"  ─► relay 192.88.99.2 ───► tap ─► exit 192.88.99.3 ─► target 192.88.99.4
+//! undeclared destinations: 192.88.99.5, other ports on 192.88.99.3/192.88.99.4
 //! ```
 //!
 //! Every server document comes from `render_server_config_for_deployment`,
@@ -28,10 +29,37 @@
 //! hard-coded processes, so the same scenario list is the checklist for
 //! the later real-VPS acceptance phase (docs/TWO_HOP_SYSTEM_TESTS.md).
 //!
-//! Requires Linux (127.0.0.0/8 is routable to lo), a pinned `sing-box`
-//! (`SING_BOX_BIN` or PATH) and `openssl`. Skips otherwise, unless
-//! `SINGBOX_VPN_REQUIRE_REAL_INTEROP` is set, which turns a skip into a
-//! failure.
+//! ## Addressing: why not loopback (127.0.0.0/8)
+//!
+//! C-16 (`compat_config::model::C16_DENY_IPV4_CIDRS`) rejects every
+//! declared peer/exit address inside the IANA special-use/testing ranges,
+//! including all of `127.0.0.0/8`. There is no CIDR block that is
+//! simultaneously outside that deny list and not real, globally-routable
+//! Internet space — so this harness cannot just pick a different "safe"
+//! static range.
+//!
+//! Instead it creates a dedicated dummy network interface
+//! (`ip link add ... type dummy`, no default route ever pointed at it) and
+//! assigns each role's address to it as a host route
+//! (`ip addr add <addr>/32 dev <iface>`). Isolation here does not come from
+//! the address block being reserved — `192.88.99.0/24` (chosen only because
+//! it is a real, unremarkable, non-C16-listed block, memorable as a
+//! `.2`.`.6` continuation of the old loopback scheme) is ordinary public
+//! space. It comes from Linux routing an address assigned to *any* local
+//! interface (dummy interfaces included) through the kernel's local table
+//! before ever consulting the main/default route: a packet destined for an
+//! address this host owns is delivered locally, and a dummy interface has
+//! no upstream to escape through even if that lookup were bypassed. See
+//! [`DummyInterfaceGuard`].
+//!
+//! Requires Linux, root/`CAP_NET_ADMIN` via passwordless `sudo` (to create
+//! the dummy interface — GitHub Actions' `ubuntu-latest` runners have this
+//! by default; a developer sandbox without it will fail loudly, see
+//! `prerequisites()`), a pinned `sing-box` (`SING_BOX_BIN` or PATH) and
+//! `openssl`. Skips on missing sing-box/openssl, unless
+//! `SINGBOX_VPN_REQUIRE_REAL_INTEROP` is set, which turns that skip into a
+//! failure. Once sing-box/openssl are present, dummy-interface setup
+//! failure is always a hard failure, never a silent skip.
 
 #![cfg(target_os = "linux")]
 
@@ -57,12 +85,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-const RELAY_IP: &str = "127.0.0.2";
-const EXIT_IP: &str = "127.0.0.3";
-const TARGET_IP: &str = "127.0.0.4";
-const UNDECLARED_IP: &str = "127.0.0.5";
+/// A real, ordinary, non-`C16_DENY_IPV4_CIDRS`-listed /24 used only as
+/// host routes on [`DUMMY_IFACE`] — see the module doc for why this is
+/// safe despite not being "reserved" space.
+const RELAY_IP: &str = "192.88.99.2";
+const EXIT_IP: &str = "192.88.99.3";
+const TARGET_IP: &str = "192.88.99.4";
+const UNDECLARED_IP: &str = "192.88.99.5";
 /// Source address of every socket the client device opens itself.
-const CLIENT_IP: &str = "127.0.0.6";
+const CLIENT_IP: &str = "192.88.99.6";
+
+/// Name of the dummy network interface these tests create. Kept short
+/// (interface names are capped at 15 bytes by the kernel) and namespaced
+/// so it's obviously this test suite's if left behind after a hard kill.
+const DUMMY_IFACE: &str = "arcana-2hop0";
 const DIRECT_TAG: &str = "Germany · Direct";
 const VIA_TAG: &str = "Germany · via Russia";
 const NEGATIVE_TIMEOUT: Duration = Duration::from_secs(6);
@@ -89,12 +125,118 @@ fn prerequisites() -> Option<SingBox> {
         .output()
         .is_ok_and(|o| o.status.success());
     match (SingBox::find(), openssl) {
-        (Some(sb), true) => Some(sb),
+        (Some(sb), true) => {
+            // sing-box and openssl are present, so this is a real run, not
+            // an environment that should be silently skipped. From here on
+            // a missing capability (no sudo, no CAP_NET_ADMIN) must panic,
+            // not skip — see the module doc and `DummyInterfaceGuard`.
+            dummy_net();
+            Some(sb)
+        }
         _ if required => panic!("two-hop system tests require sing-box and openssl"),
         _ => {
             eprintln!("skipping: sing-box and/or openssl not available");
             None
         }
+    }
+}
+
+/// Process-wide dummy interface, created once and reused by every test in
+/// this binary (`SERIAL` already forces the `Lab`-based tests to run one at
+/// a time; `harness_readiness_is_owned_by_the_started_process` also needs
+/// `EXIT_IP` bindable and doesn't go through `Lab` at all, so this can't
+/// live on `Lab` alone).
+///
+/// Note on cleanup: `OnceLock`/`static` contents are not dropped at normal
+/// process exit in Rust, so `DummyInterfaceGuard::drop` does not run here —
+/// on a GitHub Actions runner that's fine, the whole VM is destroyed after
+/// the job. `DummyInterfaceGuard` still implements `Drop` (idempotent,
+/// best-effort `ip link delete`) so a caller that owns one as a local
+/// value gets real teardown, including on an unwinding panic; it just
+/// isn't reachable through this particular process-wide static. Neither
+/// path survives a SIGKILL/process-abort, which does not unwind Rust
+/// destructors at all — that's a hard limitation, not a bug here.
+static DUMMY_NET: std::sync::OnceLock<DummyInterfaceGuard> = std::sync::OnceLock::new();
+
+fn dummy_net() -> &'static DummyInterfaceGuard {
+    DUMMY_NET.get_or_init(|| {
+        DummyInterfaceGuard::setup(
+            DUMMY_IFACE,
+            &[RELAY_IP, EXIT_IP, TARGET_IP, UNDECLARED_IP, CLIENT_IP],
+        )
+    })
+}
+
+/// Owns a Linux dummy network interface carrying this suite's non-loopback
+/// test addresses as host routes (`ip addr add <addr>/32 dev <iface>`).
+/// Setup requires `CAP_NET_ADMIN` via passwordless `sudo`; failure panics
+/// (see `prerequisites()`) rather than skipping, so a misconfigured
+/// environment is loud, not silently green.
+struct DummyInterfaceGuard {
+    name: String,
+}
+
+impl DummyInterfaceGuard {
+    fn setup(name: &str, addrs: &[&str]) -> DummyInterfaceGuard {
+        let run = |args: &[&str]| -> std::process::Output {
+            std::process::Command::new("sudo")
+                .arg("-n") // never block on an interactive password prompt
+                .args(args)
+                .output()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "two-hop system tests need passwordless `sudo ip ...` \
+                         (CAP_NET_ADMIN) to create the dummy test interface \
+                         {name:?} (args={args:?}), and could not even run \
+                         sudo: {e}"
+                    )
+                })
+        };
+
+        // Best-effort removal of a leftover interface from a prior killed
+        // run; a clean environment has nothing to remove here.
+        let _ = run(&["ip", "link", "delete", name]);
+
+        let add = run(&["ip", "link", "add", name, "type", "dummy"]);
+        assert!(
+            add.status.success(),
+            "failed to create dummy interface {name} (need CAP_NET_ADMIN via \
+             passwordless sudo): {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+        let guard = DummyInterfaceGuard {
+            name: name.to_string(),
+        };
+
+        let up = run(&["ip", "link", "set", name, "up"]);
+        assert!(
+            up.status.success(),
+            "failed to bring up dummy interface {name}: {}",
+            String::from_utf8_lossy(&up.stderr)
+        );
+
+        for addr in addrs {
+            let cidr = format!("{addr}/32");
+            let out = run(&["ip", "addr", "add", &cidr, "dev", name]);
+            assert!(
+                out.status.success(),
+                "failed to assign {addr} to dummy interface {name}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        guard
+    }
+}
+
+impl Drop for DummyInterfaceGuard {
+    fn drop(&mut self) {
+        // Best-effort: nothing sensible to do if this fails, and the
+        // interface is routeless test-only state, never anything a
+        // production host depends on.
+        let _ = std::process::Command::new("sudo")
+            .args(["-n", "ip", "link", "delete", &self.name])
+            .output();
     }
 }
 
