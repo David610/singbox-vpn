@@ -202,13 +202,216 @@ outcome, in particular the `shell` job (which is the one that would
 actually exercise Area 3's root-requiring uninstall tests against real
 privileged behavior — not verifiable in this sandbox).
 
-## Human input needed
+## Human input needed (as of 7a)
 
-- Area 6's hostname case is a real, acknowledged gap: decide whether to
-  add a persisted `public_ipv4`/`public_ipv6` field to `DeploymentConfig`
-  (schema bump) as the proper fix, or accept IP-literal-only `public_host`
-  deployments as the supported path for this protection.
+- ~~Area 6's hostname case is a real, acknowledged gap~~ — closed in 7b,
+  see below.
 - Area 4's "known fleet node" positive-allowlist model (vs. this batch's
   IP-range floor) needs the vpn-web contract tracing explicitly deferred
   to a separate follow-up (original Batch 7 Area "real protocol health").
+
+---
+
+# Batch 7b addendum — 2026-09-29 (Areas 6 close-out + 2)
+
+Continues from `ea52484`. Two tasks: closing Area 6's hostname gap, and
+auditing/extending Area 2 (revision-apply dynamic-state preservation).
+
+## Area 6 — Own-public-IP egress gap (hostname case)
+
+**Status: FIXED (both IP-literal `public_host` and hostname `public_host`
+cases now covered) — closed as far as this remediation's own scope goes.**
+
+Field/schema decision: added `DeploymentConfig::public_ipv4: Option<String>`
+and `public_ipv6: Option<String>` (`crates/compat-config/src/deployment.rs`).
+Both are optional and additive — no `DEPLOYMENT_SCHEMA_VERSION` bump, no
+migration step, because `#[serde(default)]` on an `Option` already makes
+every pre-existing `deployment.toml` (which has neither key) load, validate,
+and render identically to before. `validate()` rejects a non-empty value
+that doesn't parse as the correct IP family (IPv4 literal in `public_ipv4`,
+IPv6 in `public_ipv6`).
+
+`apply_c16_egress_policy` (`crates/compat-config/src/server.rs`) now takes
+two more `Option<&str>` parameters and folds `public_ipv4`/`public_ipv6` in
+alongside the existing IP-literal-`public_host` check, collapsing all
+addresses that are set into one combined deny rule (so the leading-rule
+count callers rely on — `c16_egress_policy_rule_count` — stays 0/4/5, never
+6+, regardless of how many of the three sources are populated). This is the
+"general fix" requested: it denies customer-tunnel egress to the node's own
+address whether `public_host` is a hostname (the common case) or an IP
+literal, as long as `public_ipv4`/`public_ipv6` is populated.
+
+Population path at install time (`deploy/almalinux/install.sh`): the
+installer already resolves the node's public IP via
+`preflight_detect_public_ip` (three third-party IP-echo services), but
+*only* on the auto-detect/sslip.io path taken when the operator does not
+supply their own `PUBLIC_HOST`/`--domain`. That resolved `PUBLIC_IP` is now
+also written to `public_ipv4` in the rendered `deployment.toml`
+(`render_deployment_toml`), at no additional network cost since the lookup
+was already happening. When the operator supplies their own domain (the
+documented/recommended real-deployment path,
+`docs/SUPPORTED_PRODUCT.md`), this installer does **not** add a new
+"call an IP-detection service" step just to populate this field — that
+would be a new network side-effect for a security hardening feature, not
+something this remediation's stated pattern condones. In that case
+`public_ipv4`/`public_ipv6` stay unset (honest: this protection is simply
+not available yet for that node) unless the operator sets
+`PUBLIC_IPV4=...` before running the installer, or the control plane
+supplies it later via a future `APPLY_NODE_REVISION` extension (see Area 2
+below — no such extension exists today; `APPLY_NODE_REVISION`'s current
+payload is a users-store document only and has no way to change
+`deployment.toml` at all, so "control plane sets it via revision apply" is
+aspirational, not implemented, until that mechanism is extended).
+
+Tests (`crates/compat-config/tests/relay_role_policy.rs`, all passing
+locally — 71/71 in that file):
+`exit_with_hostname_public_host_and_public_ipv4_field_denies_customer_tunnel`,
+`exit_with_hostname_public_host_and_public_ipv6_field_denies_customer_tunnel`,
+`exit_with_public_ipv4_and_public_ipv6_both_set_combines_into_one_rule`,
+`deployment_toml_without_public_ipv4_ipv6_fields_still_loads_and_validates`
+(backward compat), `invalid_public_ipv4_literal_is_rejected_by_validate`,
+`ipv6_literal_in_public_ipv4_field_is_rejected`. The pre-existing
+IP-literal-`public_host` tests from 7a are unchanged and still pass.
+
+Remaining risk: the operator-supplied-domain install path still leaves
+`public_ipv4`/`public_ipv6` unset by default — this is a real residual gap
+in *coverage* (not correctness: when unset, behavior is exactly the
+pre-7b baseline, never worse), and closing it fully requires either an
+operator-facing flag/prompt in install.sh (not added here — out of the
+requested scope, which was schema + wiring) or the control-plane
+revision-apply extension noted above.
+
+## Area 2 — Revision apply must preserve dynamic state
+
+**Status: PARTIAL — audited and proven correct for what
+`APPLY_NODE_REVISION` actually does today; the task's premise that it
+"re-renders the entire config, wholesale replacing whatever was on disk"
+is only half true, and that distinction is the main finding.**
+
+Read `cmd_apply_revision`/`apply_users_and_save`
+(`apps/admin/src/main.rs`, ~L3670-3835) end-to-end. Findings:
+
+- **STATIC state (protocol ports, role, hardening, `public_host`,
+  certificates) lives entirely in `deployment.toml`**, loaded once at CLI
+  startup (`cfg: &DeploymentConfig`) and passed through
+  `cmd_apply_revision` unchanged. `cmd_apply_revision` never writes
+  `deployment.toml`. There is currently **no mechanism** for
+  `APPLY_NODE_REVISION` to change a static field — a protocol port or
+  hardening flag cannot be changed via this command at all today. This
+  contradicts the task prompt's assumption ("apply a new node revision
+  (change something static, e.g. a protocol port...)") — that scenario is
+  not expressible with the current `apply-revision` CLI surface, so it was
+  not (and could not be) tested; flagging this gap explicitly rather than
+  fabricating a static-revision-apply feature that doesn't exist in this
+  codebase.
+- **DYNAMIC state (customer credentials, lease-pool slot users, the
+  reserved probe principal, C-16-policy-generated route rules) all lives
+  in `users.json`**, and `APPLY_NODE_REVISION`'s entire payload is a
+  users-store document (`store::parse_users_bytes`) that **wholesale
+  replaces** the previous `users.json` via `apply_users_and_save` →
+  `render_and_apply_singbox_config`. There is no merge logic on the node
+  side: the reserved probe, lease users, and every existing customer
+  survive a revision apply **only because and to the extent the caller
+  (vpn-web) includes them in the revision document it pushes** — this is a
+  control-plane responsibility outside this repo's code, not something the
+  node enforces. C-16 policy and probe confinement are not stored data at
+  all; they are re-derived at render time from `cfg.role`/`users` by
+  `apply_c16_egress_policy`/`apply_probe_user_confinement`, so they
+  "survive" a revision apply simply because the renderer always adds them
+  fresh on every call, regardless of what the revision document contains.
+- The existing pipeline is already fail-closed: `render_and_apply_
+  singbox_config` does fingerprint-short-circuit, `sing-box check`
+  validation, atomic rename, reload+verify, and rollback-from-backup on
+  failure; `cmd_apply_revision` adds only revision-number staleness
+  guarding and stamping on top, unchanged by this batch.
+
+Extended test coverage (`apps/admin/tests/cli.rs`, both `#[cfg(unix)]`
+alongside every other `apply-revision` test in this file):
+- `apply_revision_preserves_all_dynamic_state_types_simultaneously_static_config_untouched`
+  — 2 customers + reserved probe + 1 lease-pool slot user (`lease-0001`,
+  recognized by `apps/admin/src/lease_pool.rs::is_lease_user`'s id-prefix
+  check) applied together in one revision. Confirms probe confinement (4
+  rules), C-16 policy (4 rules), all 4 users present and correctly typed
+  in `users.json` after the apply, **and** that `deployment.toml` is
+  byte-identical before/after — the direct proof of the static/dynamic
+  separation above.
+- `apply_revision_reload_failure_rolls_back_full_dynamic_state_mix` — same
+  multi-type dynamic-state mix, but the new revision's reload fails.
+  Confirms `config.json`, `users.json`, and the revision stamp all roll
+  back to the exact previous state (never a half-old/half-new mix),
+  extending the existing single-dynamic-state-type
+  `apply_revision_reload_failure_rolls_back_config_users_and_stamp` test to
+  the realistic multi-type scenario the task asked for.
+
+These extend, not replace, the existing Batch 5/6
+`apply_revision_preserves_reserved_probe_confinement_and_c16_policy_across_reapply`
+test, which already proved the probe+C-16 case across re-renders with a
+growing customer set.
+
+**Not verifiable in this sandbox**: both new tests are `#[cfg(unix)]`
+(fork fake `systemctl`/`sing-box` shell scripts, as every other
+`apply-revision` test in this file does) and could not run on this
+Windows sandbox. `cargo test --locked --workspace` here shows 53/53 tests
+in `cli.rs` passing, but that binary, compiled for
+`x86_64-pc-windows-msvc`, does not even contain the `cfg(unix)` tests —
+confirmed via `cargo test -p admin --test cli -- --list`, which does not
+list them. The new code was verified only by successful compilation
+(rustc parses and macro-expands the whole file, including cfg-stripped
+items, so there are no syntax errors) and close structural mirroring of
+the adjacent passing tests it was modeled on. **Real pass/fail requires
+Linux CI** (see below).
+
+Remaining risk: the "dynamic state is preserved" property this batch
+proved is entirely about the node's local pipeline not corrupting or
+dropping data it's handed. It says nothing about whether vpn-web's
+revision-document construction actually always includes the full current
+dynamic-state set (probe, leases, all customers) before pushing a new
+revision — that is a vpn-web-side contract this repo cannot verify, and
+tracing it is exactly the "Area 1 protocol health / vpn-web contract"
+follow-up explicitly out of scope here.
+
+## Commits (7b)
+
+- `e5e3e22` — fix(compat-config): close Area 6 gap for hostname
+  public_host via explicit public_ipv4/ipv6 field
+- `65d1bd2` — test(admin): Area 2 audit — apply-revision preserves full
+  dynamic-state mix, static config untouched
+
+## Local validation (7b, this sandbox, no sudo/root/CAP_NET_ADMIN)
+
+- `cargo fmt --all -- --check` — clean.
+- `cargo clippy --locked --workspace --all-targets -- -D warnings` —
+  clean, 0 warnings.
+- `cargo test --locked --workspace` — same pre-existing, unrelated,
+  environment-specific failure as 7a
+  (`udp_probe_tests::cert_expiry_days_reports_positive_days_for_a_freshly_issued_cert`,
+  broken local OpenSSL config on this Windows box, not a code defect).
+  `compat-config` 132/132 (unit) + `relay_role_policy` 71/71 (was 65,
+  +6 new Area 6 tests), all other crates unchanged and green.
+  `apps/admin`'s `cli.rs` — 53/53 of what compiles on Windows; the 2 new
+  Area 2 tests are `#[cfg(unix)]` and did not run here (see above).
+
+## Real CI (7b)
+
+*(fill in after `gh pr checks 123` polling completes — see the live
+polling note in the handback for this batch; if this section still says
+"pending" when read later, re-run `gh pr checks 123` against
+`65d1bd2` for the real outcome.)*
+
+## Human input needed (7b)
+
+- Area 6: decide whether install.sh should gain an explicit
+  `--public-ip`/`PUBLIC_IPV4` prompt or flag for the operator-supplied-domain
+  path (currently only the auto-detect/sslip.io path populates the field
+  for free); until then, operator-domain deployments get this protection
+  only if the operator or control plane sets it explicitly.
+- Area 2: the `APPLY_NODE_REVISION` → static-config-change gap is real —
+  if the product requirement is "vpn-web can push a port/hardening change
+  to a node," that needs a new mechanism (either extending the revision
+  payload to optionally include a `deployment.toml` delta, or a separate
+  command); nothing in this batch invents that, since it wasn't asked for
+  and would be a meaningful new attack surface to design carefully, not a
+  narrow fix.
+- Areas 1 (protocol health) and 5 (nftables lifecycle) remain untouched,
+  as instructed.
 - Confirm real CI status on PR #123 once it settles.
