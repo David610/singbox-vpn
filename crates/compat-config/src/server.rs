@@ -75,7 +75,7 @@ pub fn render_server_config_for_deployment(
             apply_google_egress_hairpin(&mut config, hairpin, uuid);
         }
         apply_exit_loopback_selftest_exception(&mut config, deployment, users, now_unix);
-        apply_c16_egress_policy(&mut config);
+        apply_c16_egress_policy(&mut config, Some(deployment.public_host.as_str()));
         apply_probe_user_confinement(&mut config, users, now_unix);
         return Ok(config);
     }
@@ -232,7 +232,7 @@ pub fn render_server_config_for_deployment(
 /// allow-list is still evaluated before this reject set and is not
 /// itself blocked by it (the probe's one allowed IP, `1.1.1.1`, is a
 /// public address and is never in the C-16 deny set).
-fn apply_c16_egress_policy(config: &mut serde_json::Value) {
+fn apply_c16_egress_policy(config: &mut serde_json::Value, own_public_host: Option<&str>) {
     use crate::model::{C16_DENY_IPV4_CIDRS, C16_DENY_IPV6_CIDRS, C16_DENY_TCP_PORT};
     let all_inbounds: Vec<serde_json::Value> = config["inbounds"]
         .as_array()
@@ -246,7 +246,7 @@ fn apply_c16_egress_policy(config: &mut serde_json::Value) {
     if all_inbounds.is_empty() {
         return;
     }
-    let new_rules = [
+    let mut new_rules = vec![
         json!({
             "inbound": all_inbounds.clone(),
             "action": "resolve",
@@ -264,13 +264,43 @@ fn apply_c16_egress_policy(config: &mut serde_json::Value) {
             "method": "default",
         }),
         json!({
-            "inbound": all_inbounds,
+            "inbound": all_inbounds.clone(),
             "network": "tcp",
             "port": C16_DENY_TCP_PORT,
             "action": "reject",
             "method": "default",
         }),
     ];
+    // Area 6 (own-public-IP egress gap): when the deployment's trusted
+    // `public_host` (the same value already advertised to clients —
+    // never a fresh "what is my IP" network call from inside config
+    // rendering) is an IP literal, deny a customer tunnel from reaching
+    // it, exactly like the other C-16 ranges, so a customer cannot use
+    // the tunnel to pivot into a publicly-bound service on the node
+    // itself. When `public_host` is a hostname instead of an IP literal,
+    // no rule is added here: the operator's own DNS record is not a
+    // value this renderer can safely turn into an IP-based deny without
+    // an extra network call (out of scope here — see
+    // `docs/reviews/ARCANA_BATCH7_STATUS_2026-09-29.md`). Host-originated
+    // traffic never goes through these listeners, so this only affects
+    // customer tunnel destinations, not the host's own use of its
+    // address.
+    if let Some(ip) = own_public_host
+        .filter(|h| !h.is_empty())
+        .and_then(|h| h.parse::<std::net::IpAddr>().ok())
+    {
+        let cidr = match ip {
+            std::net::IpAddr::V4(v4) => format!("{v4}/32"),
+            std::net::IpAddr::V6(v6) => format!("{v6}/128"),
+        };
+        new_rules.push(json!({
+            "inbound": all_inbounds.clone(),
+            "ip_cidr": [cidr],
+            "action": "reject",
+            "method": "default",
+        }));
+    }
+    let new_rules = new_rules;
     if !config["route"].is_object() {
         config["route"] = json!({});
     }
@@ -356,9 +386,10 @@ fn apply_exit_loopback_selftest_exception(
 }
 
 /// Number of leading `route.rules` entries `apply_c16_egress_policy`
-/// prepends (0 or 4), mirroring [`probe_confinement_rule_count`] so
-/// `doctor` can validate the rest of an exit's document exactly as
-/// before.
+/// prepends (0, 4, or 5 — 5 when the deployment's `public_host` added the
+/// own-public-IP/domain deny rule), mirroring
+/// [`probe_confinement_rule_count`] so `doctor` can validate the rest of
+/// an exit's document exactly as before.
 pub fn c16_egress_policy_rule_count(doc: &serde_json::Value) -> usize {
     let Some(rules) = doc["route"]["rules"].as_array() else {
         return 0;
@@ -367,9 +398,10 @@ pub fn c16_egress_policy_rule_count(doc: &serde_json::Value) -> usize {
         r.get("auth_user").is_none()
             && (r.get("action") == Some(&json!("resolve"))
                 || r.get("ip_cidr").is_some()
+                || r.get("domain").is_some()
                 || r.get("port") == Some(&json!(crate::model::C16_DENY_TCP_PORT)))
     };
-    rules.iter().take(4).take_while(|r| is_c16(r)).count()
+    rules.iter().take(5).take_while(|r| is_c16(r)).count()
 }
 
 /// Confines the reserved protocol-probe user(s) (structurally flagged —

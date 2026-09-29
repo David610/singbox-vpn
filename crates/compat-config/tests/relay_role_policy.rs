@@ -536,6 +536,54 @@ fn exit_rendering_keeps_inbounds_outbounds_identical_and_adds_mandatory_c16_rout
 }
 
 #[test]
+fn exit_denies_customer_tunnel_to_its_own_public_ipv4() {
+    // Area 6 (own-public-IP egress gap): a customer must not be able to
+    // use the tunnel to reach this node's own publicly-bound services by
+    // targeting its public IPv4 literal directly.
+    let text = base("exit").replace(
+        "public_host = \"de1.example.test\"",
+        "public_host = \"203.0.113.9\"",
+    );
+    let cfg = load(&text).unwrap();
+    let doc = render(&cfg, &[user()]);
+    let rules = rules(&doc);
+    assert_eq!(
+        rules.len(),
+        5,
+        "4 mandatory C-16 rules + 1 own-public-IPv4 deny"
+    );
+    assert_eq!(rules[4]["ip_cidr"], serde_json::json!(["203.0.113.9/32"]));
+    assert_eq!(rules[4]["action"], "reject");
+    assert_eq!(compat_config::server::c16_egress_policy_rule_count(&doc), 5);
+}
+
+#[test]
+fn exit_denies_customer_tunnel_to_its_own_public_ipv6() {
+    let text = base("exit").replace(
+        "public_host = \"de1.example.test\"",
+        "public_host = \"2001:db8::9\"",
+    );
+    let cfg = load(&text).unwrap();
+    let doc = render(&cfg, &[user()]);
+    let rules = rules(&doc);
+    assert_eq!(rules.len(), 5);
+    assert_eq!(rules[4]["ip_cidr"], serde_json::json!(["2001:db8::9/128"]));
+    assert_eq!(rules[4]["action"], "reject");
+}
+
+#[test]
+fn exit_with_hostname_public_host_adds_no_extra_own_ip_rule() {
+    // `public_host` as a bare hostname (the common case: `base()`'s
+    // default) cannot be safely turned into an IP-literal deny without
+    // an extra network call at render time, so no 5th rule is added —
+    // this only guards the case tested above where `public_host` is
+    // already an IP literal.
+    let cfg = load(&base("exit")).unwrap();
+    let doc = render(&cfg, &[user()]);
+    assert_eq!(rules(&doc).len(), 4);
+}
+
+#[test]
 fn legacy_exit_without_identity_renders_identically_to_current_exit() {
     let legacy = base("exit")
         .replace("schema_version = 2\n", "")
