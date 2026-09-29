@@ -1425,16 +1425,22 @@ fn exit_confines_probe_user_and_leaves_customers_unrouted() {
     let rules = with_probe["route"]["rules"].as_array().unwrap();
     assert_eq!(
         rules.len(),
-        7,
-        "3 probe rules ahead of the 4 mandatory C-16 rules; customers keep default direct egress"
+        8,
+        "1 loopback self-test exception + 3 probe rules ahead of the 4 mandatory C-16 rules; \
+         customers keep default direct egress"
     );
-    assert_probe_rules_lead(rules, 0);
+    let loopback = &rules[0];
+    assert_eq!(loopback["auth_user"], serde_json::json!(["u-probe"]));
+    assert_eq!(loopback["ip_cidr"], serde_json::json!(["127.0.0.1/32"]));
+    assert_eq!(loopback["action"], "route");
+    assert_eq!(loopback["outbound"], "direct");
+    assert_probe_rules_lead(rules, 1);
     // No customer id appears in any rule.
     assert!(!with_probe["route"].to_string().contains("\"u1\""));
     assert_eq!(with_probe["route"]["final"], "direct");
     assert_eq!(
         compat_config::server::probe_confinement_rule_count(&with_probe),
-        3
+        4
     );
 }
 
@@ -1479,9 +1485,12 @@ fn probe_rules_precede_exit_hairpin_rules() {
         render_server_config_for_deployment(&exit, &[user(), probe_user()], &r, &hysteria(), 1_000)
             .unwrap();
     let rules = with["route"]["rules"].as_array().unwrap();
-    assert_probe_rules_lead(rules, 0);
+    let loopback = &rules[0];
+    assert_eq!(loopback["auth_user"], serde_json::json!(["u-probe"]));
+    assert_eq!(loopback["ip_cidr"], serde_json::json!(["127.0.0.1/32"]));
+    assert_probe_rules_lead(rules, 1);
     assert_eq!(
-        &rules[3..],
+        &rules[4..],
         without["route"]["rules"].as_array().unwrap().as_slice()
     );
     assert_eq!(with["route"]["final"], "direct");

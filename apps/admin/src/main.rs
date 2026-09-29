@@ -7779,7 +7779,23 @@ fn check_l5_l6_protocol_selftest(
         }
     };
     let now = UnixSeconds::now().0 as i64;
-    let Some(test_user) = users.iter().find(|user| user.is_active(now)) else {
+    // Prefer a reserved-probe identity (`vpn-admin user create-probe`)
+    // when one exists: both the relay's and (as of this fix) the exit's
+    // loopback self-test exception in `compat_config::server` are
+    // scoped exclusively to `is_reserved_probe` users — an ordinary
+    // customer user is, by design, fail-closed out of this node's own
+    // loopback subscription port by C-16 / the relay's forwarding
+    // policy. Using a non-probe user here would dial straight into that
+    // same fail-closed policy and come back INCONCLUSIVE (a silent
+    // router-level reject, not a REALITY-level one), independent of
+    // whether the node itself is healthy. Falls back to any active user
+    // so a node with no probe provisioned yet still gets a best-effort
+    // self-test rather than none at all.
+    let Some(test_user) = users
+        .iter()
+        .find(|user| user.is_active(now) && user.is_reserved_probe)
+        .or_else(|| users.iter().find(|user| user.is_active(now)))
+    else {
         report_protocol_unavailable(
             require_protocol,
             failures,

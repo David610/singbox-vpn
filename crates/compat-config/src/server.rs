@@ -74,6 +74,7 @@ pub fn render_server_config_for_deployment(
         ) {
             apply_google_egress_hairpin(&mut config, hairpin, uuid);
         }
+        apply_exit_loopback_selftest_exception(&mut config, deployment, users, now_unix);
         apply_c16_egress_policy(&mut config);
         apply_probe_user_confinement(&mut config, users, now_unix);
         return Ok(config);
@@ -245,7 +246,7 @@ fn apply_c16_egress_policy(config: &mut serde_json::Value) {
     if all_inbounds.is_empty() {
         return;
     }
-    let mut rules = vec![
+    let new_rules = [
         json!({
             "inbound": all_inbounds.clone(),
             "action": "resolve",
@@ -273,8 +274,28 @@ fn apply_c16_egress_policy(config: &mut serde_json::Value) {
     if !config["route"].is_object() {
         config["route"] = json!({});
     }
-    if let Some(existing) = config["route"]["rules"].as_array() {
-        rules.extend(existing.iter().cloned());
+    let existing: Vec<serde_json::Value> = config["route"]["rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    // These 4 rules apply unconditionally to every identity — they must
+    // never be placed ahead of a rule the caller already scoped to one
+    // specific `auth_user` set (e.g. `apply_exit_loopback_selftest_
+    // exception`'s narrow probe-only loopback allow), which would
+    // otherwise be shadowed by this function's own blanket
+    // `127.0.0.0/8` reject exactly the way root cause 2 in
+    // `docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29_ADDENDUM4.md`
+    // described for `apply_probe_user_confinement`. Any leading run of
+    // `auth_user`-scoped rules is therefore kept ahead of these; a rule
+    // with no `auth_user` (matches every identity) is where these get
+    // inserted.
+    let insert_at = existing
+        .iter()
+        .take_while(|rule| rule.get("auth_user").is_some())
+        .count();
+    let mut rules = existing;
+    for (offset, rule) in new_rules.into_iter().enumerate() {
+        rules.insert(insert_at + offset, rule);
     }
     config["route"]["rules"] = json!(rules);
     // Explicit final outbound: without a route section at all, sing-box
@@ -282,6 +303,56 @@ fn apply_c16_egress_policy(config: &mut serde_json::Value) {
     // was already the effective behavior — this just makes it survive
     // future outbound reordering.
     config["route"]["final"] = json!("direct");
+}
+
+/// Exit-role counterpart of the relay's loopback self-test exception
+/// above: an EXIT's C-16 egress policy ([`apply_c16_egress_policy`])
+/// unconditionally rejects `127.0.0.0/8` for every identity, which also
+/// silently swallows `vpn-admin doctor --protocol`'s own live-handshake
+/// self-test (it dials this node's own subscription `/healthz` over the
+/// tunnel to prove a real end-to-end handshake) — the same class of bug
+/// documented as "root cause 2" for the relay in
+/// `docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29_ADDENDUM4.md`, just not
+/// yet given the same narrow exception on the exit side. Scoped
+/// identically to the relay's: only the reserved probe principal(s)
+/// (`is_reserved_probe: true`, never name-matched) may reach
+/// `127.0.0.1:<subscription_port>` over TCP via `direct`; every other
+/// user and every other destination is unaffected and still fully
+/// subject to C-16. Omitted entirely when no active reserved-probe user
+/// exists, matching the relay's own omission rule.
+fn apply_exit_loopback_selftest_exception(
+    config: &mut serde_json::Value,
+    deployment: &DeploymentConfig,
+    users: &[CompatUser],
+    now_unix: i64,
+) {
+    let probe_ids: Vec<String> = users
+        .iter()
+        .filter(|u| u.is_active(now_unix) && u.is_reserved_probe)
+        .map(|u| u.id.clone())
+        .collect();
+    if probe_ids.is_empty() {
+        return;
+    }
+    if !config["route"].is_object() {
+        config["route"] = json!({});
+    }
+    let mut rules: Vec<serde_json::Value> = config["route"]["rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    rules.insert(
+        0,
+        json!({
+            "auth_user": probe_ids,
+            "network": "tcp",
+            "ip_cidr": ["127.0.0.1/32"],
+            "port": deployment.subscription.listen_port,
+            "action": "route",
+            "outbound": "direct",
+        }),
+    );
+    config["route"]["rules"] = json!(rules);
 }
 
 /// Number of leading `route.rules` entries `apply_c16_egress_policy`
@@ -414,13 +485,29 @@ fn apply_probe_user_confinement(
     config["route"]["rules"] = json!(rules);
 }
 
-/// Number of leading `route.rules` entries that
-/// `apply_probe_user_confinement` prepended (0 or 3), so `doctor` can
-/// validate the rest of the document exactly as before.
+/// Number of leading `route.rules` entries that `apply_probe_user_
+/// confinement` prepended (0 or 3), PLUS one more ahead of those if
+/// `apply_exit_loopback_selftest_exception` also ran (an exit only —
+/// see that function's doc comment), so `doctor` can validate the rest
+/// of the document exactly as before. The two always travel together:
+/// both are gated on the exact same "at least one active reserved-probe
+/// user" condition, so whenever the loopback exception is present, the
+/// confinement rules are guaranteed to immediately follow it.
 pub fn probe_confinement_rule_count(doc: &serde_json::Value) -> usize {
     let Some(rules) = doc["route"]["rules"].as_array() else {
         return 0;
     };
+    let is_loopback_selftest_exception = |r: &serde_json::Value| {
+        r.get("auth_user").is_some()
+            && r.get("ip_cidr") == Some(&json!(["127.0.0.1/32"]))
+            && r["action"] == "route"
+    };
+    let offset = if rules.first().is_some_and(is_loopback_selftest_exception) {
+        1
+    } else {
+        0
+    };
+    let rules = &rules[offset..];
     let is_probe = |r: &serde_json::Value| {
         r.get("auth_user").is_some()
             && (r["action"] == "reject" || r.get("ip_cidr").is_some() || r.get("domain").is_some())
@@ -428,7 +515,7 @@ pub fn probe_confinement_rule_count(doc: &serde_json::Value) -> usize {
             && r.get("inbound").is_none()
     };
     if rules.len() >= 3 && rules[..3].iter().all(is_probe) && rules[2]["action"] == "reject" {
-        3
+        offset + 3
     } else {
         0
     }
