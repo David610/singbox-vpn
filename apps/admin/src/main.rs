@@ -4052,22 +4052,49 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
             let targets = cfg.relay_targets();
             // Google-egress-hairpin rules (`CompatUser::google_egress_hairpin`)
             // add two rules each (a scoped `sniff` plus the `domain_suffix`
-            // route), both identifiable by carrying `auth_user` - a field
-            // no other rule this renderer emits uses. Counted from the
-            // document itself rather than recomputed from `users`/
+            // route), both identifiable by carrying `auth_user` together
+            // with either `action == "sniff"` or `domain_suffix` - fields
+            // no other rule this renderer emits uses together. Counted from
+            // the document itself rather than recomputed from `users`/
             // `now_unix` (not available here) so this check can never
             // drift from what the renderer actually did.
             let hairpin_rule_count = rules
                 .map(|rules| {
                     rules
                         .iter()
-                        .filter(|rule| rule.get("auth_user").is_some())
+                        .filter(|rule| {
+                            rule.get("auth_user").is_some()
+                                && (rule.get("action") == Some(&json!("sniff"))
+                                    || rule.get("domain_suffix").is_some())
+                        })
                         .count()
                 })
                 .unwrap_or(0);
+            // The reserved-probe loopback self-test exception (server.rs's
+            // `render_server_config_for_deployment`) is conditional on at
+            // least one active reserved-probe user existing - it is
+            // identifiable by carrying both `auth_user` and `ip_cidr`
+            // (the hairpin rules never carry `ip_cidr`, and no other rule
+            // this renderer emits for a relay carries `auth_user` at all).
+            // Before the reserved-probe principal (Phase 4) this rule was
+            // unconditional, and this check's arithmetic used to hardcode
+            // it as always present (`+ 2` = probe rule + final reject);
+            // that went stale the moment the rule became conditional,
+            // making this check wrongly FAIL a correctly fail-closed relay
+            // that has no reserved-probe user yet (e.g. an unpaired relay
+            // before `vpn-admin user create-probe` has run).
+            let probe_loopback_rule_present = rules.is_some_and(|rules| {
+                rules
+                    .iter()
+                    .any(|rule| rule.get("auth_user").is_some() && rule.get("ip_cidr").is_some())
+            });
             let fail_closed = rules.is_some_and(|rules| {
                 rules.last().is_some_and(|last| last["action"] == "reject")
-                    && rules.len() == targets.len() + 2 + hairpin_rule_count
+                    && rules.len()
+                        == targets.len()
+                            + 1
+                            + hairpin_rule_count
+                            + usize::from(probe_loopback_rule_present)
             });
             if fail_closed {
                 report_check(

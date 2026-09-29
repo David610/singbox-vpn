@@ -185,8 +185,13 @@ fn relay_render_config_applies_a_fail_closed_document() {
     let rules = doc["route"]["rules"]
         .as_array()
         .expect("relay route rules applied");
-    assert_eq!(rules.len(), 3);
-    assert_eq!(rules[1]["domain"], serde_json::json!(["de1.example.test"]));
+    // `deployment.relay_targets()` de-duplicates by (host, port): the
+    // fixture's two peer_endpoints ("de1-direct" and "de1-via-ru1") both
+    // resolve to de1.example.test:443, so only one route rule is emitted
+    // for that target, followed by the fail-closed reject-all — 2 rules
+    // total, not one-per-peer-endpoint.
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["domain"], serde_json::json!(["de1.example.test"]));
     assert_eq!(rules.last().unwrap()["action"], "reject");
     assert!(!serde_json::to_string(&doc).unwrap().contains(EXIT_UUID));
 
@@ -206,12 +211,15 @@ fn unpaired_relay_renders_reject_all_and_doctor_says_so() {
         .arg("render-config")
         .assert()
         .success();
+    // No peer_endpoints and no reserved-probe user declared for this
+    // fixture, so `relay_targets()` is empty and only the fail-closed
+    // reject-all rule is emitted.
     assert_eq!(
         rendered(dir.path())["route"]["rules"]
             .as_array()
             .unwrap()
             .len(),
-        2
+        1
     );
 
     let out = stdout(&admin(dir.path(), &cfg).args(["doctor", "--json"]).assert());
@@ -238,7 +246,13 @@ fn exit_render_is_unchanged_across_migration_to_explicit_identity() {
         .assert()
         .success();
     let before = std::fs::read(dir.path().join("state/sing-box/config.json")).unwrap();
-    assert!(rendered(dir.path()).get("route").is_none());
+    // Since C-16 (`apply_c16_egress_policy`), every exit gets a `route`
+    // section unconditionally (resolve + reject-CIDR + reject-port25 ahead
+    // of `direct`) — this test's actual point is that the schema migration
+    // to explicit identity doesn't change the render at all, proven below
+    // by the byte-identical before/after comparison, not that an exit has
+    // no route section.
+    assert!(rendered(dir.path()).get("route").is_some());
 
     admin(dir.path(), &cfg)
         .args(["config", "validate"])
