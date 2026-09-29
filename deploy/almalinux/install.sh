@@ -1741,28 +1741,25 @@ install_singbox() {
     die "download failed: $url"
   fi
 
-  # Verify integrity before extracting/installing ANYTHING. Preferred:
-  # upstream's own published checksums.txt when it exists for this
-  # release. Fallback: a pinned expected digest for this exact
-  # version+arch, hand-verified against the real upstream asset bytes
-  # (see SINGBOX_SHA256_* above). If neither is available, abort —
-  # printing a self-computed hash and calling that "verification" is not
-  # verification (docs/FINAL_PRODUCTION_AUDIT.md P0-8); never silently
-  # downgrade to an unverified install.
+  # Verify integrity against Arcana's immutable pin BEFORE consulting any
+  # upstream metadata. A release-asset compromise must not be able to replace
+  # both the tarball and checksums.txt and thereby bypass our pin.
   local sums_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box_${SINGBOX_VERSION}_checksums.txt"
   local actual_sha256 expected_sha256=""
+  case "$ARCH" in
+    amd64) expected_sha256="$SINGBOX_SHA256_AMD64" ;;
+    arm64) expected_sha256="$SINGBOX_SHA256_ARM64" ;;
+  esac
+  [ -n "$expected_sha256" ] || die "no pinned expected SHA256 for sing-box ${SINGBOX_VERSION}/${ARCH} — refusing to install an unverified binary. Update SINGBOX_SHA256_* only when intentionally changing SINGBOX_VERSION."
+  actual_sha256="$(sha256sum "$tmpdir/$tarball" | awk '{print $1}')"
+  [ "$actual_sha256" = "$expected_sha256" ] || die "checksum verification failed for $tarball: expected $expected_sha256, got $actual_sha256 — refusing to install a binary that does not match the Arcana pin."
+
+  # Upstream sums are optional corroboration, never a substitute for the pin.
   if preflight_curl_retry -fsSL -o "$tmpdir/checksums.txt" "$sums_url" 2>/dev/null; then
-    ( cd "$tmpdir" && sha256sum --ignore-missing -c checksums.txt ) || die "checksum verification failed for $tarball (upstream checksums.txt) — refusing to install."
-    log "checksum verified against upstream checksums.txt."
+    ( cd "$tmpdir" && sha256sum --ignore-missing -c checksums.txt ) || die "upstream checksums.txt disagrees for $tarball — refusing to install."
+    log "checksum verified against Arcana pin and upstream checksums.txt."
   else
-    case "$ARCH" in
-      amd64) expected_sha256="$SINGBOX_SHA256_AMD64" ;;
-      arm64) expected_sha256="$SINGBOX_SHA256_ARM64" ;;
-    esac
-    [ -n "$expected_sha256" ] || die "no upstream checksums.txt and no pinned expected SHA256 for sing-box ${SINGBOX_VERSION}/${ARCH} — refusing to install an unverified binary. Update SINGBOX_SHA256_* in this script if you intentionally changed SINGBOX_VERSION."
-    actual_sha256="$(sha256sum "$tmpdir/$tarball" | awk '{print $1}')"
-    [ "$actual_sha256" = "$expected_sha256" ] || die "checksum verification failed for $tarball: expected $expected_sha256, got $actual_sha256 — refusing to install a binary that does not match the pinned digest."
-    log "checksum verified against pinned expected SHA256 (no upstream checksums.txt published for this release)."
+    log "checksum verified against Arcana pinned expected SHA256 (no upstream checksums.txt published for this release)."
   fi
 
   tar -xzf "$tmpdir/$tarball" -C "$tmpdir"

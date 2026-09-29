@@ -99,15 +99,22 @@ if ! sha256sum -c <(echo "$BAD_SHA256  $TMPDIR_TEST/fake-asset.tar.gz") >/dev/nu
 else
   fail "invalid checksum unexpectedly verified"
 fi
-if grep -q 'expected_sha256" ] || die "no upstream checksums.txt' "$INSTALL_SH"; then
-  ok "install_singbox() fails closed (die) when neither upstream checksums.txt nor a pinned digest is available"
+if grep -q 'expected_sha256" ] || die "no pinned expected SHA256' "$INSTALL_SH"; then
+  ok "install_singbox() fails closed (die) when the Arcana pinned digest is unavailable"
 else
-  fail "install_singbox() no longer has a fail-closed no-digest-available guard"
+  fail "install_singbox() no longer has a fail-closed no-pinned-digest guard"
 fi
 if grep -q 'checksum verification failed for \$tarball: expected \$expected_sha256' "$INSTALL_SH"; then
   ok "install_singbox() fails closed (die) on a pinned-digest mismatch"
 else
   fail "install_singbox() no longer dies on a pinned-digest checksum mismatch"
+fi
+pin_line="$(grep -n 'actual_sha256=.*sha256sum.*\$tmpdir/\$tarball' "$INSTALL_SH" | head -1 | cut -d: -f1)"
+upstream_line="$(grep -n 'preflight_curl_retry .*checksums.txt' "$INSTALL_SH" | head -1 | cut -d: -f1)"
+if [ -n "$pin_line" ] && [ -n "$upstream_line" ] && [ "$pin_line" -lt "$upstream_line" ]; then
+  ok "Arcana's pinned digest is verified before optional upstream checksums.txt"
+else
+  fail "upstream checksums.txt can be consulted before the immutable Arcana pin"
 fi
 
 echo
@@ -416,6 +423,94 @@ else
   fail "malformed-SHA256SUMS detection pattern unexpectedly matched"
 fi
 rm -rf "$TMPDIR_SRC_TEST"
+
+echo
+echo "--- functional: install_singbox() rejects a binary that fails the Arcana pin even when upstream's own checksums.txt validates it [real logic, sourced] ---"
+# The anti-pattern this guards against: "checksums.txt exists and matches,
+# therefore skip comparing against the Arcana pin." A release-asset
+# compromise (or a legitimate-looking but wrong/rebuilt asset) that
+# controls both the tarball AND its own checksums.txt must still be
+# rejected, because Arcana's own pinned SHA256 is the mandatory root of
+# trust and upstream's checksum is only ever additional corroboration.
+# This extracts the REAL verification block from install_singbox()
+# (unmodified — same technique as
+# test-update-release-fixture-verification.sh) and drives it against a
+# fixture where the downloaded tarball's ACTUAL sha256 disagrees with the
+# Arcana pin (SINGBOX_SHA256_AMD64) but DOES agree with a
+# checksums.txt fixture standing in for upstream's own file — i.e.
+# "upstream's checksum passes" is simulated for real, not asserted by
+# grep.
+PIN_BODY_FILE="$TMPDIR_TEST/pin-body.sh"
+sed -n '/^  local sums_url="https:\/\/github.com\/SagerNet/,/^  fi$/p' "$INSTALL_SH" > "$PIN_BODY_FILE"
+# `local` is only legal inside a function; the extracted block is run at
+# top level of a subshell below, so strip it (values stay scoped to that
+# subshell either way).
+sed -i -e 's/^  local //' -e 's/^actual_sha256 expected_sha256=""/expected_sha256=""/' "$PIN_BODY_FILE"
+if grep -q 'expected_sha256=""' "$PIN_BODY_FILE" && grep -q 'preflight_curl_retry -fsSL -o "\$tmpdir/checksums.txt"' "$PIN_BODY_FILE"; then
+  ok "extracted the real Arcana-pin + upstream-checksums.txt verification block from install_singbox()"
+else
+  fail "could not extract the pin-verification block from install_singbox() (function changed shape?)"
+fi
+
+run_pin_check_against_fixture() {
+  local tarball_content="$1" pin_sha256="$2" upstream_sums_content="$3"
+  local dir="$TMPDIR_TEST/pin-fixture-$$-$RANDOM"
+  mkdir -p "$dir"
+  local tarball="pinned.tar.gz"
+  printf '%s' "$tarball_content" > "$dir/$tarball"
+  printf '%s' "$upstream_sums_content" > "$dir/checksums.fixture.txt"
+  (
+    set -Eeuo pipefail
+    die() { echo "DIE: $*" >&2; return 1; }
+    log() { :; }
+    # Stands in for the real network call: copies the prepared upstream
+    # checksums.txt fixture instead of hitting github.com, and records
+    # that it was actually invoked (so the test can prove the Arcana pin
+    # check short-circuits BEFORE this ever runs on a pin mismatch, not
+    # just that the end result happens to be rejection).
+    preflight_curl_retry() {
+      touch "$dir/upstream-check-was-reached.marker"
+      cp "$dir/checksums.fixture.txt" "$dir/checksums.txt"
+      return 0
+    }
+    # shellcheck disable=SC2034
+    tmpdir="$dir"
+    # shellcheck disable=SC2034
+    tarball="$tarball"
+    # shellcheck disable=SC2034
+    ARCH="amd64"
+    # shellcheck disable=SC2034
+    SINGBOX_SHA256_AMD64="$pin_sha256"
+    # shellcheck disable=SC2034
+    SINGBOX_SHA256_ARM64="0000000000000000000000000000000000000000000000000000000000000000"
+    # shellcheck disable=SC2034
+    SINGBOX_VERSION="vfixture-test"
+    # shellcheck disable=SC1090
+    source "$PIN_BODY_FILE"
+  ) 2>&1
+  echo "UPSTREAM_REACHED=$([ -f "$dir/upstream-check-was-reached.marker" ] && echo yes || echo no)"
+}
+
+REAL_TARBALL_SHA256="$(printf '%s' 'attacker-or-drifted sing-box tarball bytes' | sha256sum | awk '{print $1}')"
+UPSTREAM_SUMS_MATCHING_ACTUAL="$REAL_TARBALL_SHA256  pinned.tar.gz"
+WRONG_ARCANA_PIN="0000000000000000000000000000000000000000000000000000000000000000"
+
+out="$(run_pin_check_against_fixture 'attacker-or-drifted sing-box tarball bytes' "$WRONG_ARCANA_PIN" "$UPSTREAM_SUMS_MATCHING_ACTUAL")"
+rc=$?
+if echo "$out" | grep -qi 'DIE:.*does not match the Arcana pin' \
+    && echo "$out" | grep -q 'UPSTREAM_REACHED=no'; then
+  ok "a tarball that fails the Arcana pin is rejected WITHOUT ever consulting upstream's checksums.txt, even though upstream would have validated it"
+else
+  fail "Arcana-pin-mismatch case did not reject-before-upstream as expected: $out"
+fi
+
+CORRECT_ARCANA_PIN="$REAL_TARBALL_SHA256"
+out="$(run_pin_check_against_fixture 'attacker-or-drifted sing-box tarball bytes' "$CORRECT_ARCANA_PIN" "$UPSTREAM_SUMS_MATCHING_ACTUAL")"
+if echo "$out" | grep -q 'UPSTREAM_REACHED=yes' && ! echo "$out" | grep -qi '^DIE:'; then
+  ok "when the Arcana pin matches, verification proceeds to (and passes) the corroborating upstream checksums.txt check"
+else
+  fail "matching-pin case unexpectedly failed or skipped the upstream corroboration step: $out"
+fi
 
 echo
 echo "--- static: SINGBOX_VPN_CHANNEL=dev branch-source path remains explicitly documented as unverified/dev-only, not silently equivalent to a verified install ---"
