@@ -2626,10 +2626,10 @@ impl MachineStdout {
     }
 
     fn write_document(mut self, document: &serde_json::Value) -> Result<()> {
-        use std::io::Write;
         let text = serde_json::to_string_pretty(document)?;
         #[cfg(unix)]
         {
+            use std::io::Write;
             std::io::stdout()
                 .flush()
                 .context("flushing diverted output")?;

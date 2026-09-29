@@ -45,6 +45,7 @@ fn read_hysteria_obfs_password(path: &Path) -> Result<Option<String>> {
 #[cfg(test)]
 mod hysteria_obfs_password_tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -73,6 +74,7 @@ mod hysteria_obfs_password_tests {
         assert_eq!(read_hysteria_obfs_password(&path).unwrap(), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn unreadable_present_file_fails_closed_rather_than_looking_disabled() {
         let dir = tempfile::tempdir().unwrap();
@@ -98,6 +100,7 @@ mod hysteria_obfs_password_tests {
 
     // Avoids pulling in the `libc` crate for a single syscall this test
     // module needs to skip correctly under root (CI).
+    #[cfg(unix)]
     unsafe fn libc_geteuid() -> u32 {
         extern "C" {
             fn geteuid() -> u32;
