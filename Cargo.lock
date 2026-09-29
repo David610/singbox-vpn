@@ -1244,6 +1244,7 @@ dependencies = [
  "anyhow",
  "clap",
  "compat-config",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
