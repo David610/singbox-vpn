@@ -496,7 +496,6 @@ UPSTREAM_SUMS_MATCHING_ACTUAL="$REAL_TARBALL_SHA256  pinned.tar.gz"
 WRONG_ARCANA_PIN="0000000000000000000000000000000000000000000000000000000000000000"
 
 out="$(run_pin_check_against_fixture 'attacker-or-drifted sing-box tarball bytes' "$WRONG_ARCANA_PIN" "$UPSTREAM_SUMS_MATCHING_ACTUAL")"
-rc=$?
 if echo "$out" | grep -qi 'DIE:.*does not match the Arcana pin' \
     && echo "$out" | grep -q 'UPSTREAM_REACHED=no'; then
   ok "a tarball that fails the Arcana pin is rejected WITHOUT ever consulting upstream's checksums.txt, even though upstream would have validated it"
