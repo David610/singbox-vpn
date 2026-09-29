@@ -263,6 +263,26 @@ pub struct DeploymentConfig {
     /// loaded separately from disk, never from this TOML file.
     #[serde(default)]
     pub google_egress_hairpin: Option<GoogleEgressHairpinSection>,
+
+    /// This node's own public IPv4 address, captured once (at install/
+    /// bootstrap time, or via a later `APPLY_NODE_REVISION`) rather than
+    /// resolved live during config rendering. Closes the Area 6 gap left
+    /// by the IP-literal-only `public_host` check in
+    /// `apply_c16_egress_policy`: when `public_host` is a hostname (the
+    /// common case), this field is the only trusted source the renderer
+    /// has for "what IP is this box reachable on", so a customer tunnel
+    /// can still be denied egress to the node's own address. `None` (the
+    /// default, and every existing deployment.toml) means this protection
+    /// is simply not available yet for that node — no behavior change,
+    /// no schema-version bump required since the field is optional and
+    /// additive. Never re-resolved automatically; the operator or control
+    /// plane sets it explicitly.
+    #[serde(default)]
+    pub public_ipv4: Option<String>,
+
+    /// IPv6 counterpart of `public_ipv4`. Same semantics.
+    #[serde(default)]
+    pub public_ipv6: Option<String>,
 }
 
 /// See `DeploymentConfig::google_egress_hairpin`. Every field here is
@@ -859,6 +879,27 @@ impl DeploymentConfig {
                  see docs/PERFORMANCE_OPTIMIZATION_PLAN.md"
                     .to_string(),
             ));
+        }
+
+        if let Some(ip) = self.public_ipv4.as_deref().filter(|v| !v.is_empty()) {
+            match ip.parse::<std::net::IpAddr>() {
+                Ok(std::net::IpAddr::V4(_)) => {}
+                _ => {
+                    return Err(CompatError::Parse(format!(
+                        "public_ipv4 {ip:?} is not a valid IPv4 literal"
+                    )))
+                }
+            }
+        }
+        if let Some(ip) = self.public_ipv6.as_deref().filter(|v| !v.is_empty()) {
+            match ip.parse::<std::net::IpAddr>() {
+                Ok(std::net::IpAddr::V6(_)) => {}
+                _ => {
+                    return Err(CompatError::Parse(format!(
+                        "public_ipv6 {ip:?} is not a valid IPv6 literal"
+                    )))
+                }
+            }
         }
         Ok(())
     }

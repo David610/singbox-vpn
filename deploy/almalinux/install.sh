@@ -2290,6 +2290,23 @@ render_deployment_toml() {
     # and the renderer turns an unpaired relay into reject-all.
     cat "$REPO_ROOT/deploy/almalinux/templates/relay-ingress.toml.template" >>"$rendered"
   fi
+  # Area 6 (own-public-IP customer-tunnel egress deny, see
+  # crates/compat-config's DeploymentConfig::public_ipv4/public_ipv6):
+  # only known for free here when PUBLIC_IP was already resolved by
+  # resolve_host_config's auto-detect path (no operator-supplied
+  # PUBLIC_HOST/--domain, so a sslip.io hostname was derived FROM this
+  # same IP already fetched via preflight_detect_public_ip — no new
+  # network call). When the operator supplies their own domain (the
+  # common/recommended case), this installer deliberately does not add
+  # a new "call an IP-detection service" step just to populate this
+  # field: the value stays unset until the operator sets it explicitly
+  # (PUBLIC_IPV4=... before install, or editing deployment.toml) or the
+  # control plane supplies it via a later APPLY_NODE_REVISION.
+  if [ -n "${PUBLIC_IP:-}" ]; then
+    printf 'public_ipv4 = "%s"\n' "$PUBLIC_IP" >>"$rendered"
+  elif [ -n "${PUBLIC_IPV4:-}" ]; then
+    printf 'public_ipv4 = "%s"\n' "$PUBLIC_IPV4" >>"$rendered"
+  fi
   chmod 0644 "$rendered"
   mv -f "$rendered" "$DEPLOYMENT_TOML"
   log "wrote $DEPLOYMENT_TOML (node_id=$NODE_ID role=$NODE_ROLE)"

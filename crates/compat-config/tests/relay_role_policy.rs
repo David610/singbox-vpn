@@ -577,10 +577,101 @@ fn exit_with_hostname_public_host_adds_no_extra_own_ip_rule() {
     // default) cannot be safely turned into an IP-literal deny without
     // an extra network call at render time, so no 5th rule is added —
     // this only guards the case tested above where `public_host` is
-    // already an IP literal.
+    // already an IP literal. `public_ipv4`/`public_ipv6` are unset here
+    // too (backward-compat default), so this remains the "nothing extra
+    // known" baseline.
     let cfg = load(&base("exit")).unwrap();
     let doc = render(&cfg, &[user()]);
     assert_eq!(rules(&doc).len(), 4);
+}
+
+#[test]
+fn exit_with_hostname_public_host_and_public_ipv4_field_denies_customer_tunnel() {
+    // Area 6 follow-up: the common case is a hostname `public_host`
+    // (unchanged above), but a deployment can now separately declare its
+    // known public IPv4 via `public_ipv4`. That must still produce the
+    // own-address deny rule even though `public_host` itself never
+    // parses as an IP literal.
+    let text = base("exit").replace(
+        "public_host = \"de1.example.test\"",
+        "public_host = \"de1.example.test\"\npublic_ipv4 = \"203.0.113.9\"",
+    );
+    let cfg = load(&text).unwrap();
+    assert_eq!(cfg.public_host, "de1.example.test");
+    let doc = render(&cfg, &[user()]);
+    let rules = rules(&doc);
+    assert_eq!(
+        rules.len(),
+        5,
+        "4 mandatory C-16 rules + 1 own-public-IPv4 deny from public_ipv4"
+    );
+    assert_eq!(rules[4]["ip_cidr"], serde_json::json!(["203.0.113.9/32"]));
+    assert_eq!(rules[4]["action"], "reject");
+    assert_eq!(compat_config::server::c16_egress_policy_rule_count(&doc), 5);
+}
+
+#[test]
+fn exit_with_hostname_public_host_and_public_ipv6_field_denies_customer_tunnel() {
+    let text = base("exit").replace(
+        "public_host = \"de1.example.test\"",
+        "public_host = \"de1.example.test\"\npublic_ipv6 = \"2001:db8::9\"",
+    );
+    let cfg = load(&text).unwrap();
+    let doc = render(&cfg, &[user()]);
+    let rules = rules(&doc);
+    assert_eq!(rules.len(), 5);
+    assert_eq!(rules[4]["ip_cidr"], serde_json::json!(["2001:db8::9/128"]));
+    assert_eq!(rules[4]["action"], "reject");
+}
+
+#[test]
+fn exit_with_public_ipv4_and_public_ipv6_both_set_combines_into_one_rule() {
+    let text = base("exit").replace(
+        "public_host = \"de1.example.test\"",
+        "public_host = \"de1.example.test\"\npublic_ipv4 = \"203.0.113.9\"\npublic_ipv6 = \"2001:db8::9\"",
+    );
+    let cfg = load(&text).unwrap();
+    let doc = render(&cfg, &[user()]);
+    let rules = rules(&doc);
+    assert_eq!(rules.len(), 5, "both addresses collapse into one rule");
+    assert_eq!(
+        rules[4]["ip_cidr"],
+        serde_json::json!(["203.0.113.9/32", "2001:db8::9/128"])
+    );
+    assert_eq!(compat_config::server::c16_egress_policy_rule_count(&doc), 5);
+}
+
+#[test]
+fn deployment_toml_without_public_ipv4_ipv6_fields_still_loads_and_validates() {
+    // Backward compatibility: every existing deployment.toml predates
+    // these fields. Confirm the absence of `public_ipv4`/`public_ipv6`
+    // is not a load/validate regression and both default to None.
+    let cfg = load(&base("exit")).unwrap();
+    assert!(cfg.public_ipv4.is_none());
+    assert!(cfg.public_ipv6.is_none());
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
+fn invalid_public_ipv4_literal_is_rejected_by_validate() {
+    let text = base("exit").replace(
+        "public_host = \"de1.example.test\"",
+        "public_host = \"de1.example.test\"\npublic_ipv4 = \"not-an-ip\"",
+    );
+    let err = load(&text).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("public_ipv4"), "{msg}");
+}
+
+#[test]
+fn ipv6_literal_in_public_ipv4_field_is_rejected() {
+    let text = base("exit").replace(
+        "public_host = \"de1.example.test\"",
+        "public_host = \"de1.example.test\"\npublic_ipv4 = \"2001:db8::9\"",
+    );
+    let err = load(&text).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("public_ipv4"), "{msg}");
 }
 
 #[test]

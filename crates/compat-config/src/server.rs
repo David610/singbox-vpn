@@ -75,7 +75,12 @@ pub fn render_server_config_for_deployment(
             apply_google_egress_hairpin(&mut config, hairpin, uuid);
         }
         apply_exit_loopback_selftest_exception(&mut config, deployment, users, now_unix);
-        apply_c16_egress_policy(&mut config, Some(deployment.public_host.as_str()));
+        apply_c16_egress_policy(
+            &mut config,
+            Some(deployment.public_host.as_str()),
+            deployment.public_ipv4.as_deref(),
+            deployment.public_ipv6.as_deref(),
+        );
         apply_probe_user_confinement(&mut config, users, now_unix);
         return Ok(config);
     }
@@ -232,7 +237,12 @@ pub fn render_server_config_for_deployment(
 /// allow-list is still evaluated before this reject set and is not
 /// itself blocked by it (the probe's one allowed IP, `1.1.1.1`, is a
 /// public address and is never in the C-16 deny set).
-fn apply_c16_egress_policy(config: &mut serde_json::Value, own_public_host: Option<&str>) {
+fn apply_c16_egress_policy(
+    config: &mut serde_json::Value,
+    own_public_host: Option<&str>,
+    own_public_ipv4: Option<&str>,
+    own_public_ipv6: Option<&str>,
+) {
     use crate::model::{C16_DENY_IPV4_CIDRS, C16_DENY_IPV6_CIDRS, C16_DENY_TCP_PORT};
     let all_inbounds: Vec<serde_json::Value> = config["inbounds"]
         .as_array()
@@ -285,17 +295,40 @@ fn apply_c16_egress_policy(config: &mut serde_json::Value, own_public_host: Opti
     // traffic never goes through these listeners, so this only affects
     // customer tunnel destinations, not the host's own use of its
     // address.
-    if let Some(ip) = own_public_host
+    // Area 6 follow-up: `public_ipv4`/`public_ipv6` are the general fix —
+    // deployment-config fields populated once at install/revision-apply
+    // time (never re-resolved during rendering) that cover the node's own
+    // public address regardless of whether `public_host` itself is a
+    // hostname or an IP literal. They coexist with the IP-literal
+    // `public_host` check above (which still fires on its own, e.g. for a
+    // deployment.toml predating this field); a CIDR appearing in both
+    // sources just produces a harmless duplicate deny rule.
+    let mut own_ip_cidrs: Vec<std::net::IpAddr> = own_public_host
         .filter(|h| !h.is_empty())
         .and_then(|h| h.parse::<std::net::IpAddr>().ok())
-    {
-        let cidr = match ip {
-            std::net::IpAddr::V4(v4) => format!("{v4}/32"),
-            std::net::IpAddr::V6(v6) => format!("{v6}/128"),
-        };
+        .into_iter()
+        .collect();
+    own_ip_cidrs.extend(
+        own_public_ipv4
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<std::net::IpAddr>().ok()),
+    );
+    own_ip_cidrs.extend(
+        own_public_ipv6
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<std::net::IpAddr>().ok()),
+    );
+    if !own_ip_cidrs.is_empty() {
+        let cidrs: Vec<String> = own_ip_cidrs
+            .into_iter()
+            .map(|ip| match ip {
+                std::net::IpAddr::V4(v4) => format!("{v4}/32"),
+                std::net::IpAddr::V6(v6) => format!("{v6}/128"),
+            })
+            .collect();
         new_rules.push(json!({
             "inbound": all_inbounds.clone(),
-            "ip_cidr": [cidr],
+            "ip_cidr": cidrs,
             "action": "reject",
             "method": "default",
         }));
@@ -386,8 +419,10 @@ fn apply_exit_loopback_selftest_exception(
 }
 
 /// Number of leading `route.rules` entries `apply_c16_egress_policy`
-/// prepends (0, 4, or 5 — 5 when the deployment's `public_host` added the
-/// own-public-IP/domain deny rule), mirroring
+/// prepends (0, 4, or 5 — 5 when any of `public_host` (IP-literal form),
+/// `public_ipv4`, or `public_ipv6` contributed an own-address deny rule;
+/// all three collapse into a single combined rule when more than one is
+/// set), mirroring
 /// [`probe_confinement_rule_count`] so `doctor` can validate the rest of
 /// an exit's document exactly as before.
 pub fn c16_egress_policy_rule_count(doc: &serde_json::Value) -> usize {
