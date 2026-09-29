@@ -468,11 +468,13 @@ jobs:
           ARCANA_DIAGNOSTIC_SINGBOX_LOG_LEVEL: "debug"
         run: |
           set +e
-          cargo test --locked -p compat-config --test two_hop_system \
-            s03_relay_is_not_an_internet_exit \
-            s05_wrong_exit_credential_fails_after_reaching_the_relay \
-            s12_unpaired_relay_cannot_reach_anything_as_an_exit \
-            -- --nocapture --test-threads=1 2>&1 | tee diagnostic.log
+          for t in s03_relay_is_not_an_internet_exit \
+                   s05_wrong_exit_credential_fails_after_reaching_the_relay \
+                   s12_unpaired_relay_cannot_reach_anything_as_an_exit; do
+            echo "=== diagnostic run: $t ==="
+            cargo test --locked -p compat-config --test two_hop_system "$t" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee -a diagnostic.log
+          done
           echo "diagnostic run finished (non-blocking); full output above"
           true
 
