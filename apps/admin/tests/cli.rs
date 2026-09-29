@@ -3582,6 +3582,188 @@ fn apply_revision_reload_failure_rolls_back_config_users_and_stamp() {
     );
 }
 
+/// A3 (Batch 5 regression test): batch 1 introduced the structural
+/// `is_reserved_probe` flag and the C-16 exit egress deny-list
+/// (`apply_c16_egress_policy`/`apply_probe_user_confinement` in
+/// `crates/compat-config/src/server.rs`), but batches 2/3 both flagged
+/// that nothing proved a config apply/revision COMPOSITION couldn't
+/// silently drop either one. This is that test - driven through the real
+/// `apply-revision` CLI path (`cmd_apply_revision` ->
+/// `apply_users_and_save` -> `render_and_apply_singbox_config`), the same
+/// production code every other test in this section exercises, not a
+/// unit test calling the render functions directly.
+///
+/// Proves, across TWO successive revision applies (so this catches a
+/// regression that only shows up on RE-render, not just first render):
+/// 1. the reserved probe user survives each revision (its record and
+///    `is_reserved_probe` flag are not silently dropped by
+///    `store::parse_users_bytes` round-tripping the wire document, and
+///    its 3-rule confinement block is present after each apply);
+/// 2. the C-16 deny-list's 4 rules are present after each apply, ordered
+///    strictly AFTER the probe's 3 rules and BEFORE the exit's implicit
+///    final `direct` outbound - i.e. neither block is dropped nor
+///    reordered such that unrestricted direct egress could ever be
+///    evaluated first.
+#[test]
+#[cfg(unix)]
+fn apply_revision_preserves_reserved_probe_confinement_and_c16_policy_across_reapply() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| -> assert_cmd::assert::Assert {
+        admin(dir.path(), &cfg_path)
+            .env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SYSTEMCTL_LOG", &log_path)
+            .args(args)
+            .assert()
+    };
+    run(&["init"]).success();
+
+    // Establishes the reserved probe principal locally, exactly like a
+    // real node does (`vpn-admin user create-probe`, never reachable from
+    // customer/vpn-web input) - this is what commits `is_reserved_probe:
+    // true` to `users.json` in the first place.
+    run(&["user", "create-probe"]).success();
+
+    let config_path = dir.path().join("state/sing-box/config.json");
+    let users_path = dir.path().join("state/users/users.json");
+
+    let assert_probe_and_c16_intact = |expected_customer_count: usize| {
+        let config_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        let rules = config_json["route"]["rules"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        let probe_rules = compat_config::server::probe_confinement_rule_count(&config_json);
+        assert_eq!(
+            probe_rules, 3,
+            "the reserved probe user's 3-rule confinement block must survive the revision apply"
+        );
+        // c16_egress_policy_rule_count expects to be called on a document
+        // whose leading rules are its own - skip past the probe block
+        // first, exactly as `doctor`'s real validation does per both
+        // functions' doc comments (each mirrors the other for this).
+        let doc_after_probe = serde_json::json!({ "route": { "rules": rules[probe_rules..] } });
+        let c16_rules = compat_config::server::c16_egress_policy_rule_count(&doc_after_probe);
+        assert_eq!(
+            c16_rules, 4,
+            "the C-16 egress deny-list's 4 rules must survive the revision apply"
+        );
+
+        // Ordering: probe rules occupy [0..3), C-16 rules occupy [3..7),
+        // and — critically — the C-16 `reject`/`resolve` rules must not
+        // have been pushed AFTER some unrelated allow/direct rule that
+        // would let traffic bypass them. Assert the first 7 rules are
+        // exactly [probe x3, c16 x4] with no interloper.
+        assert!(
+            rules.len() >= 7,
+            "expected at least 7 leading rules (3 probe + 4 C-16), got {}",
+            rules.len()
+        );
+        for (i, rule) in rules.iter().take(3).enumerate() {
+            assert!(
+                rule.get("auth_user").is_some(),
+                "rule {i} was expected to be part of the probe confinement block: {rule}"
+            );
+        }
+        for (i, rule) in rules.iter().skip(3).take(4).enumerate() {
+            assert!(
+                rule.get("auth_user").is_none(),
+                "rule {} (index {}) was expected to be a C-16 rule (no auth_user), not \
+                 something reordered ahead of it: {rule}",
+                i,
+                i + 3
+            );
+        }
+
+        let users_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&users_path).unwrap()).unwrap();
+        let users = users_json["users"].as_array().unwrap();
+        let probe_users: Vec<_> = users
+            .iter()
+            .filter(|u| u["is_reserved_probe"] == true)
+            .collect();
+        assert_eq!(
+            probe_users.len(),
+            1,
+            "exactly one reserved probe user must survive in users.json"
+        );
+        assert_eq!(
+            users.len(),
+            expected_customer_count + 1,
+            "customer users must be present alongside the surviving probe user"
+        );
+    };
+
+    // Revision 1: the probe user (already local) plus one customer.
+    let after_probe_creation: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&users_path).unwrap()).unwrap();
+    let mut revision_1_users = after_probe_creation["users"].as_array().unwrap().clone();
+    revision_1_users.push(serde_json::json!({
+        "id": "user-cust-1",
+        "name": "alice",
+        "enabled": true,
+        "vless_uuid": "11111111-1111-4111-8111-111111110001",
+        "hysteria2_password": "pw",
+        "subscription_token_hash_hex": "deadbeef",
+        "created_at": 0,
+        "expires_at": null
+    }));
+    let revision_1_doc =
+        serde_json::json!({ "schema_version": 1, "users": revision_1_users.clone() });
+    let input_1 = write_json(dir.path(), "revision-7.json", &revision_1_doc);
+    run(&[
+        "apply-revision",
+        "--revision",
+        "7",
+        "--input",
+        input_1.to_str().unwrap(),
+    ])
+    .success();
+    assert_probe_and_c16_intact(1);
+
+    // Revision 2 (RE-render, the case this test exists for): same probe
+    // user carried forward plus a second customer. A regression that only
+    // manifests on re-render (e.g. an accidental "only apply C-16/probe
+    // policy on first render" bug) would be invisible after revision 1
+    // alone.
+    let mut revision_2_users = revision_1_users;
+    revision_2_users.push(serde_json::json!({
+        "id": "user-cust-2",
+        "name": "bob",
+        "enabled": true,
+        "vless_uuid": "11111111-1111-4111-8111-111111110002",
+        "hysteria2_password": "pw2",
+        "subscription_token_hash_hex": "beadfeed",
+        "created_at": 0,
+        "expires_at": null
+    }));
+    let revision_2_doc = serde_json::json!({ "schema_version": 1, "users": revision_2_users });
+    let input_2 = write_json(dir.path(), "revision-8.json", &revision_2_doc);
+    run(&[
+        "apply-revision",
+        "--revision",
+        "8",
+        "--input",
+        input_2.to_str().unwrap(),
+    ])
+    .success();
+    assert_probe_and_c16_intact(2);
+}
+
 /// Coalescing/staleness guard: a revision number that is not newer than
 /// the already-applied one must be skipped as a no-op rather than
 /// re-applied - covers the case the plain content-fingerprint
