@@ -2001,7 +2001,7 @@ fn render_and_apply_singbox_config(
                      REALITY keyset; run `vpn-admin init` first",
                 );
             }
-            println!("warning: skipping sing-box config render/apply: {e}");
+            eprintln!("warning: skipping sing-box config render/apply: {e}");
             return Ok(false);
         }
     };
@@ -2021,7 +2021,7 @@ fn render_and_apply_singbox_config(
                 cfg.singbox_binary
             );
         }
-        println!(
+        eprintln!(
             "warning: {:?} not found; wrote nothing. Install sing-box, then run `vpn-admin render-config`.",
             cfg.singbox_binary
         );
@@ -2047,16 +2047,16 @@ fn render_and_apply_singbox_config(
     let applied_stamp_matches = std::fs::read_to_string(applied_config_stamp_path(&target))
         .is_ok_and(|stamp| stamp.trim() == candidate_fingerprint);
     if target_already_matches && applied_stamp_matches && service_available && mgr.is_active() {
-        println!("sing-box authorization config is already current; no reload needed.");
+        eprintln!("sing-box authorization config is already current; no reload needed.");
         return Ok(true);
     }
 
     apply_config_atomically(&doc, &target, |p| backend.validate(p))
         .context("applying sing-box config")?;
-    println!("sing-box config updated at {target:?} (validated by `sing-box check`).");
+    eprintln!("sing-box config updated at {target:?} (validated by `sing-box check`).");
 
     if !mgr.is_available() {
-        println!(
+        eprintln!(
             "warning: systemctl not available; config written but sing-box was NOT reloaded. \
              On a real deployment this means the change has not taken effect yet — run \
              `systemctl reload-or-restart sing-box` manually."
@@ -2064,7 +2064,7 @@ fn render_and_apply_singbox_config(
         return Ok(false);
     }
     if !mgr.is_unit_installed() {
-        println!(
+        eprintln!(
             "warning: sing-box.service is not installed on this host (expected in CI/local \
              dev); config written but not reloaded. On a real deployment this means the \
              change has not taken effect yet — run `deploy/almalinux/install.sh` (or \
@@ -2100,7 +2100,7 @@ fn render_and_apply_singbox_config(
     // `render_config_repeated_timer_execution_is_idempotent`
     // (apps/admin/tests/cli.rs) hold as a regression.
     let active_now = users.iter().filter(|u| u.is_active(now)).count();
-    println!(
+    eprintln!(
         "reloading sing-box ({active_now} active user(s) in the new config) — this is a full \
          restart (sing-box has no in-place reload), so all currently connected clients will be \
          briefly disconnected."
