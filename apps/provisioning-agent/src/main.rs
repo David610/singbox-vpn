@@ -352,6 +352,8 @@ case " $* " in
     ;;
   *" apply-revision "*)
     echo "apply-revision $*" >> "$calls_log"
+    for a in "$@"; do last="$a"; done
+    cp "$last" "$(dirname "$calls_log")/last-revision.json"
     ;;
   *)
     echo "unknown invocation: $*" >&2
@@ -559,6 +561,51 @@ exit 0
         // `.expect(1)` above is checked on drop; explicitly verifying it
         // here too makes the assertion's presence non-optional in a
         // panic-swallowing test harness.
+        server.verify().await;
+    }
+
+    /// Cross-repo contract: a static-config revision document served by
+    /// vpn-web's `GET /api/agent/revision/:revision` (`config` =
+    /// `{"revision_schema":1,"static_config":{..}}`) reaches
+    /// `vpn-admin apply-revision --input` verbatim — the agent neither
+    /// interprets, filters nor re-shapes it; all validation happens in
+    /// `vpn-admin` (`compat_config::static_revision`).
+    #[tokio::test]
+    async fn apply_node_revision_passes_a_static_revision_document_through_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, client, server, dir) = setup(dir.path()).await;
+        let static_doc = serde_json::json!({
+            "revision_schema": 1,
+            "static_config": {
+                "hysteria2": {"up_mbps": 200, "down_mbps": 200},
+                "udp_probe": {"ipv4_resolvers": ["9.9.9.9"]}
+            }
+        });
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/agent/revision/12"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"revision": 12, "config": static_doc})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let job = Job {
+            id: 106,
+            job_type: "APPLY_NODE_REVISION".to_string(),
+            payload: serde_json::json!({"revision": 12}),
+        };
+        let report_queue = ReportQueue::spawn(dir.join("report-queue.json"), client.clone());
+        let op_dedup = OpDedupLog::open(dir.join("op-dedup.json"));
+        apply_job(&cfg, &client, &report_queue, &op_dedup, &job)
+            .await
+            .expect("apply_job must succeed");
+
+        let delivered: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("last-revision.json")).unwrap())
+                .unwrap();
+        assert_eq!(delivered, static_doc);
+        assert_eq!(count_calls_matching(&dir, "--revision 12 "), 1);
         server.verify().await;
     }
 }

@@ -4166,3 +4166,585 @@ fn apply_revision_rejects_a_malformed_document() {
         .assert()
         .failure();
 }
+
+// --- Static-config revisions (`{"revision_schema":1,"static_config":{..}}`) ---
+//
+// See `compat_config::static_revision` (wire format + allowlist) and
+// `apps/admin/src/static_apply.rs` (atomic apply state machine). The
+// rejection tests below run on every platform (validation happens before
+// anything touches disk); the apply/rollback tests need the fake
+// `systemctl`/`sing-box` shell scripts and are `#[cfg(unix)]`.
+
+fn write_static_revision(
+    dir: &Path,
+    name: &str,
+    static_config: serde_json::Value,
+) -> std::path::PathBuf {
+    let path = dir.join(name);
+    let doc = serde_json::json!({ "revision_schema": 1, "static_config": static_config });
+    std::fs::write(&path, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+    path
+}
+
+fn static_revision_backup_exists(cfg_path: &Path) -> bool {
+    cfg_path
+        .with_file_name("deployment.toml.static-revision.bak")
+        .exists()
+}
+
+fn revision_status(dir: &Path, cfg_path: &Path) -> serde_json::Value {
+    let out = admin(dir, cfg_path)
+        .args(["revision-status", "--json"])
+        .assert()
+        .success();
+    serde_json::from_slice::<serde_json::Value>(&out.get_output().stdout).unwrap()["revision"]
+        .clone()
+}
+
+/// Required test 5: a routine static revision may never change `role` (or
+/// any other identity/trust field). Even when bundled with an otherwise
+/// valid allowlisted change, the WHOLE revision is rejected and nothing is
+/// applied â€” not the role, not the allowlisted field, not the stamp.
+#[test]
+fn static_revision_forbidden_role_change_is_rejected_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let toml_before = std::fs::read_to_string(&cfg_path).unwrap();
+
+    for (i, static_config) in [
+        serde_json::json!({ "role": "relay" }),
+        serde_json::json!({ "role": "relay", "udp_probe": { "retries": 5 } }),
+        serde_json::json!({ "node_id": "someone-else" }),
+        serde_json::json!({ "public_ipv4": "203.0.113.9" }),
+        serde_json::json!({ "state_dir": "/tmp/evil" }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input =
+            write_static_revision(dir.path(), &format!("forbidden-{i}.json"), static_config);
+        admin(dir.path(), &cfg_path)
+            .args(["apply-revision", "--revision", "3", "--input"])
+            .arg(&input)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("security-sensitive"));
+    }
+
+    assert_eq!(std::fs::read_to_string(&cfg_path).unwrap(), toml_before);
+    assert!(!static_revision_backup_exists(&cfg_path));
+    assert_eq!(
+        revision_status(dir.path(), &cfg_path),
+        serde_json::Value::Null
+    );
+}
+
+/// Required test 6: an unknown field â€” even next to a valid one â€” rejects
+/// the whole revision; it is never "applied minus the unknown field".
+/// Also covers invalid values (ports, bandwidth pairing, resolver address,
+/// schema version).
+#[test]
+fn static_revision_unknown_field_or_invalid_value_rejects_entire_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let toml_before = std::fs::read_to_string(&cfg_path).unwrap();
+
+    let cases = [
+        (
+            serde_json::json!({ "udp_probe": { "retries": 5, "bogus": true } }),
+            "unknown field udp_probe.bogus",
+        ),
+        (
+            serde_json::json!({ "udp_probe": { "retries": 5 }, "firewall": {} }),
+            "unknown static_config section",
+        ),
+        (
+            serde_json::json!({ "reality": { "listen_port": 0 } }),
+            "not routinely revisable",
+        ),
+        (
+            serde_json::json!({ "hysteria2": { "listen_port": 8443 } }),
+            "not routinely revisable",
+        ),
+        (
+            serde_json::json!({ "hysteria2": { "up_mbps": 100 } }),
+            "must be sent together",
+        ),
+        (
+            serde_json::json!({ "udp_probe": { "ipv4_resolvers": ["127.0.0.1"] } }),
+            "not a public",
+        ),
+    ];
+    for (i, (static_config, expected)) in cases.into_iter().enumerate() {
+        let input = write_static_revision(dir.path(), &format!("bad-{i}.json"), static_config);
+        admin(dir.path(), &cfg_path)
+            .args(["apply-revision", "--revision", "4", "--input"])
+            .arg(&input)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(expected));
+    }
+
+    let wrong_schema = dir.path().join("schema-2.json");
+    std::fs::write(
+        &wrong_schema,
+        br#"{"revision_schema":2,"static_config":{"udp_probe":{"retries":5}}}"#,
+    )
+    .unwrap();
+    admin(dir.path(), &cfg_path)
+        .args(["apply-revision", "--revision", "4", "--input"])
+        .arg(&wrong_schema)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("unsupported revision_schema"));
+
+    assert_eq!(
+        std::fs::read_to_string(&cfg_path).unwrap(),
+        toml_before,
+        "retries=5 must not have been applied with the bad field silently dropped"
+    );
+    assert!(!static_revision_backup_exists(&cfg_path));
+    assert_eq!(
+        revision_status(dir.path(), &cfg_path),
+        serde_json::Value::Null
+    );
+}
+
+#[cfg(unix)]
+struct StaticNode {
+    dir: tempfile::TempDir,
+    cfg_path: std::path::PathBuf,
+    log_path: std::path::PathBuf,
+    systemctl: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl StaticNode {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let singbox = fake_singbox(dir.path(), false);
+        let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+        let systemctl = fake_systemctl(dir.path());
+        let log_path = dir.path().join("systemctl.log");
+        let node = StaticNode {
+            dir,
+            cfg_path,
+            log_path,
+            systemctl,
+        };
+        node.run(&["init"]).success();
+        node
+    }
+
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn run(&self, args: &[&str]) -> assert_cmd::assert::Assert {
+        let augmented_path = std::env::join_paths(
+            std::iter::once(self.systemctl.parent().unwrap().to_path_buf()).chain(
+                std::env::var_os("PATH")
+                    .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            ),
+        )
+        .unwrap();
+        admin(self.path(), &self.cfg_path)
+            .env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &self.systemctl)
+            .env("SYSTEMCTL_LOG", &self.log_path)
+            .args(args)
+            .assert()
+    }
+
+    fn apply(&self, revision: u64, input: &Path) -> assert_cmd::assert::Assert {
+        self.run(&[
+            "apply-revision",
+            "--revision",
+            &revision.to_string(),
+            "--input",
+            input.to_str().unwrap(),
+        ])
+    }
+
+    fn apply_static(
+        &self,
+        revision: u64,
+        static_config: serde_json::Value,
+    ) -> assert_cmd::assert::Assert {
+        let input = write_static_revision(
+            self.path(),
+            &format!("static-{revision}.json"),
+            static_config,
+        );
+        self.apply(revision, &input)
+    }
+
+    fn users_path(&self) -> std::path::PathBuf {
+        self.path().join("state/users/users.json")
+    }
+
+    fn config_json(&self) -> serde_json::Value {
+        serde_json::from_str(
+            &std::fs::read_to_string(self.path().join("state/sing-box/config.json")).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn deployment(&self) -> compat_config::deployment::DeploymentConfig {
+        compat_config::deployment::DeploymentConfig::load(&self.cfg_path).unwrap()
+    }
+
+    /// Probe + customers A and B + one lease-pool slot user, applied as a
+    /// normal (dynamic, users-document) revision 1.
+    fn seed_dynamic_state(&self) {
+        self.run(&["user", "create-probe"]).success();
+        let current: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(self.users_path()).unwrap()).unwrap();
+        let mut users = current["users"].as_array().unwrap().clone();
+        users.push(serde_json::json!({
+            "id": "user-cust-a", "name": "alice", "enabled": true,
+            "vless_uuid": "11111111-1111-4111-8111-111111110001",
+            "hysteria2_password": "pwA", "subscription_token_hash_hex": "deadbeef01",
+            "created_at": 0, "expires_at": null
+        }));
+        users.push(serde_json::json!({
+            "id": "user-cust-b", "name": "bob", "enabled": true,
+            "vless_uuid": "11111111-1111-4111-8111-111111110002",
+            "hysteria2_password": "pwB", "subscription_token_hash_hex": "deadbeef02",
+            "created_at": 0, "expires_at": null
+        }));
+        users.push(serde_json::json!({
+            "id": "lease-0001", "name": "lease-0001", "enabled": true,
+            "vless_uuid": "11111111-1111-4111-8111-111111119001",
+            "hysteria2_password": "leasepwwwwwwwwww1", "subscription_token_hash_hex": "deadbeef03",
+            "created_at": 0, "expires_at": 9_999_999_999i64
+        }));
+        let input = write_json(
+            self.path(),
+            "revision-1.json",
+            &serde_json::json!({ "schema_version": 1, "users": users }),
+        );
+        self.apply(1, &input).success();
+    }
+
+    fn assert_security_policy_intact(&self) {
+        let doc = self.config_json();
+        let rules = doc["route"]["rules"].as_array().cloned().unwrap();
+        let probe = compat_config::server::probe_confinement_rule_count(&doc);
+        assert_eq!(
+            probe, 4,
+            "loopback exception + reserved-probe confinement must be intact"
+        );
+        let after_probe = serde_json::json!({ "route": { "rules": rules[probe..] } });
+        assert_eq!(
+            compat_config::server::c16_egress_policy_rule_count(&after_probe),
+            4,
+            "C-16 egress deny-list must be intact"
+        );
+    }
+
+    fn vless_uuids(&self) -> Vec<String> {
+        let mut uuids: Vec<String> = self.config_json()["inbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ib| ib["type"] == "vless")
+            .and_then(|ib| ib["users"].as_array())
+            .unwrap()
+            .iter()
+            .map(|u| u["uuid"].as_str().unwrap().to_string())
+            .collect();
+        uuids.sort();
+        uuids
+    }
+
+    fn hysteria2_inbound(&self) -> serde_json::Value {
+        self.config_json()["inbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ib| ib["type"] == "hysteria2")
+            .cloned()
+            .unwrap()
+    }
+}
+
+/// Required test 1: dynamic-state preservation. A static change (Hysteria2
+/// bandwidth + UDP-probe resolvers) lands in deployment.toml AND in the
+/// live sing-box config, while every dynamic principal â€” customers A and
+/// B, the lease-pool user and the reserved probe â€” is still authorized,
+/// users.json is byte-identical, role is unchanged, and C-16/probe
+/// confinement are intact.
+#[test]
+#[cfg(unix)]
+fn static_revision_preserves_all_dynamic_state_and_applies_new_static_values() {
+    let node = StaticNode::new();
+    node.seed_dynamic_state();
+    let users_before = std::fs::read(node.users_path()).unwrap();
+    let uuids_before = node.vless_uuids();
+    assert_eq!(uuids_before.len(), 4, "probe + A + B + lease");
+    node.assert_security_policy_intact();
+
+    node.apply_static(
+        2,
+        serde_json::json!({
+            "hysteria2": { "up_mbps": 150, "down_mbps": 250 },
+            "udp_probe": { "ipv4_resolvers": ["9.9.9.9"] }
+        }),
+    )
+    .success()
+    .stdout(predicates::str::contains("static revision 2 applied"));
+
+    let cfg = node.deployment();
+    assert_eq!(cfg.hysteria2.up_mbps, Some(150));
+    assert_eq!(cfg.hysteria2.down_mbps, Some(250));
+    assert_eq!(
+        cfg.udp_probe.unwrap().ipv4_resolvers,
+        vec!["9.9.9.9".to_string()]
+    );
+    assert_eq!(cfg.role.as_str(), "exit", "role must be untouched");
+    assert_eq!(cfg.reality.listen_port, 443);
+
+    let hy = node.hysteria2_inbound();
+    assert_eq!(
+        hy["up_mbps"], 150,
+        "new static value must be live in sing-box config"
+    );
+    assert_eq!(hy["down_mbps"], 250);
+    let uuids_after = node.vless_uuids();
+    assert_eq!(
+        uuids_after, uuids_before,
+        "every dynamic identity must still be authorized"
+    );
+    for uuid in [
+        "11111111-1111-4111-8111-111111110001",
+        "11111111-1111-4111-8111-111111110002",
+        "11111111-1111-4111-8111-111111119001",
+    ] {
+        assert!(
+            uuids_after.iter().any(|u| u == uuid),
+            "{uuid} missing after static apply"
+        );
+    }
+    assert_eq!(
+        std::fs::read(node.users_path()).unwrap(),
+        users_before,
+        "a static revision must never rewrite users.json"
+    );
+    node.assert_security_policy_intact();
+    assert_eq!(revision_status(node.path(), &node.cfg_path), 2);
+    assert!(!static_revision_backup_exists(&node.cfg_path));
+    let log = std::fs::read_to_string(&node.log_path).unwrap();
+    assert!(
+        log.lines()
+            .any(|l| l == "reload-or-restart vpn-subscription"),
+        "a Hysteria2 bandwidth change must restart vpn-subscription so clients see it:\n{log}"
+    );
+}
+
+/// Required test 2a: the candidate is rejected by `sing-box check`. The
+/// old static config, dynamic state, revision stamp, live config and C-16
+/// all remain, and no reload is attempted.
+#[test]
+#[cfg(unix)]
+fn static_revision_rejected_by_singbox_check_leaves_everything_unchanged() {
+    let node = StaticNode::new();
+    node.seed_dynamic_state();
+    let toml_before = std::fs::read_to_string(&node.cfg_path).unwrap();
+    let users_before = std::fs::read(node.users_path()).unwrap();
+    let config_before = node.config_json();
+    let restarts_before = count_reload_or_restart_calls(&node.log_path);
+
+    fake_singbox(node.path(), true);
+    node.apply_static(
+        2,
+        serde_json::json!({ "hysteria2": { "up_mbps": 10, "down_mbps": 10 } }),
+    )
+    .failure()
+    .stderr(predicates::str::contains("did NOT take effect"));
+
+    assert_eq!(
+        std::fs::read_to_string(&node.cfg_path).unwrap(),
+        toml_before
+    );
+    assert_eq!(std::fs::read(node.users_path()).unwrap(), users_before);
+    assert_eq!(node.config_json(), config_before);
+    assert_eq!(
+        count_reload_or_restart_calls(&node.log_path),
+        restarts_before
+    );
+    assert_eq!(revision_status(node.path(), &node.cfg_path), 1);
+    assert!(!static_revision_backup_exists(&node.cfg_path));
+    node.assert_security_policy_intact();
+}
+
+/// Required test 2b: the candidate passes `sing-box check` and sing-box
+/// reloads, but restarting vpn-subscription fails. Everything must be
+/// rolled back â€” deployment.toml, the live sing-box config (re-rendered
+/// and reloaded from the old static config), the stamp â€” and dynamic state
+/// is untouched.
+#[test]
+#[cfg(unix)]
+fn static_revision_service_failure_rolls_back_static_and_runtime_config() {
+    let node = StaticNode::new();
+    node.seed_dynamic_state();
+    let toml_before = std::fs::read_to_string(&node.cfg_path).unwrap();
+    let users_before = std::fs::read(node.users_path()).unwrap();
+    let config_before = node.config_json();
+
+    // Replaces the node's systemctl in place. Call 1 = sing-box reload
+    // (ok), call 2 = vpn-subscription restart (FAILS), later calls (the
+    // rollback's reloads) succeed.
+    let failing = fake_systemctl_failing_reload_on_call(node.path(), 2);
+    assert_eq!(failing, node.systemctl);
+    node.apply_static(
+        2,
+        serde_json::json!({ "hysteria2": { "up_mbps": 10, "down_mbps": 10 } }),
+    )
+    .failure()
+    .stderr(predicates::str::contains("did NOT take effect"))
+    .stderr(predicates::str::contains("were restored"));
+
+    assert_eq!(
+        std::fs::read_to_string(&node.cfg_path).unwrap(),
+        toml_before
+    );
+    assert_eq!(std::fs::read(node.users_path()).unwrap(), users_before);
+    assert_eq!(
+        node.config_json(),
+        config_before,
+        "the live sing-box config must be back on the previous static config"
+    );
+    assert!(node.hysteria2_inbound().get("up_mbps").is_none());
+    assert_eq!(revision_status(node.path(), &node.cfg_path), 1);
+    assert!(!static_revision_backup_exists(&node.cfg_path));
+    node.assert_security_policy_intact();
+}
+
+/// Required test 3: idempotency. Re-delivering the same revision is a
+/// no-op; a new revision number carrying already-effective values records
+/// the revision without reloading anything. No credential rotation, no
+/// duplicated users, no accumulating files.
+#[test]
+#[cfg(unix)]
+fn static_revision_is_idempotent() {
+    let node = StaticNode::new();
+    node.seed_dynamic_state();
+    let change = serde_json::json!({ "hysteria2": { "up_mbps": 120, "down_mbps": 120 } });
+    node.apply_static(5, change.clone()).success();
+
+    let list_files = |root: &Path| -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    out.push(p.strip_prefix(root).unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        out.retain(|f| !f.starts_with("static-") && f != "systemctl.log");
+        out.sort();
+        out
+    };
+    let files_before = list_files(node.path());
+    let users_before = std::fs::read(node.users_path()).unwrap();
+    let config_before = node.config_json();
+    let restarts_before = count_reload_or_restart_calls(&node.log_path);
+
+    node.apply_static(5, change.clone())
+        .success()
+        .stdout(predicates::str::contains("skipping"));
+    node.apply_static(6, change)
+        .success()
+        .stdout(predicates::str::contains("already in effect"));
+
+    assert_eq!(
+        count_reload_or_restart_calls(&node.log_path),
+        restarts_before
+    );
+    assert_eq!(std::fs::read(node.users_path()).unwrap(), users_before);
+    assert_eq!(node.config_json(), config_before);
+    assert_eq!(
+        list_files(node.path()),
+        files_before,
+        "no accumulating files"
+    );
+    assert_eq!(revision_status(node.path(), &node.cfg_path), 6);
+}
+
+/// Required test 4: stale / out-of-order delivery. Revision 10 applied,
+/// then revision 9 (different content) arrives â€” it must not be applied.
+#[test]
+#[cfg(unix)]
+fn static_revision_stale_revision_is_not_applied() {
+    let node = StaticNode::new();
+    node.apply_static(
+        10,
+        serde_json::json!({ "hysteria2": { "up_mbps": 100, "down_mbps": 100 } }),
+    )
+    .success();
+    let toml_after_10 = std::fs::read_to_string(&node.cfg_path).unwrap();
+    let restarts = count_reload_or_restart_calls(&node.log_path);
+
+    node.apply_static(
+        9,
+        serde_json::json!({ "hysteria2": { "up_mbps": 50, "down_mbps": 50 } }),
+    )
+    .success()
+    .stdout(predicates::str::contains(
+        "not newer than the already-applied revision 10",
+    ));
+
+    assert_eq!(
+        std::fs::read_to_string(&node.cfg_path).unwrap(),
+        toml_after_10
+    );
+    assert_eq!(node.deployment().hysteria2.up_mbps, Some(100));
+    assert_eq!(count_reload_or_restart_calls(&node.log_path), restarts);
+    assert_eq!(revision_status(node.path(), &node.cfg_path), 10);
+}
+
+/// A crash between staging deployment.toml and committing leaves the fixed
+/// backup behind; the next static revision must first restore it (and
+/// re-converge services) before planning against it.
+#[test]
+#[cfg(unix)]
+fn static_revision_recovers_an_interrupted_apply_first() {
+    let node = StaticNode::new();
+    let committed = std::fs::read_to_string(&node.cfg_path).unwrap();
+    std::fs::write(
+        node.cfg_path
+            .with_file_name("deployment.toml.static-revision.bak"),
+        &committed,
+    )
+    .unwrap();
+    // The half-applied candidate a crash would have left on disk.
+    std::fs::write(
+        &node.cfg_path,
+        committed.replace(
+            "[hysteria2]\nlisten_port = 443\n",
+            "[hysteria2]\nlisten_port = 443\nup_mbps = 7\ndown_mbps = 7\n",
+        ),
+    )
+    .unwrap();
+    assert_eq!(node.deployment().hysteria2.up_mbps, Some(7));
+
+    node.apply_static(3, serde_json::json!({ "udp_probe": { "retries": 4 } }))
+        .success()
+        .stderr(predicates::str::contains(
+            "recovered an interrupted static revision",
+        ));
+
+    let cfg = node.deployment();
+    assert_eq!(
+        cfg.hysteria2.up_mbps, None,
+        "the uncommitted candidate must be discarded"
+    );
+    assert_eq!(cfg.udp_probe.unwrap().retries, 4);
+    assert!(!static_revision_backup_exists(&node.cfg_path));
+}
