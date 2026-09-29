@@ -456,6 +456,27 @@ async fn probe_target(
         if let Some(h) = host_override {
             ep = ep.with_host(h);
         }
+        // SSRF guard (Batch 7a, Area 4): every destination — whether it
+        // came from `static_targets` (operator-configured) or
+        // `fetch_targets` (control plane, not fully trusted) — is
+        // resolved exactly once here and pinned to that resolved IP
+        // literal before any connection is attempted, so a later,
+        // different resolution at sing-box's own connect time (DNS
+        // rebinding) cannot steer the probe onto a denied destination
+        // after this check passed.
+        let (host, port) = ep.host_port();
+        match crate::ssrf_guard::resolve_and_validate(host, port) {
+            Ok(resolved) => ep = ep.with_host(&resolved.ip.to_string()),
+            Err(reason) => {
+                tracing::warn!(
+                    target = %t.node_id,
+                    host,
+                    reason,
+                    "refusing probe destination: SSRF guard denied it"
+                );
+                continue;
+            }
+        }
         let expected = if vantage == "peer" {
             t.expected_ipv4.as_deref()
         } else {

@@ -5,6 +5,7 @@ mod lease_pool;
 mod op_dedup;
 mod protocol_probe;
 mod report_queue;
+mod ssrf_guard;
 mod stats;
 mod telemetry;
 mod worker_client;
