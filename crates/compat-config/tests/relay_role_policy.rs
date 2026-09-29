@@ -138,6 +138,7 @@ fn user() -> CompatUser {
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials,
+        is_reserved_probe: false,
     }
 }
 
@@ -488,7 +489,14 @@ fn truncated_deployment_state_fails_to_load() {
 // ----------------------------------------------------------------------
 
 #[test]
-fn exit_rendering_is_byte_identical_to_the_historical_document() {
+fn exit_rendering_keeps_inbounds_outbounds_identical_and_adds_mandatory_c16_route() {
+    // Historically the exit renderer added nothing to the raw
+    // inbounds/outbounds document (this test used to assert byte
+    // identity including an absent `route`). Since the C-16 egress
+    // isolation fix, every exit ALWAYS carries the mandatory
+    // deny-private/metadata/loopback route policy — see
+    // `server::apply_c16_egress_policy`. inbounds/outbounds/log are
+    // still untouched.
     let cfg = load(&base("exit")).unwrap();
     let users = vec![user()];
     let historical = render_singbox_server_config(
@@ -502,11 +510,29 @@ fn exit_rendering_is_byte_identical_to_the_historical_document() {
         1_000,
     );
     let role_aware = render(&cfg, &users);
+    for key in ["inbounds", "outbounds", "log"] {
+        assert_eq!(historical[key], role_aware[key], "{key} must be unchanged");
+    }
+    let rules = role_aware["route"]["rules"].as_array().unwrap();
     assert_eq!(
-        serde_json::to_string(&historical).unwrap(),
-        serde_json::to_string(&role_aware).unwrap()
+        rules.len(),
+        4,
+        "resolve + ipv4 deny + ipv6 deny + tcp/25 deny"
     );
-    assert!(role_aware.get("route").is_none());
+    assert_eq!(rules[0]["action"], "resolve");
+    assert_eq!(
+        rules[1]["ip_cidr"],
+        serde_json::json!(compat_config::model::C16_DENY_IPV4_CIDRS)
+    );
+    assert_eq!(rules[1]["action"], "reject");
+    assert_eq!(
+        rules[2]["ip_cidr"],
+        serde_json::json!(compat_config::model::C16_DENY_IPV6_CIDRS)
+    );
+    assert_eq!(rules[2]["action"], "reject");
+    assert_eq!(rules[3]["port"], 25);
+    assert_eq!(rules[3]["action"], "reject");
+    assert_eq!(role_aware["route"]["final"], "direct");
 }
 
 #[test]
@@ -527,17 +553,60 @@ fn rules(doc: &serde_json::Value) -> &Vec<serde_json::Value> {
 }
 
 #[test]
-fn unpaired_relay_rejects_everything_except_the_loopback_selftest() {
+fn unpaired_relay_rejects_everything_when_no_probe_principal_exists() {
+    // No reserved probe user exists (customer-only). The loopback
+    // self-test exception (spec C-16 "Exceptions" / NEW-01 remediation)
+    // must NOT appear at all in this case — there is nothing to scope it
+    // to, and a generic unscoped loopback exception is exactly the
+    // relay-loopback-pivot vulnerability this fixes.
     let cfg = load(&format!("{}{RELAY_INGRESS}", base("relay"))).unwrap();
     let doc = render(&cfg, &[user()]);
     let rules = rules(&doc);
-    assert_eq!(rules.len(), 2);
-    assert_eq!(rules[0]["ip_cidr"], serde_json::json!(["127.0.0.1/32"]));
-    assert_eq!(rules[0]["port"], 9100);
-    assert_eq!(rules[0]["inbound"], serde_json::json!(["vless-reality-in"]));
-    assert_eq!(rules[0]["network"], "tcp");
-    assert_eq!(rules[1]["action"], "reject");
+    assert_eq!(rules.len(), 1, "final reject only, no loopback exception");
+    assert_eq!(rules[0]["action"], "reject");
     assert!(doc["route"].get("final").is_none());
+}
+
+#[test]
+fn unpaired_relay_loopback_selftest_is_scoped_to_the_reserved_probe_principal() {
+    let cfg = load(&format!("{}{RELAY_INGRESS}", base("relay"))).unwrap();
+    let doc = render(&cfg, &[user(), probe_user()]);
+    let rules = rules(&doc);
+    // 3 probe-confinement rules (prepended ahead of everything) + 1
+    // loopback exception (scoped to the same reserved principal) + 1
+    // final reject.
+    assert_eq!(rules.len(), 5);
+    let loopback = &rules[3];
+    assert_eq!(loopback["auth_user"], serde_json::json!(["u-probe"]));
+    assert_eq!(loopback["ip_cidr"], serde_json::json!(["127.0.0.1/32"]));
+    assert_eq!(loopback["port"], 9100);
+    assert_eq!(loopback["inbound"], serde_json::json!(["vless-reality-in"]));
+    assert_eq!(loopback["network"], "tcp");
+    assert_eq!(rules[4]["action"], "reject");
+    // A customer never appears in the loopback rule's auth_user list.
+    assert!(!loopback.to_string().contains("\"u1\""));
+}
+
+#[test]
+fn a_customer_literally_named_arcana_probe_gains_no_loopback_privilege() {
+    // Structural, not name-based: a real customer who happens to pick
+    // the reserved display name must NOT be confused with the reserved
+    // internal principal. Their record has `is_reserved_probe: false`
+    // (the default for every customer-facing creation path), so they
+    // get no loopback exception and no probe-only allow rules.
+    let cfg = load(&format!("{}{RELAY_INGRESS}", base("relay"))).unwrap();
+    let mut impostor = user();
+    impostor.id = "u-impostor".into();
+    impostor.name = compat_config::model::PROBE_USER_NAME.into();
+    assert!(!impostor.is_reserved_probe);
+    let doc = render(&cfg, &[impostor]);
+    let rules = rules(&doc);
+    assert_eq!(
+        rules.len(),
+        1,
+        "a same-named customer must not unlock the loopback exception"
+    );
+    assert_eq!(rules[0]["action"], "reject");
 }
 
 #[test]
@@ -547,10 +616,10 @@ fn paired_relay_allows_only_declared_exits_and_ends_in_reject_for_every_inbound(
     let rules = rules(&doc);
     assert_eq!(
         rules.len(),
-        3,
-        "self-test + one de-duplicated exit + reject"
+        2,
+        "one de-duplicated exit + reject (no probe principal, so no loopback exception either)"
     );
-    let exit_rule = &rules[1];
+    let exit_rule = &rules[0];
     assert_eq!(exit_rule["domain"], serde_json::json!(["de1.example.test"]));
     assert_eq!(exit_rule["port"], 443);
     assert_eq!(exit_rule["network"], "tcp");
@@ -595,7 +664,7 @@ fn ip_literal_exit_targets_become_exact_host_cidrs() {
             exit_peer("de1-via", "Germany via", host, "via-ru1", None)
         );
         let doc = render(&load(&text).unwrap(), &[user()]);
-        assert_eq!(rules(&doc)[1]["ip_cidr"], serde_json::json!([cidr]));
+        assert_eq!(rules(&doc)[0]["ip_cidr"], serde_json::json!([cidr]));
     }
 }
 
@@ -1006,11 +1075,15 @@ fn fresh_install_templates_render_a_current_loadable_deployment_for_both_roles()
         compat_config::deployment::DEPLOYMENT_SCHEMA_VERSION
     );
     assert_eq!((exit.role, exit.node_id.as_str()), (NodeRole::Exit, "de1"));
-    assert!(
-        render_server_config_for_deployment(&exit, &[user()], &reality(), &hysteria(), 0)
+    let exit_rules =
+        render_server_config_for_deployment(&exit, &[user()], &reality(), &hysteria(), 0).unwrap()
+            ["route"]["rules"]
+            .as_array()
             .unwrap()
-            .get("route")
-            .is_none()
+            .len();
+    assert_eq!(
+        exit_rules, 4,
+        "mandatory C-16 egress isolation, no probe/hairpin extras"
     );
     assert_eq!(
         migrate_deployment_toml_text(&render("exit", "de1")),
@@ -1027,7 +1100,11 @@ fn fresh_install_templates_render_a_current_loadable_deployment_for_both_roles()
     assert!(relay.relay_targets().is_empty());
     let doc =
         render_server_config_for_deployment(&relay, &[user()], &reality(), &hysteria(), 0).unwrap();
-    assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        doc["route"]["rules"].as_array().unwrap().len(),
+        1,
+        "final reject only: no probe principal provisioned yet, no relay targets declared"
+    );
     assert_eq!(migrate_deployment_toml_text(&relay_text), None);
 
     // The relay template without its ingress declaration must not load.
@@ -1083,20 +1160,20 @@ fn relay_hairpin_user_gets_exactly_two_extra_rules_scoped_to_google_domains() {
         without_rules.len() + 2,
         "the hairpin user must add exactly two rules (sniff, then route), changing nothing else"
     );
-    let sniff_rule = &with_rules[1];
+    let sniff_rule = &with_rules[0];
     assert_eq!(sniff_rule["auth_user"], serde_json::json!(["u-hairpin"]));
     assert_eq!(sniff_rule["action"], "sniff");
-    let hairpin_rule = &with_rules[2];
+    let hairpin_rule = &with_rules[1];
     assert_eq!(hairpin_rule["auth_user"], serde_json::json!(["u-hairpin"]));
     assert_eq!(hairpin_rule["outbound"], "direct");
     assert_eq!(
         hairpin_rule["domain_suffix"],
         serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
     );
-    // Every other rule (loopback health check, declared-exit forwarding,
-    // final reject) is untouched and in its original relative order.
-    assert_eq!(with_rules[0], without_rules[0]);
-    for i in 1..without_rules.len() {
+    // Every other rule (declared-exit forwarding, final reject) is
+    // untouched and in its original relative order, just shifted by the
+    // two hairpin rules prepended ahead of it.
+    for i in 0..without_rules.len() {
         assert_eq!(with_rules[i + 2], without_rules[i]);
     }
 }
@@ -1148,7 +1225,9 @@ fn exit_without_hairpin_config_renders_exactly_as_before() {
     let exit = load(&base("exit")).unwrap();
     let doc =
         render_server_config_for_deployment(&exit, &[user()], &reality(), &hysteria(), 0).unwrap();
-    assert!(doc.get("route").is_none());
+    // Mandatory C-16 egress isolation is always present now; what "as
+    // before" still means here is: no hairpin outbound/rules, no sniff.
+    assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 4);
     assert!(doc["inbounds"][0].get("sniff").is_none());
     assert_eq!(doc["outbounds"].as_array().unwrap().len(), 1);
 }
@@ -1157,11 +1236,12 @@ fn exit_without_hairpin_config_renders_exactly_as_before() {
 fn exit_with_hairpin_config_but_no_credential_still_renders_unchanged() {
     // Public metadata alone (no secret UUID loaded) must not activate
     // anything — half-configured must fail safe to "off", not "on
-    // without a credential".
+    // without a credential". C-16 route rules are still mandatory and
+    // present either way.
     let exit = load(&exit_hairpin_deployment_toml()).unwrap();
     let doc =
         render_server_config_for_deployment(&exit, &[user()], &reality(), &hysteria(), 0).unwrap();
-    assert!(doc.get("route").is_none());
+    assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 4);
     assert_eq!(doc["outbounds"].as_array().unwrap().len(), 1);
 }
 
@@ -1200,11 +1280,15 @@ fn exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule() {
     );
     assert_eq!(hairpin_ob["tls"]["reality"]["short_id"], "0a1b2c3d");
     let rules = doc["route"]["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 2);
-    assert_eq!(rules[0]["action"], "sniff");
-    assert_eq!(rules[1]["outbound"], "google-egress-hairpin");
     assert_eq!(
-        rules[1]["domain_suffix"],
+        rules.len(),
+        6,
+        "4 mandatory C-16 rules ahead of the hairpin's sniff + route"
+    );
+    assert_eq!(rules[4]["action"], "sniff");
+    assert_eq!(rules[5]["outbound"], "google-egress-hairpin");
+    assert_eq!(
+        rules[5]["domain_suffix"],
         serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
     );
     assert_eq!(doc["route"]["final"], "direct");
@@ -1241,6 +1325,7 @@ fn probe_user() -> CompatUser {
     u.name = compat_config::model::PROBE_USER_NAME.into();
     u.vless_uuid = "66666666-6666-4666-8666-666666666666".into();
     u.peer_credentials = Default::default();
+    u.is_reserved_probe = true;
     u
 }
 
@@ -1310,9 +1395,13 @@ fn assert_probe_rules_lead(rules: &[serde_json::Value]) {
 #[test]
 fn exit_confines_probe_user_and_leaves_customers_unrouted() {
     let exit = load(&base("exit")).unwrap();
-    // No probe user: byte-identical to before (no route at all).
+    // No probe user: the mandatory C-16 route is still present (4
+    // rules), but nothing probe-specific.
     let customers_only = render(&exit, &[user()]);
-    assert!(customers_only["route"].is_null());
+    assert_eq!(
+        customers_only["route"]["rules"].as_array().unwrap().len(),
+        4
+    );
     assert_eq!(
         compat_config::server::probe_confinement_rule_count(&customers_only),
         0
@@ -1322,13 +1411,13 @@ fn exit_confines_probe_user_and_leaves_customers_unrouted() {
     let rules = with_probe["route"]["rules"].as_array().unwrap();
     assert_eq!(
         rules.len(),
-        3,
-        "only the probe rules; customers keep default direct egress"
+        7,
+        "3 probe rules ahead of the 4 mandatory C-16 rules; customers keep default direct egress"
     );
     assert_probe_rules_lead(rules);
     // No customer id appears in any rule.
     assert!(!with_probe["route"].to_string().contains("\"u1\""));
-    assert!(with_probe["route"].get("final").is_none());
+    assert_eq!(with_probe["route"]["final"], "direct");
     assert_eq!(
         compat_config::server::probe_confinement_rule_count(&with_probe),
         3
@@ -1336,11 +1425,33 @@ fn exit_confines_probe_user_and_leaves_customers_unrouted() {
 }
 
 #[test]
-fn disabled_probe_user_gets_no_rules() {
+fn disabled_probe_user_gets_no_probe_rules_but_keeps_mandatory_c16() {
     let exit = load(&base("exit")).unwrap();
     let mut p = probe_user();
     p.enabled = false;
-    assert!(render(&exit, &[user(), p])["route"].is_null());
+    let doc = render(&exit, &[user(), p]);
+    assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 4);
+    assert_eq!(compat_config::server::probe_confinement_rule_count(&doc), 0);
+}
+
+#[test]
+fn a_customer_literally_named_arcana_probe_gets_no_probe_confinement_on_exit() {
+    // Same structural guarantee as the relay-side test of the same name:
+    // a customer picking the reserved display name is an ordinary
+    // customer (`is_reserved_probe: false`) and is never matched by
+    // `apply_probe_user_confinement`.
+    let exit = load(&base("exit")).unwrap();
+    let mut impostor = user();
+    impostor.id = "u-impostor".into();
+    impostor.name = compat_config::model::PROBE_USER_NAME.into();
+    assert!(!impostor.is_reserved_probe);
+    let doc = render(&exit, &[impostor]);
+    assert_eq!(
+        compat_config::server::probe_confinement_rule_count(&doc),
+        0,
+        "a same-named customer must not unlock probe confinement/privilege"
+    );
+    assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 4);
 }
 
 #[test]
@@ -1369,8 +1480,16 @@ fn probe_rules_precede_relay_policy_which_is_otherwise_unchanged() {
     let with = render(&relay, &[user(), probe_user()]);
     let rules = with["route"]["rules"].as_array().unwrap();
     assert_probe_rules_lead(rules);
+    // A probe user's presence adds exactly one more rule beyond the 3
+    // probe-confinement rules: the loopback self-test exception, now
+    // scoped to that same reserved principal (spec C-16 "Exceptions").
+    // Skip past the 3 probe rules and that loopback rule; everything
+    // after is byte-identical to the no-probe case.
+    let loopback = &rules[3];
+    assert_eq!(loopback["auth_user"], serde_json::json!(["u-probe"]));
+    assert_eq!(loopback["ip_cidr"], serde_json::json!(["127.0.0.1/32"]));
     assert_eq!(
-        &rules[3..],
+        &rules[4..],
         without["route"]["rules"].as_array().unwrap().as_slice()
     );
 }
