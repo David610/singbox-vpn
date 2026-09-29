@@ -63,6 +63,14 @@ pub struct AgentConfig {
     /// restarts so expiry/rotation continues across them.
     #[serde(default = "default_lease_state_file")]
     pub lease_state_file: String,
+    /// Where the node persists pending job /complete and /fail reports
+    /// (0600) that have not yet been acknowledged by the Worker. This
+    /// queue is drained by an independent background task (see
+    /// `report_queue.rs`) so a wedged Worker endpoint never blocks
+    /// heartbeat, health probe, next-job poll, or lease expiry
+    /// enforcement (Phase 8). Survives agent restarts.
+    #[serde(default = "default_report_queue_file")]
+    pub report_queue_file: String,
     /// Rotation batch window, seconds (clamped 60..=3600). Every slot's
     /// valid_until lies on this grid; non-urgent rotations (each of which
     /// restarts sing-box and drops every open connection on the node) are
@@ -99,6 +107,10 @@ fn default_lease_slot_lifetime_secs() -> u64 {
 
 fn default_lease_state_file() -> String {
     "/var/lib/vpn-provisioning-agent/lease-pool.json".to_string()
+}
+
+fn default_report_queue_file() -> String {
+    "/var/lib/vpn-provisioning-agent/report-queue.json".to_string()
 }
 
 /// `[protocol_probe]` — see `protocol_probe.rs` for what each dimension
@@ -178,6 +190,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("lease_pool_size", &self.lease_pool_size)
             .field("lease_slot_lifetime_secs", &self.lease_slot_lifetime_secs)
             .field("lease_state_file", &self.lease_state_file)
+            .field("report_queue_file", &self.report_queue_file)
             .field(
                 "rotation_batch_interval_secs",
                 &self.rotation_batch_interval_secs,

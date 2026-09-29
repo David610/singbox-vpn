@@ -156,7 +156,9 @@ async fn run_vpn_admin(
         command.process_group(0);
     }
 
-    let mut child = command.spawn().with_context(|| format!("spawning {context}"))?;
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("spawning {context}"))?;
 
     match tokio::time::timeout(timeout, child.wait()).await {
         Ok(status) => {
@@ -435,7 +437,10 @@ mod tests {
             .arg(format!("sleep 2 && touch '{marker_str}'"));
 
         let result = run_vpn_admin(command, Duration::from_millis(200), "synthetic op").await;
-        assert!(result.is_err(), "expected the timeout to surface as an error");
+        assert!(
+            result.is_err(),
+            "expected the timeout to surface as an error"
+        );
         assert!(
             !marker.exists(),
             "child must not have mutated state immediately after the timeout fires"

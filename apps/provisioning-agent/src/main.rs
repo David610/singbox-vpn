@@ -3,6 +3,7 @@ mod dispatch;
 mod health_probe;
 mod lease_pool;
 mod protocol_probe;
+mod report_queue;
 mod stats;
 mod telemetry;
 mod worker_client;
@@ -10,13 +11,12 @@ mod worker_client;
 use anyhow::{Context, Result};
 use clap::Parser;
 use config::AgentConfig;
-use serde_json::Value;
+use report_queue::ReportQueue;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use worker_client::WorkerClient;
 
 const TRAFFIC_INTERVAL: Duration = Duration::from_secs(15);
-const REPORT_BACKOFF_MAX_SECS: u64 = 30;
 
 // `version` makes `--version` print "vpn-provisioning-agent <x.y.z>", the
 // shape deploy/lib/binary-version-check.sh verifies for every shipped binary.
@@ -36,6 +36,10 @@ async fn main() -> Result<()> {
     tracing::info!(node_id = %cfg.node_id, worker_url = %cfg.worker_url, "provisioning agent starting");
 
     let client = WorkerClient::new(&cfg);
+    // Phase 8: /complete and /fail reports are delivered by an independent
+    // background task so a wedged Worker endpoint can never block the rest
+    // of this loop (heartbeat, health probe, next-job poll, lease expiry).
+    let report_queue = ReportQueue::spawn(PathBuf::from(&cfg.report_queue_file), client.clone());
     // Never permit a bad config value to become a CPU-burning busy loop or a
     // multi-minute provisioning delay.
     let poll_interval = Duration::from_secs(cfg.poll_interval_secs.clamp(1, 60));
@@ -100,7 +104,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        match poll_once(&cfg, &client).await {
+        match poll_once(&cfg, &client, &report_queue).await {
             Ok(true) => {
                 // A job was processed. Immediately claim the next one instead
                 // of sleeping for the idle poll interval; this lets a single
@@ -153,7 +157,11 @@ async fn report_traffic_once(cfg: &AgentConfig, client: &WorkerClient) {
 
 /// Returns true when a job was claimed/processed and false when the queue was
 /// empty. The caller uses this to drain bursts without an artificial sleep.
-async fn poll_once(cfg: &AgentConfig, client: &WorkerClient) -> Result<bool> {
+async fn poll_once(
+    cfg: &AgentConfig,
+    client: &WorkerClient,
+    report_queue: &ReportQueue,
+) -> Result<bool> {
     let Some(job) = client.claim().await.context("claiming a job")? else {
         return Ok(false);
     };
@@ -161,77 +169,25 @@ async fn poll_once(cfg: &AgentConfig, client: &WorkerClient) -> Result<bool> {
 
     match dispatch::run_job(cfg, client, &job).await {
         Ok(result) => {
-            // Once vpn-admin has changed state, never move on to another job
-            // until the Worker acknowledges the result. Retrying the report
-            // is safe; rerunning the side effect is not.
-            report_complete_until_ack(client, &job, result).await;
+            // The side effect already happened; only the Worker's
+            // acknowledgement is still pending. Hand it to the
+            // independently-retrying report queue and move straight on to
+            // the next job — a slow/wedged Worker /complete endpoint must
+            // not stall provisioning for every other customer on this node
+            // (Phase 8).
+            if let Err(err) = report_queue.enqueue_complete(job.id, result) {
+                tracing::error!(job_id = job.id, error = %err, "failed to enqueue job completion report");
+            }
             tracing::info!(job_id = job.id, "job completed");
         }
         Err(err) => {
             let message = err.to_string();
             tracing::error!(job_id = job.id, error = %message, "job failed after retries");
-            report_fail_until_ack(client, &job, &message).await;
+            if let Err(queue_err) = report_queue.enqueue_fail(job.id, &message) {
+                tracing::error!(job_id = job.id, error = %queue_err, "failed to enqueue job failure report");
+            }
         }
     }
 
     Ok(true)
-}
-
-fn report_backoff(attempt: u32) -> Duration {
-    let shift = attempt.min(5);
-    Duration::from_secs((1_u64 << shift).min(REPORT_BACKOFF_MAX_SECS))
-}
-
-async fn report_complete_until_ack(client: &WorkerClient, job: &worker_client::Job, result: Value) {
-    let mut attempt = 1_u32;
-    loop {
-        match client.complete(job.id, result.clone()).await {
-            Ok(()) => return,
-            Err(err) => {
-                let delay = report_backoff(attempt);
-                tracing::warn!(
-                    job_id = job.id,
-                    attempt,
-                    retry_in_seconds = delay.as_secs(),
-                    error = %err,
-                    "reporting job completion failed; retrying without rerunning vpn-admin"
-                );
-                tokio::time::sleep(delay).await;
-                attempt = attempt.saturating_add(1);
-            }
-        }
-    }
-}
-
-async fn report_fail_until_ack(client: &WorkerClient, job: &worker_client::Job, message: &str) {
-    let mut attempt = 1_u32;
-    loop {
-        match client.fail(job.id, message).await {
-            Ok(()) => return,
-            Err(err) => {
-                let delay = report_backoff(attempt);
-                tracing::warn!(
-                    job_id = job.id,
-                    attempt,
-                    retry_in_seconds = delay.as_secs(),
-                    error = %err,
-                    "reporting job failure failed; retrying"
-                );
-                tokio::time::sleep(delay).await;
-                attempt = attempt.saturating_add(1);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn report_backoff_is_capped() {
-        assert_eq!(report_backoff(1), Duration::from_secs(2));
-        assert_eq!(report_backoff(2), Duration::from_secs(4));
-        assert_eq!(report_backoff(10), Duration::from_secs(30));
-    }
 }
