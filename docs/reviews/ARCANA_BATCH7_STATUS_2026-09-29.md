@@ -393,10 +393,30 @@ follow-up explicitly out of scope here.
 
 ## Real CI (7b)
 
-*(fill in after `gh pr checks 123` polling completes — see the live
-polling note in the handback for this batch; if this section still says
-"pending" when read later, re-run `gh pr checks 123` against
-`65d1bd2` for the real outcome.)*
+Pushed as `f2acacc`. `gh pr checks 123` polled to full settlement: every
+job passed, including `test` (both parallel runs — this is the job that
+actually executes `cargo test --workspace` on Linux, confirming the new
+`#[cfg(unix)]` Area 2 tests genuinely run and pass, not just compile),
+`shell` (privileged uninstall/ownership tests from earlier batches, still
+green), and `singbox-validate`.
+
+One job failed: `CodeQL`, reporting 1 high-severity "cleartext logging of
+sensitive information" alert at `apps/admin/src/main.rs:2918`
+(`println!("Reserved probe user {name:?} created (id {id}).")` in
+`cmd_user_create_probe`). Verified via `git diff ea52484 f2acacc --
+apps/admin/src/main.rs` (empty) and `git blame -L 2915,2920
+apps/admin/src/main.rs` (last touched by pre-existing commit `eca658b3`,
+2026-09-29, unrelated to this batch) that this file was not touched by
+either 7b commit — this is a pre-existing finding on the branch that
+CodeQL is attributing to "new alerts in code changed by this pull
+request" because the PR's cumulative diff (not just this batch's) touches
+`main.rs` elsewhere. Not investigated further or fixed here: it's outside
+this batch's Area 6/Area 2 scope, and the reported severity may be
+overstated (`id` here is `generate_user_id()`'s opaque probe-user id, not
+a credential/secret — `vless_uuid`/`hysteria2_password` are not part of
+this `println!`), but that's a judgment call for whoever owns this
+finding, not a call to make while fixing something else. Flagged in
+"Human input needed" below.
 
 ## Human input needed (7b)
 
@@ -414,4 +434,11 @@ polling note in the handback for this batch; if this section still says
   narrow fix.
 - Areas 1 (protocol health) and 5 (nftables lifecycle) remain untouched,
   as instructed.
+- Real CI: a pre-existing (not introduced by this batch — confirmed via
+  `git diff`/`git blame`) `CodeQL` high-severity "cleartext logging"
+  finding at `apps/admin/src/main.rs:2918` needs triage/owner decision:
+  fix the `println!`, or dismiss as a false positive (opaque probe id,
+  not a secret) in GitHub's code-scanning UI. Left as-is since it's
+  outside this batch's scope and changing it without that decision risks
+  masking or misjudging a real finding.
 - Confirm real CI status on PR #123 once it settles.
