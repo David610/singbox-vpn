@@ -1225,7 +1225,12 @@ fn s12_unpaired_relay_cannot_reach_anything_as_an_exit() {
         .relay
         .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
         .unwrap();
-    assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 2);
+    // Just the trailing reject-all: no peer_endpoints means
+    // `relay_targets()` is empty, and none of this suite's users carry
+    // `is_reserved_probe`, so the loopback self-test exception rule
+    // (server.rs's `render_server_config_for_deployment`) never applies
+    // here either.
+    assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 1);
     lab.relay.start(&lab.sb);
     assert!(matches!(
         lab.provisioned_config(&lab.relay_user.clone()),
@@ -1308,10 +1313,13 @@ credential_ref = "named-direct"
         .relay
         .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
         .unwrap();
+    // 2 exits (de1-via-ru1 and named-via, deduped by host:port) + reject.
+    // No `is_reserved_probe` user exists in this suite, so the loopback
+    // self-test exception rule never applies here.
     assert_eq!(
         doc["route"]["rules"].as_array().unwrap().len(),
-        4,
-        "self-test + 2 exits + reject"
+        3,
+        "2 exits + reject"
     );
     lab.relay.start(&lab.sb);
 
@@ -1379,7 +1387,10 @@ fn s14_reload_and_repair_preserve_role_and_restrictions() {
     ));
     let migrated = lab.relay.deployment();
     assert_eq!(migrated.role, NodeRole::Relay);
-    assert_eq!(migrated.node_id, "127");
+    // Default node_id is the first dot-segment of public_host
+    // (`default_node_id_for_host`) — RELAY_IP's first octet, not the old
+    // loopback scheme's "127".
+    assert_eq!(migrated.node_id, RELAY_IP.split('.').next().unwrap());
     lab.relay
         .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
         .unwrap();
