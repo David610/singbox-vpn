@@ -3,6 +3,29 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
 #
+# RECOMMENDED FOR PRODUCTION — pinned + checksum-verified bootstrap fetch
+# (Phase 12: the `main` one-liner above fetches this file itself from a
+# MOVABLE branch ref with no verification at all — see TRUST BOUNDARY
+# below. Every tagged release since this fix also publishes this exact
+# file, immutably, as a release asset with its own checksum entry in that
+# release's SHA256SUMS, so the bootstrap fetch itself can be pinned and
+# verified the same way the source archive it goes on to download already
+# is):
+#
+#   ver=v1.2.3   # pick an exact tag from https://github.com/David610/singbox-vpn/releases
+#   curl -fsSLO "https://github.com/David610/singbox-vpn/releases/download/$ver/install.sh"
+#   curl -fsSLO "https://github.com/David610/singbox-vpn/releases/download/$ver/SHA256SUMS"
+#   grep ' install\.sh$' SHA256SUMS | sha256sum -c -
+#   sudo SINGBOX_VPN_VERSION="$ver" bash install.sh
+#
+# A GitHub release tag can in principle be deleted and recreated pointing
+# at different content (tag protection, if configured on the repository,
+# defends against this but is additional defence, not the root of trust
+# by itself) — the checksum verification above is what actually makes
+# this fetch immutable: it fails closed the moment the downloaded
+# install.sh disagrees with the checksum published alongside it in that
+# same release.
+#
 # This script does NOT assume the repository is already cloned — it is
 # designed to be piped directly from `curl` into `bash` via stdin, in
 # which case `$0` does not point at a real file and `${BASH_SOURCE[0]}`
@@ -103,6 +126,16 @@ while [ $# -gt 0 ]; do
 singbox-vpn one-command bootstrap installer.
 
   curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/main/install.sh | sudo bash
+
+RECOMMENDED FOR PRODUCTION (pinned + checksum-verified bootstrap fetch —
+the one-liner above fetches this file itself from a movable branch ref
+with NO verification; see this file's own header comment for why):
+
+  ver=v1.2.3
+  curl -fsSLO "https://github.com/David610/singbox-vpn/releases/download/$ver/install.sh"
+  curl -fsSLO "https://github.com/David610/singbox-vpn/releases/download/$ver/SHA256SUMS"
+  grep ' install\.sh$' SHA256SUMS | sha256sum -c -
+  sudo SINGBOX_VPN_VERSION="$ver" bash install.sh
 
 Bootstrap options:
   --version, -s -- --version v1.2.3   pin to a specific tagged release

@@ -513,6 +513,23 @@ else
 fi
 
 echo
+echo "--- static: root install.sh (the bootstrap itself) is published as its own checksummed release asset, closing the movable-branch-ref bootstrap gap (Phase 12) ---"
+if grep -q 'cp src/install.sh dist/install.sh' "$RELEASE_YML" \
+    && grep -q 'sha256sum dist/install.sh > dist/install.sh.sha256' "$RELEASE_YML" \
+    && grep -q 'install.sh.sha256' "$RELEASE_YML" \
+    && grep -qE '^\s*dist/install\.sh\s*$' "$RELEASE_YML"; then
+  ok "release.yml publishes root install.sh as a release asset, folded into SHA256SUMS, so the bootstrap fetch itself can be checksum-verified"
+else
+  fail "release.yml no longer publishes root install.sh with its own checksum — the bootstrap fetch (before any other verification exists) would again be unpinned and unverifiable"
+fi
+if grep -q 'releases/download/\$ver/install.sh' "$BOOTSTRAP_SH" \
+    && grep -q "grep ' install\\\\.sh\$' SHA256SUMS | sha256sum -c -" "$BOOTSTRAP_SH"; then
+  ok "install.sh documents the pinned-release + checksum-verified bootstrap fetch as the recommended production path (both in its header comment and --help)"
+else
+  fail "install.sh no longer documents a checksum-verified alternative to the unverified main-branch bootstrap one-liner"
+fi
+
+echo
 echo "--- static: SINGBOX_VPN_CHANNEL=dev branch-source path remains explicitly documented as unverified/dev-only, not silently equivalent to a verified install ---"
 if grep -q 'UNVERIFIED singbox-vpn branch source' "$BOOTSTRAP_SH"; then
   ok "install.sh labels the branch-source download path as unverified at the point it runs, not just in --help text"

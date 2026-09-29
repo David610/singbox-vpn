@@ -539,6 +539,25 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: src
+
+      - name: Publish root install.sh as its own checksummed release asset (Phase 12 immutable bootstrap)
+        run: |
+          set -euo pipefail
+          # The root install.sh (the "curl | sudo bash" bootstrap) is fetched
+          # BEFORE any of the checksum/attestation machinery below is
+          # available to the caller — it is the actual root of trust for a
+          # fresh install, not the tarball it goes on to fetch and verify.
+          # Publishing it as a release asset with its own SHA256SUMS entry
+          # lets operators pin bootstrap fetches to an immutable release tag
+          # + checksum instead of the mutable `main` branch ref (which can be
+          # repointed) with zero verification. See install.sh's own header
+          # comment / --help output for the documented pinned-fetch pattern.
+          cp src/install.sh dist/install.sh
+          sha256sum dist/install.sh > dist/install.sh.sha256
+
       - name: Build combined checksum file
         run: |
           set -euo pipefail
@@ -547,7 +566,8 @@ jobs:
           # refuse to publish without them, and cover them by SHA256SUMS.
           test -s singbox-vpn-sbom.cdx.json
           test -s singbox-vpn-licenses.json
-          cat ./*.tar.gz.sha256 ./singbox-vpn-sbom.cdx.json.sha256 ./singbox-vpn-licenses.json.sha256 > SHA256SUMS
+          test -s install.sh.sha256
+          cat ./*.tar.gz.sha256 ./singbox-vpn-sbom.cdx.json.sha256 ./singbox-vpn-licenses.json.sha256 ./install.sh.sha256 > SHA256SUMS
           sha256sum -c SHA256SUMS
 
       - name: Publish release
@@ -560,6 +580,7 @@ jobs:
             dist/*.sigstore.json
             dist/singbox-vpn-sbom.cdx.json
             dist/singbox-vpn-licenses.json
+            dist/install.sh
             dist/SHA256SUMS
           generate_release_notes: true
 
