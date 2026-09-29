@@ -86,7 +86,11 @@ fn default_rotation_batch_interval_secs() -> u64 {
 }
 
 fn default_lease_pool_size() -> usize {
-    32
+    // Fail safe: unmanaged/self-host nodes must not synthesize lease users
+    // (and restart sing-box to rotate them) merely because the setting was
+    // omitted. Fleet bootstrap opts in explicitly when managed leases are
+    // actually enabled for the node.
+    0
 }
 
 fn default_lease_slot_lifetime_secs() -> u64 {
@@ -231,6 +235,75 @@ vpn_admin_config = "/etc/vpn/deployment.toml"
         assert_eq!(
             cfg.poll_interval_secs, 3,
             "default should apply when omitted"
+        );
+        assert_eq!(
+            cfg.lease_pool_size, 0,
+            "lease pool must be opt-in; an omitted setting must not create periodic node-wide restarts (F02)"
+        );
+    }
+
+    #[test]
+    fn load_respects_an_explicit_zero_lease_pool_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            r#"
+worker_url = "http://127.0.0.1:8788"
+node_id = "node-1"
+agent_api_key = "test-key"
+vpn_admin_binary = "/usr/local/bin/vpn-admin"
+vpn_admin_config = "/etc/vpn/deployment.toml"
+lease_pool_size = 0
+"#,
+        )
+        .unwrap();
+
+        let cfg = AgentConfig::load(&path).unwrap();
+        assert_eq!(cfg.lease_pool_size, 0);
+    }
+
+    #[test]
+    fn load_respects_an_explicit_nonzero_lease_pool_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            r#"
+worker_url = "http://127.0.0.1:8788"
+node_id = "node-1"
+agent_api_key = "test-key"
+vpn_admin_binary = "/usr/local/bin/vpn-admin"
+vpn_admin_config = "/etc/vpn/deployment.toml"
+lease_pool_size = 16
+"#,
+        )
+        .unwrap();
+
+        let cfg = AgentConfig::load(&path).unwrap();
+        assert_eq!(cfg.lease_pool_size, 16);
+    }
+
+    #[test]
+    fn load_rejects_a_non_numeric_lease_pool_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            r#"
+worker_url = "http://127.0.0.1:8788"
+node_id = "node-1"
+agent_api_key = "test-key"
+vpn_admin_binary = "/usr/local/bin/vpn-admin"
+vpn_admin_config = "/etc/vpn/deployment.toml"
+lease_pool_size = "not-a-number"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            AgentConfig::load(&path).is_err(),
+            "an invalid lease_pool_size must not silently coerce to a default"
         );
     }
 
