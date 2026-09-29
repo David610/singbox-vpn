@@ -87,6 +87,16 @@ pub struct AgentConfig {
     /// peers and self). Absent disables it entirely.
     #[serde(default)]
     pub protocol_probe: Option<ProtocolProbeConfig>,
+    /// Where the node persists its operation-id dedup log (0600). A4
+    /// (Batch 5): if the same job (identified by the Worker's `job.id`)
+    /// is claimed and applied twice — e.g. because the agent restarted
+    /// between mutating state and reporting completion, and the Worker
+    /// re-delivered the same job — this file lets the second application
+    /// converge to the previously recorded outcome instead of re-running
+    /// vpn-admin. See `op_dedup.rs`. Survives agent restarts, same as
+    /// `lease_state_file`/`report_queue_file`.
+    #[serde(default = "default_op_dedup_file")]
+    pub op_dedup_file: String,
 }
 
 fn default_rotation_batch_interval_secs() -> u64 {
@@ -111,6 +121,10 @@ fn default_lease_state_file() -> String {
 
 fn default_report_queue_file() -> String {
     "/var/lib/vpn-provisioning-agent/report-queue.json".to_string()
+}
+
+fn default_op_dedup_file() -> String {
+    "/var/lib/vpn-provisioning-agent/op-dedup.json".to_string()
 }
 
 /// `[protocol_probe]` — see `protocol_probe.rs` for what each dimension
@@ -191,6 +205,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("lease_slot_lifetime_secs", &self.lease_slot_lifetime_secs)
             .field("lease_state_file", &self.lease_state_file)
             .field("report_queue_file", &self.report_queue_file)
+            .field("op_dedup_file", &self.op_dedup_file)
             .field(
                 "rotation_batch_interval_secs",
                 &self.rotation_batch_interval_secs,
