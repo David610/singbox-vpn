@@ -442,3 +442,133 @@ finding, not a call to make while fixing something else. Flagged in
   outside this batch's scope and changing it without that decision risks
   masking or misjudging a real finding.
 - Confirm real CI status on PR #123 once it settles.
+
+---
+
+# Batch 7c — 2026-09-29 (CodeQL #61 + static-revision-apply scoping)
+
+## Task 1 — CodeQL alert #61 (`rust/cleartext-logging`)
+
+**Status: RESOLVED as false positive (dismissed via GitHub API with
+evidence), no code change needed.**
+
+Queried `gh api repos/David610/singbox-vpn/code-scanning/alerts/61` fresh
+rather than trusting the 7b addendum's line-2918 note (which turned out to
+describe a *different*, still-open alert — #38, `main.rs:2924`, the probe
+`println!`, not #61). Alert #61's own current location data:
+`apps/admin/src/main.rs:5763`, flow message "This operation writes
+`cert_expiry_days(...)` to a log file," analyzed on `refs/heads/main` at
+`927d9e6e`.
+
+Traced the real data flow: `cert_expiry_days()` (`main.rs:4228`) returns
+`Option<Result<i64, String>>` — a plain integer count of days until a
+locally-generated TLS cert's `notAfter` expiry. All 4 call sites
+(`main.rs:3966`, `4689`, `5767`, `5782`, confirmed via `grep -n`) feed only
+that integer into `writeln!(out, "... expires in {days} day(s)")`-style
+diagnostic output for `vpn-doctor`/perf reporting. No password, VLESS UUID,
+Hysteria2 password, private key, bearer token, connection URI, or command
+output reaches any of these sinks — verified by reading every call site,
+not by assumption. This is a demonstrable CodeQL false positive (the
+taint tracker over-attributes sensitivity to any value derived from a
+path containing `cert`/`key`).
+
+Corroborating evidence: PR #123's own `codeql-rust` check (pull_request
+analysis of this branch, not the `refs/heads/main` baseline scan alert #61
+is filed against) is currently **green** at head `1ecd2dd` — this exact
+code, present on this branch too, does not trip the PR-diff CodeQL gate.
+
+Action taken: dismissed alert #61 via
+`gh api repos/David610/singbox-vpn/code-scanning/alerts/61 -X PATCH
+-f state=dismissed -f dismissed_reason="false positive" -f
+dismissed_comment=...`. API response confirms `"state":"dismissed"`,
+`"dismissed_reason":"false positive"`, `"dismissed_by":"David610"` (the
+authenticated `gh` identity), `"dismissed_at":"2026-09-29T14:27:11Z"`. No
+regression test added — there is no real vulnerability to regress against;
+a synthetic-secret test through this path would only prove a negative that
+grep already proves.
+
+**Not touched**: alerts #33–60 (17 more `rust/cleartext-logging` findings)
+and #22–29 (`rust/hard-coded-cryptographic-value`, mostly in
+`hysteria2_interop.rs` test fixtures) exist on the same `refs/heads/main`
+baseline scan. Task 1's scope was #61 only. #38 (`main.rs:2924`, the probe
+`println!` the 7b addendum actually described) remains open and is a
+real, still-undecided triage item — flagged again below, not fixed here
+since it's a different alert than what was assigned.
+
+## Task 2 — Static-config revision apply
+
+**Status: NOT ATTEMPTED this batch — scoped out honestly rather than
+producing a partial/unverified implementation.**
+
+Per this batch's own stated discipline ("if you cannot finish both with
+real verification, finish one completely and document honest partial
+status on the other"): Task 1 is now genuinely closed with real evidence.
+Task 2 as specified — an atomic, versioned, allowlisted static-config
+revision-apply pipeline spanning `crates/compat-config`, `apps/admin`,
+`apps/provisioning-agent`'s job dispatcher, four required test classes
+(dynamic-preservation, failed-apply rollback, idempotency, stale-revision
+rejection), plus a cross-repo `vpn-web` contract trace and a
+correspondingly-scoped separate branch/PR there — is architecturally
+equivalent in size to Batches 7a+7b combined (which took a full dedicated
+pass each for a single narrower area). Starting it without the budget to
+finish the atomic-apply/rollback/idempotency state machine and its Linux
+`#[cfg(unix)]` test coverage for real would risk exactly what 7b's Area 2
+audit already flagged as the live gap: landing code that *claims* to
+preserve dynamic state and fail closed without the fork/exec-based tests
+that actually exercise `sing-box check`, reload failure, and rollback
+paths (this sandbox has no sudo/CAP_NET_ADMIN and those tests don't
+compile on `x86_64-pc-windows-msvc` — see 7b's Area 2 section above for
+the exact same constraint already hit once).
+
+What is already known and load-bearing for whoever picks this up next
+(from 7b's Area 2 audit, still accurate — re-confirmed by re-reading
+`cmd_apply_revision` in `apps/admin/src/main.rs` this session): today's
+`APPLY_NODE_REVISION` payload is a `users.json`-only document
+(`store::parse_users_bytes`); `deployment.toml` (all STATIC fields —
+ports, role, hardening, `public_host`/`public_ipv4`/`public_ipv6`,
+certificates) is loaded once at CLI startup and never written by this
+command. There is currently **no mechanism at all** in this repo for a
+remote static-config change — Task 2 would be new functionality, not a
+bugfix, which is why it needs its own fully-budgeted pass with real
+Linux-CI-verified tests rather than a same-session addendum after Task 1.
+
+Default per the task's own instruction stands and is **not contradicted**
+by anything found while re-reading `cmd_apply_revision`,
+`apply_c16_egress_policy`, or `apply_probe_user_confinement` this session:
+role must remain NOT remotely mutable via any future routine-revision
+path — C-16 policy and probe confinement are both derived directly from
+`cfg.role` at render time, so a role flip would silently rewrite security
+policy underneath any customer/lease/probe state a static revision was
+never meant to touch.
+
+`vpn-web` checkout: not inspected this session (Task 2 not started, so
+there was nothing to trace against it yet).
+
+## Commits (7c)
+
+- (none for code — Task 1 was resolved via the GitHub code-scanning API,
+  not a repository change; no commit was needed or created)
+
+## Real CI
+
+Unchanged from 7b's last polled state: `gh pr checks 123` at head
+`1ecd2dd` — all jobs pass, including `codeql-rust`, `secret-logging-check`,
+`test` (both parallel runs), `shell`, `singbox-validate`. Re-verified this
+session (see checks list above, polled once, already settled — no
+in-flight jobs to wait on since no new commit was pushed).
+
+## Human input needed (7c)
+
+- Task 2 (static-config revision apply) needs a dedicated, fully-budgeted
+  batch of its own — not attempted here, see above for exactly what's
+  already known (payload shape today, the role-immutability default, the
+  test-infrastructure constraint) so the next pass doesn't have to
+  re-derive it.
+- Alert #38 (`main.rs:2924`, probe-creation `println!` of an opaque
+  user id) is a separate, still-open, still-undecided CodeQL finding from
+  7b — needs the same fix-or-dismiss triage call Task 1 just resolved for
+  #61, but is a different alert and was not in scope for this batch's
+  Task 1 assignment.
+- Areas 1 (protocol health) and 5 (nftables lifecycle) remain untouched,
+  as instructed — still the two remaining areas before real two-VPS
+  acceptance.
