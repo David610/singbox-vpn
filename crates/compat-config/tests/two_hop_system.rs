@@ -1265,17 +1265,19 @@ fn s12_unpaired_relay_cannot_reach_anything_as_an_exit() {
         .relay
         .apply(&lab.sb, &[lab.relay_user.clone(), lab.probe_user.clone()])
         .unwrap();
-    // The loopback self-test exception rule + the trailing reject-all:
-    // no peer_endpoints means `relay_targets()` is empty, but
-    // `lab.probe_user` (`is_reserved_probe: true`) IS applied here
-    // specifically so the control check below has an identity C-16
-    // actually exempts at the loopback subscription port — an ordinary
-    // customer, `relay_user` included, is correctly `reject`ed there by
-    // design (see `probe_user`'s doc comment).
+    // The loopback self-test exception rule + the 3 probe-confinement
+    // rules (`apply_probe_user_confinement`: allow 1.1.1.1:443, allow
+    // gstatic/icanhazip:443, reject everything else for that identity) +
+    // the trailing reject-all: no peer_endpoints means `relay_targets()`
+    // is empty, but `lab.probe_user` (`is_reserved_probe: true`) IS
+    // applied here specifically so the control check below has an
+    // identity C-16 actually exempts at the loopback subscription port —
+    // an ordinary customer, `relay_user` included, is correctly
+    // `reject`ed there by design (see `probe_user`'s doc comment).
     assert_eq!(
         doc["route"]["rules"].as_array().unwrap().len(),
-        2,
-        "loopback self-test exception + reject"
+        5,
+        "loopback self-test exception + 3 probe-confinement rules + reject"
     );
     lab.relay.start(&lab.sb);
     assert!(matches!(
@@ -1404,10 +1406,13 @@ fn s14_reload_and_repair_preserve_role_and_restrictions() {
         migrate_deployment_toml(&lab.relay.deployment_path).unwrap(),
         compat_config::deployment::DeploymentMigrationOutcome::AlreadyCurrent
     );
+    // `before` was captured from `Lab::start()`'s own apply, which
+    // includes `probe_user` alongside `relay_user` — reapply with the
+    // same pair here, or this is not actually an idempotence check.
     for _ in 0..2 {
         let doc = lab
             .relay
-            .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
+            .apply(&lab.sb, &[lab.relay_user.clone(), lab.probe_user.clone()])
             .unwrap();
         assert_eq!(
             doc["route"]["rules"].as_array().unwrap().last().unwrap()["action"],
