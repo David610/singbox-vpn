@@ -222,6 +222,43 @@ the task's list of verbs is a superset of what actually exists.
   A3 test (1/1) confirmed passing on the actual unix-gated code paths
   this Windows dev machine cannot execute.
 
+**Addendum (added after a later full-workspace WSL run completed in the
+background and was checked against a clean baseline):** a subsequent
+`cargo test --workspace --no-fail-fast` inside the WSL Ubuntu 24.04
+environment surfaced additional failures beyond the Windows-native run's
+single `concurrent_user_creates_do_not_lose_an_update`:
+`-p admin --test cli` (2 failures: `render_config_noop_reconcile_does_not_restart_singbox`,
+`render_config_require_applied_succeeds_on_true_noop`), `-p admin --test
+relay_cli` (3 failures), `-p compat-config --test reality_decoy_budget`
+(1 failure), `-p compat-config --test two_hop_system` (17 of 22
+failures), and `-p provisioning-agent` (1 failure,
+`report_queue::tests::queued_completion_survives_repeated_500s_and_delivers_once_the_endpoint_recovers`
+— pre-existing, unrelated to this batch's 1-line addition to that same
+test file's `client_for()` helper). None of these are flaky/contention
+artifacts: each reproduces deterministically with `--test-threads=1` run
+in isolation, well after all compilation finished. **Verified pre-existing,
+not caused by this batch**: built a second, clean worktree at batch 4's
+own HEAD (`074854b`, before any batch 5 commit), copied it into the same
+WSL environment, and reproduced both `report_queue`'s failure and all 17
+of `two_hop_system`'s failures identically on that unmodified baseline.
+`two_hop_system`'s failures are real protocol handshake errors against
+the actual `sing-box` binary installed on this WSL container (`EOF` on
+`open connection ... using outbound/vless[...]`, real sing-box logs
+included in the failure output) — most likely a `sing-box` binary
+version/build mismatch or a WSL2-networking peculiarity specific to this
+one freshly-bootstrapped container, not a code defect this batch (or
+apparently any prior batch, since it predates batch 5 entirely and no
+prior batch's status doc mentions running the full suite on this kind of
+from-scratch WSL setup) introduced or could have caused. Did not
+root-cause further — out of this batch's three-deliverable scope — but
+recording this here so a human/later batch doesn't mistake it for a
+regression from this work, and so the environment gap (this specific WSL
+container is not currently a reliable full-suite CI proxy) is visible.
+The two things this batch's tests were actually responsible for —
+op_dedup_integration_tests and the new A3 test — were independently
+confirmed passing on this same WSL environment (see above) and are not
+part of this failure set.
+
 ## Carried-forward backlog (for a human to scope batch 6 from)
 
 Unchanged items from batches 3/4, still open:
