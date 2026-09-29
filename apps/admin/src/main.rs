@@ -9,6 +9,7 @@
 mod lease_pool;
 mod lock;
 mod service;
+mod static_apply;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -218,6 +219,13 @@ enum Commands {
     /// candidate cannot be rendered, validated, or reloaded live. Only on
     /// success is the revision number stamped locally so the next
     /// heartbeat can report `observed_revision`.
+    ///
+    /// A document of the form `{"revision_schema":1,"static_config":{..}}`
+    /// is instead a STATIC-config revision: an allowlisted change to
+    /// `deployment.toml` applied atomically with rollback, leaving
+    /// `users.json` untouched (see `compat_config::static_revision` and
+    /// `static_apply.rs`). Both kinds share the same monotonic revision
+    /// stamp.
     ApplyRevision {
         /// The revision number being applied (vpn-web's `nodes` table
         /// tracks this per-node as `desired_revision`/`observed_revision`).
@@ -664,7 +672,9 @@ fn main() -> Result<()> {
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::Repair => cmd_repair(),
-        Commands::ApplyRevision { revision, input } => cmd_apply_revision(&cfg, revision, &input),
+        Commands::ApplyRevision { revision, input } => {
+            cmd_apply_revision(&cfg, &cli.config, revision, &input)
+        }
         Commands::RevisionStatus { json } => cmd_revision_status(&cfg, json),
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
         Commands::LeasePool(LeasePoolCommands::Sync { input }) => cmd_lease_pool_sync(&cfg, &input),
@@ -3773,6 +3783,7 @@ fn commit_applied_revision_stamp(cfg: &DeploymentConfig, revision: u64) -> Resul
 /// the revision number on success.
 fn cmd_apply_revision(
     cfg: &DeploymentConfig,
+    config_path: &std::path::Path,
     revision: u64,
     input: &std::path::Path,
 ) -> Result<()> {
@@ -3810,6 +3821,18 @@ fn cmd_apply_revision(
 
     let bytes = std::fs::read(input)
         .with_context(|| format!("reading revision {revision} document from {input:?}"))?;
+
+    // Route static-config revisions (a `{"revision_schema":..,
+    // "static_config":{..}}` envelope) to their own allowlisted, atomic
+    // apply path. The check parses the whole document regardless of size
+    // so an oversized document carrying `static_config` can never fall
+    // through to the users path (which would silently ignore that key).
+    if serde_json::from_slice::<serde_json::Value>(&bytes)
+        .is_ok_and(|doc| compat_config::static_revision::is_static_revision_document(&doc))
+    {
+        return static_apply::cmd_apply_static_revision(config_path, revision, &bytes);
+    }
+
     let candidate_users = store::parse_users_bytes(&bytes).with_context(|| {
         format!(
             "revision {revision} document at {input:?} is not a valid users-store document \
