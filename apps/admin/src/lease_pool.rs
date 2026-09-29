@@ -116,6 +116,7 @@ pub fn reconcile(
                 vision_off_experiment: false,
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
+                is_reserved_probe: false,
             },
         };
         user.name = id;
@@ -158,6 +159,7 @@ mod tests {
             vision_off_experiment: false,
             google_egress_hairpin: false,
             peer_credentials: Default::default(),
+            is_reserved_probe: false,
         }
     }
 

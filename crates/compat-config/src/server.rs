@@ -74,19 +74,42 @@ pub fn render_server_config_for_deployment(
         ) {
             apply_google_egress_hairpin(&mut config, hairpin, uuid);
         }
+        apply_exit_loopback_selftest_exception(&mut config, deployment, users, now_unix);
+        apply_c16_egress_policy(
+            &mut config,
+            Some(deployment.public_host.as_str()),
+            deployment.public_ipv4.as_deref(),
+            deployment.public_ipv6.as_deref(),
+        );
         apply_probe_user_confinement(&mut config, users, now_unix);
         return Ok(config);
     }
 
     let reality_inbound = "vless-reality-in";
-    let mut rules = vec![json!({
-        "inbound": [reality_inbound],
-        "network": "tcp",
-        "ip_cidr": ["127.0.0.1/32"],
-        "port": deployment.subscription.listen_port,
-        "action": "route",
-        "outbound": "direct",
-    })];
+    let probe_ids: Vec<String> = users
+        .iter()
+        .filter(|u| u.is_active(now_unix) && u.is_reserved_probe)
+        .map(|u| u.id.clone())
+        .collect();
+    let mut rules = Vec::new();
+    // Loopback self-test exception, scoped to the reserved probe
+    // principal(s) only (spec C-16 "Exceptions" / NEW-01 remediation): a
+    // customer connecting to this relay's own loopback subscription
+    // backend must be rejected like any other C-16 destination. Omitted
+    // entirely when no reserved probe user exists yet (e.g. a relay
+    // whose `vpn-admin user create-probe` has not run) — there is then
+    // nothing to exempt.
+    if !probe_ids.is_empty() {
+        rules.push(json!({
+            "inbound": [reality_inbound],
+            "auth_user": probe_ids,
+            "network": "tcp",
+            "ip_cidr": ["127.0.0.1/32"],
+            "port": deployment.subscription.listen_port,
+            "action": "route",
+            "outbound": "direct",
+        }));
+    }
     // One narrowly-scoped exception ahead of the fail-closed policy: a
     // user with `google_egress_hairpin` set (never a real end user — see
     // that field's doc comment) may reach ONLY the Google/YouTube domain
@@ -177,10 +200,251 @@ pub fn render_server_config_for_deployment(
     Ok(config)
 }
 
-/// Confines the reserved protocol-probe user(s) (name ==
-/// [`crate::model::PROBE_USER_NAME`]) so the probe credential — whose share
-/// links are handed to peer agents — is not an open proxy. Prepends, ahead
-/// of every other rule (hairpin, relay forwarding, final reject):
+/// C-16 data-plane egress isolation (cross-repo remediation plan,
+/// invariant 3 / audit item E-01): applied to an EXIT's config, ahead of
+/// its otherwise-unconditional `direct` outbound, so an authenticated
+/// tunnel user can never reach node loopback, cloud metadata, RFC1918/
+/// CGNAT, IPv6 ULA/link-local, or other node-management-adjacent ranges
+/// through the tunnel.
+///
+/// Prepends, in order:
+/// 1. `"action": "resolve"` for every inbound — sing-box's `resolve`
+///    route action (available since 1.10) performs DNS resolution and
+///    attaches the result to `metadata.destination_ip_addr` BEFORE any
+///    later `ip_cidr` rule is evaluated, so a domain that resolves to a
+///    denied address is judged on that address, not left to fall
+///    through as an unresolved hostname. This is the domain-based-bypass
+///    guarantee: `foo.example` resolving to `127.0.0.1` is blocked by
+///    the same `ip_cidr` rule below as a literal `127.0.0.1` connection,
+///    with no separate domain-based rule needed.
+/// 2. one `ip_cidr` reject rule for [`crate::model::C16_DENY_IPV4_CIDRS`]
+///    and one for [`crate::model::C16_DENY_IPV6_CIDRS`] — covers both a
+///    client-supplied literal IP and a resolved domain.
+/// 3. a TCP/[`crate::model::C16_DENY_TCP_PORT`] reject rule (SMTP abuse
+///    mitigation), independent of destination.
+///
+/// Deliberately does NOT reject the node's own public IP here: exits do
+/// not know their own public address at render time without an extra
+/// network call, and the node-service-pivot protections
+/// (`docs/reviews/OWN_NODE_PIVOT_PROTECTION.md`) cover that via the
+/// public listeners binding to loopback/private interfaces plus host
+/// firewall policy instead of a data-plane IP-literal rule that would
+/// need to be kept in sync with DHCP/cloud-assigned addresses.
+///
+/// Existing rules the caller has already built (probe confinement,
+/// Google egress hairpin) are prepended AFTER these — see call order in
+/// `render_server_config_for_deployment` — so the probe user's narrow
+/// allow-list is still evaluated before this reject set and is not
+/// itself blocked by it (the probe's one allowed IP, `1.1.1.1`, is a
+/// public address and is never in the C-16 deny set).
+fn apply_c16_egress_policy(
+    config: &mut serde_json::Value,
+    own_public_host: Option<&str>,
+    own_public_ipv4: Option<&str>,
+    own_public_ipv6: Option<&str>,
+) {
+    use crate::model::{C16_DENY_IPV4_CIDRS, C16_DENY_IPV6_CIDRS, C16_DENY_TCP_PORT};
+    let all_inbounds: Vec<serde_json::Value> = config["inbounds"]
+        .as_array()
+        .map(|inbounds| {
+            inbounds
+                .iter()
+                .map(|inbound| inbound["tag"].clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    if all_inbounds.is_empty() {
+        return;
+    }
+    let mut new_rules = vec![
+        json!({
+            "inbound": all_inbounds.clone(),
+            "action": "resolve",
+        }),
+        json!({
+            "inbound": all_inbounds.clone(),
+            "ip_cidr": C16_DENY_IPV4_CIDRS,
+            "action": "reject",
+            "method": "default",
+        }),
+        json!({
+            "inbound": all_inbounds.clone(),
+            "ip_cidr": C16_DENY_IPV6_CIDRS,
+            "action": "reject",
+            "method": "default",
+        }),
+        json!({
+            "inbound": all_inbounds.clone(),
+            "network": "tcp",
+            "port": C16_DENY_TCP_PORT,
+            "action": "reject",
+            "method": "default",
+        }),
+    ];
+    // Area 6 (own-public-IP egress gap): when the deployment's trusted
+    // `public_host` (the same value already advertised to clients —
+    // never a fresh "what is my IP" network call from inside config
+    // rendering) is an IP literal, deny a customer tunnel from reaching
+    // it, exactly like the other C-16 ranges, so a customer cannot use
+    // the tunnel to pivot into a publicly-bound service on the node
+    // itself. When `public_host` is a hostname instead of an IP literal,
+    // no rule is added here: the operator's own DNS record is not a
+    // value this renderer can safely turn into an IP-based deny without
+    // an extra network call (out of scope here — see
+    // `docs/reviews/ARCANA_BATCH7_STATUS_2026-09-29.md`). Host-originated
+    // traffic never goes through these listeners, so this only affects
+    // customer tunnel destinations, not the host's own use of its
+    // address.
+    // Area 6 follow-up: `public_ipv4`/`public_ipv6` are the general fix —
+    // deployment-config fields populated once at install/revision-apply
+    // time (never re-resolved during rendering) that cover the node's own
+    // public address regardless of whether `public_host` itself is a
+    // hostname or an IP literal. They coexist with the IP-literal
+    // `public_host` check above (which still fires on its own, e.g. for a
+    // deployment.toml predating this field); a CIDR appearing in both
+    // sources just produces a harmless duplicate deny rule.
+    let mut own_ip_cidrs: Vec<std::net::IpAddr> = own_public_host
+        .filter(|h| !h.is_empty())
+        .and_then(|h| h.parse::<std::net::IpAddr>().ok())
+        .into_iter()
+        .collect();
+    own_ip_cidrs.extend(
+        own_public_ipv4
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<std::net::IpAddr>().ok()),
+    );
+    own_ip_cidrs.extend(
+        own_public_ipv6
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<std::net::IpAddr>().ok()),
+    );
+    if !own_ip_cidrs.is_empty() {
+        let cidrs: Vec<String> = own_ip_cidrs
+            .into_iter()
+            .map(|ip| match ip {
+                std::net::IpAddr::V4(v4) => format!("{v4}/32"),
+                std::net::IpAddr::V6(v6) => format!("{v6}/128"),
+            })
+            .collect();
+        new_rules.push(json!({
+            "inbound": all_inbounds.clone(),
+            "ip_cidr": cidrs,
+            "action": "reject",
+            "method": "default",
+        }));
+    }
+    let new_rules = new_rules;
+    if !config["route"].is_object() {
+        config["route"] = json!({});
+    }
+    let existing: Vec<serde_json::Value> = config["route"]["rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    // These 4 rules apply unconditionally to every identity — they must
+    // never be placed ahead of a rule the caller already scoped to one
+    // specific `auth_user` set (e.g. `apply_exit_loopback_selftest_
+    // exception`'s narrow probe-only loopback allow), which would
+    // otherwise be shadowed by this function's own blanket
+    // `127.0.0.0/8` reject exactly the way root cause 2 in
+    // `docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29_ADDENDUM4.md`
+    // described for `apply_probe_user_confinement`. Any leading run of
+    // `auth_user`-scoped rules is therefore kept ahead of these; a rule
+    // with no `auth_user` (matches every identity) is where these get
+    // inserted.
+    let insert_at = existing
+        .iter()
+        .take_while(|rule| rule.get("auth_user").is_some())
+        .count();
+    let mut rules = existing;
+    for (offset, rule) in new_rules.into_iter().enumerate() {
+        rules.insert(insert_at + offset, rule);
+    }
+    config["route"]["rules"] = json!(rules);
+    // Explicit final outbound: without a route section at all, sing-box
+    // falls back to the first-declared outbound ("direct" here), which
+    // was already the effective behavior — this just makes it survive
+    // future outbound reordering.
+    config["route"]["final"] = json!("direct");
+}
+
+/// Exit-role counterpart of the relay's loopback self-test exception
+/// above: an EXIT's C-16 egress policy ([`apply_c16_egress_policy`])
+/// unconditionally rejects `127.0.0.0/8` for every identity, which also
+/// silently swallows `vpn-admin doctor --protocol`'s own live-handshake
+/// self-test (it dials this node's own subscription `/healthz` over the
+/// tunnel to prove a real end-to-end handshake) — the same class of bug
+/// documented as "root cause 2" for the relay in
+/// `docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29_ADDENDUM4.md`, just not
+/// yet given the same narrow exception on the exit side. Scoped
+/// identically to the relay's: only the reserved probe principal(s)
+/// (`is_reserved_probe: true`, never name-matched) may reach
+/// `127.0.0.1:<subscription_port>` over TCP via `direct`; every other
+/// user and every other destination is unaffected and still fully
+/// subject to C-16. Omitted entirely when no active reserved-probe user
+/// exists, matching the relay's own omission rule.
+fn apply_exit_loopback_selftest_exception(
+    config: &mut serde_json::Value,
+    deployment: &DeploymentConfig,
+    users: &[CompatUser],
+    now_unix: i64,
+) {
+    let probe_ids: Vec<String> = users
+        .iter()
+        .filter(|u| u.is_active(now_unix) && u.is_reserved_probe)
+        .map(|u| u.id.clone())
+        .collect();
+    if probe_ids.is_empty() {
+        return;
+    }
+    if !config["route"].is_object() {
+        config["route"] = json!({});
+    }
+    let mut rules: Vec<serde_json::Value> = config["route"]["rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    rules.insert(
+        0,
+        json!({
+            "auth_user": probe_ids,
+            "network": "tcp",
+            "ip_cidr": ["127.0.0.1/32"],
+            "port": deployment.subscription.listen_port,
+            "action": "route",
+            "outbound": "direct",
+        }),
+    );
+    config["route"]["rules"] = json!(rules);
+}
+
+/// Number of leading `route.rules` entries `apply_c16_egress_policy`
+/// prepends (0, 4, or 5 — 5 when any of `public_host` (IP-literal form),
+/// `public_ipv4`, or `public_ipv6` contributed an own-address deny rule;
+/// all three collapse into a single combined rule when more than one is
+/// set), mirroring
+/// [`probe_confinement_rule_count`] so `doctor` can validate the rest of
+/// an exit's document exactly as before.
+pub fn c16_egress_policy_rule_count(doc: &serde_json::Value) -> usize {
+    let Some(rules) = doc["route"]["rules"].as_array() else {
+        return 0;
+    };
+    let is_c16 = |r: &serde_json::Value| {
+        r.get("auth_user").is_none()
+            && (r.get("action") == Some(&json!("resolve"))
+                || r.get("ip_cidr").is_some()
+                || r.get("domain").is_some()
+                || r.get("port") == Some(&json!(crate::model::C16_DENY_TCP_PORT)))
+    };
+    rules.iter().take(5).take_while(|r| is_c16(r)).count()
+}
+
+/// Confines the reserved protocol-probe user(s) (structurally flagged —
+/// [`crate::model::CompatUser::is_reserved_probe`], never name-matched)
+/// so the probe credential — whose share
+/// links are handed to peer agents — is not an open proxy. Inserts, ahead
+/// of every rule NOT already scoped to this same `auth_user` set (hairpin,
+/// relay forwarding, final reject):
 ///
 /// 1. allow `auth_user` → TCP/[`PROBE_ALLOWED_PORT`] to
 ///    [`PROBE_ALLOWED_IP_CIDRS`] via `direct`;
@@ -189,6 +453,23 @@ pub fn render_server_config_for_deployment(
 ///    domain destinations via socks5h, so no sniffing is needed; a
 ///    connection to a bare IP never matches a `domain` item);
 /// 3. reject everything else for `auth_user`.
+///
+/// Rule (3) is a BLANKET reject for the probe identity, so it must never
+/// be placed ahead of a narrower rule this same function's caller already
+/// built for that identity — on a relay, `render_server_config_for_
+/// deployment` builds exactly one such rule ahead of this call: the
+/// loopback self-test exception (`auth_user: probe_ids`, scoped to the
+/// node's own subscription port), which the post-install/post-update
+/// protocol self-test depends on to prove a real first-hop handshake.
+/// Prepending (3) ahead of THAT rule, as an earlier version of this
+/// function did, silently broke that self-test in production — not just
+/// in `two_hop_system.rs`'s tests, which is how this was found — since a
+/// probe connection to the loopback subscription port would match this
+/// function's own blanket reject before ever reaching the more specific
+/// rule below it. Any existing rule whose `auth_user` is already a subset
+/// of `ids` is therefore treated as more specific than this function's
+/// own rules and kept ahead of them; everything else (not scoped to this
+/// probe identity at all) is kept behind.
 ///
 /// `auth_user` (sing-box `route/rule/rule_item_auth_user.go`) matches
 /// `metadata.User`, which the VLESS/Hysteria2 inbounds set to the user's
@@ -205,12 +486,15 @@ fn apply_probe_user_confinement(
     users: &[CompatUser],
     now_unix: i64,
 ) {
-    use crate::model::{
-        PROBE_ALLOWED_DOMAINS, PROBE_ALLOWED_IP_CIDRS, PROBE_ALLOWED_PORT, PROBE_USER_NAME,
-    };
+    use crate::model::{PROBE_ALLOWED_DOMAINS, PROBE_ALLOWED_IP_CIDRS, PROBE_ALLOWED_PORT};
+    // Structural gate: `is_reserved_probe`, never `name`. A customer who
+    // happens to be named `arcana-probe` (or `arcana-selftest`) has
+    // `is_reserved_probe: false` and is NOT matched here — they get no
+    // confinement and no privilege from the name. Only records created
+    // through `vpn-admin user create-probe` ever have the flag set.
     let ids: Vec<String> = users
         .iter()
-        .filter(|u| u.is_active(now_unix) && u.name == PROBE_USER_NAME)
+        .filter(|u| u.is_active(now_unix) && u.is_reserved_probe)
         .map(|u| u.id.clone())
         .collect();
     if ids.is_empty() {
@@ -242,20 +526,55 @@ fn apply_probe_user_confinement(
     if !config["route"].is_object() {
         config["route"] = json!({});
     }
-    let mut rules: Vec<serde_json::Value> = probe_rules.into();
-    if let Some(existing) = config["route"]["rules"].as_array() {
-        rules.extend(existing.iter().cloned());
+    let existing: Vec<serde_json::Value> = config["route"]["rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    // A rule counts as "already scoped to this probe identity" only when
+    // EVERY entry in its own `auth_user` is one of `ids` — never the
+    // reverse, and never a rule with no `auth_user` at all (which matches
+    // every identity, probe included, and must stay behind this
+    // function's rules exactly as before).
+    let already_probe_scoped = |rule: &serde_json::Value| -> bool {
+        rule["auth_user"].as_array().is_some_and(|au| {
+            au.iter()
+                .all(|v| v.as_str().is_some_and(|s| ids.iter().any(|id| id == s)))
+        })
+    };
+    let insert_at = existing
+        .iter()
+        .take_while(|rule| already_probe_scoped(rule))
+        .count();
+    let mut rules = existing;
+    for (offset, rule) in probe_rules.into_iter().enumerate() {
+        rules.insert(insert_at + offset, rule);
     }
     config["route"]["rules"] = json!(rules);
 }
 
-/// Number of leading `route.rules` entries that
-/// `apply_probe_user_confinement` prepended (0 or 3), so `doctor` can
-/// validate the rest of the document exactly as before.
+/// Number of leading `route.rules` entries that `apply_probe_user_
+/// confinement` prepended (0 or 3), PLUS one more ahead of those if
+/// `apply_exit_loopback_selftest_exception` also ran (an exit only —
+/// see that function's doc comment), so `doctor` can validate the rest
+/// of the document exactly as before. The two always travel together:
+/// both are gated on the exact same "at least one active reserved-probe
+/// user" condition, so whenever the loopback exception is present, the
+/// confinement rules are guaranteed to immediately follow it.
 pub fn probe_confinement_rule_count(doc: &serde_json::Value) -> usize {
     let Some(rules) = doc["route"]["rules"].as_array() else {
         return 0;
     };
+    let is_loopback_selftest_exception = |r: &serde_json::Value| {
+        r.get("auth_user").is_some()
+            && r.get("ip_cidr") == Some(&json!(["127.0.0.1/32"]))
+            && r["action"] == "route"
+    };
+    let offset = if rules.first().is_some_and(is_loopback_selftest_exception) {
+        1
+    } else {
+        0
+    };
+    let rules = &rules[offset..];
     let is_probe = |r: &serde_json::Value| {
         r.get("auth_user").is_some()
             && (r["action"] == "reject" || r.get("ip_cidr").is_some() || r.get("domain").is_some())
@@ -263,7 +582,7 @@ pub fn probe_confinement_rule_count(doc: &serde_json::Value) -> usize {
             && r.get("inbound").is_none()
     };
     if rules.len() >= 3 && rules[..3].iter().all(is_probe) && rules[2]["action"] == "reject" {
-        3
+        offset + 3
     } else {
         0
     }
@@ -663,6 +982,7 @@ mod tests {
                 vision_off_experiment: false,
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
+                is_reserved_probe: false,
             },
             CompatUser {
                 id: "u-disabled".into(),
@@ -676,6 +996,7 @@ mod tests {
                 vision_off_experiment: false,
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
+                is_reserved_probe: false,
             },
             CompatUser {
                 id: "u-expired".into(),
@@ -689,6 +1010,7 @@ mod tests {
                 vision_off_experiment: false,
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
+                is_reserved_probe: false,
             },
         ]
     }
@@ -747,6 +1069,7 @@ mod tests {
                 vision_off_experiment: false,
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
+                is_reserved_probe: false,
             })
             .collect();
 
@@ -812,6 +1135,7 @@ mod tests {
             vision_off_experiment: true,
             google_egress_hairpin: false,
             peer_credentials: Default::default(),
+            is_reserved_probe: false,
         });
         let ports = ServerPorts {
             vless_reality_port: 443,

@@ -83,6 +83,7 @@ fn a_user_with_no_peer_credentials_round_trips_byte_identically() {
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
+        is_reserved_probe: false,
     };
     store::save_users_atomic(&path, &[user]).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
@@ -203,6 +204,7 @@ fn peer_credentials_round_trip_and_are_looked_up_by_endpoint_id() {
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
+        is_reserved_probe: false,
     };
     user.peer_credentials.insert(
         "eu2-reality".into(),

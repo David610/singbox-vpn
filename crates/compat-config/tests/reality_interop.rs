@@ -82,6 +82,7 @@ fn test_user() -> CompatUser {
         created_at: 0,
         expires_at: None,
         peer_credentials: Default::default(),
+        is_reserved_probe: false,
     }
 }
 

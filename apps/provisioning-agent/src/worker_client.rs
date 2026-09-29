@@ -23,6 +23,7 @@ struct ClaimResponse {
     job: Option<Job>,
 }
 
+#[derive(Clone)]
 pub struct WorkerClient {
     http: reqwest::Client,
     base_url: String,

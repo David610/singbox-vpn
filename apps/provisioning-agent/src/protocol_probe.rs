@@ -456,6 +456,27 @@ async fn probe_target(
         if let Some(h) = host_override {
             ep = ep.with_host(h);
         }
+        // SSRF guard (Batch 7a, Area 4): every destination — whether it
+        // came from `static_targets` (operator-configured) or
+        // `fetch_targets` (control plane, not fully trusted) — is
+        // resolved exactly once here and pinned to that resolved IP
+        // literal before any connection is attempted, so a later,
+        // different resolution at sing-box's own connect time (DNS
+        // rebinding) cannot steer the probe onto a denied destination
+        // after this check passed.
+        let (host, port) = ep.host_port();
+        match crate::ssrf_guard::resolve_and_validate(host, port) {
+            Ok(resolved) => ep = ep.with_host(&resolved.ip.to_string()),
+            Err(reason) => {
+                tracing::warn!(
+                    target = %t.node_id,
+                    host,
+                    reason,
+                    "refusing probe destination: SSRF guard denied it"
+                );
+                continue;
+            }
+        }
         let expected = if vantage == "peer" {
             t.expected_ipv4.as_deref()
         } else {
@@ -719,6 +740,9 @@ fn ensure_probe_user(cfg: &AgentConfig, pcfg: &ProtocolProbeConfig) -> Result<Pr
             compat_config::model::PROBE_USER_NAME
         );
     }
+    // `is_reserved_probe`, not the name, is what `server.rs` confinement
+    // keys off — `user create-probe` is the only path that sets it. An
+    // idempotent no-op if the reserved principal already exists.
     let admin = |args: &[&str]| -> Result<String> {
         let out = Command::new(&cfg.vpn_admin_binary)
             .arg("--config")
@@ -736,18 +760,19 @@ fn ensure_probe_user(cfg: &AgentConfig, pcfg: &ProtocolProbeConfig) -> Result<Pr
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     };
-    let list = admin(&["user", "list"])?;
-    let id = match find_user_id(&list, &pcfg.probe_user_name) {
-        Some(id) => id,
-        None => {
-            let created = admin(&["user", "create", "--name", &pcfg.probe_user_name, "--json"])?;
-            let v: Value = serde_json::from_str(created.trim()).context("parsing user create")?;
-            v.get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("user create returned no id"))?
-                .to_string()
-        }
-    };
+    let created = admin(&[
+        "user",
+        "create-probe",
+        "--name",
+        &pcfg.probe_user_name,
+        "--json",
+    ])?;
+    let v: Value = serde_json::from_str(created.trim()).context("parsing user create-probe")?;
+    let id = v
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("user create-probe returned no id"))?
+        .to_string();
     let links = admin(&["user", "links", &id])?;
     let mut t = ProbeTarget {
         node_id: cfg.node_id.clone(),
@@ -772,6 +797,9 @@ fn ensure_probe_user(cfg: &AgentConfig, pcfg: &ProtocolProbeConfig) -> Result<Pr
 
 /// `vpn-admin user list` prints a header then one row per user; the row
 /// whose name column equals `name` yields the id in the first column.
+/// Test-only now: production code uses `user create-probe`'s idempotent
+/// JSON output directly instead of listing + name-matching.
+#[cfg(test)]
 fn find_user_id(list: &str, name: &str) -> Option<String> {
     list.lines().skip(1).find_map(|line| {
         let cols: Vec<&str> = line.split_whitespace().collect();

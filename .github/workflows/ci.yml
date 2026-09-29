@@ -318,16 +318,17 @@ jobs:
           tarball="sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz"
           url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/${tarball}"
           curl -fsSL -o "$tarball" "$url"
+          actual="$(sha256sum "$tarball" | awk '{print $1}')"
+          if [ "$actual" != "$SINGBOX_SHA256_AMD64" ]; then
+            echo "::error::sing-box checksum mismatch: expected Arcana pin $SINGBOX_SHA256_AMD64, got $actual"
+            exit 1
+          fi
           sums_url="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box_${SINGBOX_VERSION}_checksums.txt"
           if curl -fsSL -o checksums.txt "$sums_url"; then
             sha256sum --ignore-missing -c checksums.txt
+            echo "verified against Arcana pin and upstream checksums.txt."
           else
-            actual="$(sha256sum "$tarball" | awk '{print $1}')"
-            if [ "$actual" != "$SINGBOX_SHA256_AMD64" ]; then
-              echo "::error::sing-box checksum mismatch: expected $SINGBOX_SHA256_AMD64, got $actual"
-              exit 1
-            fi
-            echo "verified against pinned expected SHA256 (no upstream checksums.txt for this release)."
+            echo "verified against Arcana pinned expected SHA256 (no upstream checksums.txt for this release)."
           fi
           tar -xzf "$tarball"
           install -m 0755 "sing-box-${SINGBOX_VERSION}-linux-amd64/sing-box" /usr/local/bin/sing-box
@@ -509,6 +510,14 @@ jobs:
           CFG="$RUNNER_TEMP/protocol-selftest-deployment.toml"
           SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" init
           SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" user create --name ci-protocol-test
+          # doctor's own L5-6 self-test dials this node's own loopback
+          # subscription port over the tunnel to prove a real end-to-end
+          # handshake — a destination C-16's egress policy fail-closes
+          # for every ordinary user. Only a reserved-probe identity is
+          # exempted (compat_config::server::apply_exit_loopback_
+          # selftest_exception), so one must exist for this check to be
+          # able to reach anything but INCONCLUSIVE.
+          SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" user create-probe
           "$ADMIN" --config "$CFG" render-config
 
           /usr/local/bin/sing-box run -c "$STATE/sing-box/config.json" > "$RUNNER_TEMP/singbox.log" 2>&1 &
@@ -581,8 +590,16 @@ jobs:
           EOF
           SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" init
           SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" user create --name ci-relay-test
+          # Same reasoning as the exit step above: doctor's L5-6 self-test
+          # needs a reserved-probe identity to be admitted through the
+          # relay's own loopback self-test exception; an ordinary user is
+          # fail-closed by design.
+          SINGBOX_VPN_ALLOW_OFFLINE_MUTATION=1 "$ADMIN" --config "$CFG" user create-probe
           "$ADMIN" --config "$CFG" render-config
-          python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["route"]["rules"]; assert r[-1]["action"]=="reject" and len(r)==2, r' "$STATE/sing-box/config.json"
+          # 1 loopback self-test exception + 3 probe-confinement rules
+          # (always added together whenever any is_reserved_probe user is
+          # present, regardless of relay pairing) + 1 final reject.
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["route"]["rules"]; assert r[-1]["action"]=="reject" and len(r)==5, r' "$STATE/sing-box/config.json"
           /usr/local/bin/sing-box run -c "$STATE/sing-box/config.json" > "$RUNNER_TEMP/relay-singbox.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/relay-singbox.pid"
           sleep 1

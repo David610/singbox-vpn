@@ -7,13 +7,14 @@
 //! clock, so provider separation, packet-capture knowledge separation,
 //! real reachability, latency and leak behaviour are out of scope here.
 //!
-//! Topology (distinct loopback addresses, deterministic roles):
+//! Topology (distinct addresses on a private dummy interface, deterministic
+//! roles):
 //!
 //! ```text
-//! client (sing-box, SOCKS on 127.0.0.1, dials from 127.0.0.6)
-//!   ├─ "Germany · Direct"      ─────────────────────► tap ─► exit 127.0.0.3 ─► target 127.0.0.4
-//!   └─ "Germany · via Russia"  ─► relay 127.0.0.2 ───► tap ─► exit 127.0.0.3 ─► target 127.0.0.4
-//! undeclared destinations: 127.0.0.5, other ports on 127.0.0.3/127.0.0.4
+//! client (sing-box, SOCKS on 127.0.0.1, dials from 192.88.99.6)
+//!   ├─ "Germany · Direct"      ─────────────────────► tap ─► exit 192.88.99.3 ─► target 192.88.99.4
+//!   └─ "Germany · via Russia"  ─► relay 192.88.99.2 ───► tap ─► exit 192.88.99.3 ─► target 192.88.99.4
+//! undeclared destinations: 192.88.99.5, other ports on 192.88.99.3/192.88.99.4
 //! ```
 //!
 //! Every server document comes from `render_server_config_for_deployment`,
@@ -28,10 +29,37 @@
 //! hard-coded processes, so the same scenario list is the checklist for
 //! the later real-VPS acceptance phase (docs/TWO_HOP_SYSTEM_TESTS.md).
 //!
-//! Requires Linux (127.0.0.0/8 is routable to lo), a pinned `sing-box`
-//! (`SING_BOX_BIN` or PATH) and `openssl`. Skips otherwise, unless
-//! `SINGBOX_VPN_REQUIRE_REAL_INTEROP` is set, which turns a skip into a
-//! failure.
+//! ## Addressing: why not loopback (127.0.0.0/8)
+//!
+//! C-16 (`compat_config::model::C16_DENY_IPV4_CIDRS`) rejects every
+//! declared peer/exit address inside the IANA special-use/testing ranges,
+//! including all of `127.0.0.0/8`. There is no CIDR block that is
+//! simultaneously outside that deny list and not real, globally-routable
+//! Internet space — so this harness cannot just pick a different "safe"
+//! static range.
+//!
+//! Instead it creates a dedicated dummy network interface
+//! (`ip link add ... type dummy`, no default route ever pointed at it) and
+//! assigns each role's address to it as a host route
+//! (`ip addr add <addr>/32 dev <iface>`). Isolation here does not come from
+//! the address block being reserved — `192.88.99.0/24` (chosen only because
+//! it is a real, unremarkable, non-C16-listed block, memorable as a
+//! `.2`.`.6` continuation of the old loopback scheme) is ordinary public
+//! space. It comes from Linux routing an address assigned to *any* local
+//! interface (dummy interfaces included) through the kernel's local table
+//! before ever consulting the main/default route: a packet destined for an
+//! address this host owns is delivered locally, and a dummy interface has
+//! no upstream to escape through even if that lookup were bypassed. See
+//! [`DummyInterfaceGuard`].
+//!
+//! Requires Linux, root/`CAP_NET_ADMIN` via passwordless `sudo` (to create
+//! the dummy interface — GitHub Actions' `ubuntu-latest` runners have this
+//! by default; a developer sandbox without it will fail loudly, see
+//! `prerequisites()`), a pinned `sing-box` (`SING_BOX_BIN` or PATH) and
+//! `openssl`. Skips on missing sing-box/openssl, unless
+//! `SINGBOX_VPN_REQUIRE_REAL_INTEROP` is set, which turns that skip into a
+//! failure. Once sing-box/openssl are present, dummy-interface setup
+//! failure is always a hard failure, never a silent skip.
 
 #![cfg(target_os = "linux")]
 
@@ -57,12 +85,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-const RELAY_IP: &str = "127.0.0.2";
-const EXIT_IP: &str = "127.0.0.3";
-const TARGET_IP: &str = "127.0.0.4";
-const UNDECLARED_IP: &str = "127.0.0.5";
+/// A real, ordinary, non-`C16_DENY_IPV4_CIDRS`-listed /24 used only as
+/// host routes on [`DUMMY_IFACE`] — see the module doc for why this is
+/// safe despite not being "reserved" space.
+const RELAY_IP: &str = "192.88.99.2";
+const EXIT_IP: &str = "192.88.99.3";
+const TARGET_IP: &str = "192.88.99.4";
+const UNDECLARED_IP: &str = "192.88.99.5";
 /// Source address of every socket the client device opens itself.
-const CLIENT_IP: &str = "127.0.0.6";
+const CLIENT_IP: &str = "192.88.99.6";
+
+/// Name of the dummy network interface these tests create. Kept short
+/// (interface names are capped at 15 bytes by the kernel) and namespaced
+/// so it's obviously this test suite's if left behind after a hard kill.
+const DUMMY_IFACE: &str = "arcana-2hop0";
 const DIRECT_TAG: &str = "Germany · Direct";
 const VIA_TAG: &str = "Germany · via Russia";
 const NEGATIVE_TIMEOUT: Duration = Duration::from_secs(6);
@@ -89,12 +125,118 @@ fn prerequisites() -> Option<SingBox> {
         .output()
         .is_ok_and(|o| o.status.success());
     match (SingBox::find(), openssl) {
-        (Some(sb), true) => Some(sb),
+        (Some(sb), true) => {
+            // sing-box and openssl are present, so this is a real run, not
+            // an environment that should be silently skipped. From here on
+            // a missing capability (no sudo, no CAP_NET_ADMIN) must panic,
+            // not skip — see the module doc and `DummyInterfaceGuard`.
+            dummy_net();
+            Some(sb)
+        }
         _ if required => panic!("two-hop system tests require sing-box and openssl"),
         _ => {
             eprintln!("skipping: sing-box and/or openssl not available");
             None
         }
+    }
+}
+
+/// Process-wide dummy interface, created once and reused by every test in
+/// this binary (`SERIAL` already forces the `Lab`-based tests to run one at
+/// a time; `harness_readiness_is_owned_by_the_started_process` also needs
+/// `EXIT_IP` bindable and doesn't go through `Lab` at all, so this can't
+/// live on `Lab` alone).
+///
+/// Note on cleanup: `OnceLock`/`static` contents are not dropped at normal
+/// process exit in Rust, so `DummyInterfaceGuard::drop` does not run here —
+/// on a GitHub Actions runner that's fine, the whole VM is destroyed after
+/// the job. `DummyInterfaceGuard` still implements `Drop` (idempotent,
+/// best-effort `ip link delete`) so a caller that owns one as a local
+/// value gets real teardown, including on an unwinding panic; it just
+/// isn't reachable through this particular process-wide static. Neither
+/// path survives a SIGKILL/process-abort, which does not unwind Rust
+/// destructors at all — that's a hard limitation, not a bug here.
+static DUMMY_NET: std::sync::OnceLock<DummyInterfaceGuard> = std::sync::OnceLock::new();
+
+fn dummy_net() -> &'static DummyInterfaceGuard {
+    DUMMY_NET.get_or_init(|| {
+        DummyInterfaceGuard::setup(
+            DUMMY_IFACE,
+            &[RELAY_IP, EXIT_IP, TARGET_IP, UNDECLARED_IP, CLIENT_IP],
+        )
+    })
+}
+
+/// Owns a Linux dummy network interface carrying this suite's non-loopback
+/// test addresses as host routes (`ip addr add <addr>/32 dev <iface>`).
+/// Setup requires `CAP_NET_ADMIN` via passwordless `sudo`; failure panics
+/// (see `prerequisites()`) rather than skipping, so a misconfigured
+/// environment is loud, not silently green.
+struct DummyInterfaceGuard {
+    name: String,
+}
+
+impl DummyInterfaceGuard {
+    fn setup(name: &str, addrs: &[&str]) -> DummyInterfaceGuard {
+        let run = |args: &[&str]| -> std::process::Output {
+            std::process::Command::new("sudo")
+                .arg("-n") // never block on an interactive password prompt
+                .args(args)
+                .output()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "two-hop system tests need passwordless `sudo ip ...` \
+                         (CAP_NET_ADMIN) to create the dummy test interface \
+                         {name:?} (args={args:?}), and could not even run \
+                         sudo: {e}"
+                    )
+                })
+        };
+
+        // Best-effort removal of a leftover interface from a prior killed
+        // run; a clean environment has nothing to remove here.
+        let _ = run(&["ip", "link", "delete", name]);
+
+        let add = run(&["ip", "link", "add", name, "type", "dummy"]);
+        assert!(
+            add.status.success(),
+            "failed to create dummy interface {name} (need CAP_NET_ADMIN via \
+             passwordless sudo): {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+        let guard = DummyInterfaceGuard {
+            name: name.to_string(),
+        };
+
+        let up = run(&["ip", "link", "set", name, "up"]);
+        assert!(
+            up.status.success(),
+            "failed to bring up dummy interface {name}: {}",
+            String::from_utf8_lossy(&up.stderr)
+        );
+
+        for addr in addrs {
+            let cidr = format!("{addr}/32");
+            let out = run(&["ip", "addr", "add", &cidr, "dev", name]);
+            assert!(
+                out.status.success(),
+                "failed to assign {addr} to dummy interface {name}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        guard
+    }
+}
+
+impl Drop for DummyInterfaceGuard {
+    fn drop(&mut self) {
+        // Best-effort: nothing sensible to do if this fails, and the
+        // interface is routeless test-only state, never anything a
+        // production host depends on.
+        let _ = std::process::Command::new("sudo")
+            .args(["-n", "ip", "link", "delete", &self.name])
+            .output();
     }
 }
 
@@ -466,7 +608,24 @@ fn user(id: &str, relay_uuid: &str, exit_uuid: Option<&str>) -> CompatUser {
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials,
+        is_reserved_probe: false,
     }
+}
+
+/// A reserved-probe principal (spec C-16 "Exceptions" / NEW-01): the ONLY
+/// kind of user `render_server_config_for_deployment`'s loopback self-test
+/// exception rule (server.rs, `auth_user: probe_ids`) ever exempts. An
+/// ordinary customer's `first_hop_only_client` connection is correctly
+/// `reject`ed when it targets the relay's own loopback subscription port —
+/// that IS C-16 working as designed, not a bug — so any scenario that wants
+/// to prove "the authenticated first-hop tunnel is alive" via that loopback
+/// destination must authenticate as this principal instead of the ordinary
+/// `relay_user`, and this principal must actually be applied to the relay
+/// alongside whatever ordinary user the scenario is testing.
+fn probe_user(id: &str, relay_uuid: &str) -> CompatUser {
+    let mut u = user(id, relay_uuid, None);
+    u.is_reserved_probe = true;
+    u
 }
 
 // ----------------------------------------------------------------------
@@ -484,6 +643,12 @@ struct Lab {
     relay_user: CompatUser,
     /// Credential B lives here: issued by the exit for the same person.
     exit_user: CompatUser,
+    /// Reserved-probe principal, applied to the relay alongside
+    /// `relay_user` so the loopback self-test exception rule exists.
+    /// Authenticate with this identity (never `relay_user`'s) when
+    /// checking "the tunnel to the relay's own loopback is alive" — see
+    /// `probe_user()`'s doc comment.
+    probe_user: CompatUser,
     /// In front of the exit; both declared peers point at it.
     exit_tap: Tap,
     clients: Vec<Proc>,
@@ -500,6 +665,7 @@ impl Lab {
             undeclared: spawn_http_target(&format!("{UNDECLARED_IP}:0")),
             relay_user: user("alice", &uuid(0xa1), Some(&uuid(0xb1))),
             exit_user: user("alice-at-exit", &uuid(0xb1), None),
+            probe_user: probe_user("probe", &uuid(0xd1)),
             exit_tap: spawn_tcp_tap(EXIT_IP, exit.reality_port),
             exit,
             relay,
@@ -513,7 +679,7 @@ impl Lab {
             .apply(&lab.sb, std::slice::from_ref(&lab.exit_user))
             .unwrap();
         lab.relay
-            .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
+            .apply(&lab.sb, &[lab.relay_user.clone(), lab.probe_user.clone()])
             .unwrap();
         lab.exit.start(&lab.sb);
         lab.relay.start(&lab.sb);
@@ -776,11 +942,18 @@ fn s02_relay_route_client_relay_exit_target() {
 fn s03_relay_is_not_an_internet_exit() {
     let (mut lab, _serial) = lab!();
     let control = lab.selftest_target_on_relay_loopback();
-    let socks = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
+    // The control check proves the RELAY (not just this test's HTTP
+    // fixtures) is up and authenticating first-hop connections, using the
+    // one identity C-16's loopback self-test exception actually exempts
+    // (`probe_user`) — an ordinary customer, `relay_user` included, is
+    // correctly `reject`ed here by design; using it for the control check
+    // would prove nothing about liveness, only re-demonstrate C-16.
+    let probe_socks = lab.first_hop_only_client(&lab.probe_user.vless_uuid.clone());
     assert!(
-        reaches(socks, "127.0.0.1", control.port),
-        "control: the authenticated first-hop tunnel is alive"
+        reaches(probe_socks, "127.0.0.1", control.port),
+        "control: the relay is up and authenticating (reserved-probe identity)"
     );
+    let socks = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
     let before = lab.target.hits() + lab.undeclared.hits();
     assert!(
         refused(socks, TARGET_IP, lab.target.port),
@@ -820,11 +993,21 @@ fn s05_wrong_exit_credential_fails_after_reaching_the_relay() {
     );
     assert_eq!(lab.target.hits(), 0);
 
+    // The relay-facing outbound uuid above is untouched by
+    // `set_outbound_uuid` (only the VIA_TAG/exit-facing one was corrupted),
+    // so `via_socks`'s refusal already proves the first hop authenticated
+    // fine and the exit is what rejected it. This control check adds
+    // independent proof the relay itself is up (not merely that this
+    // test's own HTTP fixtures are): it must use the reserved-probe
+    // identity, the only one C-16's loopback self-test exception exempts
+    // — `relay_user` is correctly `reject`ed at that same destination by
+    // design (see `probe_user`'s doc comment), which is not evidence of
+    // anything relay-liveness-related.
     let control = lab.selftest_target_on_relay_loopback();
-    let first_hop = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
+    let probe_first_hop = lab.first_hop_only_client(&lab.probe_user.vless_uuid.clone());
     assert!(
-        reaches(first_hop, "127.0.0.1", control.port),
-        "S5: the relay itself accepted the same first-hop credential"
+        reaches(probe_first_hop, "127.0.0.1", control.port),
+        "S5: the relay itself is up and authenticating (reserved-probe identity)"
     );
 }
 
@@ -1080,9 +1263,22 @@ fn s12_unpaired_relay_cannot_reach_anything_as_an_exit() {
     lab.write_relay_deployment(false);
     let doc = lab
         .relay
-        .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
+        .apply(&lab.sb, &[lab.relay_user.clone(), lab.probe_user.clone()])
         .unwrap();
-    assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 2);
+    // The loopback self-test exception rule + the 3 probe-confinement
+    // rules (`apply_probe_user_confinement`: allow 1.1.1.1:443, allow
+    // gstatic/icanhazip:443, reject everything else for that identity) +
+    // the trailing reject-all: no peer_endpoints means `relay_targets()`
+    // is empty, but `lab.probe_user` (`is_reserved_probe: true`) IS
+    // applied here specifically so the control check below has an
+    // identity C-16 actually exempts at the loopback subscription port —
+    // an ordinary customer, `relay_user` included, is correctly
+    // `reject`ed there by design (see `probe_user`'s doc comment).
+    assert_eq!(
+        doc["route"]["rules"].as_array().unwrap().len(),
+        5,
+        "loopback self-test exception + 3 probe-confinement rules + reject"
+    );
     lab.relay.start(&lab.sb);
     assert!(matches!(
         lab.provisioned_config(&lab.relay_user.clone()),
@@ -1090,11 +1286,12 @@ fn s12_unpaired_relay_cannot_reach_anything_as_an_exit() {
     ));
 
     let control = lab.selftest_target_on_relay_loopback();
-    let socks = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
+    let probe_socks = lab.first_hop_only_client(&lab.probe_user.vless_uuid.clone());
     assert!(
-        reaches(socks, "127.0.0.1", control.port),
-        "control: tunnel alive"
+        reaches(probe_socks, "127.0.0.1", control.port),
+        "control: tunnel alive (reserved-probe identity)"
     );
+    let socks = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
     assert!(
         refused(socks, TARGET_IP, lab.target.port),
         "S12: generic target"
@@ -1165,10 +1362,13 @@ credential_ref = "named-direct"
         .relay
         .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
         .unwrap();
+    // 2 exits (de1-via-ru1 and named-via, deduped by host:port) + reject.
+    // No `is_reserved_probe` user exists in this suite, so the loopback
+    // self-test exception rule never applies here.
     assert_eq!(
         doc["route"]["rules"].as_array().unwrap().len(),
-        4,
-        "self-test + 2 exits + reject"
+        3,
+        "2 exits + reject"
     );
     lab.relay.start(&lab.sb);
 
@@ -1206,10 +1406,13 @@ fn s14_reload_and_repair_preserve_role_and_restrictions() {
         migrate_deployment_toml(&lab.relay.deployment_path).unwrap(),
         compat_config::deployment::DeploymentMigrationOutcome::AlreadyCurrent
     );
+    // `before` was captured from `Lab::start()`'s own apply, which
+    // includes `probe_user` alongside `relay_user` — reapply with the
+    // same pair here, or this is not actually an idempotence check.
     for _ in 0..2 {
         let doc = lab
             .relay
-            .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
+            .apply(&lab.sb, &[lab.relay_user.clone(), lab.probe_user.clone()])
             .unwrap();
         assert_eq!(
             doc["route"]["rules"].as_array().unwrap().last().unwrap()["action"],
@@ -1236,7 +1439,10 @@ fn s14_reload_and_repair_preserve_role_and_restrictions() {
     ));
     let migrated = lab.relay.deployment();
     assert_eq!(migrated.role, NodeRole::Relay);
-    assert_eq!(migrated.node_id, "127");
+    // Default node_id is the first dot-segment of public_host
+    // (`default_node_id_for_host`) — RELAY_IP's first octet, not the old
+    // loopback scheme's "127".
+    assert_eq!(migrated.node_id, RELAY_IP.split('.').next().unwrap());
     lab.relay
         .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
         .unwrap();

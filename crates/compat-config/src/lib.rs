@@ -15,6 +15,7 @@ pub mod ownership;
 pub mod render;
 pub mod secret;
 pub mod server;
+pub mod static_revision;
 pub mod store;
 
 pub use model::{

@@ -63,6 +63,14 @@ pub struct AgentConfig {
     /// restarts so expiry/rotation continues across them.
     #[serde(default = "default_lease_state_file")]
     pub lease_state_file: String,
+    /// Where the node persists pending job /complete and /fail reports
+    /// (0600) that have not yet been acknowledged by the Worker. This
+    /// queue is drained by an independent background task (see
+    /// `report_queue.rs`) so a wedged Worker endpoint never blocks
+    /// heartbeat, health probe, next-job poll, or lease expiry
+    /// enforcement (Phase 8). Survives agent restarts.
+    #[serde(default = "default_report_queue_file")]
+    pub report_queue_file: String,
     /// Rotation batch window, seconds (clamped 60..=3600). Every slot's
     /// valid_until lies on this grid; non-urgent rotations (each of which
     /// restarts sing-box and drops every open connection on the node) are
@@ -79,6 +87,16 @@ pub struct AgentConfig {
     /// peers and self). Absent disables it entirely.
     #[serde(default)]
     pub protocol_probe: Option<ProtocolProbeConfig>,
+    /// Where the node persists its operation-id dedup log (0600). A4
+    /// (Batch 5): if the same job (identified by the Worker's `job.id`)
+    /// is claimed and applied twice — e.g. because the agent restarted
+    /// between mutating state and reporting completion, and the Worker
+    /// re-delivered the same job — this file lets the second application
+    /// converge to the previously recorded outcome instead of re-running
+    /// vpn-admin. See `op_dedup.rs`. Survives agent restarts, same as
+    /// `lease_state_file`/`report_queue_file`.
+    #[serde(default = "default_op_dedup_file")]
+    pub op_dedup_file: String,
 }
 
 fn default_rotation_batch_interval_secs() -> u64 {
@@ -86,7 +104,11 @@ fn default_rotation_batch_interval_secs() -> u64 {
 }
 
 fn default_lease_pool_size() -> usize {
-    32
+    // Fail safe: unmanaged/self-host nodes must not synthesize lease users
+    // (and restart sing-box to rotate them) merely because the setting was
+    // omitted. Fleet bootstrap opts in explicitly when managed leases are
+    // actually enabled for the node.
+    0
 }
 
 fn default_lease_slot_lifetime_secs() -> u64 {
@@ -95,6 +117,14 @@ fn default_lease_slot_lifetime_secs() -> u64 {
 
 fn default_lease_state_file() -> String {
     "/var/lib/vpn-provisioning-agent/lease-pool.json".to_string()
+}
+
+fn default_report_queue_file() -> String {
+    "/var/lib/vpn-provisioning-agent/report-queue.json".to_string()
+}
+
+fn default_op_dedup_file() -> String {
+    "/var/lib/vpn-provisioning-agent/op-dedup.json".to_string()
 }
 
 /// `[protocol_probe]` — see `protocol_probe.rs` for what each dimension
@@ -174,6 +204,8 @@ impl std::fmt::Debug for AgentConfig {
             .field("lease_pool_size", &self.lease_pool_size)
             .field("lease_slot_lifetime_secs", &self.lease_slot_lifetime_secs)
             .field("lease_state_file", &self.lease_state_file)
+            .field("report_queue_file", &self.report_queue_file)
+            .field("op_dedup_file", &self.op_dedup_file)
             .field(
                 "rotation_batch_interval_secs",
                 &self.rotation_batch_interval_secs,
@@ -231,6 +263,75 @@ vpn_admin_config = "/etc/vpn/deployment.toml"
         assert_eq!(
             cfg.poll_interval_secs, 3,
             "default should apply when omitted"
+        );
+        assert_eq!(
+            cfg.lease_pool_size, 0,
+            "lease pool must be opt-in; an omitted setting must not create periodic node-wide restarts (F02)"
+        );
+    }
+
+    #[test]
+    fn load_respects_an_explicit_zero_lease_pool_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            r#"
+worker_url = "http://127.0.0.1:8788"
+node_id = "node-1"
+agent_api_key = "test-key"
+vpn_admin_binary = "/usr/local/bin/vpn-admin"
+vpn_admin_config = "/etc/vpn/deployment.toml"
+lease_pool_size = 0
+"#,
+        )
+        .unwrap();
+
+        let cfg = AgentConfig::load(&path).unwrap();
+        assert_eq!(cfg.lease_pool_size, 0);
+    }
+
+    #[test]
+    fn load_respects_an_explicit_nonzero_lease_pool_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            r#"
+worker_url = "http://127.0.0.1:8788"
+node_id = "node-1"
+agent_api_key = "test-key"
+vpn_admin_binary = "/usr/local/bin/vpn-admin"
+vpn_admin_config = "/etc/vpn/deployment.toml"
+lease_pool_size = 16
+"#,
+        )
+        .unwrap();
+
+        let cfg = AgentConfig::load(&path).unwrap();
+        assert_eq!(cfg.lease_pool_size, 16);
+    }
+
+    #[test]
+    fn load_rejects_a_non_numeric_lease_pool_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            r#"
+worker_url = "http://127.0.0.1:8788"
+node_id = "node-1"
+agent_api_key = "test-key"
+vpn_admin_binary = "/usr/local/bin/vpn-admin"
+vpn_admin_config = "/etc/vpn/deployment.toml"
+lease_pool_size = "not-a-number"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            AgentConfig::load(&path).is_err(),
+            "an invalid lease_pool_size must not silently coerce to a default"
         );
     }
 

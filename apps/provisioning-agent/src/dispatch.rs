@@ -105,21 +105,16 @@ async fn apply_node_revision(cfg: &AgentConfig, client: &WorkerClient, job: &Job
             .context("restricting permissions on the fetched revision document")?;
     }
 
-    let output = tokio::time::timeout(
-        VPN_ADMIN_TIMEOUT,
-        vpn_admin_command(cfg)
-            .args([
-                "apply-revision",
-                "--revision",
-                &revision.to_string(),
-                "--input",
-            ])
-            .arg(&input_path)
-            .output(),
-    )
-    .await
-    .context("vpn-admin command timed out after 60s")?
-    .context("spawning vpn-admin apply-revision")?;
+    let mut command = vpn_admin_command(cfg);
+    command
+        .args([
+            "apply-revision",
+            "--revision",
+            &revision.to_string(),
+            "--input",
+        ])
+        .arg(&input_path);
+    let output = run_vpn_admin(command, VPN_ADMIN_TIMEOUT, "vpn-admin apply-revision").await?;
     require_success(&output, "apply-revision")?;
     Ok(serde_json::json!({ "revision": revision }))
 }
@@ -131,6 +126,103 @@ pub(crate) fn vpn_admin_command(cfg: &AgentConfig) -> Command {
     let mut cmd = Command::new(&cfg.vpn_admin_binary);
     cmd.arg("--config").arg(&cfg.vpn_admin_config);
     cmd
+}
+
+/// Spawns `command`, waits up to `timeout` for it to exit, and returns its
+/// captured output.
+///
+/// This is the ONLY place a vpn-admin child is spawned. Every call site
+/// used to do `tokio::time::timeout(dur, command.output()).await`, which
+/// on timeout just drops the `Output` future — the underlying
+/// `tokio::process::Child` was never given `kill_on_drop`, so on timeout
+/// the vpn-admin process (and anything it had spawned) kept running in
+/// the background, unsupervised, and could still mutate node state
+/// *after* the agent had already reported the job as failed. That is the
+/// bug this function fixes: on timeout it terminates the whole process
+/// group and reaps it before returning, so a caller that sees an `Err`
+/// here has a proof, not just a hope, that nothing further will happen.
+async fn run_vpn_admin(
+    mut command: Command,
+    timeout: Duration,
+    context: &str,
+) -> Result<std::process::Output> {
+    command.stdin(std::process::Stdio::null());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        // New process group (pgid = pid): lets a timeout kill vpn-admin
+        // *and* any descendant it spawned, not just the direct child.
+        command.process_group(0);
+    }
+
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("spawning {context}"))?;
+
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(status) => {
+            let status = status.with_context(|| format!("waiting for {context}"))?;
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            if let Some(mut out) = child.stdout.take() {
+                use tokio::io::AsyncReadExt;
+                let _ = out.read_to_end(&mut stdout).await;
+            }
+            if let Some(mut err) = child.stderr.take() {
+                use tokio::io::AsyncReadExt;
+                let _ = err.read_to_end(&mut stderr).await;
+            }
+            Ok(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            })
+        }
+        Err(_) => {
+            terminate_child(&mut child).await;
+            bail!("{context} timed out after {timeout:?} and was terminated");
+        }
+    }
+}
+
+/// Terminates a timed-out child (and, on Unix, its whole process group)
+/// and blocks until it has been reaped, so the caller can rely on the
+/// process being dead — not merely signalled — once this returns.
+#[cfg(unix)]
+async fn terminate_child(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        // SAFETY: `pid` is this child's own pid, and it was spawned with
+        // `process_group(0)` so its pgid equals its pid. `killpg` with a
+        // valid, still-referenced pgid has no memory-safety implications.
+        let rc = unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            // ESRCH just means it had already exited between the timeout
+            // firing and us getting here; anything else is worth logging.
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                tracing::warn!(pid, error = %err, "killpg on timed-out vpn-admin child failed");
+            }
+        }
+    }
+    // Reap so the process never lingers as a zombie. SIGKILL is
+    // unblockable, so this should resolve almost immediately; the bound
+    // is just so a pathological wait() can't wedge the agent forever.
+    if tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .is_err()
+    {
+        tracing::error!(
+            pid = child.id(),
+            "timed-out vpn-admin child did not reap within 5s of SIGKILL"
+        );
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminate_child(child: &mut tokio::process::Child) {
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 fn payload_str<'a>(job: &'a Job, key: &str) -> Result<&'a str> {
@@ -180,10 +272,7 @@ async fn create_user(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     }
     command.arg("--json");
 
-    let output = tokio::time::timeout(VPN_ADMIN_TIMEOUT, command.output())
-        .await
-        .context("vpn-admin command timed out after 60s")?
-        .context("spawning vpn-admin user create")?;
+    let output = run_vpn_admin(command, VPN_ADMIN_TIMEOUT, "vpn-admin user create").await?;
     let parsed = parse_json_output(&output, "user create")?;
 
     let vpn_user_id = parsed
@@ -214,21 +303,15 @@ async fn set_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     let vpn_user_id = payload_str(job, "vpn_user_id")?;
     let expires_at = payload_expires_at_unix(job)?;
 
-    let output = tokio::time::timeout(
-        VPN_ADMIN_TIMEOUT,
-        vpn_admin_command(cfg)
-            .args([
-                "user",
-                "set-expiry",
-                vpn_user_id,
-                "--expires-at",
-                &expires_at.to_string(),
-            ])
-            .output(),
-    )
-    .await
-    .context("vpn-admin command timed out after 60s")?
-    .context("spawning vpn-admin user set-expiry")?;
+    let mut command = vpn_admin_command(cfg);
+    command.args([
+        "user",
+        "set-expiry",
+        vpn_user_id,
+        "--expires-at",
+        &expires_at.to_string(),
+    ]);
+    let output = run_vpn_admin(command, VPN_ADMIN_TIMEOUT, "vpn-admin user set-expiry").await?;
     require_success(&output, "user set-expiry")?;
     Ok(serde_json::json!({}))
 }
@@ -236,15 +319,9 @@ async fn set_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
 async fn clear_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     let vpn_user_id = payload_str(job, "vpn_user_id")?;
 
-    let output = tokio::time::timeout(
-        VPN_ADMIN_TIMEOUT,
-        vpn_admin_command(cfg)
-            .args(["user", "clear-expiry", vpn_user_id])
-            .output(),
-    )
-    .await
-    .context("vpn-admin command timed out after 60s")?
-    .context("spawning vpn-admin user clear-expiry")?;
+    let mut command = vpn_admin_command(cfg);
+    command.args(["user", "clear-expiry", vpn_user_id]);
+    let output = run_vpn_admin(command, VPN_ADMIN_TIMEOUT, "vpn-admin user clear-expiry").await?;
     require_success(&output, "user clear-expiry")?;
     Ok(serde_json::json!({}))
 }
@@ -252,15 +329,14 @@ async fn clear_expiry(cfg: &AgentConfig, job: &Job) -> Result<Value> {
 async fn rotate_credentials(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     let vpn_user_id = payload_str(job, "vpn_user_id")?;
 
-    let output = tokio::time::timeout(
+    let mut command = vpn_admin_command(cfg);
+    command.args(["user", "rotate-credentials", vpn_user_id]);
+    let output = run_vpn_admin(
+        command,
         VPN_ADMIN_TIMEOUT,
-        vpn_admin_command(cfg)
-            .args(["user", "rotate-credentials", vpn_user_id])
-            .output(),
+        "vpn-admin user rotate-credentials",
     )
-    .await
-    .context("vpn-admin command timed out after 60s")?
-    .context("spawning vpn-admin user rotate-credentials")?;
+    .await?;
     require_success(&output, "user rotate-credentials")?;
     Ok(serde_json::json!({}))
 }
@@ -268,15 +344,14 @@ async fn rotate_credentials(cfg: &AgentConfig, job: &Job) -> Result<Value> {
 async fn enable_or_disable(cfg: &AgentConfig, job: &Job, subcommand: &str) -> Result<Value> {
     let vpn_user_id = payload_str(job, "vpn_user_id")?;
 
-    let output = tokio::time::timeout(
+    let mut command = vpn_admin_command(cfg);
+    command.args(["user", subcommand, vpn_user_id]);
+    let output = run_vpn_admin(
+        command,
         VPN_ADMIN_TIMEOUT,
-        vpn_admin_command(cfg)
-            .args(["user", subcommand, vpn_user_id])
-            .output(),
+        &format!("vpn-admin user {subcommand}"),
     )
-    .await
-    .context("vpn-admin command timed out after 60s")?
-    .with_context(|| format!("spawning vpn-admin user {subcommand}"))?;
+    .await?;
     require_success(&output, &format!("user {subcommand}"))?;
     Ok(serde_json::json!({}))
 }
@@ -284,15 +359,9 @@ async fn enable_or_disable(cfg: &AgentConfig, job: &Job, subcommand: &str) -> Re
 async fn rotate_token(cfg: &AgentConfig, job: &Job) -> Result<Value> {
     let vpn_user_id = payload_str(job, "vpn_user_id")?;
 
-    let output = tokio::time::timeout(
-        VPN_ADMIN_TIMEOUT,
-        vpn_admin_command(cfg)
-            .args(["user", "rotate-token", vpn_user_id, "--json"])
-            .output(),
-    )
-    .await
-    .context("vpn-admin command timed out after 60s")?
-    .context("spawning vpn-admin user rotate-token")?;
+    let mut command = vpn_admin_command(cfg);
+    command.args(["user", "rotate-token", vpn_user_id, "--json"]);
+    let output = run_vpn_admin(command, VPN_ADMIN_TIMEOUT, "vpn-admin user rotate-token").await?;
     let parsed = parse_json_output(&output, "user rotate-token")?;
 
     let subscription_url = parsed
@@ -345,6 +414,49 @@ mod tests {
     use crate::worker_client::Job;
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+
+    /// Phase 9 regression test (F0x: timed-out vpn-admin child mutates
+    /// state after the agent already reported failure). Spawns a synthetic
+    /// shell "operation" that sleeps well past the timeout and then
+    /// touches a marker file — a stand-in for a real vpn-admin state
+    /// mutation. Proves two things the pre-fix code could not: (1) the
+    /// child is actually killed, not just abandoned, and (2) it stays
+    /// dead — checked again after its original sleep would have elapsed,
+    /// so a merely-abandoned-future bug (child kept running in the
+    /// background) cannot pass this test by accident.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_kills_the_child_before_it_can_mutate_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("mutated");
+        let marker_str = marker.to_string_lossy().to_string();
+
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(format!("sleep 2 && touch '{marker_str}'"));
+
+        let result = run_vpn_admin(command, Duration::from_millis(200), "synthetic op").await;
+        assert!(
+            result.is_err(),
+            "expected the timeout to surface as an error"
+        );
+        assert!(
+            !marker.exists(),
+            "child must not have mutated state immediately after the timeout fires"
+        );
+
+        // Wait past the child's original sleep. If the fix only dropped an
+        // abandoned future (the pre-fix bug) instead of actually killing
+        // the process group, the shell would still be alive here and
+        // would create the marker once its sleep elapsed.
+        tokio::time::sleep(Duration::from_millis(2300)).await;
+        assert!(
+            !marker.exists(),
+            "child must still be dead well after its original sleep duration \
+             (proves termination, not merely an abandoned future)"
+        );
+    }
 
     fn job(job_type: &str, payload: Value) -> Job {
         Job {

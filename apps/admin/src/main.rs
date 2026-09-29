@@ -9,6 +9,7 @@
 mod lease_pool;
 mod lock;
 mod service;
+mod static_apply;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -218,6 +219,13 @@ enum Commands {
     /// candidate cannot be rendered, validated, or reloaded live. Only on
     /// success is the revision number stamped locally so the next
     /// heartbeat can report `observed_revision`.
+    ///
+    /// A document of the form `{"revision_schema":1,"static_config":{..}}`
+    /// is instead a STATIC-config revision: an allowlisted change to
+    /// `deployment.toml` applied atomically with rollback, leaving
+    /// `users.json` untouched (see `compat_config::static_revision` and
+    /// `static_apply.rs`). Both kinds share the same monotonic revision
+    /// stamp.
     ApplyRevision {
         /// The revision number being applied (vpn-web's `nodes` table
         /// tracks this per-node as `desired_revision`/`observed_revision`).
@@ -435,6 +443,27 @@ enum UserCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Idempotently ensure a RESERVED INTERNAL PROBE PRINCIPAL exists
+    /// (spec C-16 "Exceptions"): `--name` must be
+    /// [`compat_config::model::PROBE_USER_NAME`] or
+    /// [`compat_config::model::RESERVED_SELFTEST_USER_NAME`] (defaults to
+    /// the latter, the on-node self-test principal, when omitted).
+    ///
+    /// This is structurally different from `user create`: the returned
+    /// record has `is_reserved_probe: true`, which is the ONLY thing
+    /// `server.rs` confinement and `user list` hiding key off — never the
+    /// name. Re-running this with the same name reuses the existing
+    /// reserved-probe record for that name (safe to call on every
+    /// install/update); it never creates a duplicate, and it never
+    /// "adopts" a pre-existing ordinary customer of that name — if a
+    /// non-reserved user already holds the name, this fails rather than
+    /// silently upgrading them.
+    CreateProbe {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     List,
     /// Print a terminal QR code encoding a user's subscription URL. The
     /// raw subscription token is never persisted (only its hash is), so
@@ -643,7 +672,9 @@ fn main() -> Result<()> {
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::Repair => cmd_repair(),
-        Commands::ApplyRevision { revision, input } => cmd_apply_revision(&cfg, revision, &input),
+        Commands::ApplyRevision { revision, input } => {
+            cmd_apply_revision(&cfg, &cli.config, revision, &input)
+        }
         Commands::RevisionStatus { json } => cmd_revision_status(&cfg, json),
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
         Commands::LeasePool(LeasePoolCommands::Sync { input }) => cmd_lease_pool_sync(&cfg, &input),
@@ -688,6 +719,9 @@ fn main() -> Result<()> {
             qr,
             json,
         }) => cmd_user_create(&cfg, &name, expires_at, qr, json),
+        Commands::User(UserCommands::CreateProbe { name, json }) => {
+            cmd_user_create_probe(&cfg, name.as_deref(), json)
+        }
         Commands::User(UserCommands::List) => cmd_user_list(&cfg),
         Commands::User(UserCommands::Qr { user_id }) => cmd_user_qr(&cfg, &user_id),
         Commands::User(UserCommands::Links { user_id, qr }) => cmd_user_links(&cfg, &user_id, qr),
@@ -1977,7 +2011,7 @@ fn render_and_apply_singbox_config(
                      REALITY keyset; run `vpn-admin init` first",
                 );
             }
-            println!("warning: skipping sing-box config render/apply: {e}");
+            eprintln!("warning: skipping sing-box config render/apply: {e}");
             return Ok(false);
         }
     };
@@ -1997,7 +2031,7 @@ fn render_and_apply_singbox_config(
                 cfg.singbox_binary
             );
         }
-        println!(
+        eprintln!(
             "warning: {:?} not found; wrote nothing. Install sing-box, then run `vpn-admin render-config`.",
             cfg.singbox_binary
         );
@@ -2023,16 +2057,16 @@ fn render_and_apply_singbox_config(
     let applied_stamp_matches = std::fs::read_to_string(applied_config_stamp_path(&target))
         .is_ok_and(|stamp| stamp.trim() == candidate_fingerprint);
     if target_already_matches && applied_stamp_matches && service_available && mgr.is_active() {
-        println!("sing-box authorization config is already current; no reload needed.");
+        eprintln!("sing-box authorization config is already current; no reload needed.");
         return Ok(true);
     }
 
     apply_config_atomically(&doc, &target, |p| backend.validate(p))
         .context("applying sing-box config")?;
-    println!("sing-box config updated at {target:?} (validated by `sing-box check`).");
+    eprintln!("sing-box config updated at {target:?} (validated by `sing-box check`).");
 
     if !mgr.is_available() {
-        println!(
+        eprintln!(
             "warning: systemctl not available; config written but sing-box was NOT reloaded. \
              On a real deployment this means the change has not taken effect yet — run \
              `systemctl reload-or-restart sing-box` manually."
@@ -2040,7 +2074,7 @@ fn render_and_apply_singbox_config(
         return Ok(false);
     }
     if !mgr.is_unit_installed() {
-        println!(
+        eprintln!(
             "warning: sing-box.service is not installed on this host (expected in CI/local \
              dev); config written but not reloaded. On a real deployment this means the \
              change has not taken effect yet — run `deploy/almalinux/install.sh` (or \
@@ -2076,7 +2110,7 @@ fn render_and_apply_singbox_config(
     // `render_config_repeated_timer_execution_is_idempotent`
     // (apps/admin/tests/cli.rs) hold as a regression.
     let active_now = users.iter().filter(|u| u.is_active(now)).count();
-    println!(
+    eprintln!(
         "reloading sing-box ({active_now} active user(s) in the new config) — this is a full \
          restart (sing-box has no in-place reload), so all currently connected clients will be \
          briefly disconnected."
@@ -2602,10 +2636,10 @@ impl MachineStdout {
     }
 
     fn write_document(mut self, document: &serde_json::Value) -> Result<()> {
-        use std::io::Write;
         let text = serde_json::to_string_pretty(document)?;
         #[cfg(unix)]
         {
+            use std::io::Write;
             std::io::stdout()
                 .flush()
                 .context("flushing diverted output")?;
@@ -2655,6 +2689,7 @@ fn cmd_user_create(
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
+        is_reserved_probe: false,
     };
     users.push(user);
     apply_users_and_save(cfg, &previous_users, &users)?;
@@ -2801,6 +2836,103 @@ fn cmd_user_create(
     Ok(())
 }
 
+/// Idempotently ensures a RESERVED INTERNAL PROBE PRINCIPAL exists (spec
+/// C-16 "Exceptions") — see `UserCommands::CreateProbe`'s doc comment.
+///
+/// Unlike `cmd_user_create`, this:
+/// - only accepts the two reserved names
+///   ([`compat_config::model::PROBE_USER_NAME`] /
+///   [`compat_config::model::RESERVED_SELFTEST_USER_NAME`]);
+/// - sets `is_reserved_probe: true`, the structural flag `server.rs`
+///   confinement and `user list` hiding actually key off;
+/// - is idempotent: an existing record with that name AND
+///   `is_reserved_probe: true` is reused unchanged (no new id, no
+///   credential rotation, safe to call on every install/update, so
+///   `install.sh`/`update.sh` can call it unconditionally);
+/// - refuses (does not silently upgrade) if a record with that name
+///   already exists but is an ordinary user — a historical customer
+///   named `arcana-probe` is never promoted into the reserved principal
+///   by this call.
+fn cmd_user_create_probe(cfg: &DeploymentConfig, name: Option<&str>, json: bool) -> Result<()> {
+    let name = name.unwrap_or(compat_config::model::RESERVED_SELFTEST_USER_NAME);
+    if name != compat_config::model::PROBE_USER_NAME
+        && name != compat_config::model::RESERVED_SELFTEST_USER_NAME
+    {
+        bail!(
+            "--name must be {:?} or {:?}: those are the only reserved internal probe principals",
+            compat_config::model::PROBE_USER_NAME,
+            compat_config::model::RESERVED_SELFTEST_USER_NAME
+        );
+    }
+    let machine_stdout = if json {
+        Some(MachineStdout::divert_human_output_to_stderr()?)
+    } else {
+        None
+    };
+    let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
+
+    if let Some(existing) = users.iter().find(|u| u.name == name) {
+        if !existing.is_reserved_probe {
+            bail!(
+                "a user named {name:?} already exists and is NOT a reserved probe principal — \
+                 refusing to silently upgrade it. Rename/remove that user first if this name \
+                 must become the reserved probe."
+            );
+        }
+        let id = existing.id.clone();
+        if let Some(machine_stdout) = machine_stdout {
+            return machine_stdout.write_document(&serde_json::json!({
+                "id": id,
+                "name": name,
+                "is_reserved_probe": true,
+                "created": false,
+            }));
+        }
+        println!("Reserved probe user {name:?} already exists (id {id}); reused unchanged.");
+        return Ok(());
+    }
+
+    let mut id = credentials::generate_user_id();
+    while users.iter().any(|u| u.id == id) {
+        id = credentials::generate_user_id();
+    }
+    let token = credentials::generate_subscription_token();
+    let user = CompatUser {
+        id: id.clone(),
+        name: name.to_string(),
+        enabled: true,
+        vless_uuid: credentials::generate_uuid_v4(),
+        hysteria2_password: SecretString::new(credentials::generate_hysteria2_password()),
+        subscription_token_hash_hex: credentials::hash_token(&token),
+        created_at: UnixSeconds::now().0 as i64,
+        // Never expires on its own — this is node-local infrastructure,
+        // not a customer subscription.
+        expires_at: None,
+        vision_off_experiment: false,
+        google_egress_hairpin: false,
+        peer_credentials: Default::default(),
+        is_reserved_probe: true,
+    };
+    users.push(user);
+    apply_users_and_save(cfg, &previous_users, &users)?;
+
+    if let Some(machine_stdout) = machine_stdout {
+        return machine_stdout.write_document(&serde_json::json!({
+            "id": id,
+            "name": name,
+            "is_reserved_probe": true,
+            "created": true,
+        }));
+    }
+    println!("Reserved probe user {name:?} created (id {id}).");
+    println!(
+        "This principal is hidden from `user list`, never published in any subscription \
+         document, and confined by the server to exact probe/health targets only."
+    );
+    Ok(())
+}
+
 fn cmd_lease_pool_sync(cfg: &DeploymentConfig, input: &std::path::Path) -> Result<()> {
     let machine_stdout = MachineStdout::divert_human_output_to_stderr()?;
     let text = std::fs::read_to_string(input)
@@ -2831,7 +2963,12 @@ fn cmd_lease_pool_sync(cfg: &DeploymentConfig, input: &std::path::Path) -> Resul
 fn cmd_user_list(cfg: &DeploymentConfig) -> Result<()> {
     let users = store::load_users(&cfg.users_file())?;
     println!("{:<20} {:<16} {:<8}", "ID", "NAME", "ENABLED");
-    for u in &users {
+    // Reserved internal probe principals are node-local infrastructure,
+    // not customer/operator-visible accounts — hidden here structurally
+    // (is_reserved_probe), never by name. Still fully manageable via
+    // `user create-probe` (idempotent) and visible to anything that
+    // reads users.json directly (e.g. `doctor`).
+    for u in users.iter().filter(|u| !u.is_reserved_probe) {
         println!(
             "{:<20} {:<16} {:<8}",
             u.id,
@@ -3646,6 +3783,7 @@ fn commit_applied_revision_stamp(cfg: &DeploymentConfig, revision: u64) -> Resul
 /// the revision number on success.
 fn cmd_apply_revision(
     cfg: &DeploymentConfig,
+    config_path: &std::path::Path,
     revision: u64,
     input: &std::path::Path,
 ) -> Result<()> {
@@ -3683,6 +3821,18 @@ fn cmd_apply_revision(
 
     let bytes = std::fs::read(input)
         .with_context(|| format!("reading revision {revision} document from {input:?}"))?;
+
+    // Route static-config revisions (a `{"revision_schema":..,
+    // "static_config":{..}}` envelope) to their own allowlisted, atomic
+    // apply path. The check parses the whole document regardless of size
+    // so an oversized document carrying `static_config` can never fall
+    // through to the users path (which would silently ignore that key).
+    if serde_json::from_slice::<serde_json::Value>(&bytes)
+        .is_ok_and(|doc| compat_config::static_revision::is_static_revision_document(&doc))
+    {
+        return static_apply::cmd_apply_static_revision(config_path, revision, &bytes);
+    }
+
     let candidate_users = store::parse_users_bytes(&bytes).with_context(|| {
         format!(
             "revision {revision} document at {input:?} is not a valid users-store document \
@@ -3894,8 +4044,26 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
     let probe_rules = compat_config::server::probe_confinement_rule_count(doc);
     match cfg.role {
         NodeRole::Exit => {
+            // Leading probe-confinement rules come first (see
+            // `apply_probe_user_confinement`'s doc comment on ordering),
+            // then the mandatory C-16 egress-isolation rules every exit
+            // renders unconditionally (`apply_c16_egress_policy`) — both
+            // role-independent/always-on and not evidence of a role/
+            // renderer mismatch by themselves. Skip past both before
+            // judging what remains.
+            let rules = rules.map(|rules| &rules[probe_rules..]);
+            let is_c16 = |r: &serde_json::Value| {
+                r.get("auth_user").is_none()
+                    && (r.get("action") == Some(&serde_json::json!("resolve"))
+                        || r.get("ip_cidr").is_some()
+                        || r.get("port")
+                            == Some(&serde_json::json!(compat_config::model::C16_DENY_TCP_PORT)))
+            };
+            let c16_rules = rules.map_or(0, |rules| {
+                rules.iter().take(4).take_while(|r| is_c16(r)).count()
+            });
             let rules = rules
-                .map(|rules| &rules[probe_rules..])
+                .map(|rules| &rules[c16_rules..])
                 .filter(|rules| !rules.is_empty());
             // The one legitimate exception: the Google/YouTube egress
             // hairpin (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16) adds
@@ -3925,22 +4093,44 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
             let targets = cfg.relay_targets();
             // Google-egress-hairpin rules (`CompatUser::google_egress_hairpin`)
             // add two rules each (a scoped `sniff` plus the `domain_suffix`
-            // route), both identifiable by carrying `auth_user` - a field
-            // no other rule this renderer emits uses. Counted from the
-            // document itself rather than recomputed from `users`/
+            // route), both identifiable by carrying `auth_user` together
+            // with either `action == "sniff"` or `domain_suffix` - fields
+            // no other rule this renderer emits uses together. Counted from
+            // the document itself rather than recomputed from `users`/
             // `now_unix` (not available here) so this check can never
             // drift from what the renderer actually did.
             let hairpin_rule_count = rules
                 .map(|rules| {
                     rules
                         .iter()
-                        .filter(|rule| rule.get("auth_user").is_some())
+                        .filter(|rule| {
+                            rule.get("auth_user").is_some()
+                                && (rule.get("action") == Some(&json!("sniff"))
+                                    || rule.get("domain_suffix").is_some())
+                        })
                         .count()
                 })
                 .unwrap_or(0);
+            // The reserved-probe loopback self-test exception (server.rs's
+            // `render_server_config_for_deployment`) AND `apply_probe_
+            // user_confinement`'s 3 confinement rules are conditional on
+            // at least one active reserved-probe user existing, and
+            // always travel together immediately ahead of everything
+            // else this renderer emits for a relay (same leading shape
+            // as an exit's document — see `probe_confinement_rule_count`'s
+            // doc comment). `probe_rules` (computed once above, shared
+            // with the Exit branch) already accounts for the full 0/3/4
+            // count; an earlier version of this check only ever added
+            // 0 or 1 for the loopback rule alone and silently ignored
+            // the 3 confinement rules whenever a probe user was present,
+            // wrongly FAILing a correctly fail-closed, probe-provisioned
+            // relay in real CI (`##[error]doctor did not confirm the
+            // relay policy`) — the same stale-arithmetic class of bug as
+            // the L2 exit check fixed in
+            // `docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29_ADDENDUM4.md`.
             let fail_closed = rules.is_some_and(|rules| {
                 rules.last().is_some_and(|last| last["action"] == "reject")
-                    && rules.len() == targets.len() + 2 + hairpin_rule_count
+                    && rules.len() == targets.len() + 1 + hairpin_rule_count + probe_rules
             });
             if fail_closed {
                 report_check(
@@ -6540,6 +6730,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
+        is_reserved_probe: false,
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
     // Deliberately LOCAL endpoints only (not `served_endpoints`): this
@@ -7606,7 +7797,23 @@ fn check_l5_l6_protocol_selftest(
         }
     };
     let now = UnixSeconds::now().0 as i64;
-    let Some(test_user) = users.iter().find(|user| user.is_active(now)) else {
+    // Prefer a reserved-probe identity (`vpn-admin user create-probe`)
+    // when one exists: both the relay's and (as of this fix) the exit's
+    // loopback self-test exception in `compat_config::server` are
+    // scoped exclusively to `is_reserved_probe` users — an ordinary
+    // customer user is, by design, fail-closed out of this node's own
+    // loopback subscription port by C-16 / the relay's forwarding
+    // policy. Using a non-probe user here would dial straight into that
+    // same fail-closed policy and come back INCONCLUSIVE (a silent
+    // router-level reject, not a REALITY-level one), independent of
+    // whether the node itself is healthy. Falls back to any active user
+    // so a node with no probe provisioned yet still gets a best-effort
+    // self-test rather than none at all.
+    let Some(test_user) = users
+        .iter()
+        .find(|user| user.is_active(now) && user.is_reserved_probe)
+        .or_else(|| users.iter().find(|user| user.is_active(now)))
+    else {
         report_protocol_unavailable(
             require_protocol,
             failures,

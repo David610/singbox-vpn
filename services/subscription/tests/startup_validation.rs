@@ -191,6 +191,7 @@ fn refuses_to_start_with_non_hex_short_id() {
     assert_eq!(code, Some(1), "must exit non-zero; stderr={stderr}");
 }
 
+#[cfg(unix)]
 #[test]
 fn refuses_to_start_when_hysteria_obfs_password_file_is_unreadable() {
     // docs/FINAL_PRODUCTION_AUDIT.md F-05: an unreadable-but-PRESENT
@@ -231,6 +232,7 @@ fn refuses_to_start_when_hysteria_obfs_password_file_is_unreadable() {
     );
 }
 
+#[cfg(unix)]
 unsafe fn libc_geteuid() -> u32 {
     extern "C" {
         fn geteuid() -> u32;
