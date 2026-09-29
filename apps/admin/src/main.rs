@@ -4021,8 +4021,26 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
     let probe_rules = compat_config::server::probe_confinement_rule_count(doc);
     match cfg.role {
         NodeRole::Exit => {
+            // Leading probe-confinement rules come first (see
+            // `apply_probe_user_confinement`'s doc comment on ordering),
+            // then the mandatory C-16 egress-isolation rules every exit
+            // renders unconditionally (`apply_c16_egress_policy`) — both
+            // role-independent/always-on and not evidence of a role/
+            // renderer mismatch by themselves. Skip past both before
+            // judging what remains.
+            let rules = rules.map(|rules| &rules[probe_rules..]);
+            let is_c16 = |r: &serde_json::Value| {
+                r.get("auth_user").is_none()
+                    && (r.get("action") == Some(&serde_json::json!("resolve"))
+                        || r.get("ip_cidr").is_some()
+                        || r.get("port")
+                            == Some(&serde_json::json!(compat_config::model::C16_DENY_TCP_PORT)))
+            };
+            let c16_rules = rules.map_or(0, |rules| {
+                rules.iter().take(4).take_while(|r| is_c16(r)).count()
+            });
             let rules = rules
-                .map(|rules| &rules[probe_rules..])
+                .map(|rules| &rules[c16_rules..])
                 .filter(|rules| !rules.is_empty());
             // The one legitimate exception: the Google/YouTube egress
             // hairpin (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16) adds
