@@ -304,8 +304,9 @@ pub fn c16_egress_policy_rule_count(doc: &serde_json::Value) -> usize {
 /// Confines the reserved protocol-probe user(s) (structurally flagged —
 /// [`crate::model::CompatUser::is_reserved_probe`], never name-matched)
 /// so the probe credential — whose share
-/// links are handed to peer agents — is not an open proxy. Prepends, ahead
-/// of every other rule (hairpin, relay forwarding, final reject):
+/// links are handed to peer agents — is not an open proxy. Inserts, ahead
+/// of every rule NOT already scoped to this same `auth_user` set (hairpin,
+/// relay forwarding, final reject):
 ///
 /// 1. allow `auth_user` → TCP/[`PROBE_ALLOWED_PORT`] to
 ///    [`PROBE_ALLOWED_IP_CIDRS`] via `direct`;
@@ -314,6 +315,23 @@ pub fn c16_egress_policy_rule_count(doc: &serde_json::Value) -> usize {
 ///    domain destinations via socks5h, so no sniffing is needed; a
 ///    connection to a bare IP never matches a `domain` item);
 /// 3. reject everything else for `auth_user`.
+///
+/// Rule (3) is a BLANKET reject for the probe identity, so it must never
+/// be placed ahead of a narrower rule this same function's caller already
+/// built for that identity — on a relay, `render_server_config_for_
+/// deployment` builds exactly one such rule ahead of this call: the
+/// loopback self-test exception (`auth_user: probe_ids`, scoped to the
+/// node's own subscription port), which the post-install/post-update
+/// protocol self-test depends on to prove a real first-hop handshake.
+/// Prepending (3) ahead of THAT rule, as an earlier version of this
+/// function did, silently broke that self-test in production — not just
+/// in `two_hop_system.rs`'s tests, which is how this was found — since a
+/// probe connection to the loopback subscription port would match this
+/// function's own blanket reject before ever reaching the more specific
+/// rule below it. Any existing rule whose `auth_user` is already a subset
+/// of `ids` is therefore treated as more specific than this function's
+/// own rules and kept ahead of them; everything else (not scoped to this
+/// probe identity at all) is kept behind.
 ///
 /// `auth_user` (sing-box `route/rule/rule_item_auth_user.go`) matches
 /// `metadata.User`, which the VLESS/Hysteria2 inbounds set to the user's
@@ -370,9 +388,28 @@ fn apply_probe_user_confinement(
     if !config["route"].is_object() {
         config["route"] = json!({});
     }
-    let mut rules: Vec<serde_json::Value> = probe_rules.into();
-    if let Some(existing) = config["route"]["rules"].as_array() {
-        rules.extend(existing.iter().cloned());
+    let existing: Vec<serde_json::Value> = config["route"]["rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    // A rule counts as "already scoped to this probe identity" only when
+    // EVERY entry in its own `auth_user` is one of `ids` — never the
+    // reverse, and never a rule with no `auth_user` at all (which matches
+    // every identity, probe included, and must stay behind this
+    // function's rules exactly as before).
+    let already_probe_scoped = |rule: &serde_json::Value| -> bool {
+        rule["auth_user"].as_array().is_some_and(|au| {
+            au.iter()
+                .all(|v| v.as_str().is_some_and(|s| ids.iter().any(|id| id == s)))
+        })
+    };
+    let insert_at = existing
+        .iter()
+        .take_while(|rule| already_probe_scoped(rule))
+        .count();
+    let mut rules = existing;
+    for (offset, rule) in probe_rules.into_iter().enumerate() {
+        rules.insert(insert_at + offset, rule);
     }
     config["route"]["rules"] = json!(rules);
 }

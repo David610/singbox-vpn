@@ -572,11 +572,13 @@ fn unpaired_relay_loopback_selftest_is_scoped_to_the_reserved_probe_principal() 
     let cfg = load(&format!("{}{RELAY_INGRESS}", base("relay"))).unwrap();
     let doc = render(&cfg, &[user(), probe_user()]);
     let rules = rules(&doc);
-    // 3 probe-confinement rules (prepended ahead of everything) + 1
-    // loopback exception (scoped to the same reserved principal) + 1
-    // final reject.
+    // 1 loopback exception (scoped to the reserved principal) + 3
+    // probe-confinement rules + 1 final reject. The loopback rule is MORE
+    // specific than the confinement rules' own blanket reject for that
+    // same principal, so it is kept ahead of them, not after — see
+    // `apply_probe_user_confinement`'s doc comment.
     assert_eq!(rules.len(), 5);
-    let loopback = &rules[3];
+    let loopback = &rules[0];
     assert_eq!(loopback["auth_user"], serde_json::json!(["u-probe"]));
     assert_eq!(loopback["ip_cidr"], serde_json::json!(["127.0.0.1/32"]));
     assert_eq!(loopback["port"], 9100);
@@ -1368,25 +1370,37 @@ fn probe_urls_are_exactly_covered_by_the_probe_allowlist() {
     }
 }
 
-fn assert_probe_rules_lead(rules: &[serde_json::Value]) {
+/// Asserts the 3 probe-confinement rules appear, in order, starting at
+/// `rules[at]`. `at` is 0 on an exit (nothing else is ever scoped to the
+/// probe identity there) and 1 on a relay that also has the loopback
+/// self-test exception rule (also `auth_user`-scoped to the same
+/// principal, and correctly kept ahead of this function's own blanket
+/// reject — see `apply_probe_user_confinement`'s doc comment).
+fn assert_probe_rules_lead(rules: &[serde_json::Value], at: usize) {
     use compat_config::model::*;
     let ids = serde_json::json!(["u-probe"]);
-    assert_eq!(rules[0]["auth_user"], ids);
-    assert_eq!(rules[0]["network"], "tcp");
-    assert_eq!(rules[0]["port"], 443);
+    assert_eq!(rules[at]["auth_user"], ids);
+    assert_eq!(rules[at]["network"], "tcp");
+    assert_eq!(rules[at]["port"], 443);
     assert_eq!(
-        rules[0]["ip_cidr"],
+        rules[at]["ip_cidr"],
         serde_json::json!(PROBE_ALLOWED_IP_CIDRS)
     );
-    assert_eq!(rules[0]["outbound"], "direct");
-    assert_eq!(rules[1]["auth_user"], ids);
-    assert_eq!(rules[1]["domain"], serde_json::json!(PROBE_ALLOWED_DOMAINS));
-    assert!(rules[1].get("domain_suffix").is_none(), "exact hosts only");
-    assert_eq!(rules[1]["outbound"], "direct");
-    assert_eq!(rules[2]["auth_user"], ids);
-    assert_eq!(rules[2]["action"], "reject");
+    assert_eq!(rules[at]["outbound"], "direct");
+    assert_eq!(rules[at + 1]["auth_user"], ids);
     assert_eq!(
-        rules[2].as_object().unwrap().len(),
+        rules[at + 1]["domain"],
+        serde_json::json!(PROBE_ALLOWED_DOMAINS)
+    );
+    assert!(
+        rules[at + 1].get("domain_suffix").is_none(),
+        "exact hosts only"
+    );
+    assert_eq!(rules[at + 1]["outbound"], "direct");
+    assert_eq!(rules[at + 2]["auth_user"], ids);
+    assert_eq!(rules[at + 2]["action"], "reject");
+    assert_eq!(
+        rules[at + 2].as_object().unwrap().len(),
         3,
         "unconditional for that user"
     );
@@ -1414,7 +1428,7 @@ fn exit_confines_probe_user_and_leaves_customers_unrouted() {
         7,
         "3 probe rules ahead of the 4 mandatory C-16 rules; customers keep default direct egress"
     );
-    assert_probe_rules_lead(rules);
+    assert_probe_rules_lead(rules, 0);
     // No customer id appears in any rule.
     assert!(!with_probe["route"].to_string().contains("\"u1\""));
     assert_eq!(with_probe["route"]["final"], "direct");
@@ -1465,7 +1479,7 @@ fn probe_rules_precede_exit_hairpin_rules() {
         render_server_config_for_deployment(&exit, &[user(), probe_user()], &r, &hysteria(), 1_000)
             .unwrap();
     let rules = with["route"]["rules"].as_array().unwrap();
-    assert_probe_rules_lead(rules);
+    assert_probe_rules_lead(rules, 0);
     assert_eq!(
         &rules[3..],
         without["route"]["rules"].as_array().unwrap().as_slice()
@@ -1479,15 +1493,18 @@ fn probe_rules_precede_relay_policy_which_is_otherwise_unchanged() {
     let without = render(&relay, &[user()]);
     let with = render(&relay, &[user(), probe_user()]);
     let rules = with["route"]["rules"].as_array().unwrap();
-    assert_probe_rules_lead(rules);
     // A probe user's presence adds exactly one more rule beyond the 3
     // probe-confinement rules: the loopback self-test exception, now
     // scoped to that same reserved principal (spec C-16 "Exceptions").
-    // Skip past the 3 probe rules and that loopback rule; everything
-    // after is byte-identical to the no-probe case.
-    let loopback = &rules[3];
+    // It is MORE specific than this function's own blanket reject, so it
+    // is kept ahead of the 3 probe-confinement rules, not after them (see
+    // `apply_probe_user_confinement`'s doc comment) — index 0, then the 3
+    // confinement rules at 1..4, then everything else byte-identical to
+    // the no-probe case.
+    let loopback = &rules[0];
     assert_eq!(loopback["auth_user"], serde_json::json!(["u-probe"]));
     assert_eq!(loopback["ip_cidr"], serde_json::json!(["127.0.0.1/32"]));
+    assert_probe_rules_lead(rules, 1);
     assert_eq!(
         &rules[4..],
         without["route"]["rules"].as_array().unwrap().as_slice()
