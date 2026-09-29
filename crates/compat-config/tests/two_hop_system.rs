@@ -535,27 +535,13 @@ listen_port = {sub_port}
     /// swap with the real `sing-box check`.
     fn apply(&self, sb: &SingBox, users: &[CompatUser]) -> Result<serde_json::Value, CompatError> {
         let deployment = self.deployment();
-        let mut doc = render_server_config_for_deployment(
+        let doc = render_server_config_for_deployment(
             &deployment,
             users,
             &self.reality,
             &self.hysteria,
             unix_now(),
         )?;
-        // DIAGNOSTIC ONLY (ARCANA_BATCH6 ADDENDUM4): never shipped, never
-        // the production default. `render_server_config_for_deployment`
-        // (the actual production renderer) is untouched above — this is a
-        // test-harness-local, opt-in override of the JSON document this
-        // one test binary writes to disk, gated on an env var that CI only
-        // sets for a dedicated diagnostic step investigating the
-        // first_hop_only_client REALITY reset (s03/s05/s12). Bumping this
-        // unconditionally would break
-        // `relay_and_exit_logs_carry_no_credentials_and_no_rejected_
-        // destinations`, which asserts on production-level ("warn") log
-        // content by design.
-        if let Ok(level) = std::env::var("ARCANA_DIAGNOSTIC_SINGBOX_LOG_LEVEL") {
-            doc["log"] = serde_json::json!({"level": level});
-        }
         apply_config_atomically(&doc, &self.config_path(), |candidate| {
             let out = sb.check(candidate);
             if out.status.success() {
@@ -626,6 +612,22 @@ fn user(id: &str, relay_uuid: &str, exit_uuid: Option<&str>) -> CompatUser {
     }
 }
 
+/// A reserved-probe principal (spec C-16 "Exceptions" / NEW-01): the ONLY
+/// kind of user `render_server_config_for_deployment`'s loopback self-test
+/// exception rule (server.rs, `auth_user: probe_ids`) ever exempts. An
+/// ordinary customer's `first_hop_only_client` connection is correctly
+/// `reject`ed when it targets the relay's own loopback subscription port —
+/// that IS C-16 working as designed, not a bug — so any scenario that wants
+/// to prove "the authenticated first-hop tunnel is alive" via that loopback
+/// destination must authenticate as this principal instead of the ordinary
+/// `relay_user`, and this principal must actually be applied to the relay
+/// alongside whatever ordinary user the scenario is testing.
+fn probe_user(id: &str, relay_uuid: &str) -> CompatUser {
+    let mut u = user(id, relay_uuid, None);
+    u.is_reserved_probe = true;
+    u
+}
+
 // ----------------------------------------------------------------------
 // The lab
 // ----------------------------------------------------------------------
@@ -641,6 +643,12 @@ struct Lab {
     relay_user: CompatUser,
     /// Credential B lives here: issued by the exit for the same person.
     exit_user: CompatUser,
+    /// Reserved-probe principal, applied to the relay alongside
+    /// `relay_user` so the loopback self-test exception rule exists.
+    /// Authenticate with this identity (never `relay_user`'s) when
+    /// checking "the tunnel to the relay's own loopback is alive" — see
+    /// `probe_user()`'s doc comment.
+    probe_user: CompatUser,
     /// In front of the exit; both declared peers point at it.
     exit_tap: Tap,
     clients: Vec<Proc>,
@@ -657,6 +665,7 @@ impl Lab {
             undeclared: spawn_http_target(&format!("{UNDECLARED_IP}:0")),
             relay_user: user("alice", &uuid(0xa1), Some(&uuid(0xb1))),
             exit_user: user("alice-at-exit", &uuid(0xb1), None),
+            probe_user: probe_user("probe", &uuid(0xd1)),
             exit_tap: spawn_tcp_tap(EXIT_IP, exit.reality_port),
             exit,
             relay,
@@ -670,7 +679,7 @@ impl Lab {
             .apply(&lab.sb, std::slice::from_ref(&lab.exit_user))
             .unwrap();
         lab.relay
-            .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
+            .apply(&lab.sb, &[lab.relay_user.clone(), lab.probe_user.clone()])
             .unwrap();
         lab.exit.start(&lab.sb);
         lab.relay.start(&lab.sb);
@@ -933,11 +942,18 @@ fn s02_relay_route_client_relay_exit_target() {
 fn s03_relay_is_not_an_internet_exit() {
     let (mut lab, _serial) = lab!();
     let control = lab.selftest_target_on_relay_loopback();
-    let socks = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
+    // The control check proves the RELAY (not just this test's HTTP
+    // fixtures) is up and authenticating first-hop connections, using the
+    // one identity C-16's loopback self-test exception actually exempts
+    // (`probe_user`) — an ordinary customer, `relay_user` included, is
+    // correctly `reject`ed here by design; using it for the control check
+    // would prove nothing about liveness, only re-demonstrate C-16.
+    let probe_socks = lab.first_hop_only_client(&lab.probe_user.vless_uuid.clone());
     assert!(
-        reaches(socks, "127.0.0.1", control.port),
-        "control: the authenticated first-hop tunnel is alive"
+        reaches(probe_socks, "127.0.0.1", control.port),
+        "control: the relay is up and authenticating (reserved-probe identity)"
     );
+    let socks = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
     let before = lab.target.hits() + lab.undeclared.hits();
     assert!(
         refused(socks, TARGET_IP, lab.target.port),
@@ -977,11 +993,21 @@ fn s05_wrong_exit_credential_fails_after_reaching_the_relay() {
     );
     assert_eq!(lab.target.hits(), 0);
 
+    // The relay-facing outbound uuid above is untouched by
+    // `set_outbound_uuid` (only the VIA_TAG/exit-facing one was corrupted),
+    // so `via_socks`'s refusal already proves the first hop authenticated
+    // fine and the exit is what rejected it. This control check adds
+    // independent proof the relay itself is up (not merely that this
+    // test's own HTTP fixtures are): it must use the reserved-probe
+    // identity, the only one C-16's loopback self-test exception exempts
+    // — `relay_user` is correctly `reject`ed at that same destination by
+    // design (see `probe_user`'s doc comment), which is not evidence of
+    // anything relay-liveness-related.
     let control = lab.selftest_target_on_relay_loopback();
-    let first_hop = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
+    let probe_first_hop = lab.first_hop_only_client(&lab.probe_user.vless_uuid.clone());
     assert!(
-        reaches(first_hop, "127.0.0.1", control.port),
-        "S5: the relay itself accepted the same first-hop credential"
+        reaches(probe_first_hop, "127.0.0.1", control.port),
+        "S5: the relay itself is up and authenticating (reserved-probe identity)"
     );
 }
 
@@ -1237,14 +1263,20 @@ fn s12_unpaired_relay_cannot_reach_anything_as_an_exit() {
     lab.write_relay_deployment(false);
     let doc = lab
         .relay
-        .apply(&lab.sb, std::slice::from_ref(&lab.relay_user))
+        .apply(&lab.sb, &[lab.relay_user.clone(), lab.probe_user.clone()])
         .unwrap();
-    // Just the trailing reject-all: no peer_endpoints means
-    // `relay_targets()` is empty, and none of this suite's users carry
-    // `is_reserved_probe`, so the loopback self-test exception rule
-    // (server.rs's `render_server_config_for_deployment`) never applies
-    // here either.
-    assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 1);
+    // The loopback self-test exception rule + the trailing reject-all:
+    // no peer_endpoints means `relay_targets()` is empty, but
+    // `lab.probe_user` (`is_reserved_probe: true`) IS applied here
+    // specifically so the control check below has an identity C-16
+    // actually exempts at the loopback subscription port — an ordinary
+    // customer, `relay_user` included, is correctly `reject`ed there by
+    // design (see `probe_user`'s doc comment).
+    assert_eq!(
+        doc["route"]["rules"].as_array().unwrap().len(),
+        2,
+        "loopback self-test exception + reject"
+    );
     lab.relay.start(&lab.sb);
     assert!(matches!(
         lab.provisioned_config(&lab.relay_user.clone()),
@@ -1252,11 +1284,12 @@ fn s12_unpaired_relay_cannot_reach_anything_as_an_exit() {
     ));
 
     let control = lab.selftest_target_on_relay_loopback();
-    let socks = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
+    let probe_socks = lab.first_hop_only_client(&lab.probe_user.vless_uuid.clone());
     assert!(
-        reaches(socks, "127.0.0.1", control.port),
-        "control: tunnel alive"
+        reaches(probe_socks, "127.0.0.1", control.port),
+        "control: tunnel alive (reserved-probe identity)"
     );
+    let socks = lab.first_hop_only_client(&lab.relay_user.vless_uuid.clone());
     assert!(
         refused(socks, TARGET_IP, lab.target.port),
         "S12: generic target"

@@ -450,34 +450,6 @@ jobs:
           fi
           echo "all two-hop local system tests executed and passed"
 
-      # DIAGNOSTIC ONLY (ARCANA_BATCH6 ADDENDUM4) — never a production
-      # default, never blocking: surfaces the real sing-box REALITY
-      # rejection reason for the first_hop_only_client control-check
-      # failures (s03/s05/s12) by bumping the relay's own log level for
-      # this one test binary invocation via ARCANA_DIAGNOSTIC_SINGBOX_LOG_LEVEL
-      # (see two_hop_system.rs's Node::apply). Runs only the three affected
-      # scenarios, does not gate the job (`|| true`), and its output is
-      # printed unconditionally for this pass so the relay's actual
-      # rejection line is visible in the job log without guessing further.
-      # Remove this step once root-caused.
-      - name: "DIAGNOSTIC: bump relay sing-box log level for s03/s05/s12 (never shipped)"
-        if: always()
-        env:
-          SING_BOX_BIN: /usr/local/bin/sing-box
-          SINGBOX_VPN_REQUIRE_REAL_INTEROP: "1"
-          ARCANA_DIAGNOSTIC_SINGBOX_LOG_LEVEL: "debug"
-        run: |
-          set +e
-          for t in s03_relay_is_not_an_internet_exit \
-                   s05_wrong_exit_credential_fails_after_reaching_the_relay \
-                   s12_unpaired_relay_cannot_reach_anything_as_an_exit; do
-            echo "=== diagnostic run: $t ==="
-            cargo test --locked -p compat-config --test two_hop_system "$t" \
-              -- --exact --nocapture --test-threads=1 2>&1 | tee -a diagnostic.log
-          done
-          echo "diagnostic run finished (non-blocking); full output above"
-          true
-
       # The reality_interop.rs suite above proves crate-level config
       # RENDERING is protocol-correct; it never runs `vpn-admin` itself. This
       # step closes that gap: it runs the actual `vpn-admin doctor --protocol`
