@@ -535,13 +535,27 @@ listen_port = {sub_port}
     /// swap with the real `sing-box check`.
     fn apply(&self, sb: &SingBox, users: &[CompatUser]) -> Result<serde_json::Value, CompatError> {
         let deployment = self.deployment();
-        let doc = render_server_config_for_deployment(
+        let mut doc = render_server_config_for_deployment(
             &deployment,
             users,
             &self.reality,
             &self.hysteria,
             unix_now(),
         )?;
+        // DIAGNOSTIC ONLY (ARCANA_BATCH6 ADDENDUM4): never shipped, never
+        // the production default. `render_server_config_for_deployment`
+        // (the actual production renderer) is untouched above — this is a
+        // test-harness-local, opt-in override of the JSON document this
+        // one test binary writes to disk, gated on an env var that CI only
+        // sets for a dedicated diagnostic step investigating the
+        // first_hop_only_client REALITY reset (s03/s05/s12). Bumping this
+        // unconditionally would break
+        // `relay_and_exit_logs_carry_no_credentials_and_no_rejected_
+        // destinations`, which asserts on production-level ("warn") log
+        // content by design.
+        if let Ok(level) = std::env::var("ARCANA_DIAGNOSTIC_SINGBOX_LOG_LEVEL") {
+            doc["log"] = serde_json::json!({"level": level});
+        }
         apply_config_atomically(&doc, &self.config_path(), |candidate| {
             let out = sb.check(candidate);
             if out.status.success() {
