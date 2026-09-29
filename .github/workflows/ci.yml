@@ -461,6 +461,7 @@ jobs:
       # rejection line is visible in the job log without guessing further.
       # Remove this step once root-caused.
       - name: "DIAGNOSTIC: bump relay sing-box log level for s03/s05/s12 (never shipped)"
+        if: always()
         env:
           SING_BOX_BIN: /usr/local/bin/sing-box
           SINGBOX_VPN_REQUIRE_REAL_INTEROP: "1"
