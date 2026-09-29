@@ -294,7 +294,16 @@ mod tests {
         // test. Now poll the on-disk queue until the background task has
         // drained it (bounded so a real regression fails the test instead
         // of hanging forever).
-        for _ in 0..100 {
+        //
+        // The bound must comfortably exceed the two 500s' worth of
+        // exponential backoff the main loop sleeps through before its
+        // third (successful) attempt: `backoff = 1 << attempts.min(5)`
+        // seconds, so 2s after the 1st failure + 4s after the 2nd = 6s
+        // minimum, before the delivering attempt even starts. A 5s bound
+        // (the previous 100 * 50ms) was tighter than that worst case and
+        // made this test fail spuriously under any scheduling jitter, not
+        // because delivery was broken — 20s leaves generous headroom.
+        for _ in 0..400 {
             if load(&path).unwrap().is_empty() {
                 return;
             }
