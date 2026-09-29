@@ -14,8 +14,6 @@ use clap::Parser;
 use config::AgentConfig;
 use op_dedup::{OpDedupLog, Outcome as DedupOutcome};
 use report_queue::ReportQueue;
-#[cfg(unix)]
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use worker_client::WorkerClient;

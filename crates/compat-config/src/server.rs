@@ -284,7 +284,7 @@ fn apply_c16_egress_policy(config: &mut serde_json::Value) {
     config["route"]["final"] = json!("direct");
 }
 
-/// Number of leading `route.rules` entries [`apply_c16_egress_policy`]
+/// Number of leading `route.rules` entries `apply_c16_egress_policy`
 /// prepends (0 or 4), mirroring [`probe_confinement_rule_count`] so
 /// `doctor` can validate the rest of an exit's document exactly as
 /// before.

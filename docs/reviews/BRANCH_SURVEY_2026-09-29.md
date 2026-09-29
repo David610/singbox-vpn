@@ -49,7 +49,6 @@ touching the listed areas:
 `arcana/provisioning-agent`, `archive/native-adaptive-stack-2026`,
 `chatgpt/product-ops-agent-v2`, `chore/sing-box-1.14.1`,
 `claude/singbox-rc-evaluation-i0kpp0`, `claude/traffic-accounting`,
-`claude/vpn1-singbox-migration-bbcv6y`,
 `claude/youtube-direct-device-verify`, `feat/b2-ephemeral-auth`,
 `feat/protocol-health`, `fix/acceptance-certbot-random-sleep`,
 `fix/lifecycle-realvps-findings`,

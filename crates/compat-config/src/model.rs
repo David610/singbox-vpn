@@ -71,7 +71,7 @@ pub const PROBE_V6_ONLY_URL: &str = "https://ipv6.icanhazip.com";
 /// 3): IPv4 ranges an authenticated tunnel user must never reach through
 /// an Arcana exit — loopback, link-local/metadata, RFC1918/CGNAT,
 /// documentation/benchmark ranges, and multicast/reserved. Applied by
-/// [`crate::server::apply_c16_egress_policy`] ahead of the exit's
+/// `apply_c16_egress_policy` (in `crate::server`) ahead of the exit's
 /// otherwise-unconditional `direct` outbound. Kept as one array (rather
 /// than split reject/allow-with-exception lists) so every call site pins
 /// the exact same set — see that function's doc comment for why DNS
