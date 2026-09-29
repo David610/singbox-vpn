@@ -435,6 +435,27 @@ enum UserCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Idempotently ensure a RESERVED INTERNAL PROBE PRINCIPAL exists
+    /// (spec C-16 "Exceptions"): `--name` must be
+    /// [`compat_config::model::PROBE_USER_NAME`] or
+    /// [`compat_config::model::RESERVED_SELFTEST_USER_NAME`] (defaults to
+    /// the latter, the on-node self-test principal, when omitted).
+    ///
+    /// This is structurally different from `user create`: the returned
+    /// record has `is_reserved_probe: true`, which is the ONLY thing
+    /// `server.rs` confinement and `user list` hiding key off — never the
+    /// name. Re-running this with the same name reuses the existing
+    /// reserved-probe record for that name (safe to call on every
+    /// install/update); it never creates a duplicate, and it never
+    /// "adopts" a pre-existing ordinary customer of that name — if a
+    /// non-reserved user already holds the name, this fails rather than
+    /// silently upgrading them.
+    CreateProbe {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     List,
     /// Print a terminal QR code encoding a user's subscription URL. The
     /// raw subscription token is never persisted (only its hash is), so
@@ -688,6 +709,9 @@ fn main() -> Result<()> {
             qr,
             json,
         }) => cmd_user_create(&cfg, &name, expires_at, qr, json),
+        Commands::User(UserCommands::CreateProbe { name, json }) => {
+            cmd_user_create_probe(&cfg, name.as_deref(), json)
+        }
         Commands::User(UserCommands::List) => cmd_user_list(&cfg),
         Commands::User(UserCommands::Qr { user_id }) => cmd_user_qr(&cfg, &user_id),
         Commands::User(UserCommands::Links { user_id, qr }) => cmd_user_links(&cfg, &user_id, qr),
@@ -2655,6 +2679,7 @@ fn cmd_user_create(
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
+        is_reserved_probe: false,
     };
     users.push(user);
     apply_users_and_save(cfg, &previous_users, &users)?;
@@ -2801,6 +2826,103 @@ fn cmd_user_create(
     Ok(())
 }
 
+/// Idempotently ensures a RESERVED INTERNAL PROBE PRINCIPAL exists (spec
+/// C-16 "Exceptions") — see `UserCommands::CreateProbe`'s doc comment.
+///
+/// Unlike `cmd_user_create`, this:
+/// - only accepts the two reserved names
+///   ([`compat_config::model::PROBE_USER_NAME`] /
+///   [`compat_config::model::RESERVED_SELFTEST_USER_NAME`]);
+/// - sets `is_reserved_probe: true`, the structural flag `server.rs`
+///   confinement and `user list` hiding actually key off;
+/// - is idempotent: an existing record with that name AND
+///   `is_reserved_probe: true` is reused unchanged (no new id, no
+///   credential rotation, safe to call on every install/update, so
+///   `install.sh`/`update.sh` can call it unconditionally);
+/// - refuses (does not silently upgrade) if a record with that name
+///   already exists but is an ordinary user — a historical customer
+///   named `arcana-probe` is never promoted into the reserved principal
+///   by this call.
+fn cmd_user_create_probe(cfg: &DeploymentConfig, name: Option<&str>, json: bool) -> Result<()> {
+    let name = name.unwrap_or(compat_config::model::RESERVED_SELFTEST_USER_NAME);
+    if name != compat_config::model::PROBE_USER_NAME
+        && name != compat_config::model::RESERVED_SELFTEST_USER_NAME
+    {
+        bail!(
+            "--name must be {:?} or {:?}: those are the only reserved internal probe principals",
+            compat_config::model::PROBE_USER_NAME,
+            compat_config::model::RESERVED_SELFTEST_USER_NAME
+        );
+    }
+    let machine_stdout = if json {
+        Some(MachineStdout::divert_human_output_to_stderr()?)
+    } else {
+        None
+    };
+    let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
+
+    if let Some(existing) = users.iter().find(|u| u.name == name) {
+        if !existing.is_reserved_probe {
+            bail!(
+                "a user named {name:?} already exists and is NOT a reserved probe principal — \
+                 refusing to silently upgrade it. Rename/remove that user first if this name \
+                 must become the reserved probe."
+            );
+        }
+        let id = existing.id.clone();
+        if let Some(machine_stdout) = machine_stdout {
+            return machine_stdout.write_document(&serde_json::json!({
+                "id": id,
+                "name": name,
+                "is_reserved_probe": true,
+                "created": false,
+            }));
+        }
+        println!("Reserved probe user {name:?} already exists (id {id}); reused unchanged.");
+        return Ok(());
+    }
+
+    let mut id = credentials::generate_user_id();
+    while users.iter().any(|u| u.id == id) {
+        id = credentials::generate_user_id();
+    }
+    let token = credentials::generate_subscription_token();
+    let user = CompatUser {
+        id: id.clone(),
+        name: name.to_string(),
+        enabled: true,
+        vless_uuid: credentials::generate_uuid_v4(),
+        hysteria2_password: SecretString::new(credentials::generate_hysteria2_password()),
+        subscription_token_hash_hex: credentials::hash_token(&token),
+        created_at: UnixSeconds::now().0 as i64,
+        // Never expires on its own — this is node-local infrastructure,
+        // not a customer subscription.
+        expires_at: None,
+        vision_off_experiment: false,
+        google_egress_hairpin: false,
+        peer_credentials: Default::default(),
+        is_reserved_probe: true,
+    };
+    users.push(user);
+    apply_users_and_save(cfg, &previous_users, &users)?;
+
+    if let Some(machine_stdout) = machine_stdout {
+        return machine_stdout.write_document(&serde_json::json!({
+            "id": id,
+            "name": name,
+            "is_reserved_probe": true,
+            "created": true,
+        }));
+    }
+    println!("Reserved probe user {name:?} created (id {id}).");
+    println!(
+        "This principal is hidden from `user list`, never published in any subscription \
+         document, and confined by the server to exact probe/health targets only."
+    );
+    Ok(())
+}
+
 fn cmd_lease_pool_sync(cfg: &DeploymentConfig, input: &std::path::Path) -> Result<()> {
     let machine_stdout = MachineStdout::divert_human_output_to_stderr()?;
     let text = std::fs::read_to_string(input)
@@ -2831,7 +2953,12 @@ fn cmd_lease_pool_sync(cfg: &DeploymentConfig, input: &std::path::Path) -> Resul
 fn cmd_user_list(cfg: &DeploymentConfig) -> Result<()> {
     let users = store::load_users(&cfg.users_file())?;
     println!("{:<20} {:<16} {:<8}", "ID", "NAME", "ENABLED");
-    for u in &users {
+    // Reserved internal probe principals are node-local infrastructure,
+    // not customer/operator-visible accounts — hidden here structurally
+    // (is_reserved_probe), never by name. Still fully manageable via
+    // `user create-probe` (idempotent) and visible to anything that
+    // reads users.json directly (e.g. `doctor`).
+    for u in users.iter().filter(|u| !u.is_reserved_probe) {
         println!(
             "{:<20} {:<16} {:<8}",
             u.id,
@@ -6540,6 +6667,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
+        is_reserved_probe: false,
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
     // Deliberately LOCAL endpoints only (not `served_endpoints`): this

@@ -466,6 +466,7 @@ fn user(id: &str, relay_uuid: &str, exit_uuid: Option<&str>) -> CompatUser {
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials,
+        is_reserved_probe: false,
     }
 }
 

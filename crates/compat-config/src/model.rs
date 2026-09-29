@@ -44,6 +44,18 @@ pub const GOOGLE_EGRESS_DOMAINS: &[&str] = &[
 /// credential (handed to peer agents) is never an open proxy.
 pub const PROBE_USER_NAME: &str = "arcana-probe";
 
+/// The second reserved, node-local internal principal (spec C-16
+/// "Exceptions"): created directly by `vpn-admin` on install/update when
+/// no fleet `arcana-probe` user exists yet, so the local REALITY
+/// self-test (install/update/rotate gates) always has a loopback
+/// principal to use. Random credential, never published in any
+/// subscription/provisioning document, never reported to the control
+/// plane, excluded from heartbeat counts, and preserved across
+/// whole-store replaces. Like `PROBE_USER_NAME`, this is only a
+/// human-readable label — the actual privilege gate is the structural
+/// [`CompatUser::is_reserved_probe`] flag, never this string.
+pub const RESERVED_SELFTEST_USER_NAME: &str = "arcana-selftest";
+
 /// The exact URLs the protocol prober fetches through the tunnel. Single
 /// source of truth for both the prober and the server-side allowlist
 /// below (a unit test pins every URL's host into that allowlist).
@@ -54,6 +66,55 @@ pub const PROBE_TRACE_V4_URL: &str = "https://1.1.1.1/cdn-cgi/trace";
 pub const PROBE_DNS_URL: &str = "https://www.gstatic.com/generate_204";
 /// AAAA-only host resolved by the server (socks5h): the `ipv6` dimension.
 pub const PROBE_V6_ONLY_URL: &str = "https://ipv6.icanhazip.com";
+
+/// C-16 data-plane egress policy (cross-repo remediation plan, invariant
+/// 3): IPv4 ranges an authenticated tunnel user must never reach through
+/// an Arcana exit — loopback, link-local/metadata, RFC1918/CGNAT,
+/// documentation/benchmark ranges, and multicast/reserved. Applied by
+/// [`crate::server::apply_c16_egress_policy`] ahead of the exit's
+/// otherwise-unconditional `direct` outbound. Kept as one array (rather
+/// than split reject/allow-with-exception lists) so every call site pins
+/// the exact same set — see that function's doc comment for why DNS
+/// resolution happens before these rules are evaluated.
+pub const C16_DENY_IPV4_CIDRS: &[&str] = &[
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.0.0.0/24",
+    "192.0.2.0/24",
+    "192.168.0.0/16",
+    "198.18.0.0/15",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+];
+
+/// C-16 IPv6 deny set — loopback, IPv4-mapped/NAT64 embeddings, ULA,
+/// link-local, documentation, multicast, and the well-known EC2 IMDS
+/// link-local address expressed as a full /128 (the /10 `fe80::/10`
+/// entry already covers it, this entry is defense-in-depth in case that
+/// range is ever narrowed).
+pub const C16_DENY_IPV6_CIDRS: &[&str] = &[
+    "::/128",
+    "::1/128",
+    "::ffff:0:0/96",
+    "64:ff9b::/96",
+    "100::/64",
+    "2001:db8::/32",
+    "fc00::/7",
+    "fe80::/10",
+    "ff00::/8",
+    "fd00:ec2::254/128",
+];
+
+/// TCP destination port C-16 rejects for every user on every node
+/// regardless of destination (SMTP; spam-relay abuse mitigation, not a
+/// pivot-protection control).
+pub const C16_DENY_TCP_PORT: u16 = 25;
 
 /// Destinations the probe user may reach (IP-literal URLs above).
 pub const PROBE_ALLOWED_IP_CIDRS: &[&str] = &["1.1.1.1/32"];
@@ -280,6 +341,32 @@ pub struct CompatUser {
     /// existed — the same treatment `vision_off_experiment` gets.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub peer_credentials: BTreeMap<String, PeerCredential>,
+
+    /// STRUCTURAL marker for a reserved, node-local internal probe
+    /// principal (spec C-16 "Exceptions"; see
+    /// `server::apply_probe_user_confinement`). This is never set by any
+    /// customer-facing or operator-facing user-creation path
+    /// (`vpn-admin user create` always constructs `false` here) — the
+    /// ONLY way to get `true` is `vpn-admin user create-probe`
+    /// (`cmd_user_create_probe` in `apps/admin/src/main.rs`), which is
+    /// not reachable from customer input.
+    ///
+    /// Confinement in `server.rs` keys off THIS field, never off
+    /// `name == PROBE_USER_NAME`. A customer who happens to name their
+    /// account `"arcana-probe"` therefore gets an ordinary customer
+    /// record with `is_reserved_probe: false` — no probe confinement,
+    /// no probe privilege, no special treatment of any kind from the
+    /// name alone. A pre-existing customer of that name is never
+    /// silently upgraded by this field appearing: it defaults to
+    /// `false` for every already-persisted record (`serde(default)`)
+    /// and nothing ever flips it after creation.
+    ///
+    /// Skipped during serialization when `false`, same treatment as
+    /// `vision_off_experiment`/`google_egress_hairpin` — a deployment
+    /// that has never provisioned a probe user has a byte-identical
+    /// `users.json` to before this field existed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_reserved_probe: bool,
 }
 
 fn is_false(b: &bool) -> bool {
