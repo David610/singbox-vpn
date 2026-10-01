@@ -37,6 +37,17 @@ pub fn generate_user_id() -> String {
     format!("user_{}", generate_uuid_v4())
 }
 
+/// Opaque native-device principal id. The control plane may supply its own id later; locally
+/// managed lease slots use this CSPRNG value and persist it across credential generations.
+pub fn generate_native_principal_id() -> String {
+    format!("native_{}", generate_uuid_v4().replace('-', ""))
+}
+
+/// Opaque credential-generation id. Rotates with protocol secrets and contains no account data.
+pub fn generate_credential_id() -> String {
+    format!("cred_{}", generate_uuid_v4().replace('-', ""))
+}
+
 /// A Hysteria2 user password: 24 random bytes, hex-encoded (192 bits).
 pub fn generate_hysteria2_password() -> String {
     let mut bytes = [0u8; 24];

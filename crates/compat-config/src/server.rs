@@ -3,6 +3,7 @@
 //! for Xray later does not require rewriting user management or
 //! subscription logic — only a new backend impl of this trait.
 
+use crate::authorization::{Authorization, AuthorizationSet, CredentialClass};
 use crate::deployment::{DeploymentConfig, GoogleEgressHairpinSection, NodeRole};
 use crate::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
 use crate::secret::SecretString;
@@ -60,6 +61,30 @@ pub fn render_server_config_for_deployment(
     // `load`, and a relay policy must never be derived from a
     // declaration that would not load.
     deployment.validate()?;
+    // Credential-backed CompatUsers are the persisted projection of the authorization contract.
+    // Reconstruct and validate it at the final production boundary so a malformed revision can
+    // never rely solely on caller-side validation and reach sing-box.
+    let projected = AuthorizationSet {
+        authorizations: users
+            .iter()
+            .filter(|user| user.id.starts_with("cred_"))
+            .map(|user| Authorization {
+                principal_id: user.name.clone(),
+                credential_id: user.id.clone(),
+                class: if user.name.starts_with("native_") {
+                    CredentialClass::Native
+                } else {
+                    CredentialClass::Compatibility
+                },
+                valid_from: user.created_at,
+                valid_until: user.expires_at.unwrap_or(i64::MAX),
+                revoked: !user.enabled,
+                vless_uuid: Some(SecretString::new(user.vless_uuid.clone())),
+                hysteria2_password: Some(user.hysteria2_password.clone()),
+            })
+            .collect(),
+    };
+    projected.validate().map_err(CompatError::Parse)?;
     let mut config = render_singbox_server_config(
         users,
         reality,

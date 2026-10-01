@@ -41,6 +41,7 @@ use crate::config::AgentConfig;
 use crate::dispatch::{parse_json_output, vpn_admin_command};
 use crate::worker_client::WorkerClient;
 use anyhow::{anyhow, Context, Result};
+use compat_config::authorization::CredentialClass;
 use compat_config::credentials;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -63,6 +64,18 @@ pub struct Slot {
     pub slot: u32,
     pub generation: u64,
     pub valid_until: i64,
+    /// Stable for the logical native lease slot across credential rotation.
+    #[serde(default)]
+    pub principal_id: String,
+    /// Unique to this credential generation; rotates with both protocol secrets.
+    #[serde(default)]
+    pub credential_id: String,
+    #[serde(default = "native_class")]
+    pub class: CredentialClass,
+    #[serde(default)]
+    pub valid_from: i64,
+    #[serde(default)]
+    pub revoked: bool,
     pub vless_uuid: String,
     pub hysteria2_password: String,
     /// The control plane has stored this generation's secret.
@@ -76,9 +89,18 @@ impl std::fmt::Debug for Slot {
             .field("slot", &self.slot)
             .field("generation", &self.generation)
             .field("valid_until", &self.valid_until)
+            .field("principal_id", &self.principal_id)
+            .field("credential_id", &self.credential_id)
+            .field("class", &self.class)
+            .field("valid_from", &self.valid_from)
+            .field("revoked", &self.revoked)
             .field("reported", &self.reported)
             .finish_non_exhaustive()
     }
+}
+
+fn native_class() -> CredentialClass {
+    CredentialClass::Native
 }
 
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
@@ -118,15 +140,15 @@ pub fn round_down_to_grid(t: i64, grid: i64) -> i64 {
 }
 
 pub fn clamp_batch_interval(secs: u64) -> i64 {
-    secs.clamp(60, 3600) as i64
+    secs.clamp(60, DEFAULT_BATCH_SECS as u64) as i64
 }
 
-/// Slot lifetime, clamped so that (a) valid_until never exceeds now + 2 h
+/// Slot lifetime, clamped so that valid_until never exceeds the native 30-minute horizon
 /// (the control plane's limit) and (b) a freshly minted slot, floored to
 /// the grid, still has a leasable window of at least 60 s.
 pub fn clamp_lifetime(secs: u64, grid: i64) -> i64 {
     let min = (DEFAULT_MIN_REMAINING_SECS + grid + 60).max(900);
-    (secs as i64).clamp(min, 7200)
+    (secs as i64).clamp(min, compat_config::authorization::NATIVE_LEASE_SECS)
 }
 
 fn mint(slot: u32, generation: u64, now: i64, lifetime: i64, grid: i64) -> Slot {
@@ -135,6 +157,11 @@ fn mint(slot: u32, generation: u64, now: i64, lifetime: i64, grid: i64) -> Slot 
         generation,
         // Floored (never later than now + lifetime) onto the batch grid.
         valid_until: round_down_to_grid(now + lifetime, grid),
+        principal_id: credentials::generate_native_principal_id(),
+        credential_id: credentials::generate_credential_id(),
+        class: CredentialClass::Native,
+        valid_from: now,
+        revoked: false,
         vless_uuid: credentials::generate_uuid_v4(),
         hysteria2_password: credentials::generate_hysteria2_password(),
         reported: false,
@@ -246,7 +273,9 @@ pub fn adopt_extensions(
         if let Some(t) = rs.extend_to {
             let next = round_down_to_grid(t, grid).min(cap);
             if next > s.valid_until {
+                s.valid_from = now;
                 s.valid_until = next;
+                s.revoked = false;
                 n += 1;
             }
         }
@@ -274,7 +303,9 @@ pub fn plan(
     for slot in 0..size as u32 {
         match state.slots.iter_mut().find(|s| s.slot == slot) {
             Some(existing) if rotate.contains(&slot) => {
+                let principal_id = existing.principal_id.clone();
                 *existing = mint(slot, existing.generation + 1, now, lifetime, grid);
+                existing.principal_id = principal_id;
                 changed = true;
             }
             Some(_) => {}
@@ -293,8 +324,26 @@ pub fn plan(
 
 pub fn load_state(path: &Path) -> Result<LeaseState> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("parsing lease state {path:?} (contents not shown)")),
+        Ok(bytes) => {
+            let mut state: LeaseState = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parsing lease state {path:?} (contents not shown)"))?;
+            // One-time, secret-preserving legacy migration. Empty serde-defaulted ids can only
+            // come from the pre-authorization schema. They are minted locally, then persisted
+            // before apply; vpn-admin replaces all lease-* users with this exact cred_* set.
+            for slot in &mut state.slots {
+                if slot.principal_id.is_empty() {
+                    slot.principal_id = credentials::generate_native_principal_id();
+                }
+                if slot.credential_id.is_empty() {
+                    slot.credential_id = credentials::generate_credential_id();
+                }
+                if slot.valid_from == 0 {
+                    slot.valid_from =
+                        slot.valid_until - compat_config::authorization::NATIVE_LEASE_SECS;
+                }
+            }
+            Ok(state)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(LeaseState::default()),
         Err(e) => Err(e).with_context(|| format!("reading lease state {path:?}")),
     }
@@ -334,6 +383,11 @@ fn vpn_admin_input(state: &LeaseState) -> Value {
     json!({
         "slots": state.slots.iter().map(|s| json!({
             "slot": s.slot,
+            "principal_id": s.principal_id,
+            "credential_id": s.credential_id,
+            "class": s.class,
+            "valid_from": s.valid_from,
+            "revoked": s.revoked,
             "vless_uuid": s.vless_uuid,
             "hysteria2_password": s.hysteria2_password,
             "expires_at": s.valid_until,
@@ -358,6 +412,11 @@ pub fn sync_body(
         let mut item = json!({
             "slot": s.slot,
             "generation": s.generation,
+            "principal_id": s.principal_id,
+            "credential_id": s.credential_id,
+            "class": s.class,
+            "valid_from": rfc3339(s.valid_from)?,
+            "revoked": s.revoked,
             "valid_until": rfc3339(s.valid_until)?,
         });
         if !s.reported {
@@ -432,6 +491,7 @@ pub fn absorb_sync_response(state: &mut LeaseState, resp: &Value) -> Result<Remo
     }
     for s in &mut state.slots {
         s.reported = matches!(view.slots.get(&s.slot), Some(r) if r.generation == s.generation);
+        s.revoked = matches!(view.slots.get(&s.slot), Some(r) if r.generation == s.generation && r.state == "revoked");
     }
     Ok(view)
 }
@@ -625,18 +685,18 @@ mod tests {
     }
 
     #[test]
-    fn lifetime_clamp_keeps_a_leasable_window_and_the_2h_cap() {
+    fn lifetime_clamp_keeps_a_leasable_window_and_native_30_minute_cap() {
         assert_eq!(clamp_lifetime(60, 600), 1260);
         assert_eq!(clamp_lifetime(1800, 600), 1800);
-        assert_eq!(clamp_lifetime(99_999, 600), 7200);
+        assert_eq!(clamp_lifetime(99_999, 600), 1800);
         assert_eq!(clamp_lifetime(900, 60), 900);
         assert_eq!(clamp_batch_interval(1), 60);
-        assert_eq!(clamp_batch_interval(99_999), 3600);
-        for grid in [60, 300, 600, 3600] {
+        assert_eq!(clamp_batch_interval(99_999), 600);
+        for grid in [60, 300, 600] {
             let life = clamp_lifetime(0, grid);
             for now in [0, 1, grid - 1, 12_345] {
                 let vu = round_down_to_grid(now + life, grid);
-                assert!(vu <= now + 7200);
+                assert!(vu <= now + 1800);
                 assert!(
                     vu - DEFAULT_MIN_REMAINING_SECS - now >= 60,
                     "grid {grid} now {now}"
@@ -773,6 +833,7 @@ mod tests {
         st.applied = true;
         let vu = st.slots[0].valid_until; // 1800
         let before = st.clone();
+        let before_admin = vpn_admin_input(&st);
         let ext = |g: u64, state: &str, t: i64| RemoteSlot {
             extend_to: Some(t),
             ..rs(g, state)
@@ -794,6 +855,7 @@ mod tests {
             assert_eq!(st.slots[i].valid_until, vu);
         }
         assert!(!st.applied, "store must be re-applied");
+        let after_admin = vpn_admin_input(&st);
         for i in 0..5 {
             assert_eq!(
                 st.slots[i].vless_uuid, before.slots[i].vless_uuid,
@@ -803,7 +865,21 @@ mod tests {
                 st.slots[i].generation, before.slots[i].generation,
                 "same slot generation"
             );
+            assert_eq!(st.slots[i].credential_id, before.slots[i].credential_id);
+            assert_eq!(st.slots[i].principal_id, before.slots[i].principal_id);
         }
+        assert_eq!(
+            before_admin["slots"][0]["vless_uuid"],
+            after_admin["slots"][0]["vless_uuid"]
+        );
+        assert_eq!(
+            before_admin["slots"][0]["hysteria2_password"],
+            after_admin["slots"][0]["hysteria2_password"]
+        );
+        assert_eq!(
+            before_admin["slots"][0]["credential_id"],
+            after_admin["slots"][0]["credential_id"]
+        );
         // Never backwards, never resurrects an expired generation.
         let back = view(1_000, &[(0, ext(1, "leased", 1_200))]);
         assert_eq!(adopt_extensions(&mut st, &back, 1_000, LIFE, GRID), 0);
@@ -865,11 +941,35 @@ mod tests {
     }
 
     #[test]
+    fn legacy_state_migrates_ids_without_rotating_protocol_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.json");
+        let uuid = "11111111-1111-4111-8111-111111111111";
+        let password = "legacy-password-secret";
+        std::fs::write(&path, format!(r#"{{"slots":[{{"slot":0,"generation":7,"valid_until":1800,"vless_uuid":"{uuid}","hysteria2_password":"{password}","reported":true}}],"applied":true}}"#)).unwrap();
+        let migrated = load_state(&path).unwrap();
+        let slot = &migrated.slots[0];
+        assert!(slot.principal_id.starts_with("native_"));
+        assert!(slot.credential_id.starts_with("cred_"));
+        assert_eq!(slot.valid_from, 0);
+        assert_eq!(slot.vless_uuid, uuid);
+        assert_eq!(slot.hysteria2_password, password);
+        assert_eq!(slot.generation, 7);
+        let input = vpn_admin_input(&migrated);
+        assert_eq!(input["slots"][0]["principal_id"], slot.principal_id);
+        assert_eq!(input["slots"][0]["credential_id"], slot.credential_id);
+        assert_eq!(input["slots"][0]["class"], "native");
+    }
+
+    #[test]
     fn sync_body_sends_secrets_only_for_unreported_generations_and_policy() {
         let mut st = fresh(2, 0);
         st.slots[0].reported = true;
         let body = sync_body(&st, None, LIFE, GRID).unwrap();
         let slots = body["slots"].as_array().unwrap();
+        assert_eq!(slots[0]["principal_id"], st.slots[0].principal_id);
+        assert_eq!(slots[0]["credential_id"], st.slots[0].credential_id);
+        assert_eq!(slots[0]["class"], "native");
         assert!(slots[0].get("vless_uuid").is_none());
         assert!(slots[0].get("hysteria2_password").is_none());
         assert_eq!(slots[1]["vless_uuid"], json!(st.slots[1].vless_uuid));

@@ -791,6 +791,13 @@ fn main() -> Result<()> {
 }
 
 fn cmd_init(cfg: &DeploymentConfig, rotate: bool) -> Result<()> {
+    if !offline_mutation_allowed() {
+        compat_config::static_revision::validate_handshake_server_resolution(
+            &cfg.reality.handshake_server,
+            cfg.reality.handshake_port,
+        )
+        .context("resolving REALITY handshake server to public-only addresses before init")?;
+    }
     std::fs::create_dir_all(cfg.reality_dir())?;
     std::fs::create_dir_all(cfg.hysteria_dir())?;
     std::fs::create_dir_all(cfg.users_file().parent().unwrap())?;

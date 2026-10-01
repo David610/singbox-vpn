@@ -375,7 +375,12 @@ fn is_false(b: &bool) -> bool {
 
 impl CompatUser {
     pub fn is_active(&self, now_unix: i64) -> bool {
-        self.enabled && self.expires_at.map(|exp| now_unix < exp).unwrap_or(true)
+        // Authorization-backed lease users encode valid_from in created_at. Legacy/customer
+        // users retain their historical semantics; their creation timestamp was never an
+        // authorization boundary. This keeps one persisted source of truth without making an
+        // old paid user unexpectedly inactive during migration.
+        let started = !self.id.starts_with("cred_") || self.created_at <= now_unix;
+        self.enabled && started && self.expires_at.map(|exp| now_unix < exp).unwrap_or(true)
     }
 
     /// This user's credential for `endpoint_id`, if the operator has set
