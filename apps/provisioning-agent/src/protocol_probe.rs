@@ -36,7 +36,7 @@ use crate::config::{AgentConfig, ProtocolProbeConfig, StaticProbeTarget};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
@@ -298,6 +298,11 @@ pub struct ProbeResult {
     pub latency_ms: Option<u64>,
     pub loss_pct: u8,
     pub failure_streak: u32,
+    /// Hysteretic readiness classification. The first failed round is
+    /// `degraded`; only two consecutive failures become `failed`.
+    pub status: &'static str,
+    /// Stable machine-readable code; never contains an endpoint or secret.
+    pub reason_code: Option<&'static str>,
     pub error: Option<&'static str>,
 }
 
@@ -310,7 +315,16 @@ pub struct ProbeReport {
     /// Surfaced to the control plane so an insecure probe config cannot
     /// run unnoticed.
     pub tls_insecure_for_tests: bool,
+    /// Backward-compatible legacy name: the reporting node's LOCAL
+    /// Hysteria2 certificate, not any peer target's certificate.
     pub hysteria2_cert_days_remaining: Option<i64>,
+    /// Backward-compatible legacy name for LOCAL certificate status:
+    /// `healthy`, `expiring`, `expired`, or `unknown`.
+    pub certificate_status: &'static str,
+    /// Explicitly scoped aliases: these describe THIS reporting node's local
+    /// certificate, never a peer target's certificate.
+    pub local_hysteria2_cert_days_remaining: Option<i64>,
+    pub local_hysteria2_certificate_status: &'static str,
     pub results: Vec<ProbeResult>,
 }
 
@@ -332,7 +346,7 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
         .build()
         .expect("building reqwest client");
     let interval = Duration::from_secs(pcfg.interval_secs.clamp(15, 600));
-    let mut streaks: HashMap<(String, &'static str, String), u32> = HashMap::new();
+    let mut streaks = FailureStreaks::default();
     let mut own: Option<ProbeTarget> = None;
     let mut published = false;
     let mut round = 0_u64;
@@ -373,7 +387,7 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
             }
         }
         targets.retain(|t| t.node_id != cfg.node_id);
-        targets.dedup_by(|a, b| a.node_id == b.node_id);
+        deduplicate_targets(&mut targets);
 
         let mut results = Vec::new();
         for t in &targets {
@@ -390,19 +404,31 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
                 r.vantage,
                 format!("{:?}", r.protocol),
             );
-            let s = streaks.entry(key).or_insert(0);
-            *s = if r.ok { 0 } else { s.saturating_add(1) };
-            r.failure_streak = *s;
+            let streak = streaks.observe(round, key, r.ok);
+            r.failure_streak = streak;
+            r.status = hysteretic_status(r.ok, streak);
+            r.reason_code = r.error;
         }
+        streaks.finish_round(round);
         round += 1;
+        let cert_days = pcfg
+            .hysteria2_cert_path
+            .as_deref()
+            .and_then(cert_days_remaining);
+        let certificate_status = match cert_days {
+            Some(days) if days < 0 => "expired",
+            Some(days) if days < 14 => "expiring",
+            Some(_) => "healthy",
+            None => "unknown",
+        };
         let report = ProbeReport {
             version: 1,
             round,
             tls_insecure_for_tests: pcfg.tls_insecure_for_tests,
-            hysteria2_cert_days_remaining: pcfg
-                .hysteria2_cert_path
-                .as_deref()
-                .and_then(cert_days_remaining),
+            hysteria2_cert_days_remaining: cert_days,
+            certificate_status,
+            local_hysteria2_cert_days_remaining: cert_days,
+            local_hysteria2_certificate_status: certificate_status,
             results,
         };
         tracing::info!(
@@ -414,6 +440,53 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
             *slot = Some(report);
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+/// Preserve insertion order and the first definition for each node. Static
+/// targets are appended first, so explicit local configuration wins over a
+/// conflicting fetched control-plane definition.
+fn deduplicate_targets(targets: &mut Vec<ProbeTarget>) {
+    let mut seen = HashSet::new();
+    targets.retain(|target| seen.insert(target.node_id.clone()));
+}
+
+fn hysteretic_status(ok: bool, failure_streak: u32) -> &'static str {
+    if ok {
+        "healthy"
+    } else if failure_streak < 2 {
+        "degraded"
+    } else {
+        "failed"
+    }
+}
+
+type ProbeKey = (String, &'static str, String);
+
+#[derive(Default)]
+struct FailureStreaks {
+    entries: HashMap<ProbeKey, (u32, u64)>,
+}
+
+impl FailureStreaks {
+    fn observe(&mut self, round: u64, key: ProbeKey, ok: bool) -> u32 {
+        let previous = self.entries.get(&key).copied();
+        let consecutive = previous.is_some_and(|(_, seen)| seen.checked_add(1) == Some(round));
+        let streak = if ok {
+            0
+        } else if consecutive {
+            previous.map_or(1, |(streak, _)| streak.saturating_add(1))
+        } else {
+            1
+        };
+        self.entries.insert(key, (streak, round));
+        streak
+    }
+
+    /// Forget targets not observed in this round. Besides bounding memory,
+    /// this makes any absence break the consecutive-failure sequence.
+    fn finish_round(&mut self, round: u64) {
+        self.entries.retain(|_, (_, seen)| *seen == round);
     }
 }
 
@@ -515,6 +588,8 @@ pub async fn probe_endpoint(
         latency_ms: None,
         loss_pct: 100,
         failure_streak: 0,
+        status: "pending",
+        reason_code: None,
         error: None,
     };
 
@@ -849,6 +924,72 @@ mod tests {
 
     const VLESS: &str = "vless://11111111-1111-4111-8111-111111111111@vpn.example.com:443?encryption=none&security=reality&sni=www.cloudflare.com&fp=chrome&pbk=PUBKEY&sid=abcd&type=tcp&flow=xtls-rprx-vision#n1";
     const HY2: &str = "hysteria2://hy2%2Bpass@vpn.example.com:8443?sni=vpn.example.com&insecure=0&obfs=salamander&obfs-password=ob#n1";
+
+    #[test]
+    fn one_transient_failure_is_degraded_not_failed() {
+        assert_eq!(hysteretic_status(true, 0), "healthy");
+        assert_eq!(hysteretic_status(false, 1), "degraded");
+        assert_eq!(hysteretic_status(false, 2), "failed");
+    }
+
+    #[test]
+    fn failure_streaks_require_adjacent_observed_rounds_and_remain_bounded() {
+        let key = || ("node-a".to_string(), "peer", "Reality".to_string());
+        let mut streaks = FailureStreaks::default();
+
+        assert_eq!(streaks.observe(10, key(), false), 1);
+        assert_eq!(streaks.observe(11, key(), false), 2);
+        assert_eq!(streaks.observe(12, key(), true), 0);
+        streaks.finish_round(12);
+
+        // No observation in round 13: pruning breaks the sequence.
+        streaks.finish_round(13);
+        assert!(streaks.entries.is_empty());
+        assert_eq!(streaks.observe(14, key(), false), 1);
+        assert_eq!(hysteretic_status(false, 1), "degraded");
+
+        // Many one-off targets cannot accumulate indefinitely.
+        for n in 0..1_001 {
+            let transient = (format!("node-{n}"), "peer", "Reality".to_string());
+            streaks.observe(15, transient, false);
+        }
+        streaks.finish_round(15);
+        assert_eq!(streaks.entries.len(), 1_001);
+        streaks.finish_round(16);
+        assert!(streaks.entries.is_empty());
+    }
+
+    #[test]
+    fn duplicate_observation_in_one_round_does_not_advance_failure_streak() {
+        let key = || ("node-a".to_string(), "peer", "Reality".to_string());
+        let mut streaks = FailureStreaks::default();
+        assert_eq!(streaks.observe(1, key(), false), 1);
+        assert_eq!(streaks.observe(1, key(), false), 1);
+        assert_eq!(streaks.observe(2, key(), false), 2);
+        assert_eq!(streaks.observe(u64::MAX, key(), false), 1);
+    }
+
+    #[test]
+    fn target_dedup_is_global_ordered_and_static_first() {
+        let target = |node: &str, expected: &str| ProbeTarget {
+            node_id: node.into(),
+            expected_ipv4: Some(expected.into()),
+            reality_uri: None,
+            hysteria2_uri: None,
+        };
+        let mut targets = vec![
+            target("A", "192.0.2.1"),
+            target("B", "192.0.2.2"),
+            target("A", "198.51.100.1"),
+            target("B", "198.51.100.2"),
+        ];
+        deduplicate_targets(&mut targets);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].node_id, "A");
+        assert_eq!(targets[0].expected_ipv4.as_deref(), Some("192.0.2.1"));
+        assert_eq!(targets[1].node_id, "B");
+        assert_eq!(targets[1].expected_ipv4.as_deref(), Some("192.0.2.2"));
+    }
 
     #[test]
     fn parses_reality_share_link() {

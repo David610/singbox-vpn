@@ -1,7 +1,8 @@
 [Unit]
 Description=sing-box compatibility data plane (VLESS+REALITY, Hysteria2)
 Documentation=https://sing-box.sagernet.org/
-After=network-online.target
+Requires=vpn-egress-isolation.service
+After=network-online.target vpn-egress-isolation.service
 Wants=network-online.target
 
 # StartLimitIntervalSec/StartLimitBurst were previously left at

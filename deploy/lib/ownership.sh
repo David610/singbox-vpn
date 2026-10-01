@@ -102,6 +102,62 @@ ownership_set_baseline_once() {
   ownership_set "$key" "$value"
 }
 
+# Install a fixed-name path while preserving the first pre-singbox-vpn
+# occupant byte-for-byte. Shared by install and update so a unit introduced by
+# a later release has exactly the same uninstall/restore semantics as one
+# present on the first installation.
+install_fixed_path_with_ownership() {
+  local src="$1" dest="$2" key="$3" mode="${4:-0644}"
+  local backup_dir="${OWNERSHIP_DIR}/preexisting-backups"
+  local backup="$backup_dir/$key"
+  if [ -e "$dest" ]; then
+    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "1"
+    if [ "$(ownership_get "FIXEDPATH_${key}_BACKED_UP" "0")" != "1" ]; then
+      install -d -m 0700 "$backup_dir"
+      cp -a "$dest" "$backup"
+      ownership_set "FIXEDPATH_${key}_BACKUP" "$backup"
+      ownership_mark "FIXEDPATH_${key}_BACKED_UP"
+    fi
+  else
+    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "0"
+  fi
+  install -m "$mode" "$src" "$dest"
+}
+
+ownership_capture_systemd_baseline_once() {
+  local key="$1" unit="$2" active=0 enabled=0
+  systemctl is-active --quiet "$unit" 2>/dev/null && active=1
+  systemctl is-enabled --quiet "$unit" 2>/dev/null && enabled=1
+  ownership_set_baseline_once "SYSTEMD_${key}_PRE_ACTIVE" "$active"
+  ownership_set_baseline_once "SYSTEMD_${key}_PRE_ENABLED" "$enabled"
+}
+
+# Capture the original fixed-name nftables table before the first managed
+# mutation. This is an uninstall baseline (lifetime of the installation), not
+# the per-update rollback snapshot maintained by update.sh.
+ownership_capture_egress_table_baseline_once() {
+  ownership_init
+  if grep -q '^EGRESS_TABLE_PRE_EXISTED=' "$OWNERSHIP_FILE" 2>/dev/null; then
+    return 0
+  fi
+  command -v nft >/dev/null 2>&1 || return 1
+  if nft list table inet arcana_egress_isolation >/dev/null 2>&1; then
+    local backup_dir="${OWNERSHIP_DIR}/preexisting-backups"
+    local backup="$backup_dir/EGRESS_TABLE.nft"
+    install -d -m 0700 "$backup_dir"
+    nft list table inet arcana_egress_isolation >"$backup" || return 1
+    chmod 0600 "$backup"
+    ownership_set EGRESS_TABLE_BACKUP "$backup"
+    ownership_set EGRESS_TABLE_BACKED_UP "1"
+    ownership_set EGRESS_TABLE_PRE_EXISTED "1"
+  else
+    # Distinguish a genuinely absent table from nft/kernel/permission failure;
+    # never record "we created it" on an ambiguous observation.
+    nft list tables >/dev/null 2>&1 || return 1
+    ownership_set EGRESS_TABLE_PRE_EXISTED "0"
+  fi
+}
+
 # Refuse to treat a manifest-sourced value as a safe destructive-cleanup
 # path (uninstall.sh's own use of e.g. RUSTUP_HOME_DIR) unless it is a
 # non-empty absolute path, is not "/" itself, and contains no ".."

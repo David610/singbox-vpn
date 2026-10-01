@@ -171,37 +171,6 @@ network_diagnose_download_failure() {
   fi
 }
 
-# Installs $src to a FIXED, well-known destination path (a systemd unit,
-# a certbot renewal hook — anything named identically regardless of
-# who put it there) while tracking, via the ownership manifest, whether
-# something already occupied that exact path before singbox-vpn touched it. If
-# so, an exact byte-for-byte backup is taken ONCE (never overwritten by
-# a later repair re-run) so uninstall.sh can restore the precise
-# predecessor instead of guessing or silently adopting/discarding
-# another application's file (checkpoint-2 requirement: never silently
-# adopt another application's fixed-name resource).
-# $1 = source file to install, $2 = destination path, $3 = short KEY
-# (letters/digits/underscore only, unique per fixed path — used as both
-# the ownership-record key suffix and the backup filename), $4 = mode
-# (default 0644).
-install_fixed_path_with_ownership() {
-  local src="$1" dest="$2" key="$3" mode="${4:-0644}"
-  local backup_dir="/var/lib/singbox-vpn/preexisting-backups"
-  local backup="$backup_dir/$key"
-  if [ -e "$dest" ]; then
-    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "1"
-    if [ "$(ownership_get "FIXEDPATH_${key}_BACKED_UP" "0")" != "1" ]; then
-      install -d -m 0700 "$backup_dir"
-      cp -a "$dest" "$backup"
-      ownership_set "FIXEDPATH_${key}_BACKUP" "$backup"
-      ownership_mark "FIXEDPATH_${key}_BACKED_UP"
-    fi
-  else
-    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "0"
-  fi
-  install -m "$mode" "$src" "$dest"
-}
-
 # ---------------------------------------------------------------------
 # CLI flags (all optional; env var equivalents also work, e.g. for
 # `curl | sudo bash -s -- --domain vpn.example.com`). The normal
@@ -480,6 +449,7 @@ check_no_ambiguous_preexisting_residue() {
     [/etc/systemd/system/vpn-subscription.service]=VPNSUB_UNIT
     [/etc/systemd/system/vpn-expiry-reconcile.service]=EXPIRY_SVC_UNIT
     [/etc/systemd/system/vpn-expiry-reconcile.timer]=EXPIRY_TIMER_UNIT
+    [/etc/systemd/system/vpn-egress-isolation.service]=EGRESS_ISOLATION_UNIT
     [/etc/systemd/system/vpn-service-watchdog.service]=WATCHDOG_SVC_UNIT
     [/etc/systemd/system/vpn-service-watchdog.timer]=WATCHDOG_TIMER_UNIT
   )
@@ -1814,6 +1784,11 @@ install_provisioning_agent_binary() {
 
 install_systemd_units() {
   log "installing systemd units..."
+  # Capture the table before installing/reloading a sing-box unit that now
+  # Requires the isolation service; a repair render could otherwise start the
+  # dependency and mutate an operator's opt-in table before ownership capture.
+  ownership_capture_egress_table_baseline_once \
+    || die "could not capture the pre-install nftables egress-table ownership baseline"
   # Each is a FIXED path — install_fixed_path_with_ownership() backs up
   # (once) and tracks whether something already occupied it before singbox-vpn
   # ever wrote here, so uninstall.sh can restore the exact predecessor
@@ -1822,6 +1797,8 @@ install_systemd_units() {
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-subscription.service" /etc/systemd/system/vpn-subscription.service VPNSUB_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.service" /etc/systemd/system/vpn-expiry-reconcile.service EXPIRY_SVC_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-expiry-reconcile.timer" /etc/systemd/system/vpn-expiry-reconcile.timer EXPIRY_TIMER_UNIT
+  ownership_capture_systemd_baseline_once EGRESS_ISOLATION_UNIT vpn-egress-isolation.service
+  install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-egress-isolation.service" /etc/systemd/system/vpn-egress-isolation.service EGRESS_ISOLATION_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-service-watchdog.service" /etc/systemd/system/vpn-service-watchdog.service WATCHDOG_SVC_UNIT
   install_fixed_path_with_ownership "$REPO_ROOT/deploy/almalinux/systemd/vpn-service-watchdog.timer" /etc/systemd/system/vpn-service-watchdog.timer WATCHDOG_TIMER_UNIT
   install -m 0755 "$REPO_ROOT/deploy/almalinux/service-watchdog.sh" "$BIN_DIR/vpn-service-watchdog"
@@ -2594,7 +2571,9 @@ enable_and_start_services() {
   # idempotent no-op, not redundant risk — it's still restarted
   # explicitly rather than relying on that earlier reload alone, so this
   # function's behavior does not depend on stage ordering elsewhere.
-  systemctl enable sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-service-watchdog.timer
+  systemctl enable sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-service-watchdog.timer vpn-egress-isolation.service
+  systemctl reload-or-restart vpn-egress-isolation.service \
+    || die "host C-16 egress isolation failed to apply"
   systemctl reload-or-restart sing-box.service \
     || die "sing-box failed to (re)start — check: journalctl -u sing-box --no-pager -n 100"
   systemctl reload-or-restart vpn-subscription.service \

@@ -50,7 +50,7 @@ SINGBOX_BIN="$BIN_DIR/sing-box"
 # necessity, since this is bash, not shared code; if you add a unit to
 # one, add it to the other in the same commit — deploy/lib/tests/
 # test-install-update-parity.sh fails loudly if these two lists drift).
-SYSTEMD_UNITS=(sing-box.service vpn-subscription.service vpn-expiry-reconcile.service vpn-expiry-reconcile.timer vpn-service-watchdog.service vpn-service-watchdog.timer)
+SYSTEMD_UNITS=(sing-box.service vpn-subscription.service vpn-expiry-reconcile.service vpn-expiry-reconcile.timer vpn-service-watchdog.service vpn-service-watchdog.timer vpn-egress-isolation.service)
 
 log() { echo "[update] $*"; }
 warn() { echo "[update] WARNING: $*" >&2; }
@@ -65,6 +65,55 @@ die() { echo "[update] ERROR: $*" >&2; exit 1; }
 lifecycle_gate_abort_hook() {
   [ "${SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER:-}" = "$1" ] || return 0
   die "SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=$1 — deliberately aborting for lifecycle-gate testing."
+}
+
+snapshot_arcana_egress_table() {
+  systemctl is-active --quiet vpn-egress-isolation.service 2>/dev/null \
+    && : >"$BACKUP_DIR/arcana-egress-unit.active" \
+    || rm -f "$BACKUP_DIR/arcana-egress-unit.active"
+  systemctl is-enabled --quiet vpn-egress-isolation.service 2>/dev/null \
+    && : >"$BACKUP_DIR/arcana-egress-unit.enabled" \
+    || rm -f "$BACKUP_DIR/arcana-egress-unit.enabled"
+  command -v nft >/dev/null 2>&1 || return 0
+  if nft list table inet arcana_egress_isolation >"$BACKUP_DIR/arcana-egress-table.nft" 2>/dev/null; then
+    : >"$BACKUP_DIR/arcana-egress-table.existed"
+  else
+    rm -f "$BACKUP_DIR/arcana-egress-table.nft" "$BACKUP_DIR/arcana-egress-table.existed"
+  fi
+}
+
+# Restore exactly what existed before this transaction without relying on the
+# restored release containing this newly introduced helper.
+restore_arcana_egress_table() {
+  command -v nft >/dev/null 2>&1 || return 1
+  local batch="$BACKUP_DIR/arcana-egress-restore.nft"
+  : >"$batch"
+  if nft list table inet arcana_egress_isolation >/dev/null 2>&1; then
+    printf '%s\n' 'delete table inet arcana_egress_isolation' >>"$batch"
+  fi
+  if [ -f "$BACKUP_DIR/arcana-egress-table.existed" ]; then
+    cat "$BACKUP_DIR/arcana-egress-table.nft" >>"$batch"
+  fi
+  [ -s "$batch" ] || return 0
+  nft --check -f "$batch" && nft -f "$batch"
+}
+
+quiesce_new_egress_unit_for_rollback() {
+  if [ ! -f "$BACKUP_DIR/arcana-egress-unit.active" ]; then
+    systemctl stop vpn-egress-isolation.service >/dev/null 2>&1 || true
+  fi
+  if [ ! -f "$BACKUP_DIR/arcana-egress-unit.enabled" ]; then
+    systemctl disable vpn-egress-isolation.service >/dev/null 2>&1 || true
+  fi
+}
+
+restore_egress_unit_runtime_baseline() {
+  if [ -f "$BACKUP_DIR/arcana-egress-unit.enabled" ]; then
+    systemctl enable vpn-egress-isolation.service >/dev/null 2>&1 || return 1
+  fi
+  if [ -f "$BACKUP_DIR/arcana-egress-unit.active" ]; then
+    systemctl start vpn-egress-isolation.service >/dev/null 2>&1 || return 1
+  fi
 }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
@@ -92,6 +141,8 @@ done
 . "$REPO_ROOT/deploy/lib/state-schema.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/node-identity.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/ownership.sh"
 
 # Role/identity safety for every update/repair: snapshot deployment.toml
 # (and its role/node_id) under the state lock before anything mutates,
@@ -390,8 +441,11 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
     cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
   done
   for u in "${SYSTEMD_UNITS[@]}"; do
-    [ -f "$SYSTEMD_DIR/$u" ] || die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update"
-    cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
+    if [ -f "$SYSTEMD_DIR/$u" ]; then
+      cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
+    elif [ "$u" != "vpn-egress-isolation.service" ]; then
+      die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update"
+    fi
   done
   for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
     [ -f "$BIN_DIR/$f" ] && cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
@@ -412,6 +466,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   flock -x 201
   [ -f /etc/vpn/compat/sing-box/config.json ] \
     && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
+  snapshot_arcana_egress_table
   snapshot_deployment_identity
 
   mutation_started=0
@@ -424,6 +479,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
     set +e
     local failed=0
     warn "update did not commit; restoring previous binaries/units/helper scripts from $BACKUP_DIR"
+    quiesce_new_egress_unit_for_rollback
     for f in vpn-admin vpn vpn-subscription-svc; do
       install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
       mv -f "$BIN_DIR/$f.rollback" "$BIN_DIR/$f" || failed=1
@@ -432,10 +488,14 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
       if [ -f "$BACKUP_DIR/systemd/$u" ]; then
         install -m 0644 "$BACKUP_DIR/systemd/$u" "$SYSTEMD_DIR/$u.rollback" || failed=1
         mv -f "$SYSTEMD_DIR/$u.rollback" "$SYSTEMD_DIR/$u" || failed=1
+      else
+        rm -f "$SYSTEMD_DIR/$u" || failed=1
       fi
       rm -f "$SYSTEMD_DIR/$u.update-new"
     done
     systemctl daemon-reload || failed=1
+    restore_arcana_egress_table || failed=1
+    restore_egress_unit_runtime_baseline || failed=1
     restore_deployment_toml_snapshot || failed=1
     for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
       if [ -f "$BACKUP_DIR/$f" ]; then
@@ -489,7 +549,13 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   mv -f "$BIN_DIR/vpn.update-new" "$BIN_DIR/vpn"
   mv -f "$BIN_DIR/vpn-subscription-svc.update-new" "$BIN_DIR/vpn-subscription-svc"
   for u in "${SYSTEMD_UNITS[@]}"; do
-    mv -f "$SYSTEMD_DIR/$u.update-new" "$SYSTEMD_DIR/$u"
+    if [ "$u" = "vpn-egress-isolation.service" ]; then
+      ownership_capture_systemd_baseline_once EGRESS_ISOLATION_UNIT vpn-egress-isolation.service
+      install_fixed_path_with_ownership "$SYSTEMD_DIR/$u.update-new" "$SYSTEMD_DIR/$u" EGRESS_ISOLATION_UNIT
+      rm -f "$SYSTEMD_DIR/$u.update-new"
+    else
+      mv -f "$SYSTEMD_DIR/$u.update-new" "$SYSTEMD_DIR/$u"
+    fi
   done
   mv -f "$BIN_DIR/vpn-health-check.update-new" "$BIN_DIR/vpn-health-check"
   mv -f "$BIN_DIR/vpn-benchmark.update-new" "$BIN_DIR/vpn-benchmark"
@@ -498,6 +564,11 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
 
   log "reloading systemd unit definitions..."
   systemctl daemon-reload
+  ownership_capture_egress_table_baseline_once \
+    || die "could not capture the pre-update nftables egress-table ownership baseline"
+  systemctl enable vpn-egress-isolation.service
+  systemctl reload-or-restart vpn-egress-isolation.service \
+    || die "host C-16 egress isolation failed to apply"
 
   log "install mode: UPGRADE (dev-rebuild) — checking persistent state schema before rendering..."
   schema_rc=0
@@ -837,8 +908,11 @@ for f in vpn-admin vpn vpn-subscription-svc; do
   cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
 done
 for u in "${SYSTEMD_UNITS[@]}"; do
-  [ -f "$SYSTEMD_DIR/$u" ] || die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update. Nothing live has been changed."
-  cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
+  if [ -f "$SYSTEMD_DIR/$u" ]; then
+    cp -a "$SYSTEMD_DIR/$u" "$BACKUP_DIR/systemd/$u"
+  elif [ "$u" != "vpn-egress-isolation.service" ]; then
+    die "installed systemd unit $SYSTEMD_DIR/$u is missing; refusing a non-recoverable update. Nothing live has been changed."
+  fi
 done
 for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
   [ -f "$BIN_DIR/$f" ] && cp -a "$BIN_DIR/$f" "$BACKUP_DIR/$f"
@@ -871,6 +945,7 @@ exec 201>/run/lock/singbox-vpn.lock
 flock -x 201
 [ -f /etc/vpn/compat/sing-box/config.json ] \
   && cp -a /etc/vpn/compat/sing-box/config.json "$BACKUP_DIR/config.json"
+snapshot_arcana_egress_table
 snapshot_deployment_identity
 
 mutation_started=0
@@ -883,6 +958,9 @@ rollback_update() {
   set +e
   local failed=0
   warn "update to $TARGET_VERSION did not commit; restoring previous release (${CURRENT_VERSION:-unknown}) from $BACKUP_DIR"
+  # Stop the newly introduced unit while the verified new helper still exists.
+  # An older source tree restored below may contain neither unit nor helper.
+  quiesce_new_egress_unit_for_rollback
 
   for f in vpn-admin vpn vpn-subscription-svc; do
     install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
@@ -892,6 +970,8 @@ rollback_update() {
     if [ -f "$BACKUP_DIR/systemd/$u" ]; then
       install -m 0644 "$BACKUP_DIR/systemd/$u" "$SYSTEMD_DIR/$u.rollback" || failed=1
       mv -f "$SYSTEMD_DIR/$u.rollback" "$SYSTEMD_DIR/$u" || failed=1
+    else
+      rm -f "$SYSTEMD_DIR/$u" || failed=1
     fi
     rm -f "$SYSTEMD_DIR/$u.update-new"
   done
@@ -921,6 +1001,8 @@ rollback_update() {
   fi
 
   systemctl daemon-reload || failed=1
+  restore_arcana_egress_table || failed=1
+  restore_egress_unit_runtime_baseline || failed=1
 
   # deployment.toml IS rewound when this transaction migrated it: the
   # restored (older) binaries may not understand the migrated schema, and
@@ -1000,7 +1082,13 @@ mv -f "$BIN_DIR/vpn-admin.update-new" "$BIN_DIR/vpn-admin"
 mv -f "$BIN_DIR/vpn.update-new" "$BIN_DIR/vpn"
 mv -f "$BIN_DIR/vpn-subscription-svc.update-new" "$BIN_DIR/vpn-subscription-svc"
 for u in "${SYSTEMD_UNITS[@]}"; do
-  mv -f "$SYSTEMD_DIR/$u.update-new" "$SYSTEMD_DIR/$u"
+  if [ "$u" = "vpn-egress-isolation.service" ]; then
+    ownership_capture_systemd_baseline_once EGRESS_ISOLATION_UNIT vpn-egress-isolation.service
+    install_fixed_path_with_ownership "$SYSTEMD_DIR/$u.update-new" "$SYSTEMD_DIR/$u" EGRESS_ISOLATION_UNIT
+    rm -f "$SYSTEMD_DIR/$u.update-new"
+  else
+    mv -f "$SYSTEMD_DIR/$u.update-new" "$SYSTEMD_DIR/$u"
+  fi
 done
 mv -f "$BIN_DIR/vpn-health-check.update-new" "$BIN_DIR/vpn-health-check"
 mv -f "$BIN_DIR/vpn-benchmark.update-new" "$BIN_DIR/vpn-benchmark"
@@ -1021,6 +1109,11 @@ fi
 # =======================================================================
 log "reloading systemd unit definitions..."
 systemctl daemon-reload
+ownership_capture_egress_table_baseline_once \
+  || die "could not capture the pre-update nftables egress-table ownership baseline"
+systemctl enable vpn-egress-isolation.service
+systemctl reload-or-restart vpn-egress-isolation.service \
+  || die "host C-16 egress isolation failed to apply"
 
 log "install mode: UPDATE ${CURRENT_VERSION:-unknown} -> $TARGET_VERSION — checking persistent state schema before rendering..."
 schema_rc=0

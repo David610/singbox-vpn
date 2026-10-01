@@ -3023,14 +3023,35 @@ fn cmd_user_set_enabled(cfg: &DeploymentConfig, id: &str, enabled: bool) -> Resu
 fn cmd_user_set_expiry(cfg: &DeploymentConfig, id: &str, expires_at: Option<i64>) -> Result<()> {
     let mut users = store::load_users(&cfg.users_file())?;
     let previous_users = users.clone();
+    let now = UnixSeconds::now().0 as i64;
+    let was_active = previous_users
+        .iter()
+        .find(|u| u.id == id)
+        .ok_or_else(|| anyhow::anyhow!("no such user: {id}"))?
+        .is_active(now);
     find_user_mut(&mut users, id)?.expires_at = expires_at;
-    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
+    let is_active = users
+        .iter()
+        .find(|u| u.id == id)
+        .expect("user was just updated")
+        .is_active(now);
+    // Expiry is partly control-plane metadata. Moving an already-active
+    // user's future deadline (or clearing it) does not change the rendered
+    // authorization at this instant, so persist it without bouncing every
+    // session on the node. Crossing the active/inactive boundary remains an
+    // urgent authorization change and uses the normal validated live apply.
+    let went_live = if was_active == is_active {
+        store::save_users_atomic(&cfg.users_file(), &users)?;
+        true
+    } else {
+        apply_users_and_save(cfg, &previous_users, &users)?
+    };
     match expires_at {
         Some(t) => println!("{id}: expires_at={t}"),
         None => println!("{id}: expires_at=none"),
     }
     if let Some(t) = expires_at {
-        if t < UnixSeconds::now().0 as i64 {
+        if t < now {
             println!(
                 "This expiry is already in the past: once reloaded live, this user is dropped \
                  from the rendered sing-box authorization config, same as `user disable`."

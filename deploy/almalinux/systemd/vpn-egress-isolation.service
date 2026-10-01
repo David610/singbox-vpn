@@ -1,25 +1,18 @@
 [Unit]
 Description=Arcana host-layer C-16 egress isolation (nftables, defence in depth)
-Documentation=file:///opt/vpn/deploy/almalinux/nftables-egress-isolation.sh
-After=network.target sing-box.service
-Wants=network.target
-
-# Not enabled/started by install.sh/update.sh as of this change — an
-# operator opts in explicitly (`systemctl enable --now
-# vpn-egress-isolation.service`) after reviewing
-# nftables-egress-isolation.sh. The primary enforcement point is the
-# sing-box-rendered route policy (crates/compat-config/src/server.rs);
-# this unit is secondary, host-level defence in depth. See that script's
-# header comment for the full rationale and the exact CIDR set.
+Documentation=file:///opt/singbox-vpn/deploy/almalinux/nftables-egress-isolation.sh
+After=network-online.target
+Before=sing-box.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/opt/vpn/deploy/almalinux/nftables-egress-isolation.sh
-# Idempotent (the script deletes-then-recreates its own dedicated
-# table), so a restart safely re-applies rather than erroring on
-# already-present state.
-ExecReload=/opt/vpn/deploy/almalinux/nftables-egress-isolation.sh
+ExecStart=/opt/singbox-vpn/deploy/almalinux/nftables-egress-isolation.sh
+# Idempotent and atomic: routine reconciliation uses ExecReload so the
+# service's ExecStop removal path is reserved for a deliberate stop/uninstall.
+ExecReload=/opt/singbox-vpn/deploy/almalinux/nftables-egress-isolation.sh
+ExecStop=/opt/singbox-vpn/deploy/almalinux/nftables-egress-isolation.sh --remove
 
 [Install]
 WantedBy=multi-user.target
