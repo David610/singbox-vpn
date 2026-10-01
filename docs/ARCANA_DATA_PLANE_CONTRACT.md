@@ -1,5 +1,23 @@
 # Arcana data-plane contract (phase 1)
 
+## Implementation status
+
+**Implemented and tested in this repository:** the authorization policy validator; rolling native
+windows; correct interval-concurrency validation; typed opaque identifiers; projection through the
+existing lease-pool input into the single hardened `CompatUser` store; renderer-side revalidation;
+atomic store/config application; no-restart expiry extension when the rendered credentials are
+unchanged; minute-level final-expiry reconciliation; and restart-backed revocation. Legacy user
+documents remain readable and keep their established expiry behavior.
+
+**Control-plane work required in `vpn-web`:** emit the extended lease-pool fields (`principal_id`,
+`credential_id`, `class`, `valid_from`, `expires_at`, and `revoked`), schedule 15-minute native
+renewals, allocate separate A/B slots during compatibility rotation, and consume the capability
+matrix. Unknown input fields are rejected by the node.
+
+**Client work required in `tamara-next`:** perform native renewal, enforce strict routing/kill
+switch behavior across a server restart, and consume logical route declarations. This repository
+does not claim those cross-repository pieces are complete.
+
 ## Authorization lifecycle
 
 Nodes receive no account, email, payment, subscription-token, or billing fields. Each record has
@@ -47,7 +65,9 @@ reject-by-default Internet egress and may forward only to declared exits.
 | Arcana native/full sing-box | yes | yes | yes, nested detour | yes | 30 minutes, silent renewal |
 | generic full sing-box config | yes | yes | yes, nested detour | by subscription refresh | 6 hours |
 | generic full Xray config | yes | no | unsupported until real-binary nested validation exists | by refresh | 6 hours |
-| Hiddify / Shadowrocket / INCY share links | yes | client-dependent | **unsupported** | by refresh | 24 hours recommended |
+| Hiddify share links | yes | yes | **unsupported** | by refresh | 24 hours recommended |
+| Shadowrocket share links | yes | yes | **unsupported** | by refresh | 24 hours recommended |
+| INCY share links | yes | unproven | **unsupported** | by refresh | 24 hours recommended |
 
 The canonical machine-readable matrix is `fixtures/arcana-data-plane/client-capabilities-v1.json`.
 Consumers must reject unknown modes or a capability with `privacy_plus=false`; they must never

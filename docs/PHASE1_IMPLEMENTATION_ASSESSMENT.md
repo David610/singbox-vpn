@@ -32,6 +32,12 @@ immediate revocation flags, and class-specific lifetime policy. Native renewal c
 authorization expiry and preserves protocol secrets. Compatibility leases permit configurable
 6-hour through 30-day lifetimes; policy selection remains a control-plane decision.
 
+The implementation now projects validated authorization metadata into the existing `CompatUser`
+store rather than introducing a second credential database. Credential-backed records use opaque
+credential IDs as user IDs, opaque principals as names, `created_at`/`expires_at` as the rolling
+closed/open interval, and `enabled=false` as revocation. The production role-aware renderer
+reconstructs and validates the authorization set before emitting either inbound.
+
 The logical-route and client-capability contract explicitly fails closed for Privacy+: share-link
 clients cannot represent its two-hop composition. A changed active credential set still requires
 the existing atomic full-restart transaction; no claim of zero-disruption dynamic sing-box auth is

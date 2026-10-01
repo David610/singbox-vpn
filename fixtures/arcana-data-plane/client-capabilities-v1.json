@@ -4,6 +4,8 @@
     {"id":"arcana-native","protocols":["vless-reality","hysteria2"],"fast":true,"privacy_plus":true,"full_sing_box":true,"full_xray":false,"share_links":false,"credential_overlap":true,"minimum_safe_lifetime_seconds":1800},
     {"id":"sing-box","protocols":["vless-reality","hysteria2"],"fast":true,"privacy_plus":true,"full_sing_box":true,"full_xray":false,"share_links":true,"credential_overlap":true,"minimum_safe_lifetime_seconds":21600},
     {"id":"xray","protocols":["vless-reality"],"fast":true,"privacy_plus":false,"full_sing_box":false,"full_xray":true,"share_links":true,"credential_overlap":true,"minimum_safe_lifetime_seconds":21600},
-    {"id":"hiddify-shadowrocket-incy","protocols":["vless-reality","hysteria2"],"fast":true,"privacy_plus":false,"full_sing_box":false,"full_xray":false,"share_links":true,"credential_overlap":true,"minimum_safe_lifetime_seconds":86400}
+    {"id":"hiddify","protocols":["vless-reality","hysteria2"],"fast":true,"privacy_plus":false,"full_sing_box":false,"full_xray":false,"share_links":true,"credential_overlap":true,"minimum_safe_lifetime_seconds":86400},
+    {"id":"shadowrocket","protocols":["vless-reality","hysteria2"],"fast":true,"privacy_plus":false,"full_sing_box":false,"full_xray":false,"share_links":true,"credential_overlap":true,"minimum_safe_lifetime_seconds":86400},
+    {"id":"incy","protocols":["vless-reality"],"fast":true,"privacy_plus":false,"full_sing_box":false,"full_xray":false,"share_links":true,"credential_overlap":true,"minimum_safe_lifetime_seconds":86400}
   ]
 }

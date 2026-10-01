@@ -248,7 +248,19 @@ jobs:
             apt-get update -y >/dev/null
             apt-get install -y git >/dev/null
           elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y git >/dev/null
+            # Alma/Rocky mirror metadata can briefly reference a retired extras path during a
+            # mirrorlist publication window. Refresh boundedly; never skip the package or the
+            # OS test, and preserve the final dnf failure if all attempts fail.
+            installed=0
+            for attempt in 1 2 3; do
+              if dnf --refresh install -y git >/dev/null; then
+                installed=1
+                break
+              fi
+              dnf clean metadata >/dev/null 2>&1 || true
+              sleep $((attempt * 5))
+            done
+            [ "$installed" -eq 1 ] || { echo "::error::dnf could not install git after 3 refreshed attempts"; exit 1; }
           else
             echo "::error::no known package manager (apt-get/dnf) found in ${{ matrix.image }}"
             exit 1
