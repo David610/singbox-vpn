@@ -91,8 +91,8 @@ impl AuthorizationSet {
                     ))
                 }
                 CredentialClass::Compatibility
-                    if !(COMPAT_MIN_LIFETIME_SECS..=COMPAT_MAX_LIFETIME_SECS)
-                        .contains(&lifetime) =>
+                    if lifetime > COMPAT_MAX_LIFETIME_SECS
+                        || (!item.revoked && lifetime < COMPAT_MIN_LIFETIME_SECS) =>
                 {
                     return Err(format!(
                         "compatibility credential {:?} lifetime is outside policy",
@@ -111,9 +111,11 @@ impl AuthorizationSet {
             let credentials: Vec<_> = self
                 .authorizations
                 .iter()
-                .filter(|a| &a.principal_id == principal)
+                .filter(|a| &a.principal_id == principal && !a.revoked)
                 .collect();
-            // Bound every pair's overlap independently.
+            // Revoked credentials are already fail-closed and therefore do
+            // not count toward live overlap or simultaneous-active limits.
+            // Bound every live pair's overlap independently.
             for (i, a) in credentials.iter().enumerate() {
                 for b in credentials.iter().skip(i + 1) {
                     let overlap = a.valid_until.min(b.valid_until) - a.valid_from.max(b.valid_from);
@@ -414,6 +416,19 @@ mod tests {
         .validate()
         .is_err());
     }
+    #[test]
+    fn revoked_history_does_not_count_toward_live_overlap_limits() {
+        let mut a = auth("cred_revoked01", 0, COMPAT_MIN_LIFETIME_SECS);
+        let b = auth("cred_live00001", 1, 1 + COMPAT_MIN_LIFETIME_SECS);
+        let c = auth("cred_live00002", 2, 2 + COMPAT_MIN_LIFETIME_SECS);
+        a.revoked = true;
+        assert!(AuthorizationSet {
+            authorizations: vec![a, b, c],
+        }
+        .validate()
+        .is_ok());
+    }
+
     #[test]
     fn clock_edges_use_closed_open_intervals() {
         let a = auth("cred_edge0001", 100, 100 + COMPAT_MIN_LIFETIME_SECS);
