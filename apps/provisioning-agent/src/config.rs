@@ -54,7 +54,8 @@ pub struct AgentConfig {
     /// lease-slot users on its next tick).
     #[serde(default = "default_lease_pool_size")]
     pub lease_pool_size: usize,
-    /// Hard lifetime of one slot generation, seconds (clamped 900..=7200).
+    /// Hard lifetime of one native authorization window, seconds (clamped to a safe
+    /// leasable minimum and at most 1800 seconds).
     /// A leased credential never outlives its generation: the node renders
     /// it out and rotates the secret at `valid_until`, control plane or not.
     #[serde(default = "default_lease_slot_lifetime_secs")]
@@ -71,7 +72,7 @@ pub struct AgentConfig {
     /// enforcement (Phase 8). Survives agent restarts.
     #[serde(default = "default_report_queue_file")]
     pub report_queue_file: String,
-    /// Rotation batch window, seconds (clamped 60..=3600). Every slot's
+    /// Rotation batch window, seconds (clamped 60..=600). Every slot's
     /// valid_until lies on this grid; non-urgent rotations (each of which
     /// restarts sing-box and drops every open connection on the node) are
     /// coalesced to at most one apply per window. Expiry and urgent

@@ -104,6 +104,13 @@ pub(crate) fn cmd_apply_static_revision(
 
     preflight_security_policy_unchanged(&original_cfg, &candidate_cfg, &users)
         .with_context(|| format!("static revision {revision}: nothing was changed"))?;
+    if !offline_mutation_allowed() {
+        compat_config::static_revision::validate_handshake_server_resolution(
+            &candidate_cfg.reality.handshake_server,
+            candidate_cfg.reality.handshake_port,
+        )
+        .context("candidate REALITY handshake server did not resolve exclusively to public addresses; nothing was changed")?;
+    }
 
     let mode = deployment_toml_mode(config_path);
     let backup = static_revision_backup_path(config_path);

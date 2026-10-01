@@ -306,7 +306,7 @@ fn resolvers(v: &Value, name: &str, ipv6: bool) -> Result<Vec<String>, CompatErr
     Ok(out)
 }
 
-fn is_public_resolver_address(ip: std::net::IpAddr) -> bool {
+pub fn is_public_resolver_address(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
@@ -386,6 +386,44 @@ pub fn validate_handshake_server(host: &str) -> Result<(), CompatError> {
     ];
     if LOCAL_SUFFIXES.contains(&tld) {
         return Err(bad("uses a local/reserved suffix"));
+    }
+    Ok(())
+}
+
+/// Resolve every current answer and reject the entire hostname if any answer is unsafe.
+/// Call immediately before rendering/applying REALITY configuration. The egress firewall remains
+/// the use-time control against DNS rebinding after this check.
+pub fn validate_handshake_server_resolution(host: &str, port: u16) -> Result<(), CompatError> {
+    use std::net::ToSocketAddrs;
+    validate_handshake_server(host)?;
+    let answers: Vec<_> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| {
+            reject(format!(
+                "reality.handshake_server {host:?} did not resolve: {e}"
+            ))
+        })?
+        .map(|address| address.ip())
+        .collect();
+    validate_handshake_server_addresses(host, &answers)
+}
+
+pub fn validate_handshake_server_addresses(
+    host: &str,
+    answers: &[std::net::IpAddr],
+) -> Result<(), CompatError> {
+    if answers.is_empty() {
+        return Err(reject(format!(
+            "reality.handshake_server {host:?} resolved to no addresses"
+        )));
+    }
+    if let Some(unsafe_ip) = answers
+        .iter()
+        .find(|address| !is_public_resolver_address(**address))
+    {
+        return Err(reject(format!(
+            "reality.handshake_server {host:?} resolved to forbidden address {unsafe_ip}"
+        )));
     }
     Ok(())
 }
@@ -774,5 +812,30 @@ listen_port = 9100
         assert!(is_static_revision_document(
             &serde_json::json!({"revision_schema": 1})
         ));
+    }
+
+    #[test]
+    fn reality_answers_reject_any_unsafe_or_mixed_resolution() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        let public = IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34));
+        assert!(validate_handshake_server_addresses("public.example.net", &[public]).is_ok());
+        for unsafe_ip in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            "fe80::1".parse().unwrap(),
+        ] {
+            assert!(
+                validate_handshake_server_addresses("public.example.net", &[unsafe_ip]).is_err()
+            );
+            assert!(validate_handshake_server_addresses(
+                "public.example.net",
+                &[public, unsafe_ip]
+            )
+            .is_err());
+        }
+        assert!(validate_handshake_server_addresses("public.example.net", &[]).is_err());
     }
 }

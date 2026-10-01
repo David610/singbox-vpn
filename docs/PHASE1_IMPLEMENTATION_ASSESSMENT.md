@@ -38,6 +38,12 @@ credential IDs as user IDs, opaque principals as names, `created_at`/`expires_at
 closed/open interval, and `enabled=false` as revocation. The production role-aware renderer
 reconstructs and validates the authorization set before emitting either inbound.
 
+The production provisioning agent now persists that metadata in its 0600 lease state and sends it
+through the real 0600 `vpn-admin lease-pool sync` input. Existing states are migrated in memory by
+adding CSPRNG opaque IDs while preserving generation and protocol secrets; the next complete sync
+atomically replaces legacy `lease-*` projections, so legacy and `cred_*` records cannot accumulate.
+Native renewal advances the rolling window but preserves principal, credential ID and both secrets.
+
 The logical-route and client-capability contract explicitly fails closed for Privacy+: share-link
 clients cannot represent its two-hop composition. A changed active credential set still requires
 the existing atomic full-restart transaction; no claim of zero-disruption dynamic sing-box auth is

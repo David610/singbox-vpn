@@ -1865,6 +1865,65 @@ fn future_expiry_extension_does_not_restart_but_expiry_revocation_does() {
     );
 }
 
+#[test]
+#[cfg(unix)]
+fn authorization_backed_native_lease_renewal_uses_live_path_without_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    let command = || {
+        let mut cmd = admin(dir.path(), &cfg_path);
+        cmd.env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SYSTEMCTL_LOG", &log_path);
+        cmd
+    };
+    command().arg("init").assert().success();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let input = dir.path().join("lease.json");
+    let write = |from: i64, until: i64| {
+        std::fs::write(&input, serde_json::to_vec(&serde_json::json!({"slots":[{
+        "slot":0,"principal_id":"native_opaque0001","credential_id":"cred_opaque00001","class":"native",
+        "valid_from":from,"expires_at":until,"revoked":false,
+        "vless_uuid":"11111111-1111-4111-8111-111111111111","hysteria2_password":"native-password-secret"
+    }]})).unwrap()).unwrap()
+    };
+    write(now, now + 1700);
+    command()
+        .args(["lease-pool", "sync", "--input", input.to_str().unwrap()])
+        .assert()
+        .success();
+    let baseline = count_reload_or_restart_calls(&log_path);
+    let rendered_before = std::fs::read(dir.path().join("state/sing-box/config.json")).unwrap();
+    write(now, now + 1800);
+    command()
+        .args(["lease-pool", "sync", "--input", input.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("already current"));
+    assert_eq!(count_reload_or_restart_calls(&log_path), baseline);
+    assert_eq!(
+        std::fs::read(dir.path().join("state/sing-box/config.json")).unwrap(),
+        rendered_before
+    );
+    let users =
+        compat_config::store::load_users(&dir.path().join("state/users/users.json")).unwrap();
+    assert_eq!(users[0].expires_at, Some(now + 1800));
+}
+
 /// `deploy/almalinux/systemd/vpn-expiry-reconcile.timer` fires
 /// `render-config --require-applied` on every tick for the lifetime of
 /// the deployment, not just once — a fix that only holds for a single

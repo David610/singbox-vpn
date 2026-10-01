@@ -6,7 +6,7 @@
 windows; correct interval-concurrency validation; typed opaque identifiers; projection through the
 existing lease-pool input into the single hardened `CompatUser` store; renderer-side revalidation;
 atomic store/config application; no-restart expiry extension when the rendered credentials are
-unchanged; minute-level final-expiry reconciliation; and restart-backed revocation. Legacy user
+unchanged; bounded final-expiry reconciliation; and restart-backed revocation. Legacy user
 documents remain readable and keep their established expiry behavior.
 
 **Control-plane work required in `vpn-web`:** emit the extended lease-pool fields (`principal_id`,
@@ -18,6 +18,19 @@ matrix. Unknown input fields are rejected by the node.
 switch behavior across a server restart, and consume logical route declarations. This repository
 does not claim those cross-repository pieces are complete.
 
+The provisioning agent's 0600 lease state is the node-side desired-state authority. It persists a
+stable CSPRNG native principal per slot and a CSPRNG credential ID per generation, plus the rolling
+window, revocation state, generation and protocol secrets. `vpn_admin_input()` writes those fields
+to a 0600 file in a 0700 temporary directory; `vpn-admin` validates and atomically projects the
+complete set into `users.json`; the role-aware renderer validates again before atomic sing-box
+activation. Legacy state is assigned opaque IDs without changing secrets, and the complete sync
+replaces both legacy `lease-*` and authorization-backed `cred_*` projections, preventing duplicates.
+
+Before initial activation and before a static revision can change live configuration, the REALITY handshake hostname is resolved and
+the whole answer set is rejected if even one IPv4/IPv6 address is loopback, private/ULA,
+link-local, CGNAT, metadata, multicast, documentation, benchmarking, unspecified, or reserved.
+The node egress firewall remains the use-time defense against DNS rebinding after validation.
+
 ## Authorization lifecycle
 
 Nodes receive no account, email, payment, subscription-token, or billing fields. Each record has
@@ -28,8 +41,13 @@ cannot return after restart. Records are sorted by principal and credential id b
 
 Native authorization is a 30-minute lease, renewed at approximately 15 minutes. Renewal extends
 server authorization while preserving the UUID/password, and consequently does not intentionally
-disconnect the tunnel. Missing renewal kills authorization within 30 minutes. Revocation bypasses
-the lease immediately and is applied at the fastest safe validate/atomic-swap/restart boundary.
+disconnect the tunnel. With a healthy provisioning agent, expiry is enforced by its next poll and
+apply after `valid_until`. If the agent is unavailable, the persistent systemd fallback runs every
+10 minutes, so the hard operational bound is `valid_until + 10 minutes + apply time` (and therefore
+up to roughly 40 minutes after the last successful renewal). The 10-minute fallback deliberately
+coalesces expirations because each effective removal restarts sing-box and disconnects every user.
+Revocation bypasses natural expiry and is applied at the fastest safe poll plus
+validate/atomic-swap/restart boundary.
 
 Compatibility authorization is configurable from 6 hours through 30 days. The control plane
 chooses a duration based on the target client's documented refresh/background behavior; the node
@@ -76,7 +94,10 @@ composition.
 
 ## `vpn-web` integration
 
-1. Mint opaque principals per external device (`ext_…`) or native installation (`native_…`).
+1. Native pool IDs are generated locally from the OS CSPRNG: a principal remains stable for a
+   slot, while a credential ID changes with each secret rotation. Future externally assigned IDs
+   use the same validated wire fields. Mint external-device principals (`ext_…`) in the control
+   plane because only it knows device continuity; never derive either ID from account data.
 2. Select a declared lifetime within the class policy; renew native leases every 15 minutes.
 3. During rotation create B with explicit bounds, publish both during the bounded overlap, then
    remove A. Send revocation immediately rather than waiting for expiry.
