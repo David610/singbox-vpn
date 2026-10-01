@@ -5,7 +5,7 @@ already-merged C-16 rendering, probe-principal, SSRF, queue, timeout, dedup,
 pinning, uninstall-ownership, or revision work. GitHub Actions, GitHub
 security-alert state, and production infrastructure were not touched.
 
-## Task A — F07 real protocol health: **PARTIAL / CROSS-REPO / EXTERNAL TEST REQUIRED**
+## Task A — F07 real protocol health: **PARTIAL / CROSS-REPO / REAL-HOST BLOCKED**
 
 ### Current data-plane contract
 
@@ -41,7 +41,10 @@ not changed here. Its heartbeat handler and node-health computation must:
 2. select fresh **peer** results for managed-node READY decisions (self results
    may diagnose a listener but must not prove relay-to-exit reachability);
 3. require each configured transport's `status == "healthy"`, required DNS and
-   IPv4 dimensions, acceptable certificate status, and relay-to-exit result;
+   IPv4 dimensions, and relay-to-exit result. The report-level certificate
+   fields are the **reporting node's local certificate only** and must not be
+   used as evidence about an arbitrary peer target. A successful Hysteria2
+   peer result already includes real TLS certificate validation;
 4. represent IPv6 as its own `egress`/`blocked`/`unknown` dimension rather than
    folding it into IPv4 readiness;
 5. preserve the node's prior READY state for a `degraded` first failure, mark it
@@ -55,7 +58,7 @@ and externally reachable TCP+UDP remains required. This environment could not
 reach the current vpn-web checkout (HTTPS clone was denied with proxy HTTP 403),
 so no claim is made that its current main consumes these additive fields.
 
-## Task B — host nftables C-16 lifecycle: **FIXED / EXTERNAL TEST REQUIRED**
+## Task B — host nftables C-16 lifecycle: **FIXED + LOCAL VERIFIED / REAL-HOST BLOCKED**
 
 The dedicated `inet arcana_egress_isolation` table now participates in normal
 install, update, transactional rollback, reboot, and uninstall lifecycle.
@@ -82,7 +85,14 @@ with firewalld plus unrelated nftables rules still needs the release acceptance
 run, including update failure injection, reboot, and uninstall comparison of
 the unrelated ruleset before/after.
 
-## Task C — F11 restart behavior: **FIXED (scoped optimization) / EXTERNAL TEST REQUIRED**
+The fixed-name nftables table now has a separate lifetime ownership baseline,
+distinct from update rollback snapshots. A table that did not pre-exist is
+removed on uninstall; a pre-existing table is backed up before the first
+managed mutation and restored exactly; missing/corrupt ownership fails closed
+and is reported as critical residue. Final uninstall verification queries nft
+directly, so an ExecStop failure cannot result in a false COMPLETE message.
+
+## Task C — F11 restart behavior: **FIXED + LOCAL VERIFIED / REAL-HOST BLOCKED**
 
 | Operation | Classification | sing-box behavior |
 |---|---|---|
@@ -135,3 +145,32 @@ beside every queued report, submit it on complete/fail, renew long claims if the
 server supports renewal, and test worker A claim → lease expiry → worker B
 reclaim → A completion rejected → B completion accepted. Field names and status
 codes intentionally remain owned by vpn-web rather than being guessed here.
+
+## PR #124 final-remediation verification — 2026-10-01
+
+**GitHub state: BLOCKED in this environment.** The task began from local PR
+snapshot `cf85ae3` on base `6eb4d88`. GitHub fetch/API/push returned proxy or
+authentication failures, so the actual remote head, current workflow run IDs,
+mergeability, CI, and Security conclusions could not be refreshed. No claim of
+CI verification or merge readiness is made.
+
+Repository-local additions in this remediation:
+
+- C-16 host-policy parity is compiled as a Rust contract test: IPv4 and IPv6
+  must equal the authoritative Rust constants minus only `127.0.0.0/8` and
+  `::1/128`; TCP/25 must match `C16_DENY_TCP_PORT`. The IPv6 unspecified
+  address `::/128` is restored to the host policy.
+- Protocol targets are globally de-duplicated by node id while preserving
+  insertion order; static targets precede and therefore override fetched
+  definitions. Same-round duplicates cannot advance hysteresis.
+- Legacy certificate fields remain for wire compatibility and explicitly mean
+  the reporting node's local Hysteria2 certificate. Additive `local_*` aliases
+  remove ambiguity. Peer Hysteria2 health comes from that peer result's real
+  TLS-validated handshake, not the report-level local certificate.
+- Nftables table ownership and residue verification are now explicit and
+  independently tested for created, pre-existing, ambiguous, and failed-cleanup
+  states.
+
+**Still blocked:** real AlmaLinux lifecycle/boot failure injection, real pinned
+sing-box interoperability in this environment, GitHub CI/Security completion,
+vpn-web F07 consumption, and vpn-web F03 claimant fencing.

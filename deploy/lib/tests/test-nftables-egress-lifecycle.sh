@@ -1,11 +1,14 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 cat >"$TMP/id" <<'MOCK'
-#!/usr/bin/env bash
-if [ "$1" = "-u" ] && [ "$#" -eq 1 ]; then echo 0; else echo 991; fi
+#!/bin/bash
+if [ "$1" = "-u" ] && [ "$#" -eq 1 ]; then echo 0
+elif [ "${2:-}" = "missing-user" ]; then exit 1
+else echo 991
+fi
 MOCK
 cat >"$TMP/nft" <<'MOCK'
 #!/usr/bin/env bash
@@ -17,6 +20,7 @@ if [ "$1" = "list" ]; then
 fi
 if [ "$1" = "delete" ]; then rm -f "$NFT_PRESENT"; exit; fi
 if [ "$1" = "--check" ] && [ "$2" = "-f" ]; then
+  [ "${NFT_FAIL_CHECK:-0}" != 1 ] || exit 1
   grep -q '^table inet arcana_egress_isolation' "$3"
   exit
 fi
@@ -36,6 +40,32 @@ SCRIPT="$ROOT/deploy/almalinux/nftables-egress-isolation.sh"
 
 # First apply, idempotent replacement, unrelated state preservation.
 "$SCRIPT"
+test -f "$NFT_PRESENT"
+test -f "$NFT_UNRELATED"
+
+# Missing nft binary fails closed before touching the existing table.
+mkdir "$TMP/no-nft"
+cp "$TMP/id" "$TMP/no-nft/id"
+if PATH="$TMP/no-nft" /usr/bin/bash "$SCRIPT"; then
+  echo 'missing nft binary unexpectedly succeeded' >&2
+  exit 1
+fi
+test -f "$NFT_PRESENT"
+test -f "$NFT_UNRELATED"
+
+# Validation failure also leaves both the old Arcana and unrelated tables.
+if NFT_FAIL_CHECK=1 "$SCRIPT"; then
+  echo 'invalid ruleset check unexpectedly succeeded' >&2
+  exit 1
+fi
+test -f "$NFT_PRESENT"
+test -f "$NFT_UNRELATED"
+
+# Missing principal fails before any nft mutation.
+if SING_BOX_USER=missing-user "$SCRIPT"; then
+  echo 'missing sing-box uid unexpectedly succeeded' >&2
+  exit 1
+fi
 test -f "$NFT_PRESENT"
 test -f "$NFT_UNRELATED"
 "$SCRIPT"

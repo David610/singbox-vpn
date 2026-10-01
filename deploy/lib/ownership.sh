@@ -132,6 +132,32 @@ ownership_capture_systemd_baseline_once() {
   ownership_set_baseline_once "SYSTEMD_${key}_PRE_ENABLED" "$enabled"
 }
 
+# Capture the original fixed-name nftables table before the first managed
+# mutation. This is an uninstall baseline (lifetime of the installation), not
+# the per-update rollback snapshot maintained by update.sh.
+ownership_capture_egress_table_baseline_once() {
+  ownership_init
+  if grep -q '^EGRESS_TABLE_PRE_EXISTED=' "$OWNERSHIP_FILE" 2>/dev/null; then
+    return 0
+  fi
+  command -v nft >/dev/null 2>&1 || return 1
+  if nft list table inet arcana_egress_isolation >/dev/null 2>&1; then
+    local backup_dir="${OWNERSHIP_DIR}/preexisting-backups"
+    local backup="$backup_dir/EGRESS_TABLE.nft"
+    install -d -m 0700 "$backup_dir"
+    nft list table inet arcana_egress_isolation >"$backup" || return 1
+    chmod 0600 "$backup"
+    ownership_set EGRESS_TABLE_BACKUP "$backup"
+    ownership_set EGRESS_TABLE_BACKED_UP "1"
+    ownership_set EGRESS_TABLE_PRE_EXISTED "1"
+  else
+    # Distinguish a genuinely absent table from nft/kernel/permission failure;
+    # never record "we created it" on an ambiguous observation.
+    nft list tables >/dev/null 2>&1 || return 1
+    ownership_set EGRESS_TABLE_PRE_EXISTED "0"
+  fi
+}
+
 # Refuse to treat a manifest-sourced value as a safe destructive-cleanup
 # path (uninstall.sh's own use of e.g. RUSTUP_HOME_DIR) unless it is a
 # non-empty absolute path, is not "/" itself, and contains no ".."

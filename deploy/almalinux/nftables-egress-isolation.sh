@@ -48,11 +48,9 @@ id -u "$SING_BOX_USER" >/dev/null 2>&1 \
 SING_BOX_UID="$(id -u "$SING_BOX_USER")"
 
 # Same set as C16_DENY_IPV4_CIDRS / C16_DENY_IPV6_CIDRS in
-# crates/compat-config/src/model.rs MINUS loopback (127.0.0.0/8, ::1/128)
-# — kept in sync by hand (both are small, stable, spec-pinned lists); a
-# mismatch here only WIDENS this secondary layer's coverage relative to
-# the primary one, it can never narrow the primary sing-box-rendered
-# policy.
+# crates/compat-config/src/model.rs minus only the explicitly documented
+# loopback exceptions (127.0.0.0/8, ::1/128). A parity contract test parses
+# both definitions: hand-maintained drift can narrow this secondary policy.
 #
 # Loopback is deliberately excluded from this uid-scoped host rule: the
 # `sing-box` process legitimately dials 127.0.0.1 for the reserved
@@ -64,7 +62,7 @@ SING_BOX_UID="$(id -u "$SING_BOX_USER")"
 # this script covers every OTHER C-16 destination, where no legitimate
 # sing-box-uid outbound dial ever exists.
 IPV4_DENY="0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24, 192.168.0.0/16, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4"
-IPV6_DENY="::ffff:0:0/96, 64:ff9b::/96, 100::/64, 2001:db8::/32, fc00::/7, fe80::/10, ff00::/8, fd00:ec2::254/128"
+IPV6_DENY="::/128, ::ffff:0:0/96, 64:ff9b::/96, 100::/64, 2001:db8::/32, fc00::/7, fe80::/10, ff00::/8, fd00:ec2::254/128"
 
 RULESET="$(mktemp /run/arcana-egress-isolation.XXXXXX.nft)"
 trap 'rm -f "$RULESET"' EXIT

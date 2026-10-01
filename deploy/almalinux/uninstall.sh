@@ -75,6 +75,8 @@ fi
 
 STATE_DIR_ROOT="/var/lib/singbox-vpn"
 FIREWALL_OWNERSHIP="$STATE_DIR_ROOT/firewall-owned.env"
+ownership_manifest_present=0
+[ -f "$OWNERSHIP_FILE" ] && ownership_manifest_present=1
 
 # ---------------------------------------------------------------------
 # Truthful completion (checkpoint 2): cleanup below keeps going after a
@@ -188,6 +190,10 @@ REMOVED_ANYTHING=0
 note_removed() { REMOVED_ANYTHING=1; }
 
 log "stopping and disabling singbox-vpn services..."
+egress_table_pre_existed="$(ownership_get EGRESS_TABLE_PRE_EXISTED "")"
+egress_table_backup="$(ownership_get EGRESS_TABLE_BACKUP "")"
+egress_table_restored=0
+egress_table_verify_copy=""
 for unit in sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service vpn-service-watchdog.timer vpn-service-watchdog.service; do
   if systemctl is-enabled --quiet "$unit" 2>/dev/null || systemctl is-active --quiet "$unit" 2>/dev/null; then
     systemctl disable --now "$unit" >/dev/null 2>&1 || true
@@ -204,6 +210,74 @@ case "$egress_unit_pre_existed" in
   1) systemctl stop vpn-egress-isolation.service >/dev/null 2>&1 || true ;;
   *) warn "egress-isolation unit ownership is ambiguous; leaving its service and nftables state untouched" ;;
 esac
+
+# ExecStop is best-effort only. Enforce the table ownership contract directly
+# so a failed stop can never be reported as a complete uninstall.
+cleanup_egress_table() {
+  command -v nft >/dev/null 2>&1 || {
+    [ "$egress_table_pre_existed" = "" ] || CRITICAL_RESIDUE+=("nft is unavailable; egress-table cleanup/restoration could not be verified")
+    return
+  }
+  case "$egress_table_pre_existed" in
+    0)
+      if nft list table inet arcana_egress_isolation >/dev/null 2>&1; then
+        nft delete table inet arcana_egress_isolation >/dev/null 2>&1 \
+          || CRITICAL_RESIDUE+=("Arcana-owned nftables table could not be removed")
+      fi
+      ;;
+    1)
+      if [ "$(ownership_get EGRESS_TABLE_BACKED_UP "0")" != "1" ] \
+          || [ -z "$egress_table_backup" ] \
+          || ! ownership_path_is_safe "$egress_table_backup" \
+          || [ ! -f "$egress_table_backup" ]; then
+        CRITICAL_RESIDUE+=("pre-existing nftables egress table has no valid ownership backup; preserved current table for manual recovery")
+        return
+      fi
+      local batch current
+      batch="$(mktemp /run/arcana-egress-uninstall.XXXXXX.nft)" || {
+        CRITICAL_RESIDUE+=("could not create bounded nftables restore transaction")
+        return
+      }
+      current="${batch}.current"
+      egress_table_verify_copy="$(mktemp /run/arcana-egress-baseline.XXXXXX.nft)" || {
+        rm -f "$batch"
+        CRITICAL_RESIDUE+=("could not preserve nftables baseline for final verification")
+        return
+      }
+      cp "$egress_table_backup" "$egress_table_verify_copy" || {
+        rm -f "$batch" "$egress_table_verify_copy"
+        egress_table_verify_copy=""
+        CRITICAL_RESIDUE+=("could not preserve nftables baseline for final verification")
+        return
+      }
+      if nft list table inet arcana_egress_isolation >/dev/null 2>&1; then
+        printf '%s\n' 'delete table inet arcana_egress_isolation' >"$batch"
+      else
+        : >"$batch"
+      fi
+      cat "$egress_table_backup" >>"$batch"
+      if nft --check -f "$batch" >/dev/null 2>&1 \
+          && nft -f "$batch" >/dev/null 2>&1 \
+          && nft list table inet arcana_egress_isolation >"$current" 2>/dev/null \
+          && cmp -s "$egress_table_backup" "$current"; then
+        egress_table_restored=1
+      else
+        CRITICAL_RESIDUE+=("pre-existing nftables egress table could not be restored exactly")
+      fi
+      rm -f "$batch" "$current"
+      ;;
+    *)
+      if nft list table inet arcana_egress_isolation >/dev/null 2>&1; then
+        if [ "$ownership_manifest_present" = "1" ]; then
+          CRITICAL_RESIDUE+=("nftables egress table remains with ambiguous ownership; preserved for manual intervention")
+        else
+          NONCRITICAL_RESIDUE+=("pre-existing/ambiguous nftables egress table left untouched; no singbox-vpn ownership manifest exists")
+        fi
+      fi
+      ;;
+  esac
+}
+cleanup_egress_table
 
 log "removing/restoring singbox-vpn systemd units..."
 restore_or_remove_fixed_path /etc/systemd/system/sing-box.service SINGBOX_UNIT
@@ -735,6 +809,24 @@ done
 [ -e /etc/vpn/compat/reality/hysteria_obfs_password.txt ] && CRITICAL_RESIDUE+=("Hysteria2 obfuscation credential still present")
 [ -d /etc/vpn/compat/users ] && [ -n "$(ls -A /etc/vpn/compat/users 2>/dev/null)" ] && CRITICAL_RESIDUE+=("/etc/vpn/compat/users still contains user credential files")
 [ -e "$FIREWALL_OWNERSHIP" ] && CRITICAL_RESIDUE+=("singbox-vpn firewall ownership record still present at $FIREWALL_OWNERSHIP")
+if command -v nft >/dev/null 2>&1; then
+  case "$egress_table_pre_existed" in
+    0)
+      nft list table inet arcana_egress_isolation >/dev/null 2>&1 \
+        && CRITICAL_RESIDUE+=("Arcana-owned nftables table inet arcana_egress_isolation still exists")
+      ;;
+    1)
+      egress_current="$(mktemp /run/arcana-egress-final.XXXXXX.nft 2>/dev/null || true)"
+      if [ "$egress_table_restored" != "1" ] || [ -z "$egress_current" ] \
+          || [ -z "$egress_table_verify_copy" ] \
+          || ! nft list table inet arcana_egress_isolation >"$egress_current" 2>/dev/null \
+          || ! cmp -s "$egress_table_verify_copy" "$egress_current"; then
+        CRITICAL_RESIDUE+=("pre-existing nftables egress table restoration is not verified")
+      fi
+      rm -f "${egress_current:-}" "$egress_table_verify_copy"
+      ;;
+  esac
+fi
 if [ -d /opt/singbox-vpn ] && [ "$opt_singbox_vpn_pre_existed" != "1" ]; then
   CRITICAL_RESIDUE+=("/opt/singbox-vpn still present (singbox-vpn-created)")
 fi

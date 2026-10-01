@@ -1784,6 +1784,11 @@ install_provisioning_agent_binary() {
 
 install_systemd_units() {
   log "installing systemd units..."
+  # Capture the table before installing/reloading a sing-box unit that now
+  # Requires the isolation service; a repair render could otherwise start the
+  # dependency and mutate an operator's opt-in table before ownership capture.
+  ownership_capture_egress_table_baseline_once \
+    || die "could not capture the pre-install nftables egress-table ownership baseline"
   # Each is a FIXED path — install_fixed_path_with_ownership() backs up
   # (once) and tracks whether something already occupied it before singbox-vpn
   # ever wrote here, so uninstall.sh can restore the exact predecessor

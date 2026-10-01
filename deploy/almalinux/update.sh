@@ -564,6 +564,8 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
 
   log "reloading systemd unit definitions..."
   systemctl daemon-reload
+  ownership_capture_egress_table_baseline_once \
+    || die "could not capture the pre-update nftables egress-table ownership baseline"
   systemctl enable vpn-egress-isolation.service
   systemctl reload-or-restart vpn-egress-isolation.service \
     || die "host C-16 egress isolation failed to apply"
@@ -1107,6 +1109,8 @@ fi
 # =======================================================================
 log "reloading systemd unit definitions..."
 systemctl daemon-reload
+ownership_capture_egress_table_baseline_once \
+  || die "could not capture the pre-update nftables egress-table ownership baseline"
 systemctl enable vpn-egress-isolation.service
 systemctl reload-or-restart vpn-egress-isolation.service \
   || die "host C-16 egress isolation failed to apply"

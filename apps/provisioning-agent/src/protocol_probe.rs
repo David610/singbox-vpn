@@ -36,7 +36,7 @@ use crate::config::{AgentConfig, ProtocolProbeConfig, StaticProbeTarget};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
@@ -315,9 +315,16 @@ pub struct ProbeReport {
     /// Surfaced to the control plane so an insecure probe config cannot
     /// run unnoticed.
     pub tls_insecure_for_tests: bool,
+    /// Backward-compatible legacy name: the reporting node's LOCAL
+    /// Hysteria2 certificate, not any peer target's certificate.
     pub hysteria2_cert_days_remaining: Option<i64>,
+    /// Backward-compatible legacy name for LOCAL certificate status:
     /// `healthy`, `expiring`, `expired`, or `unknown`.
     pub certificate_status: &'static str,
+    /// Explicitly scoped aliases: these describe THIS reporting node's local
+    /// certificate, never a peer target's certificate.
+    pub local_hysteria2_cert_days_remaining: Option<i64>,
+    pub local_hysteria2_certificate_status: &'static str,
     pub results: Vec<ProbeResult>,
 }
 
@@ -380,7 +387,7 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
             }
         }
         targets.retain(|t| t.node_id != cfg.node_id);
-        targets.dedup_by(|a, b| a.node_id == b.node_id);
+        deduplicate_targets(&mut targets);
 
         let mut results = Vec::new();
         for t in &targets {
@@ -408,17 +415,20 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
             .hysteria2_cert_path
             .as_deref()
             .and_then(cert_days_remaining);
+        let certificate_status = match cert_days {
+            Some(days) if days < 0 => "expired",
+            Some(days) if days < 14 => "expiring",
+            Some(_) => "healthy",
+            None => "unknown",
+        };
         let report = ProbeReport {
             version: 1,
             round,
             tls_insecure_for_tests: pcfg.tls_insecure_for_tests,
             hysteria2_cert_days_remaining: cert_days,
-            certificate_status: match cert_days {
-                Some(days) if days < 0 => "expired",
-                Some(days) if days < 14 => "expiring",
-                Some(_) => "healthy",
-                None => "unknown",
-            },
+            certificate_status,
+            local_hysteria2_cert_days_remaining: cert_days,
+            local_hysteria2_certificate_status: certificate_status,
             results,
         };
         tracing::info!(
@@ -431,6 +441,14 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
         }
         tokio::time::sleep(interval).await;
     }
+}
+
+/// Preserve insertion order and the first definition for each node. Static
+/// targets are appended first, so explicit local configuration wins over a
+/// conflicting fetched control-plane definition.
+fn deduplicate_targets(targets: &mut Vec<ProbeTarget>) {
+    let mut seen = HashSet::new();
+    targets.retain(|target| seen.insert(target.node_id.clone()));
 }
 
 fn hysteretic_status(ok: bool, failure_streak: u32) -> &'static str {
@@ -931,14 +949,46 @@ mod tests {
         assert_eq!(hysteretic_status(false, 1), "degraded");
 
         // Many one-off targets cannot accumulate indefinitely.
-        for n in 0..100 {
+        for n in 0..1_001 {
             let transient = (format!("node-{n}"), "peer", "Reality".to_string());
             streaks.observe(15, transient, false);
         }
         streaks.finish_round(15);
-        assert_eq!(streaks.entries.len(), 100);
+        assert_eq!(streaks.entries.len(), 1_001);
         streaks.finish_round(16);
         assert!(streaks.entries.is_empty());
+    }
+
+    #[test]
+    fn duplicate_observation_in_one_round_does_not_advance_failure_streak() {
+        let key = || ("node-a".to_string(), "peer", "Reality".to_string());
+        let mut streaks = FailureStreaks::default();
+        assert_eq!(streaks.observe(1, key(), false), 1);
+        assert_eq!(streaks.observe(1, key(), false), 1);
+        assert_eq!(streaks.observe(2, key(), false), 2);
+        assert_eq!(streaks.observe(u64::MAX, key(), false), 1);
+    }
+
+    #[test]
+    fn target_dedup_is_global_ordered_and_static_first() {
+        let target = |node: &str, expected: &str| ProbeTarget {
+            node_id: node.into(),
+            expected_ipv4: Some(expected.into()),
+            reality_uri: None,
+            hysteria2_uri: None,
+        };
+        let mut targets = vec![
+            target("A", "192.0.2.1"),
+            target("B", "192.0.2.2"),
+            target("A", "198.51.100.1"),
+            target("B", "198.51.100.2"),
+        ];
+        deduplicate_targets(&mut targets);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].node_id, "A");
+        assert_eq!(targets[0].expected_ipv4.as_deref(), Some("192.0.2.1"));
+        assert_eq!(targets[1].node_id, "B");
+        assert_eq!(targets[1].expected_ipv4.as_deref(), Some("192.0.2.2"));
     }
 
     #[test]
