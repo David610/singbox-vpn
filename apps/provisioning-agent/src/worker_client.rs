@@ -217,6 +217,47 @@ impl WorkerClient {
             .context("parsing /api/agent/leases/sync response body")
     }
 
+    /// Fetches the node-scoped external compatibility authorization snapshot.
+    /// The response can contain protocol secrets, so neither body nor parsed
+    /// values are ever logged here. Structural/security validation happens in
+    /// the lease-pool reconciler before the snapshot can replace local state.
+    pub async fn fetch_authorizations(&self) -> Result<Value> {
+        let res = self
+            .http
+            .get(format!("{}/api/agent/authorizations", self.base_url))
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .context("GET /api/agent/authorizations request failed")?;
+        if !res.status().is_success() {
+            bail!("GET /api/agent/authorizations returned {}", res.status());
+        }
+        res.json()
+            .await
+            .context("parsing /api/agent/authorizations response body")
+    }
+
+    /// Acknowledges only credential identities after vpn-admin has proven
+    /// the corresponding authorization projection live. No protocol secret
+    /// or account/customer identity is sent in this acknowledgement.
+    pub async fn ack_authorizations(&self, credential_ids: &[String]) -> Result<()> {
+        let res = self
+            .http
+            .post(format!("{}/api/agent/authorizations/ack", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&serde_json::json!({ "credential_ids": credential_ids }))
+            .send()
+            .await
+            .context("POST /api/agent/authorizations/ack request failed")?;
+        if !res.status().is_success() {
+            bail!(
+                "POST /api/agent/authorizations/ack returned {}",
+                res.status()
+            );
+        }
+        Ok(())
+    }
+
     /// Exposes the shared HTTP client so the traffic poller reuses this
     /// agent's one connection pool and timeout policy rather than building
     /// a second client with different behaviour.
