@@ -1824,6 +1824,45 @@ fn future_expiry_extension_does_not_restart_but_expiry_revocation_does() {
         .assert()
         .success();
     assert_eq!(count_reload_or_restart_calls(&log_path), baseline + 1);
+
+    // Expired -> active is an authorization grant and applies once.
+    command()
+        .args(["user", "set-expiry", id, "--expires-at", "4102444800"])
+        .assert()
+        .success();
+    assert_eq!(count_reload_or_restart_calls(&log_path), baseline + 2);
+
+    // Expiry metadata cannot change effective authorization for a disabled
+    // user and therefore must not add another restart.
+    command().args(["user", "disable", id]).assert().success();
+    let disabled_baseline = count_reload_or_restart_calls(&log_path);
+    command()
+        .args(["user", "set-expiry", id, "--expires-at", "1"])
+        .assert()
+        .success();
+    assert_eq!(count_reload_or_restart_calls(&log_path), disabled_baseline);
+
+    // Restore active state, then prove expires_at == the command's captured
+    // current second is inactive (`now < expiry`, not `now <= expiry`).
+    command()
+        .args(["user", "set-expiry", id, "--expires-at", "4102444800"])
+        .assert()
+        .success();
+    command().args(["user", "enable", id]).assert().success();
+    let active_baseline = count_reload_or_restart_calls(&log_path);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    command()
+        .args(["user", "set-expiry", id, "--expires-at", &now])
+        .assert()
+        .success();
+    assert_eq!(
+        count_reload_or_restart_calls(&log_path),
+        active_baseline + 1
+    );
 }
 
 /// `deploy/almalinux/systemd/vpn-expiry-reconcile.timer` fires

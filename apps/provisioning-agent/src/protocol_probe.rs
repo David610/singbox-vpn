@@ -339,7 +339,7 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
         .build()
         .expect("building reqwest client");
     let interval = Duration::from_secs(pcfg.interval_secs.clamp(15, 600));
-    let mut streaks: HashMap<(String, &'static str, String), u32> = HashMap::new();
+    let mut streaks = FailureStreaks::default();
     let mut own: Option<ProbeTarget> = None;
     let mut published = false;
     let mut round = 0_u64;
@@ -397,12 +397,12 @@ pub async fn run_loop(cfg: AgentConfig, shared: SharedReport) {
                 r.vantage,
                 format!("{:?}", r.protocol),
             );
-            let s = streaks.entry(key).or_insert(0);
-            *s = if r.ok { 0 } else { s.saturating_add(1) };
-            r.failure_streak = *s;
-            r.status = hysteretic_status(r.ok, *s);
+            let streak = streaks.observe(round, key, r.ok);
+            r.failure_streak = streak;
+            r.status = hysteretic_status(r.ok, streak);
             r.reason_code = r.error;
         }
+        streaks.finish_round(round);
         round += 1;
         let cert_days = pcfg
             .hysteria2_cert_path
@@ -440,6 +440,35 @@ fn hysteretic_status(ok: bool, failure_streak: u32) -> &'static str {
         "degraded"
     } else {
         "failed"
+    }
+}
+
+type ProbeKey = (String, &'static str, String);
+
+#[derive(Default)]
+struct FailureStreaks {
+    entries: HashMap<ProbeKey, (u32, u64)>,
+}
+
+impl FailureStreaks {
+    fn observe(&mut self, round: u64, key: ProbeKey, ok: bool) -> u32 {
+        let previous = self.entries.get(&key).copied();
+        let consecutive = previous.is_some_and(|(_, seen)| seen.checked_add(1) == Some(round));
+        let streak = if ok {
+            0
+        } else if consecutive {
+            previous.map_or(1, |(streak, _)| streak.saturating_add(1))
+        } else {
+            1
+        };
+        self.entries.insert(key, (streak, round));
+        streak
+    }
+
+    /// Forget targets not observed in this round. Besides bounding memory,
+    /// this makes any absence break the consecutive-failure sequence.
+    fn finish_round(&mut self, round: u64) {
+        self.entries.retain(|_, (_, seen)| *seen == round);
     }
 }
 
@@ -883,6 +912,33 @@ mod tests {
         assert_eq!(hysteretic_status(true, 0), "healthy");
         assert_eq!(hysteretic_status(false, 1), "degraded");
         assert_eq!(hysteretic_status(false, 2), "failed");
+    }
+
+    #[test]
+    fn failure_streaks_require_adjacent_observed_rounds_and_remain_bounded() {
+        let key = || ("node-a".to_string(), "peer", "Reality".to_string());
+        let mut streaks = FailureStreaks::default();
+
+        assert_eq!(streaks.observe(10, key(), false), 1);
+        assert_eq!(streaks.observe(11, key(), false), 2);
+        assert_eq!(streaks.observe(12, key(), true), 0);
+        streaks.finish_round(12);
+
+        // No observation in round 13: pruning breaks the sequence.
+        streaks.finish_round(13);
+        assert!(streaks.entries.is_empty());
+        assert_eq!(streaks.observe(14, key(), false), 1);
+        assert_eq!(hysteretic_status(false, 1), "degraded");
+
+        // Many one-off targets cannot accumulate indefinitely.
+        for n in 0..100 {
+            let transient = (format!("node-{n}"), "peer", "Reality".to_string());
+            streaks.observe(15, transient, false);
+        }
+        streaks.finish_round(15);
+        assert_eq!(streaks.entries.len(), 100);
+        streaks.finish_round(16);
+        assert!(streaks.entries.is_empty());
     }
 
     #[test]

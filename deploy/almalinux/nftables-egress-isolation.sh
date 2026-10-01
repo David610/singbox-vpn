@@ -17,7 +17,7 @@
 # Installed and enabled by the normal lifecycle. `--remove` is used by
 # uninstall and rollback and deletes only this project's dedicated table.
 #
-# Idempotent: deletes and recreates its own dedicated table
+# Idempotent: atomically replaces its own dedicated table
 # (`inet arcana_egress_isolation`) only — never touches firewalld's
 # tables/zones (deploy/almalinux/firewall.sh's inbound policy) or any
 # other nftables table on the host.
@@ -66,9 +66,18 @@ SING_BOX_UID="$(id -u "$SING_BOX_USER")"
 IPV4_DENY="0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24, 192.168.0.0/16, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4"
 IPV6_DENY="::ffff:0:0/96, 64:ff9b::/96, 100::/64, 2001:db8::/32, fc00::/7, fe80::/10, ff00::/8, fd00:ec2::254/128"
 
-# Never flush the ruleset. Remove only our table, tolerating a first install.
-nft delete table inet arcana_egress_isolation 2>/dev/null || true
-nft -f - <<EOF
+RULESET="$(mktemp /run/arcana-egress-isolation.XXXXXX.nft)"
+trap 'rm -f "$RULESET"' EXIT
+
+# nft processes an entire -f input as one netlink transaction. Including the
+# delete in this same batch means a parse/evaluation/apply failure cannot leave
+# the previously-working table deleted. A first install omits the delete.
+if nft list table inet arcana_egress_isolation >/dev/null 2>&1; then
+  printf '%s\n' 'delete table inet arcana_egress_isolation' >"$RULESET"
+else
+  : >"$RULESET"
+fi
+cat >>"$RULESET" <<EOF
 table inet arcana_egress_isolation {
   chain output {
     type filter hook output priority filter; policy accept;
@@ -85,6 +94,10 @@ table inet arcana_egress_isolation {
   }
 }
 EOF
+
+# Validate without mutation first, then apply the exact same file atomically.
+nft --check -f "$RULESET"
+nft -f "$RULESET"
 
 log "installed table inet arcana_egress_isolation (output chain, uid=$SING_BOX_UID scoped)."
 log "verify with: nft list table inet arcana_egress_isolation"

@@ -102,6 +102,36 @@ ownership_set_baseline_once() {
   ownership_set "$key" "$value"
 }
 
+# Install a fixed-name path while preserving the first pre-singbox-vpn
+# occupant byte-for-byte. Shared by install and update so a unit introduced by
+# a later release has exactly the same uninstall/restore semantics as one
+# present on the first installation.
+install_fixed_path_with_ownership() {
+  local src="$1" dest="$2" key="$3" mode="${4:-0644}"
+  local backup_dir="${OWNERSHIP_DIR}/preexisting-backups"
+  local backup="$backup_dir/$key"
+  if [ -e "$dest" ]; then
+    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "1"
+    if [ "$(ownership_get "FIXEDPATH_${key}_BACKED_UP" "0")" != "1" ]; then
+      install -d -m 0700 "$backup_dir"
+      cp -a "$dest" "$backup"
+      ownership_set "FIXEDPATH_${key}_BACKUP" "$backup"
+      ownership_mark "FIXEDPATH_${key}_BACKED_UP"
+    fi
+  else
+    ownership_set_baseline_once "FIXEDPATH_${key}_PRE_EXISTED" "0"
+  fi
+  install -m "$mode" "$src" "$dest"
+}
+
+ownership_capture_systemd_baseline_once() {
+  local key="$1" unit="$2" active=0 enabled=0
+  systemctl is-active --quiet "$unit" 2>/dev/null && active=1
+  systemctl is-enabled --quiet "$unit" 2>/dev/null && enabled=1
+  ownership_set_baseline_once "SYSTEMD_${key}_PRE_ACTIVE" "$active"
+  ownership_set_baseline_once "SYSTEMD_${key}_PRE_ENABLED" "$enabled"
+}
+
 # Refuse to treat a manifest-sourced value as a safe destructive-cleanup
 # path (uninstall.sh's own use of e.g. RUSTUP_HOME_DIR) unless it is a
 # non-empty absolute path, is not "/" itself, and contains no ".."

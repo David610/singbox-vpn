@@ -194,12 +194,16 @@ for unit in sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer
     note_removed
   fi
 done
-# Never stop a pre-existing or ownership-ambiguous unit merely because it
-# has our expected filename: ExecStop removes the Arcana table. Only the
-# install manifest may authorize that mutation.
-if [ "$(ownership_get FIXEDPATH_EGRESS_ISOLATION_UNIT_PRE_EXISTED "")" = "0" ]; then
-  systemctl disable --now vpn-egress-isolation.service >/dev/null 2>&1 || true
-fi
+# Once a known baseline exists, the currently-loaded definition is ours and
+# must be stopped so its ExecStop removes the Arcana table before the source
+# tree disappears. Preserve a pre-existing unit's enabled state; only disable
+# the unit when singbox-vpn originally created the fixed path.
+egress_unit_pre_existed="$(ownership_get FIXEDPATH_EGRESS_ISOLATION_UNIT_PRE_EXISTED "")"
+case "$egress_unit_pre_existed" in
+  0) systemctl disable --now vpn-egress-isolation.service >/dev/null 2>&1 || true ;;
+  1) systemctl stop vpn-egress-isolation.service >/dev/null 2>&1 || true ;;
+  *) warn "egress-isolation unit ownership is ambiguous; leaving its service and nftables state untouched" ;;
+esac
 
 log "removing/restoring singbox-vpn systemd units..."
 restore_or_remove_fixed_path /etc/systemd/system/sing-box.service SINGBOX_UNIT
@@ -210,6 +214,16 @@ restore_or_remove_fixed_path /etc/systemd/system/vpn-egress-isolation.service EG
 restore_or_remove_fixed_path /etc/systemd/system/vpn-service-watchdog.service WATCHDOG_SVC_UNIT
 restore_or_remove_fixed_path /etc/systemd/system/vpn-service-watchdog.timer WATCHDOG_TIMER_UNIT
 systemctl daemon-reload
+if [ "$egress_unit_pre_existed" = "1" ]; then
+  if [ "$(ownership_get SYSTEMD_EGRESS_ISOLATION_UNIT_PRE_ENABLED "0")" = "1" ]; then
+    systemctl enable vpn-egress-isolation.service >/dev/null 2>&1 || true
+  else
+    systemctl disable vpn-egress-isolation.service >/dev/null 2>&1 || true
+  fi
+  if [ "$(ownership_get SYSTEMD_EGRESS_ISOLATION_UNIT_PRE_ACTIVE "0")" = "1" ]; then
+    systemctl start vpn-egress-isolation.service >/dev/null 2>&1 || true
+  fi
+fi
 systemctl reset-failed sing-box.service vpn-subscription.service vpn-expiry-reconcile.timer vpn-expiry-reconcile.service vpn-service-watchdog.timer vpn-service-watchdog.service vpn-egress-isolation.service >/dev/null 2>&1 || true
 
 # The provisioning agent binary is removed only if the installer installed

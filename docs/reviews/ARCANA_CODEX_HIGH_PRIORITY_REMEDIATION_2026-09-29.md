@@ -50,7 +50,7 @@ not changed here. Its heartbeat handler and node-health computation must:
 6. never promote a managed node to READY from heartbeat freshness alone.
 
 A two-real-VPS relay/exit run using `SINGBOX_VERSION` and
-`SINGBOX_SHA256_X86_64` from `deploy/lib/versions.env`, valid public DNS/TLS,
+`SINGBOX_SHA256_AMD64` from `deploy/lib/versions.env`, valid public DNS/TLS,
 and externally reachable TCP+UDP remains required. This environment could not
 reach the current vpn-web checkout (HTTPS clone was denied with proxy HTTP 403),
 so no claim is made that its current main consumes these additive fields.
@@ -63,14 +63,21 @@ Install records ownership of the unit, enables it, and applies it before
 sing-box. Update snapshots/replaces the unit and applies it; rollback restores
 (or removes, for an upgrade from a release without the unit) the prior state.
 The oneshot is enabled for reboot persistence and its `ExecStop` removes only
-the Arcana table. Uninstall stops it only when the ownership manifest proves
-singbox-vpn created that path, then ownership-aware removal restores any
-pre-existing file.
+the Arcana table. Uninstall only stops it when the ownership manifest has an
+unambiguous baseline, then ownership-aware removal restores any pre-existing
+file and its prior enabled/active state.
 
-Apply and removal are idempotent. They never use `flush ruleset`, never flush an
-unrelated table/chain/set, and include both IPv4 and IPv6 deny sets. A mock-nft
-lifecycle regression test covers apply twice, remove twice, both families,
-absence of broad flush/delete operations, and lifecycle wiring. A real host
+Apply atomically validates and replaces the table in one `nft -f` transaction;
+routine lifecycle reconciliation uses `reload-or-restart`, so it does not run
+`ExecStop` first. `sing-box.service` requires and starts after the isolation
+unit, making boot fail closed. Update uses the same fixed-path ownership helper
+as install, and rollback snapshots/restores the prior table without depending
+on an older release containing the new helper. Apply and removal are
+idempotent. They never use `flush ruleset`, never flush an unrelated
+table/chain/set, and include both IPv4 and IPv6 deny sets. Mock-nft lifecycle
+regression tests cover apply twice, rejected replacement preserving the old
+table, remove twice, both families, absence of broad flush/delete operations,
+installed-path/dependency validation, update ownership, and rollback wiring. A real host
 with firewalld plus unrelated nftables rules still needs the release acceptance
 run, including update failure injection, reboot, and uninstall comparison of
 the unrelated ruleset before/after.

@@ -1,19 +1,18 @@
 [Unit]
 Description=Arcana host-layer C-16 egress isolation (nftables, defence in depth)
-Documentation=file:///opt/vpn/deploy/almalinux/nftables-egress-isolation.sh
-After=network.target
+Documentation=file:///opt/singbox-vpn/deploy/almalinux/nftables-egress-isolation.sh
+After=network-online.target
 Before=sing-box.service
-Wants=network.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/opt/vpn/deploy/almalinux/nftables-egress-isolation.sh
-# Idempotent (the script deletes-then-recreates its own dedicated
-# table), so a restart safely re-applies rather than erroring on
-# already-present state.
-ExecReload=/opt/vpn/deploy/almalinux/nftables-egress-isolation.sh
-ExecStop=/opt/vpn/deploy/almalinux/nftables-egress-isolation.sh --remove
+ExecStart=/opt/singbox-vpn/deploy/almalinux/nftables-egress-isolation.sh
+# Idempotent and atomic: routine reconciliation uses ExecReload so the
+# service's ExecStop removal path is reserved for a deliberate stop/uninstall.
+ExecReload=/opt/singbox-vpn/deploy/almalinux/nftables-egress-isolation.sh
+ExecStop=/opt/singbox-vpn/deploy/almalinux/nftables-egress-isolation.sh --remove
 
 [Install]
 WantedBy=multi-user.target
