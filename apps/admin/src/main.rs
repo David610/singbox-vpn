@@ -2963,6 +2963,10 @@ fn cmd_lease_pool_sync(cfg: &DeploymentConfig, input: &std::path::Path) -> Resul
     machine_stdout.write_document(&json!({
         "live": went_live,
         "slots": parsed.slots.len(),
+        "compatibility_authorizations": parsed
+            .compatibility_authorizations
+            .as_ref()
+            .map_or(0, Vec::len),
         "hysteria2_obfs_password": obfs,
     }))
 }
