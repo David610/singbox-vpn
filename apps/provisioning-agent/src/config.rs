@@ -64,6 +64,12 @@ pub struct AgentConfig {
     /// restarts so expiry/rotation continues across them.
     #[serde(default = "default_lease_state_file")]
     pub lease_state_file: String,
+    /// Persisted, identity-minimized compatibility authorization snapshot.
+    /// The node keeps this locally so expiry/revocation remains enforceable
+    /// during a control-plane outage. Contents are protocol secrets and the
+    /// file is written mode 0600 by the reconciler.
+    #[serde(default = "default_external_authorization_state_file")]
+    pub external_authorization_state_file: String,
     /// Where the node persists pending job /complete and /fail reports
     /// (0600) that have not yet been acknowledged by the Worker. This
     /// queue is drained by an independent background task (see
@@ -118,6 +124,10 @@ fn default_lease_slot_lifetime_secs() -> u64 {
 
 fn default_lease_state_file() -> String {
     "/var/lib/vpn-provisioning-agent/lease-pool.json".to_string()
+}
+
+fn default_external_authorization_state_file() -> String {
+    "/var/lib/vpn-provisioning-agent/external-authorizations.json".to_string()
 }
 
 fn default_report_queue_file() -> String {
@@ -205,6 +215,10 @@ impl std::fmt::Debug for AgentConfig {
             .field("lease_pool_size", &self.lease_pool_size)
             .field("lease_slot_lifetime_secs", &self.lease_slot_lifetime_secs)
             .field("lease_state_file", &self.lease_state_file)
+            .field(
+                "external_authorization_state_file",
+                &self.external_authorization_state_file,
+            )
             .field("report_queue_file", &self.report_queue_file)
             .field("op_dedup_file", &self.op_dedup_file)
             .field(
