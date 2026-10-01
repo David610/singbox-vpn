@@ -41,11 +41,12 @@ use crate::config::AgentConfig;
 use crate::dispatch::{parse_json_output, vpn_admin_command};
 use crate::worker_client::WorkerClient;
 use anyhow::{anyhow, Context, Result};
-use compat_config::authorization::CredentialClass;
+use compat_config::authorization::{Authorization, AuthorizationSet, CredentialClass};
 use compat_config::credentials;
+use compat_config::secret::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
@@ -112,6 +113,52 @@ pub struct LeaseState {
     /// Unix time of the last rotation (for batching; survives restarts).
     #[serde(default)]
     pub last_rotation_at: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ExternalProtocol {
+    vless_uuid: String,
+    hysteria2_password: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalAuthorizationWire {
+    principal_id: String,
+    credential_id: String,
+    class: CredentialClass,
+    logical_route_id: String,
+    valid_from: String,
+    valid_until: String,
+    revoked: bool,
+    protocol: ExternalProtocol,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalAuthorizationResponse {
+    authorizations: Vec<ExternalAuthorizationWire>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ExternalAuthorization {
+    principal_id: String,
+    credential_id: String,
+    class: CredentialClass,
+    logical_route_id: String,
+    valid_from: i64,
+    valid_until: i64,
+    revoked: bool,
+    vless_uuid: String,
+    hysteria2_password: String,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ExternalAuthorizationState {
+    authorizations: Vec<ExternalAuthorization>,
 }
 
 /// The control plane's view of one slot.
@@ -379,8 +426,166 @@ pub fn save_state(path: &Path, state: &LeaseState) -> Result<()> {
     Ok(())
 }
 
-fn vpn_admin_input(state: &LeaseState) -> Value {
-    json!({
+const MAX_EXTERNAL_AUTHORIZATIONS: usize = 4096;
+
+fn valid_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+fn valid_password(value: &str) -> bool {
+    (16..=128).contains(&value.len()) && value.bytes().all(|b| (0x21..=0x7e).contains(&b))
+}
+
+fn valid_route_id(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("route_") else {
+        return false;
+    };
+    (3..=60).contains(&rest.len())
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn external_as_authorization(item: &ExternalAuthorization) -> Authorization {
+    Authorization {
+        principal_id: item.principal_id.clone(),
+        credential_id: item.credential_id.clone(),
+        class: item.class,
+        valid_from: item.valid_from,
+        valid_until: item.valid_until,
+        revoked: item.revoked,
+        vless_uuid: Some(SecretString::new(item.vless_uuid.clone())),
+        hysteria2_password: Some(SecretString::new(item.hysteria2_password.clone())),
+    }
+}
+
+fn validate_external_state(state: &ExternalAuthorizationState) -> Result<()> {
+    if state.authorizations.len() > MAX_EXTERNAL_AUTHORIZATIONS {
+        return Err(anyhow!(
+            "external authorization snapshot exceeds {MAX_EXTERNAL_AUTHORIZATIONS} records"
+        ));
+    }
+    let mut routes = BTreeSet::new();
+    let mut auths = Vec::with_capacity(state.authorizations.len());
+    for item in &state.authorizations {
+        if item.class != CredentialClass::Compatibility {
+            return Err(anyhow!(
+                "external authorization class must be compatibility"
+            ));
+        }
+        if !valid_route_id(&item.logical_route_id) {
+            return Err(anyhow!(
+                "external authorization has invalid logical_route_id"
+            ));
+        }
+        if !valid_uuid(&item.vless_uuid) || !valid_password(&item.hysteria2_password) {
+            return Err(anyhow!(
+                "external authorization has malformed protocol secret"
+            ));
+        }
+        // Bound memory used by attacker-controlled route ids even though the
+        // node does not otherwise interpret them operationally.
+        routes.insert(item.logical_route_id.as_str());
+        auths.push(external_as_authorization(item));
+    }
+    AuthorizationSet {
+        authorizations: auths,
+    }
+    .validate()
+    .map_err(anyhow::Error::msg)
+}
+
+fn decode_external_response(value: Value) -> Result<ExternalAuthorizationState> {
+    let response: ExternalAuthorizationResponse = serde_json::from_value(value)
+        .context("validating /api/agent/authorizations response shape")?;
+    let mut authorizations = Vec::with_capacity(response.authorizations.len());
+    for item in response.authorizations {
+        let valid_from = OffsetDateTime::parse(&item.valid_from, &Rfc3339)
+            .context("parsing external valid_from")?
+            .unix_timestamp();
+        let valid_until = OffsetDateTime::parse(&item.valid_until, &Rfc3339)
+            .context("parsing external valid_until")?
+            .unix_timestamp();
+        authorizations.push(ExternalAuthorization {
+            principal_id: item.principal_id,
+            credential_id: item.credential_id,
+            class: item.class,
+            logical_route_id: item.logical_route_id,
+            valid_from,
+            valid_until,
+            revoked: item.revoked,
+            vless_uuid: item.protocol.vless_uuid,
+            hysteria2_password: item.protocol.hysteria2_password,
+        });
+    }
+    authorizations.sort_by(|a, b| {
+        (&a.principal_id, &a.credential_id).cmp(&(&b.principal_id, &b.credential_id))
+    });
+    let state = ExternalAuthorizationState { authorizations };
+    validate_external_state(&state)?;
+    Ok(state)
+}
+
+fn active_external(state: &ExternalAuthorizationState, now: i64) -> Vec<ExternalAuthorization> {
+    state
+        .authorizations
+        .iter()
+        .filter(|a| !a.revoked && a.valid_from <= now && now < a.valid_until)
+        .cloned()
+        .collect()
+}
+
+fn load_external_state(path: &Path) -> Result<Option<ExternalAuthorizationState>> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let state: ExternalAuthorizationState =
+                serde_json::from_slice(&bytes).with_context(|| {
+                    format!("parsing external authorization state {path:?} (contents not shown)")
+                })?;
+            validate_external_state(&state)?;
+            Ok(Some(state))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading external authorization state {path:?}")),
+    }
+}
+
+fn save_external_state(path: &Path, state: &ExternalAuthorizationState) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("external authorization state path has no parent"))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {dir:?}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .context("creating external authorization state temp file")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .context("restricting external authorization state temp file")?;
+    }
+    use std::io::Write;
+    tmp.write_all(&serde_json::to_vec(state)?)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path)
+        .map_err(|e| anyhow!("installing external authorization state: {}", e.error))?;
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+fn vpn_admin_input(state: &LeaseState, external: Option<&ExternalAuthorizationState>) -> Value {
+    let mut document = json!({
         "slots": state.slots.iter().map(|s| json!({
             "slot": s.slot,
             "principal_id": s.principal_id,
@@ -392,7 +597,25 @@ fn vpn_admin_input(state: &LeaseState) -> Value {
             "hysteria2_password": s.hysteria2_password,
             "expires_at": s.valid_until,
         })).collect::<Vec<_>>()
-    })
+    });
+    if let Some(external) = external {
+        document["compatibility_authorizations"] = json!(external
+            .authorizations
+            .iter()
+            .map(|a| json!({
+                "principal_id": a.principal_id,
+                "credential_id": a.credential_id,
+                "class": a.class,
+                "logical_route_id": a.logical_route_id,
+                "valid_from": a.valid_from,
+                "valid_until": a.valid_until,
+                "revoked": a.revoked,
+                "vless_uuid": a.vless_uuid,
+                "hysteria2_password": a.hysteria2_password,
+            }))
+            .collect::<Vec<_>>());
+    }
+    document
 }
 
 fn rfc3339(t: i64) -> Result<String> {
@@ -499,6 +722,18 @@ pub fn absorb_sync_response(state: &mut LeaseState, resp: &Value) -> Result<Remo
 pub struct LeasePool {
     path: PathBuf,
     state: LeaseState,
+    external_path: PathBuf,
+    /// None means this node has never obtained a valid external snapshot.
+    /// In that state vpn-admin receives no external field and preserves any
+    /// already-managed ext_* users during a staged agent rollout.
+    external: Option<ExternalAuthorizationState>,
+    /// Exact active external projection last proven live by vpn-admin in this
+    /// process. Time-boundary changes make this differ without new control
+    /// plane input, which is how expiry remains enforced during outages.
+    applied_external: Option<Vec<ExternalAuthorization>>,
+    /// Credential ids last acknowledged to the control plane after a proven
+    /// live apply. None forces a re-ack after every agent restart.
+    acked_external: Option<Vec<String>>,
     remote: Option<RemoteView>,
     obfs_password: Option<String>,
     obfs_reported: bool,
@@ -511,9 +746,27 @@ impl LeasePool {
     pub fn open(cfg: &AgentConfig) -> Result<Self> {
         let path = PathBuf::from(&cfg.lease_state_file);
         let state = load_state(&path)?;
+        let external_path = PathBuf::from(&cfg.external_authorization_state_file);
+        let external = match load_external_state(&external_path) {
+            Ok(state) => state,
+            Err(err) => {
+                // Keep native authorization alive if only the external cache
+                // is corrupt. Existing ext_* users stay untouched until a
+                // fresh validated snapshot repairs the cache.
+                tracing::error!(
+                    error = %err,
+                    "external authorization cache unreadable; preserving live external users until resync"
+                );
+                None
+            }
+        };
         Ok(Self {
             path,
             state,
+            external_path,
+            external,
+            applied_external: None,
+            acked_external: None,
             remote: None,
             obfs_password: None,
             obfs_reported: false,
@@ -544,9 +797,66 @@ impl LeasePool {
                 tracing::info!(rotated = rotate.len(), "lease pool: rotating slots");
             }
         }
-        if !self.state.applied || !self.applied_this_process {
-            self.apply(cfg).await?;
+        // External desired state is independent of the native lease pool. A
+        // malformed or unavailable control plane can never replace the last
+        // good local snapshot; it only delays new changes. Secrets are never
+        // included in these error messages.
+        match client.fetch_authorizations().await {
+            Ok(raw) => match decode_external_response(raw) {
+                Ok(next) => {
+                    if self.external.as_ref() != Some(&next) {
+                        // Persist before live apply so a crash cannot forget a
+                        // credential that may already have reached sing-box.
+                        save_external_state(&self.external_path, &next)?;
+                        self.external = Some(next);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "rejecting malformed external authorization snapshot"
+                    );
+                }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "external authorization fetch failed; enforcing last known local snapshot"
+                );
+            }
         }
+
+        let active_now = self
+            .external
+            .as_ref()
+            .map(|state| active_external(state, now));
+        let external_needs_apply = match (&active_now, &self.applied_external) {
+            (Some(active), Some(applied)) => active != applied,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if !self.state.applied || !self.applied_this_process || external_needs_apply {
+            self.apply(cfg, now).await?;
+        }
+
+        if let Some(applied) = &self.applied_external {
+            let mut ids: Vec<String> = applied
+                .iter()
+                .map(|authorization| authorization.credential_id.clone())
+                .collect();
+            ids.sort();
+            ids.dedup();
+            if self.acked_external.as_ref() != Some(&ids) {
+                match client.ack_authorizations(&ids).await {
+                    Ok(()) => self.acked_external = Some(ids),
+                    Err(err) => tracing::warn!(
+                        error = %err,
+                        "external authorization live acknowledgement failed; publication remains gated"
+                    ),
+                }
+            }
+        }
+
         if cfg.lease_pool_size == 0 && self.state.slots.is_empty() {
             return Ok(());
         }
@@ -576,7 +886,7 @@ impl LeasePool {
         Ok(())
     }
 
-    async fn apply(&mut self, cfg: &AgentConfig) -> Result<()> {
+    async fn apply(&mut self, cfg: &AgentConfig, now: i64) -> Result<()> {
         let dir = tempfile::Builder::new()
             .prefix("vpn-lease-pool-")
             .tempdir()
@@ -597,7 +907,10 @@ impl LeasePool {
             }
             use std::io::Write;
             let mut f = opts.open(&input).context("creating lease-pool input")?;
-            f.write_all(&serde_json::to_vec(&vpn_admin_input(&self.state))?)?;
+            f.write_all(&serde_json::to_vec(&vpn_admin_input(
+                &self.state,
+                self.external.as_ref(),
+            ))?)?;
         }
         let output = tokio::time::timeout(
             VPN_ADMIN_TIMEOUT,
@@ -627,8 +940,16 @@ impl LeasePool {
         self.obfs_password = obfs;
         self.state.applied = true;
         self.applied_this_process = true;
+        self.applied_external = self
+            .external
+            .as_ref()
+            .map(|state| active_external(state, now));
         save_state(&self.path, &self.state)?;
-        tracing::info!(slots = self.state.slots.len(), "lease pool applied live");
+        tracing::info!(
+            slots = self.state.slots.len(),
+            external_active = self.applied_external.as_ref().map_or(0, Vec::len),
+            "managed authorization projection applied live"
+        );
         Ok(())
     }
 }
@@ -833,7 +1154,7 @@ mod tests {
         st.applied = true;
         let vu = st.slots[0].valid_until; // 1800
         let before = st.clone();
-        let before_admin = vpn_admin_input(&st);
+        let before_admin = vpn_admin_input(&st, None);
         let ext = |g: u64, state: &str, t: i64| RemoteSlot {
             extend_to: Some(t),
             ..rs(g, state)
@@ -855,7 +1176,7 @@ mod tests {
             assert_eq!(st.slots[i].valid_until, vu);
         }
         assert!(!st.applied, "store must be re-applied");
-        let after_admin = vpn_admin_input(&st);
+        let after_admin = vpn_admin_input(&st, None);
         for i in 0..5 {
             assert_eq!(
                 st.slots[i].vless_uuid, before.slots[i].vless_uuid,
@@ -955,7 +1276,7 @@ mod tests {
         assert_eq!(slot.vless_uuid, uuid);
         assert_eq!(slot.hysteria2_password, password);
         assert_eq!(slot.generation, 7);
-        let input = vpn_admin_input(&migrated);
+        let input = vpn_admin_input(&migrated, None);
         assert_eq!(input["slots"][0]["principal_id"], slot.principal_id);
         assert_eq!(input["slots"][0]["credential_id"], slot.credential_id);
         assert_eq!(input["slots"][0]["class"], "native");
@@ -1002,6 +1323,75 @@ mod tests {
         assert!(!v.slots[&0].urgent);
         assert!(v.slots[&2].urgent);
         assert_eq!(v.slots[&2].extend_to, None);
+    }
+
+    fn external_wire(extra: Value) -> Value {
+        let mut item = json!({
+            "principal_id": "ext_opaque0001",
+            "credential_id": "cred_external001",
+            "class": "compatibility",
+            "logical_route_id": "route_de_fast",
+            "valid_from": "2026-09-26T00:00:00Z",
+            "valid_until": "2026-10-03T00:00:00Z",
+            "revoked": false,
+            "protocol": {
+                "vless_uuid": "11111111-1111-4111-8111-111111111111",
+                "hysteria2_password": "external-password-0001"
+            }
+        });
+        if let Some(map) = extra.as_object() {
+            for (key, value) in map {
+                item[key] = value.clone();
+            }
+        }
+        json!({ "authorizations": [item] })
+    }
+
+    #[test]
+    fn external_snapshot_is_strict_persistent_and_expires_locally() {
+        let state = decode_external_response(external_wire(json!({}))).unwrap();
+        assert_eq!(state.authorizations.len(), 1);
+        let start = state.authorizations[0].valid_from;
+        let end = state.authorizations[0].valid_until;
+        assert_eq!(active_external(&state, start).len(), 1);
+        assert_eq!(active_external(&state, end - 1).len(), 1);
+        assert!(active_external(&state, end).is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("external-authorizations.json");
+        save_external_state(&path, &state).unwrap();
+        assert!(load_external_state(&path).unwrap() == Some(state));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn external_snapshot_rejects_unknown_fields_and_bad_security_contract() {
+        assert!(decode_external_response(external_wire(json!({
+            "account_id": "must-never-reach-node"
+        })))
+        .is_err());
+        assert!(decode_external_response(external_wire(json!({
+            "class": "native"
+        })))
+        .is_err());
+        assert!(decode_external_response(external_wire(json!({
+            "principal_id": "user@example.com"
+        })))
+        .is_err());
+        assert!(decode_external_response(external_wire(json!({
+            "protocol": {
+                "vless_uuid": "bad",
+                "hysteria2_password": "short"
+            }
+        })))
+        .is_err());
     }
 
     #[test]
