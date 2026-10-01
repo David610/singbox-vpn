@@ -207,6 +207,8 @@ mod tests {
             lease_pool_size: 0,
             lease_slot_lifetime_secs: 1800,
             lease_state_file: "/tmp/unused-lease-state.json".to_string(),
+            external_authorization_state_file: "/tmp/unused-external-authorizations.json"
+                .to_string(),
             report_queue_file: "/tmp/unused-report-queue.json".to_string(),
             op_dedup_file: "/tmp/unused-op-dedup.json".to_string(),
             rotation_batch_interval_secs: 60,
