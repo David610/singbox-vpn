@@ -44,16 +44,42 @@ pub struct LeaseSlotInput {
 // No Debug: this carries secrets.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CompatibilityAuthorizationInput {
+    pub principal_id: String,
+    pub credential_id: String,
+    pub class: CredentialClass,
+    pub logical_route_id: String,
+    pub valid_from: i64,
+    pub valid_until: i64,
+    #[serde(default)]
+    pub revoked: bool,
+    pub vless_uuid: String,
+    pub hysteria2_password: String,
+}
+
+// No Debug: this carries secrets.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LeasePoolInput {
     pub slots: Vec<LeaseSlotInput>,
+    /// None is deliberately different from Some(empty): an older agent
+    /// does not own ext_* state and must preserve it, while a new agent that
+    /// has fetched an authoritative empty snapshot must remove ext_* state.
+    #[serde(default)]
+    pub compatibility_authorizations: Option<Vec<CompatibilityAuthorizationInput>>,
 }
 
 pub fn lease_user_id(slot: u32) -> String {
     format!("{LEASE_USER_PREFIX}{slot:04}")
 }
 
-pub fn is_lease_user(user: &CompatUser) -> bool {
-    user.id.starts_with(LEASE_USER_PREFIX) || user.id.starts_with("cred_")
+pub fn is_native_managed_user(user: &CompatUser) -> bool {
+    user.id.starts_with(LEASE_USER_PREFIX)
+        || (user.id.starts_with("cred_") && user.name.starts_with("native_"))
+}
+
+pub fn is_external_managed_user(user: &CompatUser) -> bool {
+    user.id.starts_with("cred_") && user.name.starts_with("ext_")
 }
 
 fn valid_uuid(s: &str) -> bool {
@@ -68,9 +94,22 @@ fn valid_password(s: &str) -> bool {
     (16..=128).contains(&s.len()) && s.bytes().all(|b| (0x21..=0x7e).contains(&b))
 }
 
-/// Returns the new user list and whether it differs from `users`.
-/// Non-lease users are carried over untouched and in order; lease users
-/// are replaced by exactly the input slots (sorted by slot).
+fn valid_route_id(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("route_") else {
+        return false;
+    };
+    (3..=60).contains(&rest.len())
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// Reconcile the one managed authorization projection.
+///
+/// Native lease slots are always owned by this input. External compatibility
+/// state is owned only when `compatibility_authorizations` is present; an
+/// older agent omitting that field cannot delete ext_* users. Reserved probe
+/// and legacy normal users are never owned by this path.
 pub fn reconcile(
     users: &[CompatUser],
     input: &LeasePoolInput,
@@ -79,14 +118,26 @@ pub fn reconcile(
     if input.slots.len() > MAX_SLOTS {
         bail!("lease pool larger than {MAX_SLOTS} slots");
     }
-    let mut seen = BTreeSet::new();
+    if input
+        .compatibility_authorizations
+        .as_ref()
+        .is_some_and(|items| items.len() > MAX_SLOTS)
+    {
+        bail!("external authorization snapshot larger than {MAX_SLOTS} records");
+    }
+
+    let mut seen_slots = BTreeSet::new();
+    let mut declared_uuids = BTreeSet::new();
     let mut authorizations = Vec::new();
     for s in &input.slots {
-        if s.slot as usize >= MAX_SLOTS || !seen.insert(s.slot) {
+        if s.slot as usize >= MAX_SLOTS || !seen_slots.insert(s.slot) {
             bail!("lease slot {} is out of range or duplicated", s.slot);
         }
         if !valid_uuid(&s.vless_uuid) || !valid_password(&s.hysteria2_password) {
             bail!("lease slot {} has a malformed credential", s.slot);
+        }
+        if !declared_uuids.insert(s.vless_uuid.to_ascii_lowercase()) {
+            bail!("managed authorization snapshot contains a duplicate VLESS uuid");
         }
         if s.expires_at <= 0 {
             bail!("lease slot {} has no expiry", s.slot);
@@ -104,6 +155,9 @@ pub fn reconcile(
             bail!("lease slot {} must provide principal_id, credential_id, class, and valid_from together", s.slot);
         }
         if metadata_count == 4 {
+            if s.class != Some(CredentialClass::Native) {
+                bail!("lease slot {} must use the native credential class", s.slot);
+            }
             authorizations.push(Authorization {
                 principal_id: s.principal_id.clone().expect("count checked"),
                 credential_id: s.credential_id.clone().expect("count checked"),
@@ -121,29 +175,50 @@ pub fn reconcile(
             );
         }
     }
-    AuthorizationSet { authorizations }
-        .validate()
-        .map_err(anyhow::Error::msg)?;
-    let lease_uuids: BTreeSet<String> = input
-        .slots
-        .iter()
-        .map(|s| s.vless_uuid.to_ascii_lowercase())
-        .collect();
-    if lease_uuids.len() != input.slots.len() {
-        bail!("lease slots must have distinct VLESS uuids");
-    }
-    if users
-        .iter()
-        .any(|u| !is_lease_user(u) && lease_uuids.contains(&u.vless_uuid.to_ascii_lowercase()))
-    {
-        bail!("a lease slot uuid collides with an existing user");
+
+    if let Some(external) = &input.compatibility_authorizations {
+        for a in external {
+            if a.class != CredentialClass::Compatibility {
+                bail!("external authorization class must be compatibility");
+            }
+            if !valid_route_id(&a.logical_route_id) {
+                bail!("external authorization has invalid logical route");
+            }
+            if !valid_uuid(&a.vless_uuid) || !valid_password(&a.hysteria2_password) {
+                bail!("external authorization has a malformed credential");
+            }
+            if !declared_uuids.insert(a.vless_uuid.to_ascii_lowercase()) {
+                bail!("managed authorization snapshot contains a duplicate VLESS uuid");
+            }
+            authorizations.push(Authorization {
+                principal_id: a.principal_id.clone(),
+                credential_id: a.credential_id.clone(),
+                class: a.class,
+                valid_from: a.valid_from,
+                valid_until: a.valid_until,
+                revoked: a.revoked,
+                vless_uuid: Some(SecretString::new(a.vless_uuid.clone())),
+                hysteria2_password: Some(SecretString::new(a.hysteria2_password.clone())),
+            });
+        }
     }
 
+    let set = AuthorizationSet { authorizations };
+    set.validate().map_err(anyhow::Error::msg)?;
+    let active_ids: BTreeSet<String> = set
+        .active_at(now)
+        .into_iter()
+        .map(|a| a.credential_id.clone())
+        .collect();
+
+    let owns_external = input.compatibility_authorizations.is_some();
     let mut next: Vec<CompatUser> = users
         .iter()
-        .filter(|u| !is_lease_user(u))
+        .filter(|u| !is_native_managed_user(u) && (!owns_external || !is_external_managed_user(u)))
         .cloned()
         .collect();
+    let mut managed_uuids = BTreeSet::new();
+
     let mut slots: Vec<&LeaseSlotInput> = input.slots.iter().collect();
     slots.sort_by_key(|s| s.slot);
     for s in slots {
@@ -151,9 +226,23 @@ pub fn reconcile(
             .credential_id
             .clone()
             .unwrap_or_else(|| lease_user_id(s.slot));
-        let mut user = match users.iter().find(|u| u.id == id) {
-            Some(existing) => existing.clone(),
-            None => CompatUser {
+        let metadata = s.credential_id.is_some();
+        if (metadata && !active_ids.contains(&id)) || (!metadata && s.expires_at <= now) {
+            continue;
+        }
+        let uuid = s.vless_uuid.to_ascii_lowercase();
+        if !managed_uuids.insert(uuid.clone())
+            || next
+                .iter()
+                .any(|u| u.vless_uuid.eq_ignore_ascii_case(&uuid))
+        {
+            bail!("a managed authorization uuid collides with another user");
+        }
+        let mut user = users
+            .iter()
+            .find(|u| u.id == id)
+            .cloned()
+            .unwrap_or_else(|| CompatUser {
                 id: id.clone(),
                 name: id.clone(),
                 enabled: true,
@@ -168,17 +257,65 @@ pub fn reconcile(
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
-            },
-        };
+            });
         user.name = s.principal_id.clone().unwrap_or_else(|| id.clone());
-        user.enabled = !s.revoked;
-        user.vless_uuid = s.vless_uuid.to_ascii_lowercase();
+        user.enabled = true;
+        user.vless_uuid = uuid;
         user.hysteria2_password = SecretString::new(s.hysteria2_password.clone());
         user.created_at = s.valid_from.unwrap_or(user.created_at);
         user.expires_at = Some(s.expires_at);
         user.vision_off_experiment = false;
         user.google_egress_hairpin = false;
         next.push(user);
+    }
+
+    if let Some(external) = &input.compatibility_authorizations {
+        let mut external: Vec<_> = external.iter().collect();
+        external.sort_by(|a, b| {
+            (&a.principal_id, &a.credential_id).cmp(&(&b.principal_id, &b.credential_id))
+        });
+        for a in external {
+            if !active_ids.contains(&a.credential_id) {
+                continue;
+            }
+            let uuid = a.vless_uuid.to_ascii_lowercase();
+            if !managed_uuids.insert(uuid.clone())
+                || next
+                    .iter()
+                    .any(|u| u.vless_uuid.eq_ignore_ascii_case(&uuid))
+            {
+                bail!("a managed authorization uuid collides with another user");
+            }
+            let mut user = users
+                .iter()
+                .find(|u| u.id == a.credential_id)
+                .cloned()
+                .unwrap_or_else(|| CompatUser {
+                    id: a.credential_id.clone(),
+                    name: a.principal_id.clone(),
+                    enabled: true,
+                    vless_uuid: String::new(),
+                    hysteria2_password: SecretString::new(String::new()),
+                    subscription_token_hash_hex: credentials::hash_token(
+                        &credentials::generate_subscription_token(),
+                    ),
+                    created_at: a.valid_from,
+                    expires_at: None,
+                    vision_off_experiment: false,
+                    google_egress_hairpin: false,
+                    peer_credentials: Default::default(),
+                    is_reserved_probe: false,
+                });
+            user.name = a.principal_id.clone();
+            user.enabled = true;
+            user.vless_uuid = uuid;
+            user.hysteria2_password = SecretString::new(a.hysteria2_password.clone());
+            user.created_at = a.valid_from;
+            user.expires_at = Some(a.valid_until);
+            user.vision_off_experiment = false;
+            user.google_egress_hairpin = false;
+            next.push(user);
+        }
     }
 
     let changed = serde_json::to_value(&next)? != serde_json::to_value(users)?;
@@ -226,6 +363,7 @@ mod tests {
         let users = vec![customer()];
         let input = LeasePoolInput {
             slots: vec![slot(1, "b", 2000), slot(0, "a", 1000)],
+            compatibility_authorizations: None,
         };
         let (next, changed) = reconcile(&users, &input, 10).unwrap();
         assert!(changed);
@@ -244,6 +382,7 @@ mod tests {
             &[],
             &LeasePoolInput {
                 slots: vec![slot(0, "a", 1000)],
+                compatibility_authorizations: None,
             },
             10,
         )
@@ -252,6 +391,7 @@ mod tests {
             &a,
             &LeasePoolInput {
                 slots: vec![slot(0, "a", 1000)],
+                compatibility_authorizations: None,
             },
             20,
         )
@@ -265,6 +405,7 @@ mod tests {
             &a,
             &LeasePoolInput {
                 slots: vec![slot(0, "c", 2000)],
+                compatibility_authorizations: None,
             },
             20,
         )
@@ -279,11 +420,20 @@ mod tests {
             &[customer()],
             &LeasePoolInput {
                 slots: vec![slot(0, "a", 1000), slot(1, "b", 1000)],
+                compatibility_authorizations: None,
             },
             10,
         )
         .unwrap();
-        let (b, _) = reconcile(&a, &LeasePoolInput { slots: vec![] }, 10).unwrap();
+        let (b, _) = reconcile(
+            &a,
+            &LeasePoolInput {
+                slots: vec![],
+                compatibility_authorizations: None,
+            },
+            10,
+        )
+        .unwrap();
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].id, "user_1");
     }
@@ -297,7 +447,8 @@ mod tests {
         assert!(reconcile(
             &[],
             &LeasePoolInput {
-                slots: vec![bad_uuid]
+                slots: vec![bad_uuid],
+                compatibility_authorizations: None,
             },
             1
         )
@@ -309,7 +460,8 @@ mod tests {
         assert!(reconcile(
             &[],
             &LeasePoolInput {
-                slots: vec![short_pw]
+                slots: vec![short_pw],
+                compatibility_authorizations: None,
             },
             1
         )
@@ -317,7 +469,8 @@ mod tests {
         assert!(reconcile(
             &[],
             &LeasePoolInput {
-                slots: vec![slot(0, "a", 1), slot(0, "b", 1)]
+                slots: vec![slot(0, "a", 1), slot(0, "b", 1)],
+                compatibility_authorizations: None,
             },
             1
         )
@@ -325,7 +478,8 @@ mod tests {
         assert!(reconcile(
             &[],
             &LeasePoolInput {
-                slots: vec![slot(0, "a", 1), slot(1, "a", 1)]
+                slots: vec![slot(0, "a", 1), slot(1, "a", 1)],
+                compatibility_authorizations: None,
             },
             1
         )
@@ -333,7 +487,8 @@ mod tests {
         assert!(reconcile(
             &[],
             &LeasePoolInput {
-                slots: vec![slot(0, "a", 0)]
+                slots: vec![slot(0, "a", 0)],
+                compatibility_authorizations: None,
             },
             1
         )
@@ -345,7 +500,8 @@ mod tests {
         assert!(reconcile(
             &[customer()],
             &LeasePoolInput {
-                slots: vec![collide]
+                slots: vec![collide],
+                compatibility_authorizations: None,
             },
             1
         )
@@ -363,6 +519,7 @@ mod tests {
             &[],
             &LeasePoolInput {
                 slots: vec![native],
+                compatibility_authorizations: None,
             },
             0,
         )
@@ -380,6 +537,7 @@ mod tests {
             &first,
             &LeasePoolInput {
                 slots: vec![renewed],
+                compatibility_authorizations: None,
             },
             900,
         )
@@ -390,29 +548,90 @@ mod tests {
         assert_eq!(second[0].expires_at, Some(2_700));
     }
 
+    fn external(
+        credential_id: &str,
+        uuid_tail: &str,
+        valid_from: i64,
+        valid_until: i64,
+        revoked: bool,
+    ) -> CompatibilityAuthorizationInput {
+        CompatibilityAuthorizationInput {
+            principal_id: "ext_opaque0001".into(),
+            credential_id: credential_id.into(),
+            class: CredentialClass::Compatibility,
+            logical_route_id: "route_de_fast".into(),
+            valid_from,
+            valid_until,
+            revoked,
+            vless_uuid: format!("10000000-0000-4000-8000-{uuid_tail:0>12}"),
+            hysteria2_password: format!("external-password-{uuid_tail}-xxxx"),
+        }
+    }
+
     #[test]
     fn compatibility_overlap_and_revocation_project_fail_closed() {
-        let make = |slot_number, credential: &str, from, until, revoked| {
-            let mut value = slot(slot_number, &format!("{slot_number:x}"), until);
-            value.principal_id = Some("ext_opaque0001".into());
-            value.credential_id = Some(credential.into());
-            value.class = Some(CredentialClass::Compatibility);
-            value.valid_from = Some(from);
-            value.revoked = revoked;
-            value
-        };
         let input = LeasePoolInput {
-            slots: vec![
-                make(0, "cred_rotate001", 0, COMPAT_MIN_LIFETIME_SECS, true),
-                make(1, "cred_rotate002", 1, 1 + COMPAT_MIN_LIFETIME_SECS, false),
-            ],
+            slots: vec![],
+            compatibility_authorizations: Some(vec![
+                external("cred_rotate001", "a", 0, COMPAT_MIN_LIFETIME_SECS, true),
+                external(
+                    "cred_rotate002",
+                    "b",
+                    1,
+                    1 + COMPAT_MIN_LIFETIME_SECS,
+                    false,
+                ),
+            ]),
         };
         let (users, _) = reconcile(&[], &input, 10).unwrap();
-        assert!(!users[0].is_active(10));
-        assert!(users[1].is_active(10));
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].id, "cred_rotate002");
+        assert!(users[0].is_active(10));
         let persisted = serde_json::to_vec(&users).unwrap();
         let restored: Vec<CompatUser> = serde_json::from_slice(&persisted).unwrap();
-        assert!(!restored[0].is_active(10));
-        assert!(restored[1].is_active(10));
+        assert!(restored[0].is_active(10));
+    }
+
+    #[test]
+    fn native_and_external_ownership_coexist_without_cross_deletion() {
+        let mut native = slot(0, "a", 1_800);
+        native.principal_id = Some("native_opaque001".into());
+        native.credential_id = Some("cred_native001".into());
+        native.class = Some(CredentialClass::Native);
+        native.valid_from = Some(0);
+        let combined = LeasePoolInput {
+            slots: vec![native],
+            compatibility_authorizations: Some(vec![external(
+                "cred_external001",
+                "b",
+                0,
+                COMPAT_MIN_LIFETIME_SECS,
+                false,
+            )]),
+        };
+        let (users, _) = reconcile(&[customer()], &combined, 10).unwrap();
+        assert!(users.iter().any(|u| u.id == "cred_native001"));
+        assert!(users.iter().any(|u| u.id == "cred_external001"));
+        assert!(users.iter().any(|u| u.id == "user_1"));
+
+        // Staged rollout: a native-only/older agent omits the external field,
+        // so ext_* users survive unchanged.
+        let native_only = LeasePoolInput {
+            slots: combined.slots,
+            compatibility_authorizations: None,
+        };
+        let (preserved, _) = reconcile(&users, &native_only, 20).unwrap();
+        assert!(preserved.iter().any(|u| u.id == "cred_external001"));
+
+        // Once a new agent supplies an authoritative empty external snapshot,
+        // only ext_* managed users disappear; native and legacy users remain.
+        let clear_external = LeasePoolInput {
+            slots: native_only.slots,
+            compatibility_authorizations: Some(vec![]),
+        };
+        let (cleared, _) = reconcile(&preserved, &clear_external, 20).unwrap();
+        assert!(!cleared.iter().any(|u| u.id == "cred_external001"));
+        assert!(cleared.iter().any(|u| u.id == "cred_native001"));
+        assert!(cleared.iter().any(|u| u.id == "user_1"));
     }
 }
