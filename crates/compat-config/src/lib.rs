@@ -6,6 +6,7 @@
 //! hierarchy in this workspace — see
 //! `docs/COMPATIBILITY_IMPLEMENTATION_PLAN.md` §6.
 
+pub mod authorization;
 pub mod contract;
 pub mod credentials;
 pub mod deployment;
