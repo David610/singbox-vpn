@@ -138,6 +138,20 @@ active credential set and reconciles an expiry transition. A process restart
 first re-applies the durable snapshot using current node time, so it cannot
 resurrect an expired credential.
 
+Only an authenticated, successfully parsed response replaces that durable
+desired state. In particular, a successful `{"authorizations":[]}` is an
+authoritative request to remove every externally managed compatibility
+credential, while a timeout, non-success HTTP status, malformed JSON, unknown
+field, invalid secret, or invalid validity window leaves the last accepted
+snapshot intact. Keeping the snapshot during an outage does not extend any
+authorization: its original `valid_until` remains authoritative and local
+expiry still removes it. Conversely, a node cannot enforce a revocation it has
+never received before that bound; poll, HTTP, and apply timing above describe
+the healthy-path delivery bound, not a guarantee during a partition. Applying
+an unchanged effective set (including a differently ordered response) does not
+restart sing-box; a secret, membership, activation, revocation, or expiry
+transition does require live reconciliation and may restart the service.
+
 Logical-route publication remains a control-plane responsibility. A new target
 must not become subscription-visible until that node has fetched and reported
 its authorization live. The old target must retain the authorization through a

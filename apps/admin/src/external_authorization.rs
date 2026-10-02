@@ -59,6 +59,18 @@ pub fn reconcile(
     {
         bail!("an external VLESS UUID collides with a non-external user");
     }
+    let desired_ids: BTreeSet<_> = set
+        .authorizations
+        .iter()
+        .map(|authorization| authorization.credential_id.as_str())
+        .collect();
+    if users
+        .iter()
+        .filter(|user| !is_external(user))
+        .any(|user| desired_ids.contains(user.id.as_str()))
+    {
+        bail!("an external credential id collides with a non-external user");
+    }
 
     let mut next: Vec<_> = users.iter().filter(|u| !is_external(u)).cloned().collect();
     let mut desired = set.authorizations;
@@ -199,5 +211,96 @@ mod tests {
         .unwrap();
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].id, native.id);
+    }
+
+    #[test]
+    fn rejects_credential_id_and_uuid_collisions_across_owners() {
+        let native = user("cred_external1", "native_principal001");
+        assert!(reconcile(
+            std::slice::from_ref(&native),
+            &ExternalAuthorizationInput {
+                authorizations: vec![external("cred_external1", 0)]
+            },
+            1,
+        )
+        .is_err());
+
+        let native = user("cred_native001", "native_principal001");
+        let mut collision = external("cred_external1", 0);
+        collision.vless_uuid = Some(SecretString::new(native.vless_uuid.clone()));
+        assert!(reconcile(
+            &[native],
+            &ExternalAuthorizationInput {
+                authorizations: vec![collision]
+            },
+            1,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn ab_removal_restart_and_revocation_cannot_resurrect_a() {
+        let native = user("cred_native001", "native_principal001");
+        let a = external("cred_external1", 0);
+        let b = external("cred_external2", 1);
+        let (a_only, _) = reconcile(
+            std::slice::from_ref(&native),
+            &ExternalAuthorizationInput {
+                authorizations: vec![a.clone()],
+            },
+            1,
+        )
+        .unwrap();
+        let (ab, _) = reconcile(
+            &a_only,
+            &ExternalAuthorizationInput {
+                authorizations: vec![a.clone(), b.clone()],
+            },
+            2,
+        )
+        .unwrap();
+        let (b_only, _) = reconcile(
+            &ab,
+            &ExternalAuthorizationInput {
+                authorizations: vec![b.clone()],
+            },
+            3,
+        )
+        .unwrap();
+        assert!(!b_only.iter().any(|user| user.id == a.credential_id));
+        assert!(b_only.iter().any(|user| user.id == b.credential_id));
+
+        // A reconstructed process/store converges to the same B-only state.
+        let serialized = serde_json::to_vec(&b_only).unwrap();
+        let restarted: Vec<CompatUser> = serde_json::from_slice(&serialized).unwrap();
+        let (after_restart, changed) = reconcile(
+            &restarted,
+            &ExternalAuthorizationInput {
+                authorizations: vec![b],
+            },
+            4,
+        )
+        .unwrap();
+        assert!(!changed);
+        assert!(!after_restart.iter().any(|user| user.id == a.credential_id));
+
+        let mut revoked_a = a;
+        revoked_a.revoked = true;
+        let (revoked, _) = reconcile(
+            &after_restart,
+            &ExternalAuthorizationInput {
+                authorizations: vec![revoked_a],
+            },
+            5,
+        )
+        .unwrap();
+        assert!(
+            !revoked
+                .iter()
+                .find(|user| user.id == "cred_external1")
+                .unwrap()
+                .enabled
+        );
+        assert!(revoked.iter().any(|user| user.id == native.id));
     }
 }
