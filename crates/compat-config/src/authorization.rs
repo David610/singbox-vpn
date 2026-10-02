@@ -23,6 +23,7 @@ pub enum CredentialClass {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Authorization {
     pub principal_id: String,
     pub credential_id: String,
@@ -44,6 +45,7 @@ impl Authorization {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthorizationSet {
     pub authorizations: Vec<Authorization>,
 }
@@ -82,6 +84,20 @@ impl AuthorizationSet {
                     "credential {:?} has no protocol secret",
                     item.credential_id
                 ));
+            }
+            if item
+                .vless_uuid
+                .as_ref()
+                .is_some_and(|secret| !valid_vless_uuid(secret.expose()))
+            {
+                return Err("credential has a malformed VLESS UUID".into());
+            }
+            if item
+                .hysteria2_password
+                .as_ref()
+                .is_some_and(|secret| !valid_hysteria2_password(secret.expose()))
+            {
+                return Err("credential has a malformed Hysteria2 password".into());
             }
             match item.class {
                 CredentialClass::Native if lifetime > NATIVE_LEASE_SECS => {
@@ -178,6 +194,18 @@ impl AuthorizationSet {
     }
 }
 
+fn valid_vless_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.char_indices().all(|(index, character)| match index {
+            8 | 13 | 18 | 23 => character == '-',
+            _ => character.is_ascii_hexdigit(),
+        })
+}
+
+fn valid_hysteria2_password(value: &str) -> bool {
+    (16..=128).contains(&value.len()) && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
 fn validate_principal_id(value: &str) -> Result<(), String> {
     validate_id(value, &["native_", "ext_"], "principal_id")
 }
@@ -212,7 +240,7 @@ mod tests {
             valid_from: from,
             valid_until: until,
             revoked: false,
-            vless_uuid: Some(SecretString::new("secret")),
+            vless_uuid: Some(SecretString::new("11111111-1111-4111-8111-111111111111")),
             hysteria2_password: None,
         }
     }

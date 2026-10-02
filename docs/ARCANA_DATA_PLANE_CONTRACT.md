@@ -112,21 +112,47 @@ The two node synchronization calls have disjoint ownership:
 
 * `POST /api/agent/leases/sync` exchanges the node-created native slot pool. It may
   replace only `native_*` principals (and legacy `lease-*` slot records).
-* `GET /api/agent/authorizations` returns the complete desired compatibility set
-  assigned to the authenticated node. Its strict response is
-  `{"authorizations":[...]}`; each item contains only `principal_id`,
-  `credential_id`, `class`, `valid_from`, `valid_until`, `revoked`, and optional
-  `vless_uuid` / `hysteria2_password`. Unknown fields are rejected. Account,
-  billing, subscription-token, and device-label data must never be sent.
+* The agent requests `GET /api/agent/authorizations?schema=2`. During the rolling
+  deployment it accepts exactly two strict response contracts. The legacy
+  `{"authorizations":[...]}` item contains `principal_id`, `credential_id`,
+  `class`, a syntactically validated `logical_route_id`, validity/revocation
+  fields, and a nested `protocol` object. Schema v2 adds top-level
+  `"schema_version":2` and `snapshot_revision`, removes `logical_route_id` from
+  each item, and retains the nested `protocol`. That object permits only
+  `vless_uuid` and `hysteria2_password`. Unknown fields are rejected at every
+  level. Account, billing, subscription-token, and device-label data must never
+  be sent. The route identifier is routing metadata, not customer identity, and
+  is validated then discarded on legacy ingestion.
+
+Schema-v2 revisions are unsigned monotonic integers. Revision `0` is the valid
+initial snapshot for a node that has never had an external authorization; its
+empty authorization set is still authoritative, must be applied and verified,
+and is then acknowledged as revision `0`. It is not a fallback for an HTTP or
+validation failure. After revision `N` is accepted, a revision below `N` or
+different content carrying the same `N` is rejected without replacing durable
+desired state.
 
 The agent validates `ext_*` / `cred_*`, compatibility class, protocol secrets,
 lifetime, two-credential concurrency, and the 48-hour overlap bound. It persists
-the accepted snapshot in a mode-0600 file before invoking `vpn-admin
-external-authorizations`. That command preserves native, reserved-probe, legacy,
+the accepted snapshot and its optional exact revision in a mode-0600 file before
+invoking `vpn-admin external-authorizations`. That command preserves native,
+reserved-probe, legacy,
 and operator users; it passes the merged store through the normal candidate
 render, `sing-box check`, atomic replace, restart, health verification, and
 rollback transaction. The agent does not treat the snapshot as applied unless
 `vpn-admin` reports that the live service was verified.
+
+For schema v2, the agent durably records the fetched revision, verifies that
+exact desired state live, then acknowledges that exact revision with a
+secret-free `POST /api/agent/authorizations?schema=2`. It never acknowledges
+before successful live verification and never substitutes the server's latest
+revision. A legacy response has no revision and receives no acknowledgement.
+An acknowledgement failure does not roll back valid live VPN state: applied and
+acknowledged revision bookkeeping is persisted separately and delivery is
+retried. After a crash before apply, restart applies the persisted desired
+snapshot. After a crash between apply and acknowledgement, restart re-runs the
+idempotent live verification and acknowledges the same persisted revision; an
+already-current effective sing-box config does not restart the service.
 
 Revocation and newly fetched desired state are therefore bounded by the agent
 idle poll interval (configured `poll_interval_secs`, clamped to 1–60 seconds),
@@ -137,6 +163,20 @@ not depend on either control-plane endpoint: on each loop the agent compares the
 active credential set and reconciles an expiry transition. A process restart
 first re-applies the durable snapshot using current node time, so it cannot
 resurrect an expired credential.
+
+Only an authenticated, successfully parsed response replaces that durable
+desired state. In particular, a successful `{"authorizations":[]}` is an
+authoritative request to remove every externally managed compatibility
+credential, while a timeout, non-success HTTP status, malformed JSON, unknown
+field, invalid secret, or invalid validity window leaves the last accepted
+snapshot intact. Keeping the snapshot during an outage does not extend any
+authorization: its original `valid_until` remains authoritative and local
+expiry still removes it. Conversely, a node cannot enforce a revocation it has
+never received before that bound; poll, HTTP, and apply timing above describe
+the healthy-path delivery bound, not a guarantee during a partition. Applying
+an unchanged effective set (including a differently ordered response) does not
+restart sing-box; a secret, membership, activation, revocation, or expiry
+transition does require live reconciliation and may restart the service.
 
 Logical-route publication remains a control-plane responsibility. A new target
 must not become subscription-visible until that node has fetched and reported

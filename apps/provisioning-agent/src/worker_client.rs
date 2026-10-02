@@ -223,6 +223,7 @@ impl WorkerClient {
         let res = self
             .http
             .get(format!("{}/api/agent/authorizations", self.base_url))
+            .query(&[("schema", "2")])
             .bearer_auth(&self.api_key)
             .send()
             .await
@@ -235,10 +236,120 @@ impl WorkerClient {
             .context("parsing /api/agent/authorizations response body")
     }
 
+    /// Acknowledges the exact v2 snapshot that was verified live. The body contains no
+    /// authorization or protocol secret, and callers must never substitute a latest revision.
+    pub async fn ack_external_authorizations(&self, snapshot_revision: u64) -> Result<()> {
+        let res = self
+            .http
+            .post(format!("{}/api/agent/authorizations", self.base_url))
+            .query(&[("schema", "2")])
+            .bearer_auth(&self.api_key)
+            .json(&serde_json::json!({
+                "schema_version": 2,
+                "snapshot_revision": snapshot_revision,
+            }))
+            .send()
+            .await
+            .context("POST /api/agent/authorizations acknowledgement failed")?;
+        if !res.status().is_success() {
+            bail!(
+                "POST /api/agent/authorizations acknowledgement returned {}",
+                res.status()
+            );
+        }
+        Ok(())
+    }
+
     /// Exposes the shared HTTP client so the traffic poller reuses this
     /// agent's one connection pool and timeout policy rather than building
     /// a second client with different behaviour.
     pub fn http(&self) -> &reqwest::Client {
         &self.http
+    }
+}
+
+#[cfg(test)]
+mod external_authorization_tests {
+    use super::*;
+    use wiremock::matchers::{body_json, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client(base_url: &str) -> WorkerClient {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("agent.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "worker_url = {base_url:?}\nnode_id = \"node_test\"\nagent_api_key = \"test-key\"\nvpn_admin_binary = \"vpn-admin\"\nvpn_admin_config = \"deployment.toml\"\n"
+            ),
+        )
+        .unwrap();
+        WorkerClient::new(&AgentConfig::load(&config).unwrap())
+    }
+
+    #[tokio::test]
+    async fn fetch_requests_v2_and_ack_contains_only_the_exact_revision() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/authorizations"))
+            .and(query_param("schema", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "schema_version": 2,
+                "snapshot_revision": 10,
+                "authorizations": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/authorizations"))
+            .and(query_param("schema", "2"))
+            .and(body_json(serde_json::json!({
+                "schema_version": 2,
+                "snapshot_revision": 10
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client(&server.uri());
+        client.fetch_authorizations().await.unwrap();
+        client.ack_external_authorizations(10).await.unwrap();
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn failed_ack_can_be_retried_with_the_same_exact_revision() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/authorizations"))
+            .and(query_param("schema", "2"))
+            .and(body_json(serde_json::json!({
+                "schema_version": 2,
+                "snapshot_revision": 10
+            })))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        assert!(client.ack_external_authorizations(10).await.is_err());
+        server.verify().await;
+
+        server.reset().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/authorizations"))
+            .and(query_param("schema", "2"))
+            .and(body_json(serde_json::json!({
+                "schema_version": 2,
+                "snapshot_revision": 10
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        client.ack_external_authorizations(10).await.unwrap();
+        server.verify().await;
     }
 }

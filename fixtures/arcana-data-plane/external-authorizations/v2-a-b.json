@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "snapshot_revision": 11,
+  "authorizations": [
+    {
+      "principal_id": "ext_principal001",
+      "credential_id": "cred_external01",
+      "class": "compatibility",
+      "valid_from": "2026-10-01T00:00:00Z",
+      "valid_until": "2026-10-02T00:00:00Z",
+      "revoked": false,
+      "protocol": {
+        "vless_uuid": "00000000-0000-4000-8000-000000000001",
+        "hysteria2_password": "password-credential-01-long"
+      }
+    },
+    {
+      "principal_id": "ext_principal001",
+      "credential_id": "cred_external02",
+      "class": "compatibility",
+      "valid_from": "2026-10-01T00:00:00Z",
+      "valid_until": "2026-10-02T00:00:00Z",
+      "revoked": false,
+      "protocol": {
+        "vless_uuid": "00000000-0000-4000-8000-000000000002",
+        "hysteria2_password": "password-credential-02-long"
+      }
+    }
+  ]
+}
