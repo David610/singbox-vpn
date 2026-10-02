@@ -98,6 +98,10 @@ pub struct AgentConfig {
     /// `lease_state_file`/`report_queue_file`.
     #[serde(default = "default_op_dedup_file")]
     pub op_dedup_file: String,
+    /// Durable external compatibility desired state. It contains only opaque
+    /// principals, credential ids, protocol secrets, and validity bounds.
+    #[serde(default = "default_external_authorization_state_file")]
+    pub external_authorization_state_file: String,
 }
 
 fn default_rotation_batch_interval_secs() -> u64 {
@@ -126,6 +130,10 @@ fn default_report_queue_file() -> String {
 
 fn default_op_dedup_file() -> String {
     "/var/lib/vpn-provisioning-agent/op-dedup.json".to_string()
+}
+
+fn default_external_authorization_state_file() -> String {
+    "/var/lib/vpn-provisioning-agent/external-authorizations.json".to_string()
 }
 
 /// `[protocol_probe]` — see `protocol_probe.rs` for what each dimension
@@ -207,6 +215,10 @@ impl std::fmt::Debug for AgentConfig {
             .field("lease_state_file", &self.lease_state_file)
             .field("report_queue_file", &self.report_queue_file)
             .field("op_dedup_file", &self.op_dedup_file)
+            .field(
+                "external_authorization_state_file",
+                &self.external_authorization_state_file,
+            )
             .field(
                 "rotation_batch_interval_secs",
                 &self.rotation_batch_interval_secs,

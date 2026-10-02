@@ -217,6 +217,24 @@ impl WorkerClient {
             .context("parsing /api/agent/leases/sync response body")
     }
 
+    /// Fetch this node's control-plane-owned external compatibility state.
+    /// The response is never logged because it contains protocol secrets.
+    pub async fn fetch_authorizations(&self) -> Result<Value> {
+        let res = self
+            .http
+            .get(format!("{}/api/agent/authorizations", self.base_url))
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .context("GET /api/agent/authorizations request failed")?;
+        if !res.status().is_success() {
+            bail!("GET /api/agent/authorizations returned {}", res.status());
+        }
+        res.json()
+            .await
+            .context("parsing /api/agent/authorizations response body")
+    }
+
     /// Exposes the shared HTTP client so the traffic poller reuses this
     /// agent's one connection pool and timeout policy rather than building
     /// a second client with different behaviour.

@@ -53,7 +53,8 @@ pub fn lease_user_id(slot: u32) -> String {
 }
 
 pub fn is_lease_user(user: &CompatUser) -> bool {
-    user.id.starts_with(LEASE_USER_PREFIX) || user.id.starts_with("cred_")
+    user.id.starts_with(LEASE_USER_PREFIX)
+        || (user.id.starts_with("cred_") && user.name.starts_with("native_"))
 }
 
 fn valid_uuid(s: &str) -> bool {
