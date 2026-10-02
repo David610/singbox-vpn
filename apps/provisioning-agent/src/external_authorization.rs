@@ -136,9 +136,6 @@ fn parse_snapshot(value: Value) -> Result<ParsedSnapshot> {
         if wire.schema_version != 2 {
             bail!("unsupported external authorization schema_version");
         }
-        if wire.snapshot_revision == 0 {
-            bail!("external authorization snapshot_revision must be positive");
-        }
         let authorizations = wire
             .authorizations
             .into_iter()
@@ -399,7 +396,7 @@ mod tests {
                 .revoked
         );
         let empty = parse_snapshot(fixture("v2-empty")).unwrap();
-        assert_eq!(empty.snapshot_revision, Some(20));
+        assert_eq!(empty.snapshot_revision, Some(0));
         assert!(empty.desired.authorizations.is_empty());
     }
 
@@ -526,28 +523,37 @@ mod tests {
     }
 
     #[test]
-    fn stale_equivocated_or_downgraded_snapshots_cannot_replace_v2_state() {
-        let current = parse_snapshot(fixture("v2-empty")).unwrap();
+    fn revision_zero_advances_to_one_but_cannot_roll_back_or_equivocate() {
+        let initial = parse_snapshot(fixture("v2-empty")).unwrap();
         let mut state = PersistedExternalState {
-            desired: current.desired,
-            snapshot_revision: current.snapshot_revision,
-            applied_snapshot_revision: Some(20),
-            acknowledged_snapshot_revision: Some(20),
+            desired: initial.desired,
+            snapshot_revision: initial.snapshot_revision,
+            applied_snapshot_revision: Some(0),
+            acknowledged_snapshot_revision: Some(0),
         };
-        assert!(adopt_snapshot(&mut state, parse_snapshot(fixture("stale")).unwrap()).is_err());
-        assert_eq!(state.snapshot_revision, Some(20));
         assert!(state.desired.authorizations.is_empty());
 
-        let mut equivocated = fixture("v2-active");
-        equivocated["snapshot_revision"] = 20.into();
+        let mut revision_one = fixture("v2-active");
+        revision_one["snapshot_revision"] = 1.into();
+        assert!(adopt_snapshot(&mut state, parse_snapshot(revision_one.clone()).unwrap()).unwrap());
+        assert_eq!(state.snapshot_revision, Some(1));
+        assert_eq!(state.desired.authorizations.len(), 1);
+        assert_eq!(state.applied_snapshot_revision, None);
+        assert_eq!(state.acknowledged_snapshot_revision, None);
+
+        assert!(adopt_snapshot(&mut state, parse_snapshot(fixture("v2-empty")).unwrap()).is_err());
+        assert_eq!(state.snapshot_revision, Some(1));
+
+        let mut equivocated = fixture("v2-empty");
+        equivocated["snapshot_revision"] = 1.into();
         assert!(adopt_snapshot(&mut state, parse_snapshot(equivocated).unwrap()).is_err());
         assert!(adopt_snapshot(
             &mut state,
             parse_snapshot(fixture("legacy-active")).unwrap()
         )
         .is_err());
-        assert_eq!(state.applied_snapshot_revision, Some(20));
-        assert_eq!(state.acknowledged_snapshot_revision, Some(20));
+        assert_eq!(state.snapshot_revision, Some(1));
+        assert_eq!(state.desired.authorizations.len(), 1);
     }
 
     #[test]
@@ -597,7 +603,7 @@ mod tests {
             .and(query_param("schema", "2"))
             .and(body_json(serde_json::json!({
                 "schema_version": 2,
-                "snapshot_revision": 20
+                "snapshot_revision": 0
             })))
             .respond_with(ResponseTemplate::new(204))
             .expect(1)
@@ -632,7 +638,7 @@ mod tests {
 
         assert!(reconciler.tick(&cfg, &client).await.is_err());
         let after_failure = load_state(&state_path).unwrap();
-        assert_eq!(after_failure.snapshot_revision, Some(20));
+        assert_eq!(after_failure.snapshot_revision, Some(0));
         assert_eq!(after_failure.applied_snapshot_revision, None);
         assert_eq!(after_failure.acknowledged_snapshot_revision, None);
         assert_eq!(
@@ -649,8 +655,8 @@ mod tests {
         std::fs::remove_file(fail_flag).unwrap();
         reconciler.tick(&cfg, &client).await.unwrap();
         let applied = load_state(&state_path).unwrap();
-        assert_eq!(applied.applied_snapshot_revision, Some(20));
-        assert_eq!(applied.acknowledged_snapshot_revision, Some(20));
+        assert_eq!(applied.applied_snapshot_revision, Some(0));
+        assert_eq!(applied.acknowledged_snapshot_revision, Some(0));
         server.verify().await;
     }
 }

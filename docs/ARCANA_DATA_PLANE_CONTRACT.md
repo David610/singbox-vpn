@@ -124,6 +124,14 @@ The two node synchronization calls have disjoint ownership:
   be sent. The route identifier is routing metadata, not customer identity, and
   is validated then discarded on legacy ingestion.
 
+Schema-v2 revisions are unsigned monotonic integers. Revision `0` is the valid
+initial snapshot for a node that has never had an external authorization; its
+empty authorization set is still authoritative, must be applied and verified,
+and is then acknowledged as revision `0`. It is not a fallback for an HTTP or
+validation failure. After revision `N` is accepted, a revision below `N` or
+different content carrying the same `N` is rejected without replacing durable
+desired state.
+
 The agent validates `ext_*` / `cred_*`, compatibility class, protocol secrets,
 lifetime, two-credential concurrency, and the 48-hour overlap bound. It persists
 the accepted snapshot and its optional exact revision in a mode-0600 file before
