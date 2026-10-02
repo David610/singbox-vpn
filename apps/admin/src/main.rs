@@ -6,6 +6,7 @@
 //! at `create` or `rotate-token` time, because only its hash is persisted
 //! (spec §26).
 
+mod external_authorization;
 mod lease_pool;
 mod lock;
 mod service;
@@ -273,6 +274,11 @@ enum Commands {
     /// bounded lease pool of pseudonymous credential slots.
     #[command(subcommand)]
     LeasePool(LeasePoolCommands),
+    /// Reconcile the control-plane-owned `ext_*` compatibility credentials.
+    ExternalAuthorizations {
+        #[arg(long)]
+        input: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -678,6 +684,7 @@ fn main() -> Result<()> {
         Commands::RevisionStatus { json } => cmd_revision_status(&cfg, json),
         Commands::HysteriaObfsRotate => cmd_hysteria_obfs_rotate(&cfg),
         Commands::LeasePool(LeasePoolCommands::Sync { input }) => cmd_lease_pool_sync(&cfg, &input),
+        Commands::ExternalAuthorizations { input } => cmd_external_authorizations(&cfg, &input),
         Commands::Config(ConfigCommands::Validate) => cmd_config_validate(&cfg, &cli.config),
         Commands::Config(ConfigCommands::Migrate) => cmd_config_migrate(&cfg, &cli.config),
         Commands::GoogleEgressHairpin(GoogleEgressHairpinCommands::Set {
@@ -2964,6 +2971,27 @@ fn cmd_lease_pool_sync(cfg: &DeploymentConfig, input: &std::path::Path) -> Resul
         "live": went_live,
         "slots": parsed.slots.len(),
         "hysteria2_obfs_password": obfs,
+    }))
+}
+
+fn cmd_external_authorizations(cfg: &DeploymentConfig, input: &std::path::Path) -> Result<()> {
+    let machine_stdout = MachineStdout::divert_human_output_to_stderr()?;
+    let text = std::fs::read_to_string(input)
+        .with_context(|| format!("reading external authorization input {input:?}"))?;
+    let parsed: external_authorization::ExternalAuthorizationInput = serde_json::from_str(&text)
+        .context("parsing external authorization input (contents not shown)")?;
+    let users = store::load_users(&cfg.users_file())?;
+    let previous = users.clone();
+    let now = UnixSeconds::now().0 as i64;
+    let (next, changed) = external_authorization::reconcile(&users, &parsed, now)?;
+    let live = if changed {
+        apply_users_and_save(cfg, &previous, &next)?
+    } else {
+        render_and_apply_singbox_config(cfg, &next, true)?
+    };
+    machine_stdout.write_document(&json!({
+        "live": live,
+        "authorizations": parsed.authorizations.len(),
     }))
 }
 

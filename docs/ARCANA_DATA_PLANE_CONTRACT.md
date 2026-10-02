@@ -105,3 +105,42 @@ composition.
 5. Read the capability matrix before offering a mode. If Privacy+ is false, omit/disable it with
    an explicit unsupported result; never return a Fast profile for that request.
 6. Never include customer identity or subscription/billing tokens in node jobs or logs.
+
+## External compatibility authorization synchronization
+
+The two node synchronization calls have disjoint ownership:
+
+* `POST /api/agent/leases/sync` exchanges the node-created native slot pool. It may
+  replace only `native_*` principals (and legacy `lease-*` slot records).
+* `GET /api/agent/authorizations` returns the complete desired compatibility set
+  assigned to the authenticated node. Its strict response is
+  `{"authorizations":[...]}`; each item contains only `principal_id`,
+  `credential_id`, `class`, `valid_from`, `valid_until`, `revoked`, and optional
+  `vless_uuid` / `hysteria2_password`. Unknown fields are rejected. Account,
+  billing, subscription-token, and device-label data must never be sent.
+
+The agent validates `ext_*` / `cred_*`, compatibility class, protocol secrets,
+lifetime, two-credential concurrency, and the 48-hour overlap bound. It persists
+the accepted snapshot in a mode-0600 file before invoking `vpn-admin
+external-authorizations`. That command preserves native, reserved-probe, legacy,
+and operator users; it passes the merged store through the normal candidate
+render, `sing-box check`, atomic replace, restart, health verification, and
+rollback transaction. The agent does not treat the snapshot as applied unless
+`vpn-admin` reports that the live service was verified.
+
+Revocation and newly fetched desired state are therefore bounded by the agent
+idle poll interval (configured `poll_interval_secs`, clamped to 1–60 seconds),
+the HTTP client timeout (30 seconds), and the 60-second apply timeout: a
+conservative 150-second bound while the control plane and node are healthy. There is no separate urgent wake-up contract,
+so this is deliberately not described as immediate. Locally known expiry does
+not depend on either control-plane endpoint: on each loop the agent compares the
+active credential set and reconciles an expiry transition. A process restart
+first re-applies the durable snapshot using current node time, so it cannot
+resurrect an expired credential.
+
+Logical-route publication remains a control-plane responsibility. A new target
+must not become subscription-visible until that node has fetched and reported
+its authorization live. The old target must retain the authorization through a
+bounded subscription-refresh overlap, after which its next complete snapshot
+omits it. A failure target follows the same prepare/confirm/publish ordering;
+there is no Privacy+ to Fast fallback.

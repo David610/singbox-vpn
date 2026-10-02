@@ -1,5 +1,6 @@
 mod config;
 mod dispatch;
+mod external_authorization;
 mod health_probe;
 mod lease_pool;
 mod op_dedup;
@@ -74,6 +75,13 @@ async fn main() -> Result<()> {
             None
         }
     };
+    let mut external_authorizations = match external_authorization::ExternalReconciler::open(&cfg) {
+        Ok(state) => Some(state),
+        Err(err) => {
+            tracing::error!(error = %err, "external authorization state unreadable; reconciliation disabled until fixed");
+            None
+        }
+    };
 
     if cfg.clash_api_url.is_none() {
         tracing::info!("clash_api_url not configured — traffic reporting disabled for this node");
@@ -110,6 +118,15 @@ async fn main() -> Result<()> {
             // poll interval, and does not depend on the control plane.
             if let Err(err) = pool.tick(&cfg, &client).await {
                 tracing::warn!(error = %err, "lease pool tick failed");
+            }
+        }
+
+        if let Some(external) = external_authorizations.as_mut() {
+            // The durable local snapshot is rendered on every process start
+            // and whenever its active set changes, so expiry remains bounded
+            // by this loop even during a control-plane outage.
+            if let Err(err) = external.tick(&cfg, &client).await {
+                tracing::warn!(error = %err, "external authorization reconciliation failed");
             }
         }
 
@@ -306,6 +323,7 @@ mod op_dedup_integration_tests {
             lease_state_file: "/tmp/unused-lease-state.json".to_string(),
             report_queue_file: "/tmp/unused-report-queue.json".to_string(),
             op_dedup_file: "/tmp/unused-op-dedup.json".to_string(),
+            external_authorization_state_file: "/tmp/unused-external-auth.json".to_string(),
             rotation_batch_interval_secs: 60,
             heartbeat_interval_secs: 60,
             protocol_probe: None,
