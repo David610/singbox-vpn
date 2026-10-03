@@ -4,6 +4,24 @@ use std::process::Command;
 use std::process::Stdio;
 use std::time::Instant;
 
+const CAPABILITY_CONTRACT: &str = "arcana.node.capabilities.v1";
+const PROVISIONING_PROTOCOL: u64 = 2;
+const MINIMUM_CLAIM_LEASE_SECONDS: u64 = 300;
+
+fn node_capabilities() -> Value {
+    json!({
+        "capability_contract": CAPABILITY_CONTRACT,
+        "provisioning_protocol": PROVISIONING_PROTOCOL,
+        "capabilities": {
+            "claim_token": {
+                "version": 1,
+                "minimum_lease_seconds": MINIMUM_CLAIM_LEASE_SECONDS
+            },
+            "external_authorization_snapshot": { "version": 2 }
+        }
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CpuSample {
     total: u64,
@@ -39,6 +57,7 @@ impl TelemetrySampler {
     ) -> Value {
         let cpu_percent = self.cpu_percent();
         let (network_rx_bps, network_tx_bps) = self.network_bps();
+        let capabilities = node_capabilities();
         let mut payload = json!({
             // Receipt of this authenticated payload proves the agent is
             // alive; keep it explicit so dashboards need not conflate that
@@ -50,15 +69,9 @@ impl TelemetrySampler {
             "vpn_version": env!("CARGO_PKG_VERSION"),
             // Machine-readable rollout contract. vpn-web must observe this
             // on every active node before enabling REQUIRE_CLAIM_TOKEN.
-            "capability_contract": "arcana.node.capabilities.v1",
-            "provisioning_protocol": 2,
-            "capabilities": {
-                "claim_token": {
-                    "version": 1,
-                    "minimum_lease_seconds": 300
-                },
-                "external_authorization_snapshot": { "version": 2 }
-            },
+            "capability_contract": capabilities["capability_contract"],
+            "provisioning_protocol": capabilities["provisioning_protocol"],
+            "capabilities": capabilities["capabilities"],
             "singbox_version": command_first_version("sing-box", &["version"]),
             "uptime_seconds": read_uptime_seconds()
                 .unwrap_or_else(|| self.started.elapsed().as_secs()),
@@ -345,6 +358,37 @@ vpn_admin_config = "/etc/vpn/deployment.toml"
         let payload = sampler.collect(&cfg, Some(true), Some(42));
         assert_eq!(payload["probe_ok"], true);
         assert_eq!(payload["probe_latency_ms"], 42);
+    }
+
+    #[test]
+    fn heartbeat_capability_contract_has_stable_names_and_types() {
+        let cfg = test_config();
+        let payload = TelemetrySampler::new().collect(&cfg, None, None);
+        assert_eq!(payload["capability_contract"], CAPABILITY_CONTRACT);
+        assert_eq!(payload["provisioning_protocol"].as_u64(), Some(2));
+        assert_eq!(
+            payload["capabilities"]["claim_token"]["version"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            payload["capabilities"]["claim_token"]["minimum_lease_seconds"].as_u64(),
+            Some(300)
+        );
+        assert_eq!(
+            payload["capabilities"]["external_authorization_snapshot"]["version"].as_u64(),
+            Some(2)
+        );
+        for forbidden in ["account_id", "customer_id", "email", "subscription_token"] {
+            assert!(!payload.to_string().contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn legacy_heartbeat_is_distinguishable_by_absent_contract() {
+        let legacy = json!({"agent_alive": true, "agent_version": "1.0.0"});
+        assert!(legacy.get("capability_contract").is_none());
+        assert!(legacy.get("capabilities").is_none());
+        assert!(node_capabilities().get("capability_contract").is_some());
     }
 
     #[test]

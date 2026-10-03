@@ -358,7 +358,8 @@ pub fn save_state(path: &Path, state: &LeaseState) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("restricting lease state directory {dir:?}"))?;
     }
     let mut tmp = tempfile::NamedTempFile::new_in(dir).context("creating lease state temp file")?;
     #[cfg(unix)]

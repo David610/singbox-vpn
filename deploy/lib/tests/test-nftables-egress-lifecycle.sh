@@ -3,6 +3,24 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+mkdir -m 700 "$TMP/runtime"
+# Production intentionally allocates its unpredictable transaction file below
+# root-controlled /run.  Interpose only mktemp for this hermetic rootless test:
+# preserve the production basename/template and mktemp's O_EXCL semantics, but
+# relocate it into this test's private 0700 directory.  No real /run or nftables
+# state can be touched.
+cat >"$TMP/mktemp" <<'MOCK'
+#!/bin/bash
+set -euo pipefail
+template="${1:?missing mktemp template}"
+case "$template" in
+  /run/arcana-egress-isolation.XXXXXX.nft)
+    umask 077
+    exec /usr/bin/mktemp "$NFT_TEST_RUNTIME/arcana-egress-isolation.XXXXXX.nft"
+    ;;
+  *) echo "unexpected mktemp template: $template" >&2; exit 2 ;;
+esac
+MOCK
 cat >"$TMP/id" <<'MOCK'
 #!/bin/bash
 if [ "$1" = "-u" ] && [ "$#" -eq 1 ]; then echo 0
@@ -21,6 +39,9 @@ fi
 if [ "$1" = "delete" ]; then rm -f "$NFT_PRESENT"; exit; fi
 if [ "$1" = "--check" ] && [ "$2" = "-f" ]; then
   [ "${NFT_FAIL_CHECK:-0}" != 1 ] || exit 1
+  case "$3" in "$NFT_TEST_RUNTIME"/*) ;; *) exit 1;; esac
+  [ "$(stat -c %a "$3")" = 600 ]
+  touch "$NFT_PRIVATE_RULESET_VERIFIED"
   grep -q '^table inet arcana_egress_isolation' "$3"
   exit
 fi
@@ -32,9 +53,10 @@ if [ "$1" = "-f" ]; then
 fi
 exit 1
 MOCK
-chmod +x "$TMP/id" "$TMP/nft"
+chmod +x "$TMP/id" "$TMP/nft" "$TMP/mktemp"
 export PATH="$TMP:$PATH" NFT_LOG="$TMP/log" NFT_LAST_BATCH="$TMP/batch" \
-  NFT_PRESENT="$TMP/arcana-present" NFT_UNRELATED="$TMP/unrelated-present"
+  NFT_PRESENT="$TMP/arcana-present" NFT_UNRELATED="$TMP/unrelated-present" \
+  NFT_TEST_RUNTIME="$TMP/runtime" NFT_PRIVATE_RULESET_VERIFIED="$TMP/private-ruleset-verified"
 touch "$NFT_UNRELATED"
 SCRIPT="$ROOT/deploy/almalinux/nftables-egress-isolation.sh"
 
@@ -42,6 +64,8 @@ SCRIPT="$ROOT/deploy/almalinux/nftables-egress-isolation.sh"
 "$SCRIPT"
 test -f "$NFT_PRESENT"
 test -f "$NFT_UNRELATED"
+test -f "$NFT_PRIVATE_RULESET_VERIFIED"
+test -z "$(find "$NFT_TEST_RUNTIME" -type f -print -quit)"
 
 # Missing nft binary fails closed before touching the existing table.
 mkdir "$TMP/no-nft"

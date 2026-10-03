@@ -7,6 +7,9 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::process::Command;
 
+// The offline job-runtime contract parses these authoritative execution
+// bounds directly. Keep simple integer constructors so a timeout/retry change
+// necessarily requires an intentional fixture update.
 const MAX_ATTEMPTS: u32 = 3;
 const RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const VPN_ADMIN_TIMEOUT: Duration = Duration::from_secs(60);

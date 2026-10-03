@@ -37,7 +37,7 @@
 //! /  restarted between mutate and report", measured in seconds to low
 //! minutes, not days.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -145,23 +145,42 @@ fn load(path: &Path) -> Result<Vec<Entry>> {
 }
 
 fn save(path: &Path, entries: &[Entry]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating operation dedup directory {parent:?}"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("operation dedup path has no parent"))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating operation dedup directory {parent:?}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("securing operation dedup directory {parent:?}"))?;
     }
     // Recorded outcomes can carry the same job-result payloads
     // ReportQueue persists (subscription/provisioning URLs with embedded
     // tokens on CREATE_USER/ROTATE_*) - never left world/group readable.
-    let tmp = path.with_extension("tmp");
     let bytes = serde_json::to_vec(entries).context("serializing op dedup log")?;
-    std::fs::write(&tmp, &bytes).with_context(|| format!("writing {tmp:?}"))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating operation dedup temporary file in {parent:?}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("securing operation dedup temporary file {tmp:?}"))?;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .context("securing operation dedup temporary file")?;
     }
-    std::fs::rename(&tmp, path).with_context(|| format!("renaming {tmp:?} to {path:?}"))
+    use std::io::Write;
+    tmp.write_all(&bytes)
+        .context("writing operation dedup temporary file")?;
+    tmp.as_file()
+        .sync_all()
+        .context("syncing operation dedup temporary file")?;
+    tmp.persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("atomically installing operation dedup log {path:?}"))?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -189,6 +208,22 @@ mod tests {
             Some(Outcome::Complete(serde_json::json!({"vpn_user_id": "u1"})))
         );
         assert_eq!(log.lookup(43).unwrap(), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(dir.path().join("dedup.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
     }
 
     #[test]

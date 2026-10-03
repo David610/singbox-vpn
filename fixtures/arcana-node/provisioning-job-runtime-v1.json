@@ -5,6 +5,7 @@
   "admin_attempts": 3,
   "retry_backoff_seconds": 2,
   "minimum_claim_lease_seconds": 300,
+  "control_plane_claim_lease_seconds": 600,
   "jobs": [
     {"type":"CREATE_USER","network_fetches_per_attempt":0,"admin_invocations_per_attempt":1,"worst_case_seconds":184},
     {"type":"SET_EXPIRY","network_fetches_per_attempt":0,"admin_invocations_per_attempt":1,"worst_case_seconds":184},
