@@ -192,6 +192,13 @@ async fn poll_once(
     let Some(job) = client.claim().await.context("claiming a job")? else {
         return Ok(false);
     };
+    if !job.lease_is_live()? {
+        tracing::warn!(
+            job_id = job.id,
+            "claimed job has expired lease; refusing to execute"
+        );
+        return Ok(true);
+    }
     apply_job(cfg, client, report_queue, op_dedup, &job).await?;
     Ok(true)
 }
@@ -231,7 +238,12 @@ async fn apply_job(
                 job_id = job.id,
                 "job already applied (dedup hit); replaying recorded completion"
             );
-            if let Err(err) = report_queue.enqueue_complete(job.id, result) {
+            if let Err(err) = report_queue.enqueue_complete(
+                job.id,
+                &job.claim_token,
+                &job.lease_expires_at,
+                result,
+            ) {
                 tracing::error!(job_id = job.id, error = %err, "failed to enqueue replayed completion report");
             }
             return Ok(());
@@ -258,7 +270,19 @@ async fn apply_job(
             // the next job — a slow/wedged Worker /complete endpoint must
             // not stall provisioning for every other customer on this node
             // (Phase 8).
-            if let Err(err) = report_queue.enqueue_complete(job.id, result) {
+            if !job.lease_is_live()? {
+                tracing::warn!(
+                    job_id = job.id,
+                    "job finished after claim lease expired; suppressing completion report"
+                );
+                return Ok(());
+            }
+            if let Err(err) = report_queue.enqueue_complete(
+                job.id,
+                &job.claim_token,
+                &job.lease_expires_at,
+                result,
+            ) {
                 tracing::error!(job_id = job.id, error = %err, "failed to enqueue job completion report");
             }
             tracing::info!(job_id = job.id, "job completed");
@@ -270,7 +294,9 @@ async fn apply_job(
             // comment above: nothing mutated, so there is nothing to
             // dedup against, and a future redelivery should be free to
             // try again.
-            if let Err(queue_err) = report_queue.enqueue_fail(job.id, &message) {
+            if let Err(queue_err) =
+                report_queue.enqueue_fail(job.id, &job.claim_token, &job.lease_expires_at, &message)
+            {
                 tracing::error!(job_id = job.id, error = %queue_err, "failed to enqueue job failure report");
             }
         }
@@ -459,6 +485,8 @@ exit 0
             id: 101,
             job_type: "CREATE_USER".to_string(),
             payload: serde_json::json!({"user_id": "alice"}),
+            claim_token: "test-claim-token".to_string(),
+            lease_expires_at: "2999-01-01T00:00:00Z".to_string(),
         };
         apply_twice_across_a_simulated_restart(
             &cfg,
@@ -484,6 +512,8 @@ exit 0
             id: 102,
             job_type: "ROTATE_CREDENTIALS".to_string(),
             payload: serde_json::json!({"vpn_user_id": "user-1"}),
+            claim_token: "test-claim-token".to_string(),
+            lease_expires_at: "2999-01-01T00:00:00Z".to_string(),
         };
         apply_twice_across_a_simulated_restart(
             &cfg,
@@ -509,6 +539,8 @@ exit 0
             id: 103,
             job_type: "ENABLE_USER".to_string(),
             payload: serde_json::json!({"vpn_user_id": "user-1"}),
+            claim_token: "test-claim-token".to_string(),
+            lease_expires_at: "2999-01-01T00:00:00Z".to_string(),
         };
         apply_twice_across_a_simulated_restart(
             &cfg,
@@ -530,6 +562,8 @@ exit 0
             id: 104,
             job_type: "DISABLE_USER".to_string(),
             payload: serde_json::json!({"vpn_user_id": "user-1"}),
+            claim_token: "test-claim-token".to_string(),
+            lease_expires_at: "2999-01-01T00:00:00Z".to_string(),
         };
         apply_twice_across_a_simulated_restart(
             &cfg,
@@ -565,6 +599,8 @@ exit 0
             id: 105,
             job_type: "APPLY_NODE_REVISION".to_string(),
             payload: serde_json::json!({"revision": 7}),
+            claim_token: "test-claim-token".to_string(),
+            lease_expires_at: "2999-01-01T00:00:00Z".to_string(),
         };
         apply_twice_across_a_simulated_restart(
             &cfg,
@@ -612,6 +648,8 @@ exit 0
             id: 106,
             job_type: "APPLY_NODE_REVISION".to_string(),
             payload: serde_json::json!({"revision": 12}),
+            claim_token: "test-claim-token".to_string(),
+            lease_expires_at: "2999-01-01T00:00:00Z".to_string(),
         };
         let report_queue = ReportQueue::spawn(dir.join("report-queue.json"), client.clone());
         let op_dedup = OpDedupLog::open(dir.join("op-dedup.json"));

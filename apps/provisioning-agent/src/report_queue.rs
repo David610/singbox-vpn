@@ -1,4 +1,4 @@
-use crate::worker_client::WorkerClient;
+use crate::worker_client::{ReportDisposition, WorkerClient};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 const MAX_PENDING: usize = 4096;
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+const MAX_ATTEMPTS: u32 = 8;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub enum Outcome {
@@ -20,9 +21,14 @@ pub enum Outcome {
     Fail(String),
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Entry {
     job_id: i64,
+    /// Necessary crash-safe copy of the one-claim capability; queue files are mode 0600.
+    #[serde(default)]
+    claim_token: String,
+    #[serde(default)]
+    lease_expires_at: String,
     outcome: Outcome,
     #[serde(default)]
     attempts: u32,
@@ -43,10 +49,10 @@ struct Entry {
 /// `enqueue_complete`/`enqueue_fail` persist the report and return
 /// immediately; a background task (spawned by `spawn`) owns actually
 /// delivering it, on its own schedule. The queue file survives an agent
-/// restart, so a report queued right before a crash/restart is retried
-/// rather than silently lost, and delivering it twice is safe because
-/// the Worker's /complete and /fail endpoints are idempotent per job id
-/// (job already terminal => no-op; see vpn-web's job-contract).
+/// restart. Each entry carries the claim-attempt token and lease deadline;
+/// an old process therefore cannot report using a newly reclaimed attempt.
+/// Terminal stale/gone/cancelled responses are discarded, and transient
+/// delivery failures have a finite retry budget.
 pub struct ReportQueue {
     path: PathBuf,
     wake: mpsc::UnboundedSender<()>,
@@ -65,17 +71,33 @@ impl ReportQueue {
         }
     }
 
-    pub fn enqueue_complete(&self, job_id: i64, result: Value) -> Result<()> {
+    pub fn enqueue_complete(
+        &self,
+        job_id: i64,
+        claim_token: &str,
+        lease_expires_at: &str,
+        result: Value,
+    ) -> Result<()> {
         self.enqueue(Entry {
             job_id,
+            claim_token: claim_token.to_string(),
+            lease_expires_at: lease_expires_at.to_string(),
             outcome: Outcome::Complete(result),
             attempts: 0,
         })
     }
 
-    pub fn enqueue_fail(&self, job_id: i64, message: &str) -> Result<()> {
+    pub fn enqueue_fail(
+        &self,
+        job_id: i64,
+        claim_token: &str,
+        lease_expires_at: &str,
+        message: &str,
+    ) -> Result<()> {
         self.enqueue(Entry {
             job_id,
+            claim_token: claim_token.to_string(),
+            lease_expires_at: lease_expires_at.to_string(),
             outcome: Outcome::Fail(message.to_string()),
             attempts: 0,
         })
@@ -149,20 +171,48 @@ async fn run(path: PathBuf, client: WorkerClient, mut wake: mpsc::UnboundedRecei
         let mut remaining = Vec::with_capacity(entries.len());
         let mut max_attempts_after = 0u32;
         for mut entry in entries {
+            let expired = time::OffsetDateTime::parse(
+                &entry.lease_expires_at,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .map_or(true, |deadline| deadline <= time::OffsetDateTime::now_utc());
+            if expired {
+                tracing::warn!(
+                    job_id = entry.job_id,
+                    "report queue: claim lease expired; discarding report"
+                );
+                continue;
+            }
             let result = match &entry.outcome {
-                Outcome::Complete(v) => client.complete(entry.job_id, v.clone()).await,
-                Outcome::Fail(msg) => client.fail(entry.job_id, msg).await,
+                Outcome::Complete(v) => {
+                    client
+                        .complete(entry.job_id, &entry.claim_token, v.clone())
+                        .await
+                }
+                Outcome::Fail(msg) => client.fail(entry.job_id, &entry.claim_token, msg).await,
             };
             match result {
-                Ok(()) => {
+                Ok(ReportDisposition::Accepted) => {
                     tracing::info!(
                         job_id = entry.job_id,
                         attempts = entry.attempts,
                         "report queue: delivered"
                     );
                 }
+                Ok(ReportDisposition::Terminal) => tracing::warn!(
+                    job_id = entry.job_id,
+                    "report queue: terminal claim response; discarding report"
+                ),
                 Err(err) => {
                     entry.attempts = entry.attempts.saturating_add(1);
+                    if entry.attempts >= MAX_ATTEMPTS {
+                        tracing::error!(
+                            job_id = entry.job_id,
+                            attempts = entry.attempts,
+                            "report queue: retry limit reached; discarding report"
+                        );
+                        continue;
+                    }
                     tracing::warn!(
                         job_id = entry.job_id,
                         attempts = entry.attempts,
@@ -230,6 +280,8 @@ mod tests {
         let path = dir.path().join("queue.json");
         let entries = vec![Entry {
             job_id: 42,
+            claim_token: "token".into(),
+            lease_expires_at: "2999-01-01T00:00:00Z".into(),
             outcome: Outcome::Complete(serde_json::json!({"vpn_user_id": "u1"})),
             attempts: 2,
         }];
@@ -257,7 +309,12 @@ mod tests {
             wake: wake_tx,
         };
         queue
-            .enqueue_complete(7, serde_json::json!({"ok": true}))
+            .enqueue_complete(
+                7,
+                "token",
+                "2999-01-01T00:00:00Z",
+                serde_json::json!({"ok": true}),
+            )
             .unwrap();
         let entries = load(&path).unwrap();
         assert_eq!(entries.len(), 1);
@@ -289,7 +346,12 @@ mod tests {
         let client = client_for(&server.uri());
         let queue = ReportQueue::spawn(path.clone(), client);
         queue
-            .enqueue_complete(99, serde_json::json!({"vpn_user_id": "u99"}))
+            .enqueue_complete(
+                99,
+                "token",
+                "2999-01-01T00:00:00Z",
+                serde_json::json!({"vpn_user_id": "u99"}),
+            )
             .unwrap();
         // enqueue() returned immediately above — that's the fix under
         // test. Now poll the on-disk queue until the background task has
@@ -326,7 +388,9 @@ mod tests {
         let queue = ReportQueue::spawn(path, client);
 
         let started = std::time::Instant::now();
-        queue.enqueue_complete(1, serde_json::json!({})).unwrap();
+        queue
+            .enqueue_complete(1, "token", "2999-01-01T00:00:00Z", serde_json::json!({}))
+            .unwrap();
         assert!(
             started.elapsed() < Duration::from_millis(500),
             "enqueue must return immediately, independent of the Worker's reachability"
