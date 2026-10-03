@@ -11,11 +11,47 @@ use serde_json::Value;
 /// "APPLY_NODE_REVISION" (Phase 6 — payload is `{"revision": N}`, never
 /// the config content inline; the content is fetched separately via
 /// `fetch_revision_config`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Job {
     pub id: i64,
     pub job_type: String,
     pub payload: Value,
+    /// Opaque capability for this claim attempt. Deliberately omitted from Debug/logging.
+    pub claim_token: String,
+    /// RFC3339 hard deadline after which this claim must not report success.
+    pub lease_expires_at: String,
+}
+
+impl std::fmt::Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Job")
+            .field("id", &self.id)
+            .field("job_type", &self.job_type)
+            .field("payload", &"[REDACTED]")
+            .field("claim_token", &"[REDACTED]")
+            .field("lease_expires_at", &self.lease_expires_at)
+            .finish()
+    }
+}
+
+impl Job {
+    pub fn lease_expires_at(&self) -> Result<time::OffsetDateTime> {
+        time::OffsetDateTime::parse(
+            &self.lease_expires_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .context("claim lease_expires_at is not RFC3339")
+    }
+
+    pub fn lease_is_live(&self) -> Result<bool> {
+        Ok(self.lease_expires_at()? > time::OffsetDateTime::now_utc())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportDisposition {
+    Accepted,
+    Terminal,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,7 +106,12 @@ impl WorkerClient {
     /// job-type-specific payload the Worker's /complete endpoint expects
     /// (see the vpn-web plan's Task 4) — e.g. for CREATE_USER,
     /// `{"vpn_user_id": ..., "subscription_url": ...}`.
-    pub async fn complete(&self, job_id: i64, result: Value) -> Result<()> {
+    pub async fn complete(
+        &self,
+        job_id: i64,
+        claim_token: &str,
+        result: Value,
+    ) -> Result<ReportDisposition> {
         let res = self
             .http
             .post(format!(
@@ -78,40 +119,54 @@ impl WorkerClient {
                 self.base_url
             ))
             .bearer_auth(&self.api_key)
-            .json(&serde_json::json!({ "result": result }))
+            .json(&serde_json::json!({ "claim_token": claim_token, "result": result }))
             .send()
             .await
             .context("POST /api/agent/jobs/:id/complete request failed")?;
 
-        if !res.status().is_success() {
+        if res.status().is_success() {
+            return Ok(ReportDisposition::Accepted);
+        }
+        if matches!(res.status().as_u16(), 401 | 403 | 404 | 409 | 410) {
+            return Ok(ReportDisposition::Terminal);
+        }
+        {
             bail!(
                 "POST /api/agent/jobs/{job_id}/complete returned {}",
                 res.status()
             );
         }
-        Ok(())
     }
 
-    /// Reports a job as failed. The Worker marks it `failed` and sends
-    /// the operator alert — this agent does not retry beyond its own
-    /// local 3-attempt backoff (see the poll loop in main.rs).
-    pub async fn fail(&self, job_id: i64, error: &str) -> Result<()> {
+    /// Reports a job as failed. Delivery is owned by the bounded,
+    /// independently backed-off report queue.
+    pub async fn fail(
+        &self,
+        job_id: i64,
+        claim_token: &str,
+        error: &str,
+    ) -> Result<ReportDisposition> {
         let res = self
             .http
             .post(format!("{}/api/agent/jobs/{job_id}/fail", self.base_url))
             .bearer_auth(&self.api_key)
-            .json(&serde_json::json!({ "error": error }))
+            .json(&serde_json::json!({ "claim_token": claim_token, "error": error }))
             .send()
             .await
             .context("POST /api/agent/jobs/:id/fail request failed")?;
 
-        if !res.status().is_success() {
+        if res.status().is_success() {
+            return Ok(ReportDisposition::Accepted);
+        }
+        if matches!(res.status().as_u16(), 401 | 403 | 404 | 409 | 410) {
+            return Ok(ReportDisposition::Terminal);
+        }
+        {
             bail!(
                 "POST /api/agent/jobs/{job_id}/fail returned {}",
                 res.status()
             );
         }
-        Ok(())
     }
 
     /// Sends a privacy-safe operational heartbeat.
@@ -351,5 +406,173 @@ mod external_authorization_tests {
             .await;
         client.ack_external_authorizations(10).await.unwrap();
         server.verify().await;
+    }
+}
+
+#[cfg(test)]
+mod claim_lease_tests {
+    use super::*;
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client(base_url: &str) -> WorkerClient {
+        WorkerClient {
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(40))
+                .no_proxy()
+                .build()
+                .unwrap(),
+            base_url: base_url.to_string(),
+            api_key: "node-key".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_requires_and_parses_attempt_capability() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"job": {
+                "id": 7, "job_type": "ENABLE_USER", "payload": {},
+                "claim_token": "secret-attempt-token", "lease_expires_at": "2999-01-01T00:00:00Z"
+            }})))
+            .mount(&server)
+            .await;
+        let job = client(&server.uri()).claim().await.unwrap().unwrap();
+        assert_eq!(job.id, 7);
+        assert!(job.lease_is_live().unwrap());
+        assert!(!format!("{job:?}").contains("secret-attempt-token"));
+    }
+
+    #[tokio::test]
+    async fn complete_and_fail_echo_the_claim_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/jobs/7/complete"))
+            .and(body_json(
+                serde_json::json!({"claim_token":"attempt-1","result":{"ok":true}}),
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/jobs/8/fail"))
+            .and(body_json(
+                serde_json::json!({"claim_token":"attempt-2","error":"failed safely"}),
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        assert_eq!(
+            client
+                .complete(7, "attempt-1", serde_json::json!({"ok":true}))
+                .await
+                .unwrap(),
+            ReportDisposition::Accepted
+        );
+        assert_eq!(
+            client.fail(8, "attempt-2", "failed safely").await.unwrap(),
+            ReportDisposition::Accepted
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn stale_gone_cancelled_and_unauthorized_are_terminal() {
+        for status in [401, 403, 404, 409, 410] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            let client = client(&server.uri());
+            assert_eq!(
+                client
+                    .complete(1, "stale-token", Value::Null)
+                    .await
+                    .unwrap(),
+                ReportDisposition::Terminal
+            );
+            assert_eq!(
+                client.fail(1, "stale-token", "x").await.unwrap(),
+                ReportDisposition::Terminal
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn reclaimed_attempt_cannot_complete_but_new_attempt_can() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_json(
+                serde_json::json!({"claim_token":"old","result":null}),
+            ))
+            .respond_with(ResponseTemplate::new(409))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_json(
+                serde_json::json!({"claim_token":"new","result":null}),
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        assert_eq!(
+            client.complete(1, "old", Value::Null).await.unwrap(),
+            ReportDisposition::Terminal
+        );
+        assert_eq!(
+            client.complete(1, "new", Value::Null).await.unwrap(),
+            ReportDisposition::Accepted
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_terminal_reports_are_treated_as_accepted_when_server_is_idempotent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(4)
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        for _ in 0..2 {
+            assert_eq!(
+                client.complete(1, "token", Value::Null).await.unwrap(),
+                ReportDisposition::Accepted
+            );
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                client.fail(2, "token", "x").await.unwrap(),
+                ReportDisposition::Accepted
+            );
+        }
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn timeout_is_transient_and_expired_lease_is_rejected_locally() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(204).set_delay(std::time::Duration::from_millis(200)),
+            )
+            .mount(&server)
+            .await;
+        assert!(client(&server.uri())
+            .complete(1, "token", Value::Null)
+            .await
+            .is_err());
+        let expired: Job = serde_json::from_value(serde_json::json!({
+            "id":1,"job_type":"x","payload":{},"claim_token":"secret",
+            "lease_expires_at":"2000-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(!expired.lease_is_live().unwrap());
     }
 }

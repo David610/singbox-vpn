@@ -463,6 +463,8 @@ mod tests {
             id: 1,
             job_type: job_type.to_string(),
             payload,
+            claim_token: "test-claim-token".to_string(),
+            lease_expires_at: "2999-01-01T00:00:00Z".to_string(),
         }
     }
 
