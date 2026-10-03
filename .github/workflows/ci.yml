@@ -30,6 +30,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  offline-node-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
+      - run: bash deploy/lib/offline-release-gate.sh --quick
+
   fmt:
     runs-on: ubuntu-latest
     timeout-minutes: 10

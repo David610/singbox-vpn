@@ -48,6 +48,17 @@ impl TelemetrySampler {
             "agent_version": env!("CARGO_PKG_VERSION"),
             // vpn-admin is part of the same workspace/release as this agent.
             "vpn_version": env!("CARGO_PKG_VERSION"),
+            // Machine-readable rollout contract. vpn-web must observe this
+            // on every active node before enabling REQUIRE_CLAIM_TOKEN.
+            "capability_contract": "arcana.node.capabilities.v1",
+            "provisioning_protocol": 2,
+            "capabilities": {
+                "claim_token": {
+                    "version": 1,
+                    "minimum_lease_seconds": 300
+                },
+                "external_authorization_snapshot": { "version": 2 }
+            },
             "singbox_version": command_first_version("sing-box", &["version"]),
             "uptime_seconds": read_uptime_seconds()
                 .unwrap_or_else(|| self.started.elapsed().as_secs()),

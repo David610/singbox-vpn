@@ -146,7 +146,8 @@ fn load(path: &Path) -> Result<Vec<Entry>> {
 
 fn save(path: &Path, entries: &[Entry]) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating operation dedup directory {parent:?}"))?;
     }
     // Recorded outcomes can carry the same job-result payloads
     // ReportQueue persists (subscription/provisioning URLs with embedded
@@ -157,7 +158,8 @@ fn save(path: &Path, entries: &[Entry]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).ok();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("securing operation dedup temporary file {tmp:?}"))?;
     }
     std::fs::rename(&tmp, path).with_context(|| format!("renaming {tmp:?} to {path:?}"))
 }

@@ -135,7 +135,8 @@ fn load(path: &Path) -> Result<Vec<Entry>> {
 
 fn save(path: &Path, entries: &[Entry]) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating report queue directory {parent:?}"))?;
     }
     // Contains job results, which may carry subscription/provisioning
     // URLs with embedded tokens - never left world/group readable.
@@ -145,7 +146,8 @@ fn save(path: &Path, entries: &[Entry]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).ok();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("securing report queue temporary file {tmp:?}"))?;
     }
     std::fs::rename(&tmp, path).with_context(|| format!("renaming {tmp:?} to {path:?}"))
 }
@@ -240,7 +242,7 @@ async fn run(path: PathBuf, client: WorkerClient, mut wake: mpsc::UnboundedRecei
 mod tests {
     use super::*;
     use crate::config::AgentConfig;
-    use wiremock::matchers::{method, path_regex};
+    use wiremock::matchers::{body_json, method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client_for(base_url: &str) -> WorkerClient {
@@ -395,5 +397,43 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "enqueue must return immediately, independent of the Worker's reachability"
         );
+    }
+
+    #[tokio::test]
+    async fn reboot_replays_persisted_original_attempt_then_drains_queue() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/api/agent/jobs/55/complete$"))
+            .and(body_json(serde_json::json!({
+                "claim_token":"pre-reboot-attempt",
+                "result":{"mutation_already_succeeded":true}
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("queue.json");
+        save(
+            &path,
+            &[Entry {
+                job_id: 55,
+                claim_token: "pre-reboot-attempt".into(),
+                lease_expires_at: "2999-01-01T00:00:00Z".into(),
+                outcome: Outcome::Complete(serde_json::json!({"mutation_already_succeeded":true})),
+                attempts: 1,
+            }],
+        )
+        .unwrap();
+
+        let _after_reboot = ReportQueue::spawn(path.clone(), client_for(&server.uri()));
+        for _ in 0..100 {
+            if load(&path).unwrap().is_empty() {
+                server.verify().await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("persisted completion was not replayed after simulated reboot");
     }
 }

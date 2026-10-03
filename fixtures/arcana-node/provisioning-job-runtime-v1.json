@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "agent_http_timeout_seconds": 30,
+  "admin_attempt_timeout_seconds": 60,
+  "admin_attempts": 3,
+  "retry_backoff_seconds": 2,
+  "minimum_claim_lease_seconds": 300,
+  "jobs": [
+    {"type":"CREATE_USER","network_fetches_per_attempt":0,"admin_invocations_per_attempt":1,"worst_case_seconds":184},
+    {"type":"SET_EXPIRY","network_fetches_per_attempt":0,"admin_invocations_per_attempt":1,"worst_case_seconds":184},
+    {"type":"CLEAR_EXPIRY","network_fetches_per_attempt":0,"admin_invocations_per_attempt":1,"worst_case_seconds":184},
+    {"type":"ENABLE_USER","network_fetches_per_attempt":0,"admin_invocations_per_attempt":1,"worst_case_seconds":184},
+    {"type":"DISABLE_USER","network_fetches_per_attempt":0,"admin_invocations_per_attempt":1,"worst_case_seconds":184},
+    {"type":"ROTATE_SUBSCRIPTION_TOKEN","network_fetches_per_attempt":0,"admin_invocations_per_attempt":1,"worst_case_seconds":184},
+    {"type":"ROTATE_CREDENTIALS","network_fetches_per_attempt":0,"admin_invocations_per_attempt":1,"worst_case_seconds":184},
+    {"type":"APPLY_NODE_REVISION","network_fetches_per_attempt":1,"admin_invocations_per_attempt":1,"worst_case_seconds":274}
+  ],
+  "derivation": "attempts * (network_fetches * agent_http_timeout + admin_invocations * admin_attempt_timeout) + (attempts - 1) * retry_backoff",
+  "qualification": "Every advertised lease_expires_at must be at least 300 seconds after claim response generation. The agent still checks the absolute deadline before mutation and before report enqueue; an expired attempt is never reported successful."
+}

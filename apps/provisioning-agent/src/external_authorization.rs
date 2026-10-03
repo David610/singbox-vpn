@@ -14,6 +14,10 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 const VPN_ADMIN_TIMEOUT: Duration = Duration::from_secs(60);
+/// Hard memory/CPU boundary for a complete control-plane snapshot. This is far
+/// above the supported small-node population, yet prevents an authenticated
+/// endpoint fault from handing validation an unbounded vector.
+const MAX_EXTERNAL_AUTHORIZATIONS: usize = 4096;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,6 +120,12 @@ fn convert_authorization(
 }
 
 fn validate_external_set(desired: AuthorizationSet) -> Result<AuthorizationSet> {
+    if desired.authorizations.len() > MAX_EXTERNAL_AUTHORIZATIONS {
+        bail!(
+            "external authorization response exceeds the {} credential limit",
+            MAX_EXTERNAL_AUTHORIZATIONS
+        );
+    }
     desired.validate().map_err(anyhow::Error::msg)?;
     if desired
         .authorizations
@@ -353,6 +363,7 @@ fn effective_fingerprint(state: &AuthorizationSet, now: i64) -> Result<Vec<u8>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -496,6 +507,52 @@ mod tests {
         overlap["authorizations"][0]["valid_until"] = "2026-10-05T00:00:01Z".into();
         overlap["authorizations"][1]["valid_until"] = "2026-10-06T00:00:00Z".into();
         assert!(parse_snapshot(overlap).is_err());
+    }
+
+    #[test]
+    fn large_bounded_snapshot_validates_and_one_over_limit_fails_closed() {
+        let template = fixture("v2-active")["authorizations"][0].clone();
+        let mut items = Vec::with_capacity(MAX_EXTERNAL_AUTHORIZATIONS);
+        for i in 0..MAX_EXTERNAL_AUTHORIZATIONS {
+            let mut item = template.clone();
+            item["principal_id"] = format!("ext_stress{i:08x}").into();
+            item["credential_id"] = format!("cred_stress{i:08x}").into();
+            item["protocol"]["vless_uuid"] = format!("00000000-0000-4000-8000-{i:012x}").into();
+            items.push(item);
+        }
+        let snapshot = serde_json::json!({
+            "schema_version": 2, "snapshot_revision": 99, "authorizations": items
+        });
+        assert_eq!(
+            parse_snapshot(snapshot.clone())
+                .unwrap()
+                .desired
+                .authorizations
+                .len(),
+            MAX_EXTERNAL_AUTHORIZATIONS
+        );
+        let mut oversized = snapshot;
+        oversized["authorizations"]
+            .as_array_mut()
+            .unwrap()
+            .push(template);
+        assert!(parse_snapshot(oversized).is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn snapshot_parser_never_panics_on_arbitrary_input(bytes in proptest::collection::vec(any::<u8>(), 0..8192)) {
+            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                let _ = parse_snapshot(value);
+            }
+        }
+
+        #[test]
+        fn revision_parser_rejects_non_integer_revision(revision in "[^0-9]{1,32}") {
+            let mut value = fixture("v2-empty");
+            value["snapshot_revision"] = revision.into();
+            prop_assert!(parse_snapshot(value).is_err());
+        }
     }
 
     #[test]

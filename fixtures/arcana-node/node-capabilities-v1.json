@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "capability_contract": "arcana.node.capabilities.v1",
+  "node_release": "1.1.0",
+  "provisioning_protocol": 2,
+  "capabilities": {
+    "claim_token": {"version":1,"required_in_claim":true,"echoed_on_complete":true,"echoed_on_fail":true,"absolute_lease_deadline":true,"minimum_lease_seconds":300},
+    "external_authorization_snapshot": {"version":2,"monotonic_revision":true,"equivocation_rejected":true},
+    "privacy_plus": {"version":1,"real_sing_box_required":true}
+  }
+}
