@@ -30,6 +30,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  offline-node-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
+      - run: bash deploy/lib/offline-release-gate.sh --quick
+
   fmt:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -629,3 +637,28 @@ jobs:
           grep -q "relay forwarding policy is fail-closed" "$RUNNER_TEMP/relay-doctor.log" \
             || { echo "::error::doctor did not confirm the relay policy"; exit 1; }
           echo "unpaired relay: fail-closed policy rendered, real first-hop handshake self-test passed."
+
+  # The full offline gate's one operation not otherwise exercised by a PR job:
+  # compile the complete locked workspace with release optimizations. The
+  # release-container-smoke job separately proves the production container and
+  # glibc environment; release.yml performs the packaged production build.
+  release-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo build --locked --workspace --release
+
+  # Authoritative, exact-SHA aggregate. GitHub starts this only after every
+  # mapped proof succeeds; the checked-in manifest/test prevents --full from
+  # gaining an operation without a corresponding required CI job.
+  offline-full-verdict:
+    needs: [offline-node-contract, fmt, clippy, test, release-build, release-container-smoke, audit, docs, shell, os-matrix, secret-logging-check, no-legacy-identity-check, workspace-version-consistency-check, license-check, singbox-validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash deploy/lib/tests/test-offline-full-ci-equivalence.sh
+      - run: echo 'OFFLINE FULL GATE EQUIVALENCE PASS for ${{ github.sha }}'

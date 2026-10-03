@@ -14,6 +14,10 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 const VPN_ADMIN_TIMEOUT: Duration = Duration::from_secs(60);
+/// Hard memory/CPU boundary for a complete control-plane snapshot. This is far
+/// above the supported small-node population, yet prevents an authenticated
+/// endpoint fault from handing validation an unbounded vector.
+const MAX_EXTERNAL_AUTHORIZATIONS: usize = 4096;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,6 +120,12 @@ fn convert_authorization(
 }
 
 fn validate_external_set(desired: AuthorizationSet) -> Result<AuthorizationSet> {
+    if desired.authorizations.len() > MAX_EXTERNAL_AUTHORIZATIONS {
+        bail!(
+            "external authorization response exceeds the {} credential limit",
+            MAX_EXTERNAL_AUTHORIZATIONS
+        );
+    }
     desired.validate().map_err(anyhow::Error::msg)?;
     if desired
         .authorizations
@@ -127,6 +137,16 @@ fn validate_external_set(desired: AuthorizationSet) -> Result<AuthorizationSet> 
     Ok(desired)
 }
 
+fn enforce_snapshot_size(size: usize) -> Result<()> {
+    if size > MAX_EXTERNAL_AUTHORIZATIONS {
+        bail!(
+            "external authorization response exceeds the {} credential limit",
+            MAX_EXTERNAL_AUTHORIZATIONS
+        );
+    }
+    Ok(())
+}
+
 fn parse_snapshot(value: Value) -> Result<ParsedSnapshot> {
     // schema_version is the sole explicit discriminator. Its presence always selects the
     // versioned parser; malformed/unknown versions never fall back to the legacy contract.
@@ -136,6 +156,7 @@ fn parse_snapshot(value: Value) -> Result<ParsedSnapshot> {
         if wire.schema_version != 2 {
             bail!("unsupported external authorization schema_version");
         }
+        enforce_snapshot_size(wire.authorizations.len())?;
         let authorizations = wire
             .authorizations
             .into_iter()
@@ -159,6 +180,7 @@ fn parse_snapshot(value: Value) -> Result<ParsedSnapshot> {
 
     let wire: LegacyWireSnapshot = serde_json::from_value(value)
         .context("invalid legacy external authorization response (contents not shown)")?;
+    enforce_snapshot_size(wire.authorizations.len())?;
     let mut authorizations = Vec::with_capacity(wire.authorizations.len());
     for item in wire.authorizations {
         if !valid_route_id(&item.logical_route_id) {
@@ -353,6 +375,7 @@ fn effective_fingerprint(state: &AuthorizationSet, now: i64) -> Result<Vec<u8>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -499,6 +522,78 @@ mod tests {
     }
 
     #[test]
+    fn large_bounded_snapshot_validates_and_one_over_limit_fails_closed() {
+        let template = fixture("v2-active")["authorizations"][0].clone();
+        let mut items = Vec::with_capacity(MAX_EXTERNAL_AUTHORIZATIONS);
+        for i in 0..MAX_EXTERNAL_AUTHORIZATIONS {
+            let mut item = template.clone();
+            item["principal_id"] = format!("ext_stress{i:08x}").into();
+            item["credential_id"] = format!("cred_stress{i:08x}").into();
+            item["protocol"]["vless_uuid"] = format!("00000000-0000-4000-8000-{i:012x}").into();
+            items.push(item);
+        }
+        let snapshot = serde_json::json!({
+            "schema_version": 2, "snapshot_revision": 99, "authorizations": items
+        });
+        assert_eq!(
+            parse_snapshot(snapshot.clone())
+                .unwrap()
+                .desired
+                .authorizations
+                .len(),
+            MAX_EXTERNAL_AUTHORIZATIONS
+        );
+        let mut oversized = snapshot;
+        oversized["authorizations"]
+            .as_array_mut()
+            .unwrap()
+            .push(template);
+        assert!(parse_snapshot(oversized).is_err());
+    }
+
+    #[test]
+    fn oversized_snapshot_cannot_replace_previously_accepted_state() {
+        let accepted = parse_snapshot(fixture("v2-active")).unwrap();
+        let state = PersistedExternalState {
+            desired: accepted.desired,
+            snapshot_revision: accepted.snapshot_revision,
+            applied_snapshot_revision: accepted.snapshot_revision,
+            acknowledged_snapshot_revision: accepted.snapshot_revision,
+        };
+        let before = serde_json::to_vec(&state).unwrap();
+        let item = fixture("v2-active")["authorizations"][0].clone();
+        let oversized = serde_json::json!({
+            "schema_version": 2,
+            "snapshot_revision": 11,
+            "authorizations": vec![item; MAX_EXTERNAL_AUTHORIZATIONS + 1]
+        });
+        assert!(parse_snapshot(oversized).is_err());
+        assert_eq!(serde_json::to_vec(&state).unwrap(), before);
+        assert_eq!(state.snapshot_revision, Some(10));
+
+        // A parse failure never reaches adopt_snapshot; make that boundary
+        // explicit so future refactors cannot turn an oversized response into
+        // an authoritative empty snapshot.
+        state.desired.validate().unwrap();
+    }
+
+    proptest! {
+        #[test]
+        fn snapshot_parser_never_panics_on_arbitrary_input(bytes in proptest::collection::vec(any::<u8>(), 0..8192)) {
+            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                let _ = parse_snapshot(value);
+            }
+        }
+
+        #[test]
+        fn revision_parser_rejects_non_integer_revision(revision in "[^0-9]{1,32}") {
+            let mut value = fixture("v2-empty");
+            value["snapshot_revision"] = revision.into();
+            prop_assert!(parse_snapshot(value).is_err());
+        }
+    }
+
+    #[test]
     fn persisted_revision_bookkeeping_survives_restart_and_old_format_migrates() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
@@ -514,6 +609,19 @@ mod tests {
         assert_eq!(restarted.snapshot_revision, Some(10));
         assert_eq!(restarted.applied_snapshot_revision, Some(10));
         assert_eq!(restarted.acknowledged_snapshot_revision, None);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
 
         let old = dir.path().join("old.json");
         save(&old, &state.desired).unwrap();

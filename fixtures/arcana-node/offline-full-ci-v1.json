@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "verdict_job": "offline-full-verdict",
+  "requirements": [
+    {
+      "operation": "quick offline node gate",
+      "job": "offline-node-contract",
+      "evidence": "bash deploy/lib/offline-release-gate.sh --quick"
+    },
+    {
+      "operation": "format",
+      "job": "fmt",
+      "evidence": "cargo fmt --all -- --check"
+    },
+    {
+      "operation": "clippy",
+      "job": "clippy",
+      "evidence": "cargo clippy --locked --workspace --all-targets -- -D warnings"
+    },
+    {
+      "operation": "workspace build and tests plus SBOM",
+      "job": "test",
+      "evidence": "cargo test --locked --workspace"
+    },
+    {
+      "operation": "release build",
+      "job": "release-build",
+      "evidence": "cargo build --locked --workspace --release"
+    },
+    {
+      "operation": "release build environment",
+      "job": "release-container-smoke",
+      "evidence": "build-release-x86_64.sh --environment-check"
+    },
+    {
+      "operation": "dependency audit",
+      "job": "audit",
+      "evidence": "cargo audit"
+    },
+    {
+      "operation": "documentation",
+      "job": "docs",
+      "evidence": "cargo doc --locked --workspace --no-deps"
+    },
+    {
+      "operation": "shell and lifecycle including release stability",
+      "job": "shell",
+      "evidence": "deploy/lib/tests/*.sh"
+    },
+    {
+      "operation": "supported distro containers",
+      "job": "os-matrix",
+      "evidence": "bash deploy/lib/os-matrix-check.sh"
+    },
+    {
+      "operation": "secret logging",
+      "job": "secret-logging-check",
+      "evidence": "bash deploy/lib/check-no-secret-logging.sh"
+    },
+    {
+      "operation": "legacy identity",
+      "job": "no-legacy-identity-check",
+      "evidence": "bash deploy/lib/check-no-legacy-identity.sh"
+    },
+    {
+      "operation": "workspace version contract",
+      "job": "workspace-version-consistency-check",
+      "evidence": "bash deploy/lib/check-workspace-version-consistency.sh"
+    },
+    {
+      "operation": "repository license",
+      "job": "license-check",
+      "evidence": "test -s LICENSE"
+    },
+    {
+      "operation": "real sing-box and two-hop runtime",
+      "job": "singbox-validate",
+      "evidence": "SINGBOX_VPN_REQUIRE_REAL_INTEROP"
+    }
+  ],
+  "full_gate_steps": [
+    {
+      "gate_evidence": "run contract bash deploy/lib/tests/test-node-offline-contract.sh",
+      "ci_jobs": [
+        "offline-node-contract"
+      ]
+    },
+    {
+      "gate_evidence": "run fast-gate bash deploy/lib/fast-gate.sh",
+      "ci_jobs": [
+        "fmt",
+        "clippy",
+        "test",
+        "shell",
+        "secret-logging-check",
+        "no-legacy-identity-check",
+        "workspace-version-consistency-check",
+        "singbox-validate"
+      ]
+    },
+    {
+      "gate_evidence": "run sbom bash deploy/lib/generate-sbom.sh",
+      "ci_jobs": [
+        "test"
+      ]
+    },
+    {
+      "gate_evidence": "run dependency-audit cargo audit --no-fetch",
+      "ci_jobs": [
+        "audit"
+      ]
+    },
+    {
+      "gate_evidence": "run release-build cargo build --locked --workspace --release",
+      "ci_jobs": [
+        "release-build"
+      ]
+    },
+    {
+      "gate_evidence": "run release-repro-build bash deploy/lib/tests/test-release-stability-regressions.sh",
+      "ci_jobs": [
+        "shell"
+      ]
+    }
+  ]
+}

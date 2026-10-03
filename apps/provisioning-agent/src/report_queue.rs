@@ -134,20 +134,41 @@ fn load(path: &Path) -> Result<Vec<Entry>> {
 }
 
 fn save(path: &Path, entries: &[Entry]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    // Contains job results, which may carry subscription/provisioning
-    // URLs with embedded tokens - never left world/group readable.
-    let tmp = path.with_extension("tmp");
-    let bytes = serde_json::to_vec(entries).context("serializing report queue")?;
-    std::fs::write(&tmp, &bytes).with_context(|| format!("writing {tmp:?}"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("report queue path has no parent"))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating report queue directory {parent:?}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).ok();
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("securing report queue directory {parent:?}"))?;
     }
-    std::fs::rename(&tmp, path).with_context(|| format!("renaming {tmp:?} to {path:?}"))
+    // Contains job results, which may carry subscription/provisioning
+    // URLs with embedded tokens - never left world/group readable.
+    let bytes = serde_json::to_vec(entries).context("serializing report queue")?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating report queue temporary file in {parent:?}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .context("securing report queue temporary file")?;
+    }
+    use std::io::Write;
+    tmp.write_all(&bytes)
+        .context("writing report queue temporary file")?;
+    tmp.as_file()
+        .sync_all()
+        .context("syncing report queue temporary file")?;
+    tmp.persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("atomically installing report queue {path:?}"))?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 async fn run(path: PathBuf, client: WorkerClient, mut wake: mpsc::UnboundedReceiver<()>) {
@@ -240,7 +261,7 @@ async fn run(path: PathBuf, client: WorkerClient, mut wake: mpsc::UnboundedRecei
 mod tests {
     use super::*;
     use crate::config::AgentConfig;
-    use wiremock::matchers::{method, path_regex};
+    use wiremock::matchers::{body_json, method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client_for(base_url: &str) -> WorkerClient {
@@ -296,6 +317,8 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
+            let parent_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(parent_mode, 0o700);
         }
     }
 
@@ -395,5 +418,79 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "enqueue must return immediately, independent of the Worker's reachability"
         );
+    }
+
+    #[tokio::test]
+    async fn reboot_replays_persisted_original_attempt_then_drains_queue() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/api/agent/jobs/55/complete$"))
+            .and(body_json(serde_json::json!({
+                "claim_token":"pre-reboot-attempt",
+                "result":{"mutation_already_succeeded":true}
+            })))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("queue.json");
+        save(
+            &path,
+            &[Entry {
+                job_id: 55,
+                claim_token: "pre-reboot-attempt".into(),
+                lease_expires_at: "2999-01-01T00:00:00Z".into(),
+                outcome: Outcome::Complete(serde_json::json!({"mutation_already_succeeded":true})),
+                attempts: 1,
+            }],
+        )
+        .unwrap();
+
+        let _after_reboot = ReportQueue::spawn(path.clone(), client_for(&server.uri()));
+        for _ in 0..100 {
+            if load(&path).unwrap().is_empty() {
+                server.verify().await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("persisted completion was not replayed after simulated reboot");
+    }
+
+    #[tokio::test]
+    async fn reboot_discards_terminal_stale_attempt_without_rewriting_its_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/api/agent/jobs/56/complete$"))
+            .and(body_json(serde_json::json!({
+                "claim_token":"reclaimed-old-attempt", "result":{"ok":true}
+            })))
+            .respond_with(ResponseTemplate::new(409))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("queue.json");
+        save(
+            &path,
+            &[Entry {
+                job_id: 56,
+                claim_token: "reclaimed-old-attempt".into(),
+                lease_expires_at: "2999-01-01T00:00:00Z".into(),
+                outcome: Outcome::Complete(serde_json::json!({"ok":true})),
+                attempts: 0,
+            }],
+        )
+        .unwrap();
+        let _restarted = ReportQueue::spawn(path.clone(), client_for(&server.uri()));
+        for _ in 0..100 {
+            if load(&path).unwrap().is_empty() {
+                server.verify().await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("terminal stale report remained queued after restart");
     }
 }
