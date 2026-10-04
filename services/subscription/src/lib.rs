@@ -810,6 +810,7 @@ mod tests {
             google_egress_hairpin: false,
             peer_credentials: Default::default(),
             is_reserved_probe: false,
+            credentials: Vec::new(),
         }
     }
 
@@ -1651,6 +1652,7 @@ mod tests {
             google_egress_hairpin: false,
             peer_credentials: Default::default(),
             is_reserved_probe: false,
+            credentials: Vec::new(),
         };
         let state = make_state(vec![user]);
         let output = captured_log_output_for_request("trace", &format!("/sub/{token}"), state);
@@ -2276,6 +2278,7 @@ capabilities = ["tcp"]
             google_egress_hairpin: false,
             peer_credentials,
             is_reserved_probe: false,
+            credentials: Vec::new(),
         }
     }
 

@@ -83,6 +83,7 @@ fn test_user() -> CompatUser {
         expires_at: None,
         peer_credentials: Default::default(),
         is_reserved_probe: false,
+        credentials: Vec::new(),
     }
 }
 

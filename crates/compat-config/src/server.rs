@@ -111,10 +111,16 @@ pub fn render_server_config_for_deployment(
     }
 
     let reality_inbound = "vless-reality-in";
+    // Scoped to each reserved probe user's **live grant principals**, not
+    // its account id: `auth_user` matches the `name` this document gives
+    // each credential, and during a rotation that is the principal. A rule
+    // scoped to the account id would stop matching the moment a grant
+    // replaced it, and would silently fail open into the terminating reject
+    // for a credential that is still authorized.
     let probe_ids: Vec<String> = users
         .iter()
         .filter(|u| u.is_active(now_unix) && u.is_reserved_probe)
-        .map(|u| u.id.clone())
+        .flat_map(|u| u.active_principal_ids(now_unix))
         .collect();
     let mut rules = Vec::new();
     // Loopback self-test exception, scoped to the reserved probe
@@ -141,10 +147,16 @@ pub fn render_server_config_for_deployment(
     // set via this relay's own `direct` outbound. Every other user, and
     // every other destination for this one, is unaffected — the loop
     // below and the final reject-all still apply to everything else.
-    for hairpin_user in users
+    // `hairpin_principals` rather than `hairpin_user`: the hairpin
+    // exception must follow every live grant of that account, so a rotated
+    // hairpin credential keeps its exception instead of falling through to
+    // the terminating reject while it is still authorized.
+    let hairpin_principals: Vec<String> = users
         .iter()
         .filter(|u| u.is_active(now_unix) && u.google_egress_hairpin)
-    {
+        .flat_map(|u| u.active_principal_ids(now_unix))
+        .collect();
+    for hairpin_principal in &hairpin_principals {
         // The exit forwards whatever destination form it received from
         // its own client (often a bare IP: an iOS TUN core typically
         // resolves DNS itself before the packet ever reaches sing-box,
@@ -163,7 +175,7 @@ pub fn render_server_config_for_deployment(
         // invariant.
         rules.push(json!({
             "inbound": [reality_inbound],
-            "auth_user": [hairpin_user.id.clone()],
+            "auth_user": [hairpin_principal.clone()],
             "action": "sniff",
         }));
         rules.push(json!({
@@ -175,7 +187,7 @@ pub fn render_server_config_for_deployment(
             // identity this rule actually needs lives in
             // `metadata.User`, which only `auth_user`
             // (`route/rule/rule_item_auth_user.go`) matches against.
-            "auth_user": [hairpin_user.id.clone()],
+            "auth_user": [hairpin_principal.clone()],
             "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
             "action": "route",
             "outbound": "direct",
@@ -225,6 +237,26 @@ pub fn render_server_config_for_deployment(
     Ok(config)
 }
 
+/// Every inbound `tag` configured in this document, as plain strings, in
+/// document order. `None` when the document has no `inbounds` array or it
+/// is empty — callers that need "nothing to protect" to mean "do nothing"
+/// (e.g. [`apply_c16_egress_policy`]) match on `None` to return early,
+/// rather than this function choosing that policy itself. A tag that is
+/// present but not a JSON string is skipped rather than panicking on a
+/// malformed document.
+fn all_inbound_tags(config: &serde_json::Value) -> Option<Vec<String>> {
+    let tags: Vec<String> = config["inbounds"]
+        .as_array()?
+        .iter()
+        .filter_map(|inbound| inbound["tag"].as_str().map(str::to_string))
+        .collect();
+    if tags.is_empty() {
+        None
+    } else {
+        Some(tags)
+    }
+}
+
 /// C-16 data-plane egress isolation (cross-repo remediation plan,
 /// invariant 3 / audit item E-01): applied to an EXIT's config, ahead of
 /// its otherwise-unconditional `direct` outbound, so an authenticated
@@ -268,44 +300,15 @@ fn apply_c16_egress_policy(
     own_public_ipv4: Option<&str>,
     own_public_ipv6: Option<&str>,
 ) {
-    use crate::model::{C16_DENY_IPV4_CIDRS, C16_DENY_IPV6_CIDRS, C16_DENY_TCP_PORT};
-    let all_inbounds: Vec<serde_json::Value> = config["inbounds"]
-        .as_array()
-        .map(|inbounds| {
-            inbounds
-                .iter()
-                .map(|inbound| inbound["tag"].clone())
-                .collect()
-        })
-        .unwrap_or_default();
-    if all_inbounds.is_empty() {
+    let Some(all_inbounds) = all_inbound_tags(config) else {
         return;
-    }
-    let mut new_rules = vec![
-        json!({
-            "inbound": all_inbounds.clone(),
-            "action": "resolve",
-        }),
-        json!({
-            "inbound": all_inbounds.clone(),
-            "ip_cidr": C16_DENY_IPV4_CIDRS,
-            "action": "reject",
-            "method": "default",
-        }),
-        json!({
-            "inbound": all_inbounds.clone(),
-            "ip_cidr": C16_DENY_IPV6_CIDRS,
-            "action": "reject",
-            "method": "default",
-        }),
-        json!({
-            "inbound": all_inbounds.clone(),
-            "network": "tcp",
-            "port": C16_DENY_TCP_PORT,
-            "action": "reject",
-            "method": "default",
-        }),
-    ];
+    };
+    let mut new_rules = c16_egress_deny_rules(
+        &all_inbounds,
+        own_public_host,
+        own_public_ipv4,
+        own_public_ipv6,
+    );
     // Area 6 (own-public-IP egress gap): when the deployment's trusted
     // `public_host` (the same value already advertised to clients —
     // never a fresh "what is my IP" network call from inside config
@@ -358,7 +361,66 @@ fn apply_c16_egress_policy(
             "method": "default",
         }));
     }
-    let new_rules = new_rules;
+    insert_after_identity_scoped_rules(config, new_rules);
+}
+
+/// Builds the C-16 egress-deny rule set: a `resolve` action for every
+/// inbound (so a domain resolving to a denied address is judged on that
+/// address, not left to fall through unresolved), one `ip_cidr` reject
+/// for [`crate::model::C16_DENY_IPV4_CIDRS`] and one for
+/// [`crate::model::C16_DENY_IPV6_CIDRS`], and a TCP/
+/// [`crate::model::C16_DENY_TCP_PORT`] reject. See
+/// [`apply_c16_egress_policy`]'s own doc comment for the full rationale;
+/// this function builds exactly its numbered points 1-3. The own-public-
+/// IP rule (point covered by `own_public_host`/`own_public_ipv4`/
+/// `own_public_ipv6`) is appended separately by the caller, since it is
+/// conditional on whether those values are IP literals at all.
+fn c16_egress_deny_rules(
+    all_inbounds: &[String],
+    _own_public_host: Option<&str>,
+    _own_public_ipv4: Option<&str>,
+    _own_public_ipv6: Option<&str>,
+) -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "inbound": all_inbounds.to_vec(),
+            "action": "resolve",
+        }),
+        json!({
+            "inbound": all_inbounds.to_vec(),
+            "ip_cidr": crate::model::C16_DENY_IPV4_CIDRS,
+            "action": "reject",
+            "method": "default",
+        }),
+        json!({
+            "inbound": all_inbounds.to_vec(),
+            "ip_cidr": crate::model::C16_DENY_IPV6_CIDRS,
+            "action": "reject",
+            "method": "default",
+        }),
+        json!({
+            "inbound": all_inbounds.to_vec(),
+            "network": "tcp",
+            "port": crate::model::C16_DENY_TCP_PORT,
+            "action": "reject",
+            "method": "default",
+        }),
+    ]
+}
+
+/// Inserts `new_rules` into `config["route"]["rules"]` immediately after
+/// any leading run of `auth_user`-scoped rules the caller already built
+/// (e.g. [`apply_probe_user_confinement`]'s narrow allow-list), and before
+/// every unscoped (matches-every-identity) rule. These rules apply
+/// unconditionally to every identity, so they must never be placed ahead
+/// of a rule the caller already scoped to one specific `auth_user` set —
+/// doing so would shadow it, exactly the bug root cause 2 in
+/// `docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29_ADDENDUM4.md` described
+/// for `apply_probe_user_confinement`.
+fn insert_after_identity_scoped_rules(
+    config: &mut serde_json::Value,
+    new_rules: Vec<serde_json::Value>,
+) {
     if !config["route"].is_object() {
         config["route"] = json!({});
     }
@@ -366,17 +428,6 @@ fn apply_c16_egress_policy(
         .as_array()
         .cloned()
         .unwrap_or_default();
-    // These 4 rules apply unconditionally to every identity — they must
-    // never be placed ahead of a rule the caller already scoped to one
-    // specific `auth_user` set (e.g. `apply_exit_loopback_selftest_
-    // exception`'s narrow probe-only loopback allow), which would
-    // otherwise be shadowed by this function's own blanket
-    // `127.0.0.0/8` reject exactly the way root cause 2 in
-    // `docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29_ADDENDUM4.md`
-    // described for `apply_probe_user_confinement`. Any leading run of
-    // `auth_user`-scoped rules is therefore kept ahead of these; a rule
-    // with no `auth_user` (matches every identity) is where these get
-    // inserted.
     let insert_at = existing
         .iter()
         .take_while(|rule| rule.get("auth_user").is_some())
@@ -417,7 +468,7 @@ fn apply_exit_loopback_selftest_exception(
     let probe_ids: Vec<String> = users
         .iter()
         .filter(|u| u.is_active(now_unix) && u.is_reserved_probe)
-        .map(|u| u.id.clone())
+        .flat_map(|u| u.active_principal_ids(now_unix))
         .collect();
     if probe_ids.is_empty() {
         return;
@@ -520,7 +571,7 @@ fn apply_probe_user_confinement(
     let ids: Vec<String> = users
         .iter()
         .filter(|u| u.is_active(now_unix) && u.is_reserved_probe)
-        .map(|u| u.id.clone())
+        .flat_map(|u| u.active_principal_ids(now_unix))
         .collect();
     if ids.is_empty() {
         return;
@@ -684,6 +735,35 @@ pub fn render_singbox_server_config(
 ) -> serde_json::Value {
     let active: Vec<&CompatUser> = users.iter().filter(|u| u.is_active(now_unix)).collect();
 
+    // One entry per **credential grant**, not per user.
+    //
+    // sing-box identifies a VLESS/Hysteria2 user by its `uuid`/`password`
+    // and only carries `name` as a label, so two credentials for the same
+    // account are simply two entries. That is what makes a bounded overlap
+    // window representable at all: during rotation, credential A and
+    // credential B are both authorized, so both appear, each under its own
+    // opaque principal, and either one authenticates until its own
+    // `valid_until` passes.
+    //
+    // The label is the grant's `principal_id` and never the account `id` or
+    // `name`: this string is what an `auth_user` route rule matches, and it
+    // is the identifier that appears in sing-box's own diagnostics. Keeping
+    // it opaque is what lets a node route, revoke and troubleshoot a
+    // connection without holding customer identity.
+    //
+    // Iteration order is user order then grant order, both stable, so the
+    // rendered document is deterministic for a given store and `now`.
+    let authorized_grants: Vec<(&CompatUser, crate::model::CredentialGrant)> = active
+        .iter()
+        .flat_map(|u| {
+            u.effective_grants()
+                .into_iter()
+                .filter(|g| crate::credential_policy::grant_is_authorized(g, now_unix))
+                .map(|g| (*u, g.into_owned()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
     // `flow` is per-user and MUST match what the client sends: sing-box's
     // VLESS server compares them directly (sing-vmess `vless/service.go`
     // — `else if request.Flow != userFlow { return E.New("flow mismatch:
@@ -693,23 +773,23 @@ pub fn render_singbox_server_config(
     // stays `xtls-rprx-vision` for every user — only a user explicitly
     // opted into the EXPERIMENTAL `vision_off_experiment` flag renders
     // differently, and only for as long as that flag is set.
-    let vless_users: Vec<_> = active
+    let vless_users: Vec<_> = authorized_grants
         .iter()
-        .map(|u| {
+        .map(|(u, grant)| {
             json!({
-                "name": u.id,
-                "uuid": u.vless_uuid,
+                "name": grant.principal_id,
+                "uuid": grant.vless_uuid,
                 "flow": if u.vision_off_experiment { "" } else { "xtls-rprx-vision" },
             })
         })
         .collect();
 
-    let hysteria_users: Vec<_> = active
+    let hysteria_users: Vec<_> = authorized_grants
         .iter()
-        .map(|u| {
+        .map(|(_, grant)| {
             json!({
-                "name": u.id,
-                "password": u.hysteria2_password.expose(),
+                "name": grant.principal_id,
+                "password": grant.hysteria2_password.expose(),
             })
         })
         .collect();
@@ -1008,6 +1088,7 @@ mod tests {
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
+                credentials: Vec::new(),
             },
             CompatUser {
                 id: "u-disabled".into(),
@@ -1022,6 +1103,7 @@ mod tests {
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
+                credentials: Vec::new(),
             },
             CompatUser {
                 id: "u-expired".into(),
@@ -1036,6 +1118,7 @@ mod tests {
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
+                credentials: Vec::new(),
             },
         ]
     }
@@ -1095,6 +1178,7 @@ mod tests {
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
+                credentials: Vec::new(),
             })
             .collect();
 
@@ -1161,6 +1245,7 @@ mod tests {
             google_egress_hairpin: false,
             peer_credentials: Default::default(),
             is_reserved_probe: false,
+            credentials: Vec::new(),
         });
         let ports = ServerPorts {
             vless_reality_port: 443,

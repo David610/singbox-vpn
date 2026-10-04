@@ -78,6 +78,7 @@ fn user() -> CompatUser {
         google_egress_hairpin: false,
         peer_credentials,
         is_reserved_probe: false,
+        credentials: Vec::new(),
     }
 }
 

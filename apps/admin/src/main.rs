@@ -2704,6 +2704,7 @@ fn cmd_user_create(
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
         is_reserved_probe: false,
+        credentials: Vec::new(),
     };
     users.push(user);
     apply_users_and_save(cfg, &previous_users, &users)?;
@@ -2927,6 +2928,7 @@ fn cmd_user_create_probe(cfg: &DeploymentConfig, name: Option<&str>, json: bool)
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
         is_reserved_probe: true,
+        credentials: Vec::new(),
     };
     users.push(user);
     apply_users_and_save(cfg, &previous_users, &users)?;
@@ -6787,6 +6789,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
         is_reserved_probe: false,
+        credentials: Vec::new(),
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
     // Deliberately LOCAL endpoints only (not `served_endpoints`): this
