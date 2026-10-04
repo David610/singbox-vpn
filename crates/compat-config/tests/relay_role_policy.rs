@@ -369,6 +369,40 @@ fn invalid_relay_destinations_are_refused() {
     }
 }
 
+/// Phase 1 data-plane assessment (2026-10-01), §4.2 / Batch 7 Area 5: a
+/// relay's own fail-closed default-reject only protects destinations the
+/// operator did not declare. A declared relay target must not be able to
+/// name an internal/metadata address, exactly like an EXIT's C-16 egress
+/// policy already denies these for customer tunnels.
+#[test]
+fn relay_destinations_cannot_name_internal_or_metadata_addresses() {
+    for host in [
+        "127.0.0.1",
+        "10.0.0.5",
+        "172.16.0.1",
+        "192.168.1.1",
+        "169.254.169.254",
+        "169.254.1.1",
+        "100.64.0.1",
+        "::1",
+        "fc00::1",
+        "fe80::1",
+        "::ffff:10.0.0.1",
+        "::ffff:169.254.169.254",
+        "192.0.2.1",
+        "198.51.100.1",
+        "203.0.113.1",
+        "2001:db8::1",
+    ] {
+        let text = format!(
+            "{}{RELAY_INGRESS}{}",
+            base("relay"),
+            exit_peer("de1-via", "Germany via", host, "via-ru1", None)
+        );
+        expect_err(&text, "invalid relay destination");
+    }
+}
+
 #[test]
 fn dangling_credential_ref_is_refused() {
     let text = format!(
@@ -796,9 +830,13 @@ fn paired_relay_allows_only_declared_exits_and_ends_in_reject_for_every_inbound(
 
 #[test]
 fn ip_literal_exit_targets_become_exact_host_cidrs() {
+    // Ordinary public addresses, not RFC 5737/3849 documentation ranges:
+    // those are now refused by `validate_relay_target_host` (see
+    // `relay_destinations_cannot_name_internal_or_metadata_addresses`),
+    // same as every other C-16-denied range.
     for (host, cidr) in [
-        ("192.0.2.10", "192.0.2.10/32"),
-        ("2001:db8::10", "2001:db8::10/128"),
+        ("8.8.8.8", "8.8.8.8/32"),
+        ("2606:4700:4700::1111", "2606:4700:4700::1111/128"),
     ] {
         let text = format!(
             "{}{RELAY_INGRESS}{}",
