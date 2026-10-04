@@ -172,11 +172,11 @@ pub fn overlap_secs(a: &CredentialGrant, b: &CredentialGrant) -> i64 {
 }
 
 /// The set of grants of `class` that are authorized at `now_unix`.
-pub fn live_grants<'a>(
-    user: &'a CompatUser,
+pub fn live_grants(
+    user: &CompatUser,
     class: CredentialClass,
     now_unix: i64,
-) -> Vec<&'a CredentialGrant> {
+) -> Vec<&CredentialGrant> {
     // Only the explicit-stored path can hand back borrows; a legacy account
     // synthesizes an owned grant that dies with this call, so it is
     // intentionally not exposed as a reference. Callers that need the
@@ -190,11 +190,11 @@ pub fn live_grants<'a>(
 
 /// The next grant of `class` that has not yet expired and has not started,
 /// i.e. the one a rotation would supersede. `None` when nothing is live.
-pub fn current_grant<'a>(
-    user: &'a CompatUser,
+pub fn current_grant(
+    user: &CompatUser,
     class: CredentialClass,
     now_unix: i64,
-) -> Option<&'a CredentialGrant> {
+) -> Option<&CredentialGrant> {
     live_grants(user, class, now_unix)
         .into_iter()
         .max_by_key(|g| g.generation)
