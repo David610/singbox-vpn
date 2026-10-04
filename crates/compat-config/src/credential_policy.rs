@@ -282,14 +282,14 @@ pub fn clamp_compat_lifetime(requested_secs: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::{generate_principal_id, generate_user_id};
+    use crate::credentials::{generate_principal_id, generate_uuid_v4};
     use crate::secret::SecretString;
 
     fn grant(class: CredentialClass, from: i64, until: i64) -> CredentialGrant {
         CredentialGrant::new(
             generate_principal_id(class),
             class,
-            &generate_user_id(),
+            &generate_uuid_v4(),
             from,
             until,
         )
@@ -319,8 +319,8 @@ mod tests {
 
     #[test]
     fn a_rotation_overlapping_by_exactly_the_bound_is_accepted() {
-        let a = grant(CredentialClass::Native, 0, 1_000);
-        let b = grant(CredentialClass::Native, 1_000 - MAX_OVERLAP_SECS, 5_000);
+        let a = grant(CredentialClass::Native, 0, 10_000);
+        let b = grant(CredentialClass::Native, 10_000 - MAX_OVERLAP_SECS, 15_000);
         validate_grant_set(&[a, b]).expect("exactly MAX_OVERLAP_SECS is permitted");
     }
 
@@ -361,7 +361,10 @@ mod tests {
     #[test]
     fn validity_window_is_half_open_at_valid_until() {
         let g = grant(CredentialClass::Native, 100, 200);
-        assert!(!grant_is_authorized(&g, 99));
+        assert!(!grant_is_authorized(
+            &g,
+            100 - VALID_FROM_SKEW_GRACE_SECS - 1
+        ));
         assert!(grant_is_authorized(&g, 100));
         assert!(grant_is_authorized(&g, 199));
         assert!(!grant_is_authorized(&g, 200), "dead AT valid_until");
@@ -426,7 +429,7 @@ mod tests {
         let g = CredentialGrant::new(
             generate_principal_id(CredentialClass::Native),
             CredentialClass::Native,
-            &generate_user_id(),
+            &generate_uuid_v4(),
             2_000,
             1_000,
         );
@@ -450,7 +453,7 @@ mod tests {
         let g = CredentialGrant::new(
             generate_principal_id(CredentialClass::Native),
             CredentialClass::Native,
-            &generate_user_id(),
+            &generate_uuid_v4(),
             0,
             1_000,
         );
