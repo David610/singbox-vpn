@@ -2690,6 +2690,46 @@ impl MachineStdout {
     }
 }
 
+/// Builds the record `vpn user create` stores, and the subscription token that
+/// is shown once. Kept separate from the I/O in [`cmd_user_create`] so the
+/// credential invariants below can be tested without a live sing-box.
+fn build_new_operator_user(
+    id: String,
+    name: &str,
+    expires_at: Option<i64>,
+    now: i64,
+) -> (CompatUser, String) {
+    let token = credentials::generate_subscription_token();
+    // An operator-created user is a long-lived compatibility account: its
+    // credentials are the legacy `vless_uuid` / `hysteria2_password` fields
+    // and `credentials` stays empty. `effective_grants()` then derives the
+    // one grant the server renders from exactly those fields, bounded only by
+    // `expires_at`. Do NOT attach a native grant here: that is a 30-minute
+    // lease which nothing renews for these users (it locked out every new
+    // user, including the installer's first one, after 30 minutes), and
+    // because the server renders from grants while clients are handed the
+    // legacy fields, a grant minted with its own random Hysteria2 password
+    // made Hysteria2 authentication fail and made `rotate-*` change a secret
+    // the server never looked at. Native grants belong to authorization-backed
+    // principals (lease pool / `renew-native`), not to this command.
+    let user = CompatUser {
+        id,
+        name: name.to_string(),
+        enabled: true,
+        vless_uuid: credentials::generate_uuid_v4(),
+        hysteria2_password: SecretString::new(credentials::generate_hysteria2_password()),
+        subscription_token_hash_hex: credentials::hash_token(&token),
+        created_at: now,
+        expires_at,
+        vision_off_experiment: false,
+        google_egress_hairpin: false,
+        peer_credentials: Default::default(),
+        is_reserved_probe: false,
+        credentials: Vec::new(),
+    };
+    (user, token)
+}
+
 fn cmd_user_create(
     cfg: &DeploymentConfig,
     name: &str,
@@ -2711,39 +2751,8 @@ fn cmd_user_create(
     while users.iter().any(|u| u.id == id) {
         id = credentials::generate_user_id();
     }
-    let token = credentials::generate_subscription_token();
     let now = UnixSeconds::now().0 as i64;
-    // The legacy `vless_uuid` field keeps the SAME value as the native
-    // grant's below (not an independent one): other code that reads
-    // `user.vless_uuid` directly for display/lookup (not rendering, which
-    // goes through `effective_grants()` and ignores legacy fields once
-    // `credentials` is non-empty) stays correct without needing to know
-    // grants exist at all. `hysteria2_password` is NOT shared the same
-    // way — the grant mints its own internally (`CredentialGrant::new`) —
-    // since nothing outside rendering needs the two to match.
-    let vless_uuid = credentials::generate_uuid_v4();
-    let native_grant = CredentialGrant::new(
-        credentials::generate_principal_id(CredentialClass::Native),
-        CredentialClass::Native,
-        &vless_uuid,
-        now,
-        now + credential_policy::NATIVE_LEASE_SECS,
-    );
-    let user = CompatUser {
-        id: id.clone(),
-        name: name.to_string(),
-        enabled: true,
-        vless_uuid,
-        hysteria2_password: SecretString::new(credentials::generate_hysteria2_password()),
-        subscription_token_hash_hex: credentials::hash_token(&token),
-        created_at: now,
-        expires_at,
-        vision_off_experiment: false,
-        google_egress_hairpin: false,
-        peer_credentials: Default::default(),
-        is_reserved_probe: false,
-        credentials: vec![native_grant],
-    };
+    let (user, token) = build_new_operator_user(id.clone(), name, expires_at, now);
     users.push(user);
     apply_users_and_save(cfg, &previous_users, &users)?;
 
@@ -10126,6 +10135,89 @@ mod peer_credential_cli_tests {
             msg.contains("cannot generate"),
             "the message must say why this is the operator's job; got {msg}"
         );
+    }
+
+    // ---- credentials `vpn user create` issues ------------------------------
+    //
+    // The sing-box server renders every user from `effective_grants()`, while
+    // clients are handed the user's own `vless_uuid` / `hysteria2_password`.
+    // Both views must therefore carry the same secrets, and the account must
+    // not stop working just because a 30-minute native lease ran out: nothing
+    // renews operator-created users. Real VPSs showed all three failures on
+    // v1.1.0-rc.8/rc.9 (Hysteria2 authentication 404, rotation ignored by the
+    // server, the installer's own first user expiring after 30 minutes).
+
+    fn new_operator_user_for_test(now: i64) -> CompatUser {
+        build_new_operator_user("user_test-0001".to_string(), "alice", None, now).0
+    }
+
+    #[test]
+    fn a_new_operator_user_is_served_the_credentials_it_is_given() {
+        let now = 1_900_000_000;
+        let user = new_operator_user_for_test(now);
+        let grants = user.effective_grants();
+        assert!(!grants.is_empty(), "the server must render the user");
+        for grant in grants {
+            assert_eq!(
+                grant.vless_uuid, user.vless_uuid,
+                "the server's VLESS UUID must be the one the client is given"
+            );
+            assert_eq!(
+                grant.hysteria2_password.expose(),
+                user.hysteria2_password.expose(),
+                "the server's Hysteria2 password must be the one the client is given"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_operator_user_is_not_locked_out_after_the_native_lease() {
+        let now = 1_900_000_000;
+        let user = new_operator_user_for_test(now);
+        for later in [
+            now + credential_policy::NATIVE_LEASE_SECS + 1,
+            now + 24 * 3600,
+            now + 400 * 24 * 3600,
+        ] {
+            assert!(
+                user.is_active(later),
+                "an operator-created user with no expiry must stay active at +{}s",
+                later - now
+            );
+            assert!(
+                !user.active_principal_ids(later).is_empty(),
+                "the server must still render a credential for the user at +{}s",
+                later - now
+            );
+        }
+    }
+
+    #[test]
+    fn rotating_a_new_operator_users_credentials_changes_what_the_server_renders() {
+        let now = 1_900_000_000;
+        let mut user = new_operator_user_for_test(now);
+        let old_uuid = user.vless_uuid.clone();
+        let old_password = user.hysteria2_password.expose().to_string();
+        // Exactly what `vpn user rotate-credentials` changes on the record.
+        user.vless_uuid = credentials::generate_uuid_v4();
+        user.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
+        for grant in user.effective_grants() {
+            assert_eq!(
+                grant.vless_uuid, user.vless_uuid,
+                "server must use the NEW UUID"
+            );
+            assert_eq!(
+                grant.hysteria2_password.expose(),
+                user.hysteria2_password.expose(),
+                "server must use the NEW Hysteria2 password"
+            );
+            assert_ne!(grant.vless_uuid, old_uuid, "the OLD UUID must be rejected");
+            assert_ne!(
+                grant.hysteria2_password.expose(),
+                old_password,
+                "the OLD Hysteria2 password must be rejected"
+            );
+        }
     }
 
     #[test]
