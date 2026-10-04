@@ -155,17 +155,31 @@ pub fn default_node_id_for_host(public_host: &str) -> String {
 /// A relay target host must be something a Core `domain`/`ip_cidr` route
 /// rule can match exactly: an IP literal that names one concrete host, or
 /// a lowercase DNS name.
+///
+/// An IP-literal target is additionally checked against the same
+/// loopback/private/link-local/CGNAT/documentation/metadata-service/ULA
+/// ranges [`apply_c16_egress_policy`](crate::server) denies for an EXIT's
+/// customer tunnels (Phase 1 data-plane assessment, 2026-10-01, §4.2): a
+/// relay's forwarding rule is built directly from this declared host
+/// (`render_server_config_for_deployment`'s relay branch), and unlike the
+/// exit's `direct` outbound, that branch's own fail-closed design (every
+/// un-matched inbound hits a terminal reject) only protects destinations
+/// the operator did *not* declare — it does nothing to stop the operator
+/// (or a compromised control plane) from declaring an internal/metadata
+/// address as the target itself. Mirrors (duplicates, not shares —
+/// different crate graph direction) `classify_denied` in
+/// `apps/provisioning-agent/src/ssrf_guard.rs`; keep both in sync if the
+/// deny-range policy changes. A DNS name is intentionally not resolved
+/// here: that would add a network call to pure config validation, same
+/// as the pre-existing `public_host`-as-hostname exclusion documented on
+/// `apply_c16_egress_policy`.
 fn validate_relay_target_host(host: &str) -> Result<(), String> {
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        let unusable = ip.is_unspecified()
-            || ip.is_multicast()
-            || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast());
-        return if unusable {
-            Err(format!(
-                "{host:?} is not a single concrete host (unspecified/multicast/broadcast)"
-            ))
-        } else {
-            Ok(())
+        return match classify_relay_target_denied(ip) {
+            Some(reason) => Err(format!(
+                "{host:?} is not a dialable relay destination ({reason})"
+            )),
+            None => Ok(()),
         };
     }
     if host.len() > 253 || host.ends_with('.') {
@@ -187,6 +201,82 @@ fn validate_relay_target_host(host: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Classifies a relay-target IP literal. Returns `Some(reason)` when it
+/// must never be declared as a `[[peer_endpoints]]` destination, `None`
+/// for an ordinary public address. See [`validate_relay_target_host`]'s
+/// doc comment for why this exists and what it mirrors.
+fn classify_relay_target_denied(ip: std::net::IpAddr) -> Option<&'static str> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    /// The cloud-metadata address used by AWS/GCP/Azure/DO/etc. — see
+    /// `apps/provisioning-agent/src/ssrf_guard.rs`'s identical constant.
+    const METADATA_V4: Ipv4Addr = Ipv4Addr::new(169, 254, 169, 254);
+    fn v4(addr: Ipv4Addr) -> Option<&'static str> {
+        if addr == METADATA_V4 {
+            return Some("metadata service");
+        }
+        if addr.is_unspecified() {
+            return Some("unspecified");
+        }
+        if addr.is_broadcast() {
+            return Some("broadcast");
+        }
+        if addr.is_loopback() {
+            return Some("loopback");
+        }
+        if addr.is_private() {
+            return Some("private-use (RFC1918)");
+        }
+        if addr.is_link_local() {
+            return Some("link-local");
+        }
+        if addr.is_multicast() {
+            return Some("multicast");
+        }
+        if addr.is_documentation() {
+            return Some("documentation");
+        }
+        let o = addr.octets();
+        if o[0] == 100 && (64..=127).contains(&o[1]) {
+            return Some("carrier-grade NAT (RFC6598)");
+        }
+        if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
+            return Some("benchmarking (RFC2544)");
+        }
+        if o[0] == 0 {
+            return Some("reserved");
+        }
+        None
+    }
+    fn v6(addr: Ipv6Addr) -> Option<&'static str> {
+        if addr.is_unspecified() {
+            return Some("unspecified");
+        }
+        if addr.is_loopback() {
+            return Some("loopback");
+        }
+        if addr.is_multicast() {
+            return Some("multicast");
+        }
+        let seg0 = addr.segments()[0];
+        if (seg0 & 0xffc0) == 0xfe80 {
+            return Some("link-local");
+        }
+        if (seg0 & 0xfe00) == 0xfc00 {
+            return Some("unique-local (ULA)");
+        }
+        if addr.segments()[0] == 0x2001 && addr.segments()[1] == 0x0db8 {
+            return Some("documentation");
+        }
+        None
+    }
+    match ip {
+        IpAddr::V4(addr) => v4(addr),
+        // IPv4-mapped IPv6 (::ffff:a.b.c.d) must be judged by its embedded
+        // IPv4 address — a classic filter-bypass vector otherwise.
+        IpAddr::V6(addr) => addr.to_ipv4_mapped().and_then(v4).or_else(|| v6(addr)),
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
