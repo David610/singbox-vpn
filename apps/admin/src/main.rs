@@ -15,8 +15,11 @@ mod static_apply;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use common::UnixSeconds;
+use compat_config::credential_policy;
 use compat_config::deployment::{DeploymentConfig, GoogleEgressHairpinSection};
-use compat_config::model::{CompatUser, Hysteria2ServerParams, RealityServerParams};
+use compat_config::model::{
+    CompatUser, CredentialClass, CredentialGrant, Hysteria2ServerParams, RealityServerParams,
+};
 use compat_config::render::render_singbox_client_subscription;
 use compat_config::secret::SecretString;
 use compat_config::server::{
@@ -548,6 +551,21 @@ enum UserCommands {
     RotateCredentials {
         user_id: String,
     },
+    /// Extend this user's current native-class credential grant's
+    /// `valid_until` without changing any secret material — the
+    /// zero-restart renewal path `credential_policy.rs` was built for (see
+    /// its module doc comment). Mints a fresh native grant instead if the
+    /// user has none yet (e.g. created before this command existed, or
+    /// its one native grant already expired/was revoked).
+    ///
+    /// NOT yet called by anything automatically: this is the node-side
+    /// half of renewal only. A real deployment needs something upstream
+    /// (the control plane, on the Arcana app's own renewal cadence) to
+    /// actually invoke this periodically — see this command's own
+    /// `README`/PR notes before relying on it in production.
+    RenewNative {
+        user_id: String,
+    },
     Remove {
         user_id: String,
     },
@@ -762,6 +780,9 @@ fn main() -> Result<()> {
         }
         Commands::User(UserCommands::RotateCredentials { user_id }) => {
             cmd_user_rotate_credentials(&cfg, &user_id)
+        }
+        Commands::User(UserCommands::RenewNative { user_id }) => {
+            cmd_user_renew_native(&cfg, &user_id)
         }
         Commands::User(UserCommands::Remove { user_id }) => cmd_user_remove(&cfg, &user_id),
         Commands::User(UserCommands::Peer(PeerCommands::Set {
@@ -2691,19 +2712,37 @@ fn cmd_user_create(
         id = credentials::generate_user_id();
     }
     let token = credentials::generate_subscription_token();
+    let now = UnixSeconds::now().0 as i64;
+    // The legacy `vless_uuid` field keeps the SAME value as the native
+    // grant's below (not an independent one): other code that reads
+    // `user.vless_uuid` directly for display/lookup (not rendering, which
+    // goes through `effective_grants()` and ignores legacy fields once
+    // `credentials` is non-empty) stays correct without needing to know
+    // grants exist at all. `hysteria2_password` is NOT shared the same
+    // way — the grant mints its own internally (`CredentialGrant::new`) —
+    // since nothing outside rendering needs the two to match.
+    let vless_uuid = credentials::generate_uuid_v4();
+    let native_grant = CredentialGrant::new(
+        credentials::generate_principal_id(CredentialClass::Native),
+        CredentialClass::Native,
+        &vless_uuid,
+        now,
+        now + credential_policy::NATIVE_LEASE_SECS,
+    );
     let user = CompatUser {
         id: id.clone(),
         name: name.to_string(),
         enabled: true,
-        vless_uuid: credentials::generate_uuid_v4(),
+        vless_uuid,
         hysteria2_password: SecretString::new(credentials::generate_hysteria2_password()),
         subscription_token_hash_hex: credentials::hash_token(&token),
-        created_at: UnixSeconds::now().0 as i64,
+        created_at: now,
         expires_at,
         vision_off_experiment: false,
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
         is_reserved_probe: false,
+        credentials: vec![native_grant],
     };
     users.push(user);
     apply_users_and_save(cfg, &previous_users, &users)?;
@@ -2927,6 +2966,7 @@ fn cmd_user_create_probe(cfg: &DeploymentConfig, name: Option<&str>, json: bool)
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
         is_reserved_probe: true,
+        credentials: Vec::new(),
     };
     users.push(user);
     apply_users_and_save(cfg, &previous_users, &users)?;
@@ -3709,6 +3749,78 @@ fn cmd_user_rotate_credentials(cfg: &DeploymentConfig, id: &str) -> Result<()> {
             u.hysteria2_password = SecretString::new(credentials::generate_hysteria2_password());
         },
     )
+}
+
+/// Extend this user's native-class credential grant, or mint a fresh one
+/// if it has none (first call, or its prior native grant expired/was
+/// revoked). Unlike `rotate_and_apply`'s commands, this never changes
+/// `vless_uuid`/`hysteria2_password` on an existing grant — only
+/// `valid_until` moves — so the rendered sing-box document is
+/// byte-identical for the common "renew before expiry" case and
+/// `apply_users_and_save`'s own already-current short-circuit means no
+/// reload, no restart, no disconnect for this user or any other. A fresh
+/// mint (no prior native grant) does change the document, the same as
+/// any other first-time credential issuance.
+///
+/// This is the node-side half of renewal only (see this command's own
+/// `--help` text): nothing upstream calls it automatically yet.
+fn cmd_user_renew_native(cfg: &DeploymentConfig, id: &str) -> Result<()> {
+    let mut users = store::load_users(&cfg.users_file())?;
+    let previous_users = users.clone();
+    let now = UnixSeconds::now().0 as i64;
+    let new_valid_until = now + credential_policy::NATIVE_LEASE_SECS;
+
+    let user = find_user_mut(&mut users, id)?;
+    let existing_principal = credential_policy::current_grant(user, CredentialClass::Native, now)
+        .map(|g| g.principal_id.clone());
+
+    let (principal_id, minted_fresh) = match existing_principal {
+        Some(principal_id) => {
+            let grant = user
+                .credentials
+                .iter_mut()
+                .find(|g| g.principal_id == principal_id)
+                .expect("current_grant just found this principal_id in this same user");
+            grant
+                .renew_until(new_valid_until, now)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            (principal_id, false)
+        }
+        None => {
+            let principal_id = credentials::generate_principal_id(CredentialClass::Native);
+            let grant = CredentialGrant::new(
+                principal_id.clone(),
+                CredentialClass::Native,
+                &credentials::generate_uuid_v4(),
+                now,
+                new_valid_until,
+            );
+            user.credentials.push(grant);
+            (principal_id, true)
+        }
+    };
+
+    let went_live = apply_users_and_save(cfg, &previous_users, &users)?;
+    if minted_fresh {
+        println!(
+            "{id}: no live native grant found; minted a fresh one ({principal_id}), valid \
+             until {new_valid_until} (unix seconds). This DOES change the rendered document."
+        );
+    } else {
+        println!(
+            "{id}: native grant {principal_id} renewed, valid until {new_valid_until} (unix \
+             seconds)."
+        );
+    }
+    if went_live {
+        println!("Applied to the running server.");
+    } else {
+        println!(
+            "Saved on disk, but NOT reloaded live (see the warning above) — the running \
+             server has not picked this up yet."
+        );
+    }
+    Ok(())
 }
 
 /// Push a proposed user-store change to the running server, then publish it
@@ -6787,6 +6899,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         google_egress_hairpin: false,
         peer_credentials: Default::default(),
         is_reserved_probe: false,
+        credentials: Vec::new(),
     };
     let short_id = reality.short_ids.first().cloned().unwrap_or_default();
     // Deliberately LOCAL endpoints only (not `served_endpoints`): this

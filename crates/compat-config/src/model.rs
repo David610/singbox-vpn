@@ -260,6 +260,249 @@ impl PeerCredential {
     }
 }
 
+/// Which credential policy a [`CredentialGrant`] is minted under.
+///
+/// The two classes are the same *shape* with different lifetimes, because
+/// they differ only in how often the holder can be expected to come back
+/// for a new one — not in what the credential proves. Everything else about
+/// them (opaque principal, explicit validity window, immediate revocation,
+/// bounded overlap) is identical, so that a mistake in one cannot silently
+/// weaken the other.
+///
+/// See `credential_policy` for the policy each class enforces and for why
+/// the numbers are what they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialClass {
+    /// Arcana's own client. Silently renewable, short authorization
+    /// window, never requires a reconnect to renew.
+    Native,
+    /// A third-party VPN client (Hiddify, Shadowrocket, INCY, generic
+    /// sing-box/Xray importers). Cannot implement renewal logic, so its
+    /// window is long and operator-configurable within policy bounds.
+    ///
+    /// Named `compatibility` in JSON; the client-facing opaque principal
+    /// prefix is `ext_` (see [`crate::credentials::generate_principal_id`]).
+    Compatibility,
+}
+
+impl CredentialClass {
+    /// Stable lowercase wire name. Used in policy errors and in the
+    /// client capability contract.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CredentialClass::Native => "native",
+            CredentialClass::Compatibility => "compatibility",
+        }
+    }
+
+    /// The opaque principal-id prefix for this class. A principal id is
+    /// self-describing about its *policy* (so an operator can tell at a
+    /// glance in `users.json` which lifetime rule applies) while carrying
+    /// no customer identity whatsoever.
+    pub fn principal_prefix(&self) -> &'static str {
+        match self {
+            CredentialClass::Native => "native_",
+            CredentialClass::Compatibility => "ext_",
+        }
+    }
+}
+
+/// One time-bounded credential grant for a [`CompatUser`].
+///
+/// A grant is the unit of authorization: it carries its own opaque
+/// principal, its own credential material, and an explicit half-open
+/// validity window `[valid_from, valid_until)`.
+///
+/// # Why this is separate from the account
+///
+/// A `CompatUser` is an *account* — it may outlive any individual
+/// credential by months. Before this type existed, the account doubled as
+/// its own single credential, which made the account-level `expires_at`
+/// serve two incompatible purposes at once (see `credential_policy`). One
+/// account can now hold several grants: one native, one or more
+/// compatibility credentials for distinct external devices, and briefly
+/// two of either during a controlled rotation overlap.
+///
+/// # Material stability
+///
+/// `principal_id`, `vless_uuid` and `hysteria2_password` are fixed for the
+/// life of the grant. **Renewal must not change any of them** — only
+/// `valid_until`. sing-box has no per-user expiry field, so material is the
+/// only thing that can change the rendered document, and changing it forces
+/// a sing-box restart that disconnects every client on the node. Holding
+/// material constant across renewals is what makes silent renewal free.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CredentialGrant {
+    /// Opaque authorization principal, e.g. `native_ab18…` or
+    /// `ext_f921…`.
+    ///
+    /// This is what the data plane authenticates, routes, expires and
+    /// troubleshoots against. It deliberately contains **no** customer
+    /// email, name, Stripe customer id, Supabase account id, billing
+    /// record or subscription token — an operator reading `users.json` or a
+    /// `vpn-admin` listing learns only that some principal holds a
+    /// credential of a given class, which is everything required to
+    /// authenticate it, revoke it, apply route policy to it, expire it, or
+    /// diagnose it.
+    ///
+    /// Distinct from `CompatUser::id`, which identifies the account. Where
+    /// an account has exactly one legacy credential the two coincide by
+    /// construction (see [`CompatUser::effective_grants`]).
+    pub principal_id: String,
+    pub class: CredentialClass,
+    pub vless_uuid: String,
+    pub hysteria2_password: SecretString,
+    /// Unix seconds; inclusive. A grant is not authorized before this.
+    pub valid_from: i64,
+    /// Unix seconds; **exclusive**. A grant is dead at exactly this
+    /// instant, so no credential survives past its authorized validity.
+    ///
+    /// Always present and always finite for an explicitly stored grant.
+    /// The "never expires" case is expressed by the legacy account fields,
+    /// not by an absent `valid_until`, so that "explicit valid_until" is
+    /// true of every stored grant and cannot be forgotten.
+    pub valid_until: i64,
+    /// Unix seconds at which this grant was revoked, if it was. Absent
+    /// means never revoked.
+    ///
+    /// Revocation is recorded rather than expressed by deletion so that
+    /// revocation is *auditable* — an operator can answer "was this
+    /// credential ever issued to this principal, and when did it die?" —
+    /// and so that a replayed or restored state file cannot resurrect it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<i64>,
+    /// Monotonic counter, incremented on every rotation of this (principal,
+    /// class). Ordering only; it is not a secret and not an identity.
+    ///
+    /// Starts at 1 for a grant that has never been rotated, so that
+    /// generation 0 can mean "not present" without a sentinel.
+    #[serde(default = "first_generation")]
+    pub generation: u64,
+}
+
+fn first_generation() -> u64 {
+    1
+}
+
+impl CredentialGrant {
+    /// Mint a new grant with freshly generated credential material.
+    pub fn new(
+        principal_id: String,
+        class: CredentialClass,
+        vless_uuid: &str,
+        valid_from: i64,
+        valid_until: i64,
+    ) -> Self {
+        Self {
+            principal_id,
+            class,
+            vless_uuid: vless_uuid.to_string(),
+            hysteria2_password: SecretString::new(crate::credentials::generate_hysteria2_password()),
+            valid_from,
+            valid_until,
+            revoked_at: None,
+            generation: 1,
+        }
+    }
+
+    /// Whether this grant was revoked at or before `now_unix`.
+    ///
+    /// Revocation is treated as already in force at the recorded instant,
+    /// not one second later: an operator who revokes at T means "not
+    /// usable at T", and a revoke recorded in the future is treated as
+    /// revoked now rather than as a scheduled revocation nobody asked for.
+    pub fn is_revoked_at(&self, now_unix: i64) -> bool {
+        self.revoked_at.is_some_and(|at| at <= now_unix)
+    }
+
+    /// Revoke this grant at `now_unix`. Idempotent — re-revoking keeps the
+    /// earlier instant, so the recorded revocation time is the true time
+    /// authorization actually ended.
+    pub fn revoke(&mut self, now_unix: i64) {
+        self.revoked_at = Some(
+            self.revoked_at
+                .map_or(now_unix, |existing| existing.min(now_unix)),
+        );
+    }
+
+    /// Extend this grant's authorization to `new_valid_until`.
+    ///
+    /// Returns `Err` rather than shortening: `valid_until` may only ever
+    /// move forward within a grant's life. Shortening is what rotation
+    /// does, and it does it by minting a *new* grant and clipping this one,
+    /// which keeps the audit trail ("this credential was valid until X")
+    /// intact.
+    ///
+    /// Refuses to extend a grant that has already expired or been revoked.
+    /// Renewing an expired credential is precisely the resurrection this
+    /// design forbids: it would resurrect a secret that a customer stopped
+    /// using, or that leaked, back into a live window.
+    pub fn renew_until(&mut self, new_valid_until: i64, now_unix: i64) -> Result<(), String> {
+        if self.is_revoked_at(now_unix) {
+            return Err(format!(
+                "credential {} was revoked and cannot be renewed; mint a new one",
+                self.principal_id
+            ));
+        }
+        if now_unix >= self.valid_until {
+            return Err(format!(
+                "credential {} expired at {} (now {now_unix}) and cannot be renewed; \
+                 mint a new one",
+                self.principal_id, self.valid_until
+            ));
+        }
+        if new_valid_until < self.valid_until {
+            return Err(format!(
+                "credential {} cannot be shortened from {} to {new_valid_until}; \
+                 mint a superseding credential instead",
+                self.principal_id, self.valid_until
+            ));
+        }
+        self.valid_until = new_valid_until;
+        Ok(())
+    }
+
+    /// Structural validation of a single grant.
+    pub fn validate(&self) -> Result<(), String> {
+        crate::credentials::validate_principal_id(&self.principal_id, self.class)?;
+        if !crate::credentials::is_uuid_v4_shaped(&self.vless_uuid) {
+            return Err(format!(
+                "credential {} has a VLESS UUID that is not 8-4-4-4-12 hex",
+                self.principal_id
+            ));
+        }
+        if self.hysteria2_password.expose().is_empty() {
+            return Err(format!(
+                "credential {} has an empty Hysteria2 password",
+                self.principal_id
+            ));
+        }
+        if self.valid_until <= self.valid_from {
+            return Err(format!(
+                "credential {} has valid_until {} at or before valid_from {}; every credential \
+                 must have a non-empty validity window",
+                self.principal_id, self.valid_until, self.valid_from
+            ));
+        }
+        if self.valid_until <= 0 || self.valid_from < 0 {
+            return Err(format!(
+                "credential {} has a non-positive validity window ({}, {})",
+                self.principal_id, self.valid_from, self.valid_until
+            ));
+        }
+        if let Some(revoked_at) = self.revoked_at {
+            if revoked_at < self.valid_from {
+                return Err(format!(
+                    "credential {} was revoked at {revoked_at}, before its window opened at {}",
+                    self.principal_id, self.valid_from
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A compatibility (third-party-client) user. Persisted in
 /// `/etc/vpn/compat/users/users.json`; never mixed into the native
 /// `config`/`rendezvous` trust chain.
@@ -367,6 +610,23 @@ pub struct CompatUser {
     /// `users.json` to before this field existed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_reserved_probe: bool,
+
+    /// This account's time-bounded credential grants.
+    ///
+    /// Empty on any deployment created before credential grants existed, in
+    /// which case [`CompatUser::effective_grants`] synthesizes a single
+    /// grant from the legacy `vless_uuid` / `hysteria2_password` /
+    /// `expires_at` fields. That fallback is what makes this field
+    /// additive: an existing `users.json` loads unchanged, renders
+    /// byte-identically, and needs no migration step to keep working.
+    ///
+    /// When this is non-empty it is **authoritative**: rendering uses these
+    /// grants and ignores the legacy fields. The legacy fields are left in
+    /// place rather than removed so that the fleet lease-pool code path,
+    /// which writes them directly, keeps composing with this model instead
+    /// of having to be rewritten.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<CredentialGrant>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -374,6 +634,14 @@ fn is_false(b: &bool) -> bool {
 }
 
 impl CompatUser {
+    /// Account-level authorization. A disabled or expired account is
+    /// excluded from the rendered config entirely.
+    ///
+    /// Note this is an **account** check, not a credential check: it is the
+    /// coarse switch that kills every credential a user holds at once. The
+    /// per-credential window is [`CredentialGrant`]'s job, and a user can
+    /// be active here while holding no live credential (all lapsed), in
+    /// which case they are authorized for nothing.
     pub fn is_active(&self, now_unix: i64) -> bool {
         // Authorization-backed lease users encode valid_from in created_at. Legacy/customer
         // users retain their historical semantics; their creation timestamp was never an
@@ -383,6 +651,77 @@ impl CompatUser {
         self.enabled && started && self.expires_at.map(|exp| now_unix < exp).unwrap_or(true)
     }
 
+    /// This account's credential grants, with the pre-grant model
+    /// synthesized where needed.
+    ///
+    /// Returns `Cow` rather than a reference slice because the legacy path
+    /// has to *construct* a grant: before grants existed, the account's own
+    /// `vless_uuid` / `hysteria2_password` / `expires_at` were the
+    /// credential, so an account with no explicit `credentials` is treated
+    /// as holding exactly one grant whose principal is the account's own
+    /// `id`.
+    ///
+    /// Three properties of that fallback are deliberate and load-bearing:
+    ///
+    /// * The synthesized `principal_id` is the account `id`, so every
+    ///   existing `auth_user` route rule, probe confinement rule and
+    ///   hairpin exception keeps matching the same identity string it
+    ///   matched before.
+    /// * `valid_from` is 0 and `valid_until` mirrors `expires_at`, so
+    ///   authorization is bit-for-bit what `is_active` already decided.
+    ///   In particular `created_at` is deliberately **not** used as
+    ///   `valid_from` — it has never been enforced, so honouring it now
+    ///   could lock out an existing account whose stored `created_at` is
+    ///   wrong or in the future.
+    /// * The class is [`CredentialClass::Compatibility`]: a bare legacy
+    ///   credential has third-party refresh semantics, which is what it has
+    ///   always had.
+    ///
+    /// The result is that a deployment with no `credentials` field renders
+    /// an identical document to one built before this type existed.
+    pub fn effective_grants(&self) -> Vec<std::borrow::Cow<'_, CredentialGrant>> {
+        if !self.credentials.is_empty() {
+            return self
+                .credentials
+                .iter()
+                .map(std::borrow::Cow::Borrowed)
+                .collect();
+        }
+        vec![std::borrow::Cow::Owned(CredentialGrant {
+            principal_id: self.id.clone(),
+            class: CredentialClass::Compatibility,
+            vless_uuid: self.vless_uuid.clone(),
+            hysteria2_password: self.hysteria2_password.clone(),
+            valid_from: 0,
+            // `i64::MAX` rather than `None`: the stored-grant invariant is
+            // "valid_until is explicit and finite", and a legacy account
+            // that never expires is exactly the account-level `None` case.
+            valid_until: self.expires_at.unwrap_or(i64::MAX),
+            revoked_at: None,
+            generation: 1,
+        })]
+    }
+
+    /// The principals of this account's credentials that are authorized at
+    /// `now_unix`.
+    ///
+    /// This is the set every `auth_user` route rule, probe confinement
+    /// rule and hairpin exception must be scoped to. It is a *set* rather
+    /// than a single id because an account may hold several live grants
+    /// during an overlap — a rule scoped to only the newest one would stop
+    /// matching the older credential mid-rotation and cut a working client
+    /// off.
+    pub fn active_principal_ids(&self, now_unix: i64) -> Vec<String> {
+        if !self.is_active(now_unix) {
+            return Vec::new();
+        }
+        self.effective_grants()
+            .into_iter()
+            .filter(|g| crate::credential_policy::grant_is_authorized(g, now_unix))
+            .map(|g| g.principal_id.clone())
+            .collect()
+    }
+
     /// This user's credential for `endpoint_id`, if the operator has set
     /// one. Deliberately returns `None` rather than falling back to the
     /// user's LOCAL credential: the local `vless_uuid` is meaningless on a
@@ -390,6 +729,15 @@ impl CompatUser {
     /// produce an endpoint that cannot authenticate.
     pub fn peer_credential(&self, endpoint_id: &str) -> Option<&PeerCredential> {
         self.peer_credentials.get(endpoint_id)
+    }
+
+    /// Validate this account's grant set against the overlap policy.
+    ///
+    /// Called on every store load and every write, so an out-of-policy set
+    /// can never reach the render path — which is what makes "a restart
+    /// cannot resurrect an expired credential" true by construction.
+    pub fn validate_grants(&self) -> Result<(), String> {
+        crate::credential_policy::validate_grant_set(&self.credentials)
     }
 }
 

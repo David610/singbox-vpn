@@ -169,6 +169,7 @@ pub fn reconcile(
                 google_egress_hairpin: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
+                credentials: Vec::new(),
             },
         };
         user.name = s.principal_id.clone().unwrap_or_else(|| id.clone());
@@ -219,6 +220,7 @@ mod tests {
             google_egress_hairpin: false,
             peer_credentials: Default::default(),
             is_reserved_probe: false,
+            credentials: Vec::new(),
         }
     }
 

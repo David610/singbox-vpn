@@ -8,6 +8,7 @@
 
 pub mod authorization;
 pub mod contract;
+pub mod credential_policy;
 pub mod credentials;
 pub mod deployment;
 pub mod migrate;
@@ -20,8 +21,8 @@ pub mod static_revision;
 pub mod store;
 
 pub use model::{
-    CompatEndpoint, CompatTransport, CompatUser, Hysteria2ServerParams, PublicParameters,
-    RealityServerParams,
+    CompatEndpoint, CompatTransport, CompatUser, CredentialClass, CredentialGrant,
+    Hysteria2ServerParams, PublicParameters, RealityServerParams,
 };
 pub use secret::SecretString;
 

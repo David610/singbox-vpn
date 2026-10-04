@@ -297,6 +297,7 @@ mod tests {
             google_egress_hairpin: false,
             peer_credentials: Default::default(),
             is_reserved_probe: false,
+            credentials: Vec::new(),
         }
     }
 
