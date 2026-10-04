@@ -120,6 +120,8 @@ EOF
 chmod +x "$BIN_DIR/vpn-health-check"
 cat > "$BIN_DIR/vpn" <<'EOF'
 #!/usr/bin/env bash
+# acceptance first provisions the reserved probe principal; only `doctor` fails here.
+case "$*" in *"user create-probe"*) exit 0 ;; esac
 echo "[FAIL] [L2] public hostname \"example.test\" does not resolve after 3 attempt(s): simulated transient resolver failure"
 exit 1
 EOF
