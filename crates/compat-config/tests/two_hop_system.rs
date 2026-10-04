@@ -609,6 +609,7 @@ fn user(id: &str, relay_uuid: &str, exit_uuid: Option<&str>) -> CompatUser {
         google_egress_hairpin: false,
         peer_credentials,
         is_reserved_probe: false,
+        credentials: Vec::new(),
     }
 }
 

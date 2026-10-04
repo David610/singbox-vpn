@@ -30,11 +30,76 @@ pub fn generate_uuid_v4() -> String {
 /// A compatibility-user id: `user_<uuidv4>` — 128 bits of CSPRNG entropy,
 /// not the 32-bit `generate_short_id` (which is reserved for the REALITY
 /// short_id and must not be reused as a general-purpose identifier).
-/// Callers should still run `is_duplicate_user_id` before insert as
-/// defense in depth even though a collision at 128 bits is not
-/// realistically reachable.
+/// Callers should still run a duplicate check before insert as defense in
+/// depth even though a collision at 128 bits is not realistically
+/// reachable.
 pub fn generate_user_id() -> String {
     format!("user_{}", generate_uuid_v4())
+}
+
+/// An **opaque authorization principal**, the identity the data plane
+/// actually authenticates, routes, expires, revokes and troubleshoots
+/// against. Shaped `<class-prefix><24 hex chars>`, e.g. `native_ab18f3…`
+/// or `ext_f921…`.
+///
+/// # Why this is not the customer
+///
+/// A VPN node needs to answer four questions about whoever is connecting:
+/// is this credential valid, until when, which routes may it use, and has
+/// it been revoked. None of those require knowing who the human is. Wiring
+/// a customer email, Stripe customer id or Supabase account id into the
+/// data plane would therefore add a privacy liability — a database of
+/// "who was connected to the VPN, when, and through which credential" —
+/// without making a single one of those four answers better.
+///
+/// 96 bits of CSPRNG entropy: collision-free in practice, and short enough
+/// to read aloud or paste into a ticket during troubleshooting, which is
+/// the whole point of an identifier that carries no identity. The class
+/// prefix is deliberately part of the id rather than stored separately so
+/// that an operator reading `users.json` can tell which lifetime policy
+/// applies without a lookup, while learning nothing about the holder.
+pub fn generate_principal_id(class: crate::model::CredentialClass) -> String {
+    let mut bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut bytes);
+    format!("{}{}", class.principal_prefix(), hex::encode(bytes))
+}
+
+/// Validate an opaque principal id's shape *and* that its prefix matches
+/// the class it was declared under.
+///
+/// Both halves matter. The shape check refuses paste accidents and, more
+/// importantly, refuses anything that could be an email address or an
+/// account id smuggled into the authorization field. The prefix check
+/// means a native class credential cannot be published under a
+/// compatibility prefix (which would let a short-lived native lease be
+/// treated with third-party lifetime policy) or vice versa.
+pub fn validate_principal_id(
+    principal_id: &str,
+    class: crate::model::CredentialClass,
+) -> Result<(), String> {
+    let prefix = class.principal_prefix();
+    let Some(suffix) = principal_id.strip_prefix(prefix) else {
+        return Err(format!(
+            "authorization principal {principal_id:?} must start with {prefix:?} for a {} \
+             credential",
+            class.as_str()
+        ));
+    };
+    if suffix.len() != 24 {
+        return Err(format!(
+            "authorization principal {principal_id:?} has {} hex characters after {prefix:?}; \
+             exactly 24 are required",
+            suffix.len()
+        ));
+    }
+    if !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "authorization principal {principal_id:?} must be hexadecimal; it must be an opaque \
+             id and must never carry customer identity (email, name, account id, or billing \
+             reference)"
+        ));
+    }
+    Ok(())
 }
 
 /// A Hysteria2 user password: 24 random bytes, hex-encoded (192 bits).
