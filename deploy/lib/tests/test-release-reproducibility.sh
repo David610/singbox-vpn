@@ -514,7 +514,7 @@ fi
 echo
 echo "--- static: root install.sh (the bootstrap itself) is published as its own checksummed release asset, closing the movable-branch-ref bootstrap gap (Phase 12) ---"
 if grep -q 'cp src/install.sh dist/install.sh' "$RELEASE_YML" \
-    && grep -q 'sha256sum dist/install.sh > dist/install.sh.sha256' "$RELEASE_YML" \
+    && grep -q 'sha256sum install.sh > install.sh.sha256' "$RELEASE_YML" \
     && grep -q 'install.sh.sha256' "$RELEASE_YML" \
     && grep -qE '^\s*dist/install\.sh\s*$' "$RELEASE_YML"; then
   ok "release.yml publishes root install.sh as a release asset, folded into SHA256SUMS, so the bootstrap fetch itself can be checksum-verified"

@@ -556,7 +556,7 @@ jobs:
           # repointed) with zero verification. See install.sh's own header
           # comment / --help output for the documented pinned-fetch pattern.
           cp src/install.sh dist/install.sh
-          sha256sum dist/install.sh > dist/install.sh.sha256
+          (cd dist && sha256sum install.sh > install.sh.sha256)
 
       - name: Build combined checksum file
         run: |
