@@ -20,7 +20,13 @@ Description=Periodically recover sing-box/vpn-subscription from a parked failed 
 # own 10-minute cadence (an unrelated concern — this timer never touches
 # expiry/authorization state, and does not restart anything that isn't
 # already `failed`).
+#
+# OnActiveSec starts the cycle when this timer is started after boot (a fresh
+# install or update); OnBootSec has already elapsed then and OnUnitActiveSec
+# only counts from a previous run of the service, so without it the timer is
+# never scheduled until the next reboot.
 OnBootSec=2min
+OnActiveSec=2min
 OnUnitActiveSec=5min
 AccuracySec=30s
 Persistent=true
