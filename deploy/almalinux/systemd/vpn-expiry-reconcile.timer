@@ -11,7 +11,14 @@ Description=Apply singbox-vpn user expirations to live protocol authorization
 # of one restart per 1-minute tick that happens to catch a different
 # user. OnBootSec stays short so a freshly-booted host still reconciles
 # promptly once.
+#
+# OnActiveSec starts the cycle on a host where this timer is started AFTER
+# boot (a fresh install or an update): OnBootSec has long elapsed and
+# OnUnitActiveSec only counts from a previous run of the service, so without
+# this the timer is never scheduled (`systemctl list-timers` shows NEXT "-")
+# and expired credentials stay valid until the next reboot.
 OnBootSec=1min
+OnActiveSec=1min
 OnUnitActiveSec=10min
 AccuracySec=10s
 Persistent=true
