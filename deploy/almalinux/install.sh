@@ -2895,6 +2895,16 @@ acceptance_stage() {
   if ! "$BIN_DIR/vpn-health-check"; then
     die "post-install health check failed — see output above. Installation did not complete cleanly."
   fi
+  # The L5-6 protocol self-test below dials this node's own loopback listener.
+  # Since C-16 only a RESERVED PROBE principal is exempt from the loopback /
+  # relay confinement, so without one the self-test falls back to the first
+  # ordinary user, is rejected by design, comes back INCONCLUSIVE, and
+  # --require-protocol then rolls back an otherwise healthy fresh install.
+  # `user create-probe` is idempotent and documents itself as safe to call on
+  # every install/update; it never rotates or adopts an existing user.
+  if ! "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create-probe >/dev/null; then
+    die "could not provision the reserved internal probe principal (vpn user create-probe) that the protocol self-test requires. Installation is not accepted."
+  fi
   # Capture doctor's own output rather than only its exit code: doctor
   # reports each check independently and prefixes failing lines with
   # "[FAIL]" (see apps/admin/src/main.rs report_check/CheckStatus), so
