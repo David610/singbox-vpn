@@ -121,7 +121,7 @@ The client understands only:
 
 ```
 location      text    -- e.g. "Germany"; backend resolves to a healthy node pool
-mode          "ONE_SERVER" | "TWO_SERVER"
+mode          "fast" | "privacy_plus"
 availability  bool
 route_id      opaque string
 ```
@@ -129,36 +129,50 @@ route_id      opaque string
 Never exposed to normal UI: protocol name (VLESS/REALITY/Hysteria2/
 sing-box), node hostname, node IP, internal region code, transport.
 
-**Naming reconciliation — three vocabularies exist today, none of which
-this document unifies by fiat:**
+**Naming reconciliation — resolved 2026-10-04.** Three vocabularies existed:
 
 1. `vpn-web` DB (`public.connection_profiles.routing_mode`):
    `AUTO | DIRECT | DOUBLE_HOP`.
 2. `tamara-next`'s already-shipped wire contract
    (`docs/contracts/managed-control-plane-v1.md`, `GET /v1/routes` route
-   payload `mode` field, covered by passing interop tests today):
-   `"fast" | "privacy_plus"` — one hop vs. exactly two hops.
-3. This document's product-facing conceptual vocabulary (used only in
-   prose/UI-copy discussions, not in any wire format):
-   `ONE_SERVER | TWO_SERVER`.
+   payload `mode` field, covered by passing interop tests, enforced down to
+   `sing_box_config_builder.dart`'s outbound count): `"fast" |
+   "privacy_plus"` — one hop vs. exactly two hops.
+3. This document's product-facing conceptual vocabulary, used only in
+   prose/UI-copy discussions: `ONE_SERVER | TWO_SERVER`. It had **zero**
+   code footprint anywhere in any of the three repos — grepped and
+   confirmed absent from `singbox-vpn`'s implementation, which uses its own
+   third vocabulary internally (`role=relay`/`exit`, `detour` chaining) for
+   the same hop-count concept.
 
-Rough mapping for reasoning about them together: `DIRECT` ≈ `"fast"` ≈
-`ONE_SERVER`; `DOUBLE_HOP` ≈ `"privacy_plus"` ≈ `TWO_SERVER`. Do **not**
-treat these as interchangeable in code — `"fast"`/`"privacy_plus"` are the
-real signed wire values and must not be renamed without a contract
-revision to `managed-control-plane-v1.md` and a client/server rollout
-(§0 of that document's own failure-semantics discipline applies). Picking
-one vocabulary as canonical and migrating the other two is explicit
-follow-up work. Until then: wire code uses `"fast"`/`"privacy_plus"`, the
-`vpn-web` DB keeps `DIRECT`/`DOUBLE_HOP`, and user-facing copy says
-"One server"/"Two servers" — never literally print any of the three
-machine vocabularies to a user.
+**Resolution: vocabulary 3 is retired.** `"fast"`/`"privacy_plus"` is
+canonical everywhere this document means hop-count mode, because it is the
+one of the three that is live, signed, schema-validated and already
+enforces exact hop counts — not because it was first. `ONE_SERVER`/
+`TWO_SERVER` must not appear in new code or docs; existing occurrences are
+being swept to `"fast"`/`"privacy_plus"` as each repo is touched, not in
+one blanket rename.
 
-`Automatic` *location* (§4a) is a separate axis from hop-count mode —
-`AUTO` the routing_mode and `Automatic` the location are two different
-things that `vpn-web`'s current single `routing_mode` enum conflates.
-Resolving that conflation (new column vs. UI-layer mapping) is also named
-follow-up work, not solved by this document.
+`vpn-web`'s `routing_mode` column is **not** migrated — `AUTO | DIRECT |
+DOUBLE_HOP` remains the value at rest, because `AUTO` and `DIRECT` are
+secretly the same hop-count value (`exitNodeId === entryNodeId` either
+way; confirmed in `device-provisioning.js`/`scheduler.js`) differing only
+in who picks the location, an axis the wire contract doesn't carry at all.
+Migrating the column was weighed against a read-model translation and
+rejected as unnecessary blast radius for an internal value nothing outside
+`vpn-web` ever sees. Instead, every JSON response that includes
+`routing_mode` now also derives the clean two-axis read model alongside it
+(`functions/lib/connection-profiles.js`'s exported `routingAxes()`,
+consumed by `connection-profiles/index.js`, `devices.js` and
+`telegram-mini-app-service.js`):
+
+```
+hopMode       "fast" | "privacy_plus"   -- AUTO and DIRECT both "fast"
+locationMode  "AUTO" | "PINNED"         -- AUTO is the only "AUTO" value
+```
+
+`routingMode` (`AUTO|DIRECT|DOUBLE_HOP`) is kept alongside these, additive,
+for existing consumers — nothing that read it before had to change.
 
 ### 4a. Automatic location
 
@@ -306,12 +320,14 @@ singbox-vpn   node install/runtime, node-local credential application,
 
 ## 10. Open items (explicitly not resolved by this document)
 
-- Links supporting `"privacy_plus"`/`TWO_SERVER` routes (§5) — currently
-  fail-closed with `422 unsupported_route`; two-server is Arcana-app-only
-  today.
-- Reconciling `routing_mode` (`AUTO|DIRECT|DOUBLE_HOP`) with the
-  `Automatic`-location vs. `ONE_SERVER`/`TWO_SERVER`-mode two-axis model
-  (§4).
+- Links supporting `"privacy_plus"` routes (§5) — currently fail-closed
+  with `422 unsupported_route`; two-hop is Arcana-app-only today.
+- ~~Reconciling `routing_mode` with the `Automatic`-location vs. hop-count
+  two-axis model (§4).~~ **Resolved 2026-10-04** — see §4. `routing_mode`
+  stays at rest unmigrated; API responses now also carry derived
+  `hopMode`/`locationMode`. Still open, deliberately deferred: an actual
+  schema rename (`routing_mode` → `hop_mode` + new `location_mode` column)
+  if the read-model shim ever stops being enough — not needed today.
 - Per-link/per-user traffic attribution (§0, blocked on `singbox-vpn`
   runtime work).
 - Android platform support (`tamara-next` currently has no `android/`
