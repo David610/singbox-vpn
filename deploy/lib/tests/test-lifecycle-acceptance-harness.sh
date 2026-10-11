@@ -601,6 +601,16 @@ if grep -q -- 'sudo kill -9 1001' "$SSH_LOG"; then
 else
   fail "sing-box was not killed via its captured MainPID"
 fi
+# Stage 13 must start with a fresh restart budget (found on a real VPS: stage 12's
+# benchmark restarts sing-box four times in ~6s, the SIGKILL was then refused with
+# "Start request repeated too quickly"). The reset must come BEFORE the kill.
+reset_line="$(grep -n 'systemctl reset-failed sing-box' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+kill_line="$(grep -n 'sudo kill -9 1001' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+if [ -n "$reset_line" ] && [ -n "$kill_line" ] && [ "$reset_line" -lt "$kill_line" ]; then
+  ok "stage 13 clears the start-limit budget (reset-failed) before it SIGKILLs sing-box"
+else
+  fail "stage 13 does not run 'systemctl reset-failed sing-box' before the SIGKILL (reset=$reset_line kill=$kill_line)"
+fi
 if [ "$(grep -c 'MainPID' "$SSH_LOG")" -ge 2 ]; then
   ok "MainPID is queried both before and after the kill (to prove a real respawn)"
 else
