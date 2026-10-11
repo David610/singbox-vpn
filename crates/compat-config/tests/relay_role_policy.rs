@@ -1292,11 +1292,11 @@ fn fresh_install_templates_render_a_current_loadable_deployment_for_both_roles()
 }
 
 // ----------------------------------------------------------------------
-// Google/YouTube egress hairpin (docs/YOUTUBE_FINAL_ROOT_CAUSE.md §16):
-// an EXIT can hold one relay user's credential and hairpin the Google/
-// YouTube domain set through a relay with better network peering to
-// Google's CDN. Never a client-facing feature — see
-// `CompatUser::google_egress_hairpin`'s doc comment.
+// Google/YouTube egress hairpin (docs/YOUTUBE_FIX_INVARIANTS.md): an EXIT
+// can hold one other node's user credential and send the Google/YouTube
+// domain set out through that node's IP, which YouTube serves Shorts to.
+// Never a client-facing feature — see `CompatUser::google_egress_hairpin`'s
+// doc comment.
 
 fn hairpin_user() -> CompatUser {
     let mut u = user();
@@ -1462,16 +1462,105 @@ fn exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule() {
     let rules = doc["route"]["rules"].as_array().unwrap();
     assert_eq!(
         rules.len(),
-        6,
-        "4 mandatory C-16 rules ahead of the hairpin's sniff + route"
+        7,
+        "4 mandatory C-16 rules ahead of the hairpin's sniff + IPv6 reject + route"
     );
     assert_eq!(rules[4]["action"], "sniff");
-    assert_eq!(rules[5]["outbound"], "google-egress-hairpin");
+    assert_eq!(rules[5]["action"], "reject");
+    assert_eq!(rules[6]["outbound"], "google-egress-hairpin");
     assert_eq!(
-        rules[5]["domain_suffix"],
+        rules[6]["domain_suffix"],
         serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
     );
     assert_eq!(doc["route"]["final"], "direct");
+}
+
+/// `docs/YOUTUBE_FIX_INVARIANTS.md` invariant 4. The hairpin target is
+/// usually IPv4-only, so a client that sends a literal IPv6 Google
+/// destination would stall until its own timeout. The reject must (a) come
+/// after the sniff and before the route, (b) be scoped to literal IPv6 and
+/// to exactly the shared Google/YouTube domain set, and (c) carry
+/// `no_drop`, because without it sing-box turns reject into a silent drop
+/// after 50 rejects in 30 s and the stall returns mid-session.
+#[test]
+fn exit_hairpin_rejects_literal_ipv6_google_destinations_without_dropping() {
+    let exit = load(&exit_hairpin_deployment_toml()).unwrap();
+    let doc =
+        render_server_config_for_deployment(&exit, &[user()], &hairpin_reality(), &hysteria(), 0)
+            .unwrap();
+    let rules = doc["route"]["rules"].as_array().unwrap();
+    let sniff = rules.iter().position(|r| r["action"] == "sniff").unwrap();
+    let v6 = rules
+        .iter()
+        .position(|r| r["ip_version"] == 6)
+        .expect("IPv6 reject rule present");
+    let route = rules
+        .iter()
+        .position(|r| r["outbound"] == "google-egress-hairpin")
+        .unwrap();
+    assert!(
+        sniff < v6 && v6 < route,
+        "order must be sniff -> IPv6 reject -> hairpin route"
+    );
+    let rule = &rules[v6];
+    assert_eq!(rule["action"], "reject");
+    assert_eq!(rule["method"], "default");
+    assert_eq!(
+        rule["no_drop"], true,
+        "no_drop is load-bearing: without it reject becomes a silent drop after 50 rejects/30s"
+    );
+    assert_eq!(
+        rule["domain_suffix"],
+        serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS),
+        "the IPv6 reject and the hairpin route must share one domain set"
+    );
+    assert!(
+        rule.get("auth_user").is_none() && rule.get("inbound").is_none(),
+        "must apply to every user on the exit, like the hairpin route itself"
+    );
+    assert_eq!(
+        rules
+            .iter()
+            .filter(|r| r["action"] == "reject" && r.get("ip_version").is_some())
+            .count(),
+        1
+    );
+}
+
+/// `docs/YOUTUBE_FIX_INVARIANTS.md` invariant 5: if the paired node is
+/// down, Google/YouTube must fail, never fall back to this exit's own
+/// refused IP. That holds only while the hairpin route is the sole route
+/// for the domain set and `route.final` stays `direct` for everything else.
+#[test]
+fn exit_hairpin_has_exactly_one_route_for_google_domains_and_no_fallback() {
+    let exit = load(&exit_hairpin_deployment_toml()).unwrap();
+    let doc =
+        render_server_config_for_deployment(&exit, &[user()], &hairpin_reality(), &hysteria(), 0)
+            .unwrap();
+    let google_routes: Vec<_> = doc["route"]["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["action"] == "route" && r.get("domain_suffix").is_some())
+        .collect();
+    assert_eq!(google_routes.len(), 1);
+    assert_eq!(google_routes[0]["outbound"], "google-egress-hairpin");
+    assert_eq!(doc["route"]["final"], "direct");
+    let hairpin_users: Vec<_> = doc["outbounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["tag"] == "google-egress-hairpin")
+        .collect();
+    assert_eq!(hairpin_users.len(), 1);
+    assert!(
+        doc["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| o["type"] != "urltest" && o["type"] != "selector"),
+        "no selector/urltest outbound may offer a direct fallback for the hairpin"
+    );
 }
 
 #[test]
