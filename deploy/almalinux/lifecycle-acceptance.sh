@@ -822,6 +822,22 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # watchdog; this stage proves plain crash recovery. `reset-failed` is systemd's
   # documented way to clear the start-limit counter (see 13b and 13c below).
   ssh_run 'sudo systemctl reset-failed sing-box' >/dev/null 2>&1 || true
+
+  # Quiesce vpn-expiry-reconcile.timer for the whole induced-outage block (stages
+  # 13, 13b, 13c). It fires every 10 minutes regardless; if it lands while this
+  # harness is SIGKILLing sing-box it applies a config, restarts sing-box into a
+  # kill, exits non-zero ("sing-box did not remain active after reload") and leaves
+  # a FAILED record that vpn doctor then correctly reports. That made stage 14 and
+  # a production update's post-check fail intermittently (found in real runs of
+  # v1.2.0-rc.4: 2 of 3 runs hit it, depending on where the timer fell). The
+  # watchdog timer is suspended for 13b for the same reason. The prior state is
+  # recorded so it is restored, never turned on unconditionally.
+  if ssh_run 'systemctl is-active --quiet vpn-expiry-reconcile.timer' 2>/dev/null; then
+    reconcile_timer_was_active_before=1
+    ssh_run 'sudo systemctl stop vpn-expiry-reconcile.timer' >/dev/null 2>&1 || true
+  else
+    reconcile_timer_was_active_before=0
+  fi
   sb_pid_before="$(ssh_run 'systemctl show -p MainPID --value sing-box' 2>/dev/null || true)"
   if [ -n "$sb_pid_before" ] && [ "$sb_pid_before" != "0" ] && ssh_run "sudo kill -9 $sb_pid_before" 2>/dev/null; then
     pass "SIGKILL sent to sing-box (pid $sb_pid_before)"
@@ -985,6 +1001,23 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
       sudo /usr/local/bin/sing-box check -c /etc/vpn/compat/sing-box/config.json
     ' 2>&1 || true)"
     fail_required "sing-box restarted normally after the deliberate-stop test" "(start command output: ${START_SINGBOX_OUT:-none}; diagnostics: ${START_SINGBOX_DIAG:-unknown})"
+  fi
+
+  # The outage is over: prove authorization still reconciles against the recovered
+  # sing-box by running the reconcile service once now and requiring it to succeed,
+  # clear any stale record the induced outage could have left, then re-arm the
+  # timer if it was armed before. A reconcile that cannot apply after recovery is a
+  # real defect, so it is a required check, not plumbing.
+  if [ "$reconcile_timer_was_active_before" -eq 1 ]; then
+    if [ "$singbox_restored_after_stop" -eq 1 ]; then
+      ssh_run 'sudo systemctl reset-failed vpn-expiry-reconcile.service' >/dev/null 2>&1 || true
+      if RECONCILE_OUT="$(ssh_run 'sudo systemctl start vpn-expiry-reconcile.service' 2>&1)"; then
+        pass "vpn-expiry-reconcile ran cleanly against the recovered sing-box"
+      else
+        fail_required "vpn-expiry-reconcile after the outage" "(output: ${RECONCILE_OUT:-none})"
+      fi
+    fi
+    ssh_run 'sudo systemctl start vpn-expiry-reconcile.timer' >/dev/null 2>&1 || true
   fi
 
   section "14. protocol works after recovery (re-run doctor --protocol --require-protocol)"
