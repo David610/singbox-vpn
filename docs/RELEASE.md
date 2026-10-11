@@ -56,6 +56,10 @@ Stable releases are manual-only. Creating or pushing a stable tag does not by it
 
 1. Start from a clean, reviewed `main` with green CI and Security workflows.
 2. Set `[workspace.package].version` to the intended release **core**, e.g. `1.0.0`. Do not put `-rc.N` in the workspace version.
+   Also set `node_release` in `fixtures/arcana-node/node-capabilities-v1.json` to the same value:
+   `deploy/lib/tests/test-node-offline-contract.sh` (run by CI's `offline-node-contract` and `shell`
+   jobs) fails if it differs from the workspace version. `Cargo.lock` is updated by `cargo check`.
+   Verify with `deploy/lib/check-release-version.sh vX.Y.Z-rc.1` and the offline gate before tagging.
 3. Create and push the matching RC tag, e.g. `v1.0.0-rc.1`.
 4. Let the release workflow build, attest, publish, and verify the immutable RC artifacts.
 5. Run `.github/workflows/vps-acceptance.yml` against that exact immutable RC on a disposable AlmaLinux 9 x86_64 VPS. Do not use `main` and do not use an unverified development-channel run as release evidence.
