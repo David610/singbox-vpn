@@ -190,6 +190,26 @@ Both are written once. A repair or update keeps them and refuses a
 conflicting flag; deployments installed before roles existed are migrated to
 `role = "exit"` with the default node id.
 
+### Profile name shown in Hiddify
+
+Every successful subscription response carries a `profile-title` header so
+Hiddify and other importers name the profile **Arcana VPN** for every user.
+Without it they invent a name from the URL (the punycode host or the token).
+To use a different name, set it in `/etc/vpn/deployment.toml` and restart the
+subscription service:
+
+```toml
+[subscription]
+profile_title = "My VPN"   # 1-64 characters, no control characters
+```
+
+```bash
+systemctl restart vpn-subscription
+```
+
+Clients show the new name after their next profile update. A name that is not
+plain ASCII is sent base64-encoded (`base64:...`), which Hiddify decodes.
+
 ### Custom subscription port
 
 ```bash

@@ -251,6 +251,51 @@ pub fn to_base64_subscription(body: &str) -> String {
     STANDARD.encode(body)
 }
 
+/// Default name importers show for a subscription profile. Importers (Hiddify
+/// and friends) invent a name from the subscription URL when the response has
+/// no `profile-title` header, which surfaces the punycode host or the token.
+pub const DEFAULT_PROFILE_TITLE: &str = "Arcana VPN";
+
+/// Longest accepted profile title, in characters.
+pub const MAX_PROFILE_TITLE_CHARS: usize = 64;
+
+/// A profile title must be 1–[`MAX_PROFILE_TITLE_CHARS`] characters with no
+/// control characters and no leading/trailing whitespace: it is placed into an
+/// HTTP header and shown verbatim in the client's profile list.
+pub fn validate_profile_title(title: &str) -> Result<(), CompatError> {
+    if title.trim().is_empty() || title.trim() != title {
+        return Err(CompatError::Parse(
+            "[subscription] profile_title must be non-empty with no leading/trailing whitespace"
+                .into(),
+        ));
+    }
+    if title.chars().count() > MAX_PROFILE_TITLE_CHARS {
+        return Err(CompatError::Parse(format!(
+            "[subscription] profile_title must be at most {MAX_PROFILE_TITLE_CHARS} characters"
+        )));
+    }
+    if title.chars().any(char::is_control) {
+        return Err(CompatError::Parse(
+            "[subscription] profile_title must not contain control characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The `profile-title` header value for `title`. Plain printable ASCII is sent
+/// as-is; anything else is sent as `base64:<standard base64 of the UTF-8
+/// bytes>`, the form Hiddify (and most importers that read this header)
+/// decode, because raw non-ASCII bytes in an HTTP header are not portable.
+pub fn profile_title_header_value(title: &str) -> String {
+    if title.bytes().all(|b| (0x20..0x7f).contains(&b)) && !title.starts_with("base64:") {
+        title.to_string()
+    } else {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        format!("base64:{}", STANDARD.encode(title))
+    }
+}
+
 /// Which endpoint the manual `select` outbound defaults to. This picks
 /// ONLY the default — every profile still lists every real endpoint tag
 /// plus `auto` (urltest) in the selector, so a user can always override

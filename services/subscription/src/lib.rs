@@ -24,6 +24,10 @@ pub struct AppState {
     pub endpoints: Vec<CompatEndpoint>,
     pub access_paths: Vec<contract::AccessPath>,
     pub rate_limiter: Mutex<RateLimiter>,
+    /// Name importers show for the profile; sent as the `profile-title`
+    /// header on every successful `/sub/{token}` response, identical for
+    /// every user. From `[subscription] profile_title` in deployment.toml.
+    pub profile_title: String,
 }
 
 /// Deployment-wide backstop token bucket.
@@ -736,11 +740,37 @@ async fn get_provision_unsupported_version(
     }
 }
 
+/// Names the imported profile. Without a `profile-title` header Hiddify and
+/// other importers derive a name from the subscription URL — the punycode host
+/// or the token — which looks broken. Added only to a successful (200)
+/// `/sub/{token}` response: an unauthenticated probe or a bad token still gets
+/// the same generic response as before, and no product name leaks to it.
+async fn profile_title_header(
+    State(state): State<std::sync::Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut resp = next.run(req).await;
+    if resp.status() == StatusCode::OK {
+        if let Ok(value) =
+            HeaderValue::from_str(&render::profile_title_header_value(&state.profile_title))
+        {
+            resp.headers_mut().insert("profile-title", value);
+        }
+    }
+    resp
+}
+
 pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
     Router::new()
         .route(
             "/sub/:token",
-            get(get_subscription).layer(axum::middleware::from_fn(no_store_headers)),
+            get(get_subscription)
+                .layer(axum::middleware::from_fn(no_store_headers))
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    profile_title_header,
+                )),
         )
         .route(
             "/v1/provision/:token",
@@ -815,6 +845,10 @@ mod tests {
     }
 
     fn make_state(users: Vec<CompatUser>) -> std::sync::Arc<AppState> {
+        make_state_titled(users, render::DEFAULT_PROFILE_TITLE)
+    }
+
+    fn make_state_titled(users: Vec<CompatUser>, title: &str) -> std::sync::Arc<AppState> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("users.json");
         compat_config::store::save_users_atomic(&path, &users).unwrap();
@@ -832,6 +866,7 @@ mod tests {
             ),
             access_paths: Vec::new(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+            profile_title: title.to_string(),
         })
     }
 
@@ -861,6 +896,84 @@ mod tests {
         let s = String::from_utf8(body.to_vec()).unwrap();
         assert!(s.contains("vless"));
         assert!(s.contains("hysteria2"));
+    }
+
+    fn profile_title_of(resp: &Response) -> Option<String> {
+        resp.headers()
+            .get("profile-title")
+            .map(|v| v.to_str().unwrap().to_string())
+    }
+
+    /// Hiddify names an imported profile from the `profile-title` header; with
+    /// none it invents a name from the URL (the punycode host or the token),
+    /// which is the odd text users saw. Every successful format must carry it.
+    #[tokio::test]
+    async fn every_successful_subscription_format_carries_the_profile_title() {
+        for query in [
+            "",
+            "?format=uri",
+            "?format=hiddify",
+            "?format=hiddify&encoding=base64",
+            "?format=singbox&compat=hiddify-pinned",
+            "?format=singbox&compat=quic-reject",
+        ] {
+            let state = make_state(vec![user_with_token("goodtoken", true)]);
+            let resp = oneshot_with_addr(state, &format!("/sub/goodtoken{query}")).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{query}");
+            assert_eq!(
+                profile_title_of(&resp).as_deref(),
+                Some("Arcana VPN"),
+                "missing/wrong profile-title for {query:?}"
+            );
+        }
+    }
+
+    /// The default (first) user and every later user get the same name: it is
+    /// deployment-wide, never derived from the user, the token or the host.
+    #[tokio::test]
+    async fn the_profile_title_is_identical_for_every_user() {
+        let mut second = user_with_token("othertoken", true);
+        second.id = "u2".into();
+        second.name = "someone-else".into();
+        let state = make_state(vec![user_with_token("goodtoken", true), second]);
+        let a = oneshot_with_addr(state.clone(), "/sub/goodtoken?format=hiddify").await;
+        let b = oneshot_with_addr(state, "/sub/othertoken?format=hiddify").await;
+        assert_eq!(profile_title_of(&a), profile_title_of(&b));
+        assert_eq!(profile_title_of(&a).as_deref(), Some("Arcana VPN"));
+    }
+
+    /// An unauthenticated probe must not learn the product name, and error
+    /// responses are not profiles.
+    #[tokio::test]
+    async fn error_responses_carry_no_profile_title() {
+        let state = make_state(vec![user_with_token("goodtoken", true)]);
+        let unknown = oneshot_with_addr(state.clone(), "/sub/wrongtoken").await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        assert!(profile_title_of(&unknown).is_none());
+        let bad_request =
+            oneshot_with_addr(state, "/sub/goodtoken?format=uri&compat=tcp-only").await;
+        assert_eq!(bad_request.status(), StatusCode::BAD_REQUEST);
+        assert!(profile_title_of(&bad_request).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_configured_title_is_used_and_non_ascii_is_base64_encoded() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let ascii = make_state_titled(vec![user_with_token("goodtoken", true)], "Acme VPN");
+        let resp = oneshot_with_addr(ascii, "/sub/goodtoken?format=hiddify").await;
+        assert_eq!(profile_title_of(&resp).as_deref(), Some("Acme VPN"));
+
+        let unicode = make_state_titled(vec![user_with_token("goodtoken", true)], "Тамара VPN");
+        let resp = oneshot_with_addr(unicode, "/sub/goodtoken?format=hiddify").await;
+        let value = profile_title_of(&resp).unwrap();
+        let encoded = value
+            .strip_prefix("base64:")
+            .expect("non-ASCII titles must be sent as base64:<...>");
+        assert_eq!(
+            String::from_utf8(STANDARD.decode(encoded).unwrap()).unwrap(),
+            "Тамара VPN"
+        );
     }
 
     #[tokio::test]
@@ -1702,6 +1815,7 @@ mod tests {
             endpoints,
             access_paths: Vec::new(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+            profile_title: render::DEFAULT_PROFILE_TITLE.to_string(),
         })
     }
 
@@ -1864,6 +1978,7 @@ mod tests {
             endpoints,
             access_paths: Vec::new(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+            profile_title: render::DEFAULT_PROFILE_TITLE.to_string(),
         })
     }
 
@@ -2292,6 +2407,7 @@ capabilities = ["tcp"]
             endpoints: cfg.served_endpoints(RELAY_KEY, "11223344", None).unwrap(),
             access_paths: cfg.contract_access_paths().unwrap(),
             rate_limiter: Mutex::new(RateLimiter::new(1000.0, 1000.0)),
+            profile_title: render::DEFAULT_PROFILE_TITLE.to_string(),
         })
     }
 
