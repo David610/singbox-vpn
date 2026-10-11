@@ -614,3 +614,12 @@ unchanged. A DNS/IPv6 leak-test pass is the one remaining gate.
 - **Rejected RCs in this cycle:** rc.3 (acceptance workflow wrote ssh-agent output into `GITHUB_ENV`), rc.4 (certbot dry-run random sleep exceeded the harness timeout; installer required a preinstalled `tar`), rc.5 (update.sh left the source tree group-writable after in-place update; uninstaller refused).
 - **UNVERIFIED here:** reachability from a censoring network; update transition from this RC is exercised separately after stable publication (rc.6 -> v1.1.0).
 
+
+### 2026-10-11 — v1.2.0-rc.5 release acceptance (VPS + maintainer-reported device)
+
+- **Release tag / commit:** `v1.2.0-rc.5` / `7a0fd3da61d817fabc979f5505d15673fdb5fc7d`.
+- **VPS (SERVER-VERIFIED):** `.github/workflows/vps-acceptance.yml` against the exact immutable RC on a disposable Hetzner Cloud host, AlmaLinux 9.8 x86_64, domain `accept-b.nodes.sustechnologies.eu`. Lifecycle: 55 PASS, 0 failing, 0 blocked ([run](https://github.com/David610/singbox-vpn/actions/runs/38146836201)). In-place update rc.4 -> rc.5 with injected-failure rollback proof: 58 PASS, 0 failing, 0 blocked ([run](https://github.com/David610/singbox-vpn/actions/runs/38147510455)). Certificate renewal (`certbot renew --dry-run`) PASS.
+- **Production exit (SERVER-VERIFIED):** `de1` updated to rc.5 through the release's own `update.sh`; hairpin rules rendered natively (no hand patch), 6/6 consecutive Shorts through the real REALITY tunnel (Chrome iPhone emulation), `profile-title: Arcana VPN` served, `vpn-admin doctor --protocol --require-protocol` passing, no WARP/WireGuard.
+- **Device (DEVICE-VERIFIED, maintainer-reported, earlier build):** native iPhone YouTube app through Hiddify; Shorts and long videos play over VLESS+REALITY and over Hysteria2. This ran on 2026-10-11 against the exit on v1.1.0 binaries with the same hairpin rules applied by hand, not on the rc.5 build. Runtime code is unchanged since rc.3.
+- **Rejected RCs in this cycle:** rc.1 (updater from v1.1.0 failed on the new unit; no reserved probe principal), rc.2 (update deadlock on its own lock), rc.3 and rc.4 (acceptance harness: start-limit budget in stage 13, then the reconcile timer racing the SIGKILL stages).
+- **UNVERIFIED here:** profile name "Arcana VPN" on a real device, cellular/handover, 15-minute sustained session, reconnect after server reboot, real-device Hysteria2 on rc.5, reachability from a censoring network.
