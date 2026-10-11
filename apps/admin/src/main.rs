@@ -304,19 +304,21 @@ enum LeasePoolCommands {
 
 #[derive(Subcommand)]
 enum GoogleEgressHairpinCommands {
-    /// EXIT ROLE ONLY. Configure this exit to hairpin the Google/YouTube
-    /// domain set through a relay with better network peering to
-    /// Google's CDN than this exit's own network (see
-    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16). Applies automatically to
-    /// every user on this exit — no client cooperation, no subscription
-    /// URL parameter, no per-user opt-in. `--relay-*` are the relay's own
+    /// EXIT ROLE ONLY. Configure this exit to send the Google/YouTube
+    /// domain set out through another node, because YouTube refuses to
+    /// serve Shorts media to this exit's own IP while accepting the other
+    /// node's (see `docs/YOUTUBE_FIX_INVARIANTS.md`). Applies automatically
+    /// to every user on this exit — no client cooperation, no subscription
+    /// URL parameter, no per-user opt-in. `--relay-*` are the other node's
     /// public REALITY connection metadata (never secret). The hairpin
     /// credential's VLESS UUID (secret) is printed once by `vpn-admin
-    /// user google-egress-hairpin <id>` on the RELAY when that dedicated
-    /// user was created — copy it from there, never from a real client's
-    /// own credential — via `--uuid-stdin` (preferred: never in argv,
-    /// same as `user peer set --credential-stdin`) or `--uuid` (visible
-    /// in process listings and shell history). Validates the candidate
+    /// user google-egress-hairpin <id>` when a RELAY-role node's dedicated
+    /// user is marked; an exit-role node's dedicated plain user works too
+    /// (read its UUID from that node's user store, never print it). Never
+    /// use a real client's own credential. Pass it via `--uuid-stdin`
+    /// (preferred: never in argv, same as `user peer set
+    /// --credential-stdin`) or `--uuid` (visible in process listings and
+    /// shell history). Validates the candidate
     /// config with the real `sing-box` binary, applies it, and reloads
     /// sing-box — fully rolled back (both `deployment.toml` and the
     /// credential file) on any failure. Safe to re-run to change the
@@ -4243,18 +4245,25 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
                 .map(|rules| &rules[c16_rules..])
                 .filter(|rules| !rules.is_empty());
             // The one legitimate exception: the Google/YouTube egress
-            // hairpin (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16) adds
-            // exactly one route.rules entry to an exit. Anything else —
-            // no hairpin configured but rules present, or rules present
-            // that don't match that exact shape — is the role/renderer
-            // mismatch this check exists to catch.
+            // hairpin (`docs/YOUTUBE_FIX_INVARIANTS.md`) adds exactly
+            // three route.rules entries to an exit — sniff, a no_drop
+            // reject of literal-IPv6 Google destinations, and the route to
+            // the hairpin outbound. Anything else — no hairpin configured
+            // but rules present, or rules present that don't match that
+            // exact shape (including a reject without `no_drop`, which
+            // silently becomes a drop and restores the stall) — is the
+            // role/renderer mismatch this check exists to catch.
+            let google_domains = serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS);
             let is_expected_hairpin_shape = cfg.google_egress_hairpin.is_some()
                 && rules.is_some_and(|rules| {
-                    rules.len() == 2
+                    rules.len() == 3
                         && rules[0]["action"] == "sniff"
-                        && rules[1]["outbound"] == "google-egress-hairpin"
-                        && rules[1]["domain_suffix"]
-                            == serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
+                        && rules[1]["action"] == "reject"
+                        && rules[1]["ip_version"] == 6
+                        && rules[1]["no_drop"] == true
+                        && rules[1]["domain_suffix"] == google_domains
+                        && rules[2]["outbound"] == "google-egress-hairpin"
+                        && rules[2]["domain_suffix"] == google_domains
                         && doc["route"]["final"] == "direct"
                 });
             if rules.is_some() && !is_expected_hairpin_shape {

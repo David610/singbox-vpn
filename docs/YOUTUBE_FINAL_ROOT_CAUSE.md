@@ -1,4 +1,14 @@
-# YouTube native-app failure — investigation record (2026-09-08, corrected 2026-09-16)
+# YouTube native-app failure — investigation record (2026-09-08, corrected 2026-09-16, root cause proven 2026-10-11)
+
+> **SUPERSEDED BY §18 (2026-10-11). Read
+> [`YOUTUBE_FIX_INVARIANTS.md`](YOUTUBE_FIX_INVARIANTS.md) first.** The cause
+> is that YouTube refuses to serve Shorts media to specific datacenter egress
+> IPs (Evolus `91.244.71.165`, Hetzner `62.238.46.190`) and accepts others
+> (Selectel `135.106.178.167`). §16's "per-edge CDN latency / better peering"
+> theory is **wrong** — the hairpin worked because of which IP YouTube sees —
+> and §15's "hosting-IP class is rejected" is too broad. The fix in §16.4
+> (`google_egress_hairpin`) stays, with the IPv6 correction in §18.3.
+> Sections 1–17 are kept unedited so the reasoning stays auditable.
 
 **Status (2026-09-20): FIXED and device-path-verified (real browser session
 through the live production exit; real iPhone/Hiddify confirmation still
@@ -942,3 +952,84 @@ Still the same gap as §16.6: no confirmation from the actual iPhone/Hiddify
 app yet. Ask for a retest with the existing `?format=singbox&compat=hiddify-pinned`
 profile — known-failing Short, the control video, and at least one other
 Short, over a normal reconnect/idle cycle.
+
+---
+
+## 18. ROOT CAUSE PROVEN (2026-10-11): YouTube refuses Shorts media to specific egress IPs
+
+This section supersedes the *mechanism* claimed in §15 and §16. The invariants
+that must hold are in [`YOUTUBE_FIX_INVARIANTS.md`](YOUTUBE_FIX_INVARIANTS.md).
+
+### 18.1 Evidence (browser verified, server verified; native confirmation in 18.4)
+
+A fresh, cookie-less Chrome session with iPhone emulation loaded consecutive
+Shorts (`deploy/lib/youtube_shorts_probe.py`) through each path. "Plays" means
+the `<video>` element's `currentTime` advanced, not that the API said OK.
+
+| Path (egress IP) | Shorts that play |
+|---|---|
+| Owner's own broadband line | 6/6 |
+| `91.244.71.165` (Evolus IT, AS215120) via VLESS+REALITY | 0/6 |
+| same IP, **plain SSH-forwarded TCP** (no VLESS, REALITY, XUDP, QUIC or Hiddify) | 0/6; IPv4-only 0/6; IPv6-only 0/6 |
+| `62.238.46.190` (Hetzner, AS24940), plain TCP | 0/6; one ordinary video also got "Sign in to confirm you're not a bot" |
+| `135.106.178.167` (Selectel, AS50340), plain TCP | 6/6 |
+| Cloudflare WARP exiting the Evolus node (**prohibited, INV-7**) | 6/6 |
+
+For the refused IPs `youtubei/v1/player` returns `playabilityStatus: OK` with
+151/31 formats, identical to the accepted paths. The difference is the media
+request: from the Evolus IP the single `videoplayback` POST returns HTTP 200
+with a **155-byte** `application/vnd.yt-ump` body (a control reply, no media)
+and the page then shows "Video unavailable"; from the Selectel IP the same
+request returns 661 154 and 326 146 bytes of media. Ordinary videos play from
+all of these IPs. So the decision is made per egress IP and per content type,
+inside YouTube, after the API has already said OK.
+
+### 18.2 What was eliminated
+
+Server-to-Google QUIC handshakes from the refused node succeeded 12/12 at about
+35 ms over IPv4 and IPv6 (aioquic). Through the tunnel every QUIC Initial was
+answered by Google within 250 ms (80/80 seen at the exit). No ICMP errors, no
+PMTU black hole, UFW dropped 3 Google packets in 15 minutes. One-packet QUIC
+flows that sit idle for 240 s are the app abandoning a QUIC attempt that lost
+a race with a parallel TCP connection, not a failure. The per-edge latency
+numbers in §16.3 do not reproduce (both nodes connect to Google edges in
+7–15 ms).
+
+### 18.3 The fix, and the one thing §16 got wrong in it
+
+`google_egress_hairpin` is the right mechanism: it makes YouTube see the
+accepted IP. Two corrections:
+
+- It does **not** need a relay-role node. A dedicated plain user on an
+  exit-role node works, and then the target needs no domain-matching rules and
+  no relay-side sniff (§17's bug cannot occur).
+- The target node is IPv4-only. A client sending a **literal IPv6** Google
+  destination reached the hairpin and stalled (0/20 QUIC handshakes). The exit
+  now rejects those immediately with `no_drop` so the client falls back to
+  IPv4 (INV-5). `ip_version` in route rules is set only from a literal
+  destination (sing-box `route/route.go` `prepareMatchMetadata`), so domain
+  flows, including after the C-16 `resolve` action, are unaffected.
+
+Measured cost: new QUIC sessions through the hairpin take about 320 ms versus
+about 130 ms directly (14/15, 39/40 and 19/20 handshakes succeeded; the
+rest were retransmission timeouts).
+
+### 18.4 Native verification
+
+Owner, 2026-10-11, on the iPhone with Hiddify and the plain `?format=hiddify`
+subscription: "now it works" for Shorts and normal videos, with the live
+hairpin (release v1.1.0 binaries, hand-patched IPv6 reject rule). This is a
+**user report**; the transport, network (Wi-Fi vs cellular), session length
+and seeking were not recorded. Hysteria2, cellular, a 15-minute session and a
+post-reboot run are untested — see `DEVICE_ACCEPTANCE_TESTS.md`.
+
+### 18.5 Related defect found on the way (not YouTube-specific)
+
+With the control plane unreachable (since 2026-10-06 on `ru1`), the
+provisioning agent's lease-pool sweeper rotated all 32 lease slots every 20
+minutes, and each rotation rewrote the config and restarted sing-box,
+dropping every connection and invalidating every native credential
+(`apps/provisioning-agent/src/lease_pool.rs` documents that a restart drops
+connections; `NATIVE_LEASE_SECS` is 30 minutes). Any node whose agent cannot
+reach its control plane degrades this way. On `ru1` the agent is stopped and
+disabled (INV-10).

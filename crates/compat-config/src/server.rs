@@ -664,21 +664,39 @@ pub fn probe_confinement_rule_count(doc: &serde_json::Value) -> usize {
     }
 }
 
-/// Mutates an already-rendered exit document to hairpin the Google/
-/// YouTube domain set through a relay with better network peering to
-/// Google's CDN than this exit's own network — see
-/// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16. Adds exactly one outbound (a
-/// VLESS+REALITY client dialing the relay's hairpin user) and two
-/// `route.rules` entries: an unconditional sniff (so a client that
-/// resolved DNS itself and sent a bare IP — common on mobile TUN
-/// clients — still gets matched by domain, from the TLS ClientHello
-/// SNI, exactly like a client that passed the domain through
-/// unresolved) and the domain-match rule itself. Per-inbound `sniff`
-/// is a legacy field removed in sing-box 1.13 (see
-/// <https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions>);
-/// a `{"action": "sniff"}` route rule — the same shape Hiddify's own
-/// core emits — is the current syntax. Every other destination keeps
-/// using the pre-existing `direct` outbound via `route.final`.
+/// Mutates an already-rendered exit document to send the Google/YouTube
+/// domain set out through another node's IP instead of this exit's own —
+/// see `docs/YOUTUBE_FIX_INVARIANTS.md`. The reason is **which IP YouTube
+/// accepts**, not CDN peering: YouTube's media server answers Shorts
+/// requests from some datacenter IPs with a media-less control reply, so
+/// Shorts never start while ordinary videos still play
+/// (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §18).
+///
+/// Adds exactly one outbound (a VLESS+REALITY client dialing the paired
+/// node's hairpin user) and three `route.rules` entries, in this order:
+///
+/// 1. an unconditional sniff, so a client that resolved DNS itself and sent
+///    a bare IP — common on mobile TUN clients — still gets matched by
+///    domain from the TLS/QUIC SNI. Per-inbound `sniff` is a legacy field
+///    removed in sing-box 1.13 (see
+///    <https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions>);
+///    a `{"action": "sniff"}` route rule is the current syntax.
+/// 2. a reject for Google/YouTube destinations given as a **literal IPv6
+///    address**. The paired node is typically IPv4-only, so such a flow
+///    would stall until the client's own timeout instead of falling back
+///    to IPv4. `ip_version` in a route rule is set only from a literal
+///    destination (`route/route.go` `prepareMatchMetadata`) — a domain
+///    destination, even after the C-16 `resolve` action, never matches —
+///    so this cannot reject a normal domain-based flow. `no_drop` is
+///    load-bearing: without it sing-box escalates reject to a silent drop
+///    after 50 rejects in 30 s, restoring the very stall this rule exists
+///    to prevent.
+/// 3. the domain-match route to the hairpin outbound.
+///
+/// Every other destination keeps using the pre-existing `direct` outbound
+/// via `route.final`. If the paired node is unreachable, Google/YouTube
+/// connections fail; they are never silently sent out of this exit's own
+/// (refused) IP.
 fn apply_google_egress_hairpin(
     config: &mut serde_json::Value,
     hairpin: &GoogleEgressHairpinSection,
@@ -708,6 +726,13 @@ fn apply_google_egress_hairpin(
     config["route"] = json!({
         "rules": [
             { "action": "sniff" },
+            {
+                "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
+                "ip_version": 6,
+                "action": "reject",
+                "method": "default",
+                "no_drop": true,
+            },
             {
                 "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
                 "action": "route",

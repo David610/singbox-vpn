@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 /// and `server::render_server_config_for_deployment`'s relay hairpin
 /// exception (`CompatUser::google_egress_hairpin`). One shared list so the
 /// two mechanisms — routing this traffic to the client's own line, or
-/// hairpinning it through a better-peered relay — can never silently drift
+/// hairpinning it out through another node's IP — can never silently drift
 /// apart on what counts as "Google/YouTube traffic". See
 /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §15/§16 for why the set is this broad:
 /// auth, DRM/licensing, the player API, static assets and media each
@@ -551,10 +551,10 @@ pub struct CompatUser {
     ///
     /// This is not a client-facing feature: it exists so an EXIT can hold
     /// this one user's credential and hairpin real end-user Google/YouTube
-    /// traffic through a relay with materially better network peering to
-    /// Google's CDN than the exit's own network — see
-    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16. A real end user is never
-    /// expected to hold this credential.
+    /// traffic out through this relay's IP instead of the exit's own — the
+    /// relay's IP is one YouTube serves Shorts to, the exit's is not; see
+    /// `docs/YOUTUBE_FIX_INVARIANTS.md`. A real end user is never expected
+    /// to hold this credential.
     ///
     /// Every other user, and every other destination for this one, keeps
     /// the relay's existing fail-closed guarantee unchanged: this flag

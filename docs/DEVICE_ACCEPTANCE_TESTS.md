@@ -103,7 +103,26 @@ one test that closes the incident and what each outcome means. Do not
 mark it working here without a dated entry recording device, OS, client
 version, active core, server commit, endpoint and network.
 
-### Open: `google_egress_hairpin` (YouTube Shorts, no client-side change — Hiddify included)
+### `google_egress_hairpin` — YouTube Shorts: USER-REPORTED PASS on iPhone/Hiddify (2026-10-11)
+
+Superseded the earlier "Open" entry. Mechanism corrected in
+`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §18: YouTube refuses Shorts media to the
+Evolus egress IP and accepts the Selectel IP, so the hairpin works because of
+which IP YouTube sees, not CDN peering. Rules that must keep holding:
+`docs/YOUTUBE_FIX_INVARIANTS.md`.
+
+| Field | Value |
+|---|---|
+| Result | Shorts and ordinary videos play (**user-reported**, evidence class: native device, unrecorded details) |
+| Date | 2026-10-11 |
+| Client | Hiddify on iPhone, plain `?format=hiddify` subscription (version, iOS version, transport and network **not recorded**) |
+| Server | exit `de1` `91.244.71.165`, release v1.1.0 binaries, hand-patched live config with the IPv6 reject rule; paired with `ru1` `135.106.178.167` |
+| Same-day browser gate | Chrome iPhone emulation through the real VLESS+REALITY tunnel: 6/6 consecutive Shorts, before the fix 0/6 |
+| **Not tested** | Hysteria2, cellular, 15-minute sustained session, seeking, post-reboot, a run on a release containing the IPv6 reject rule |
+
+Do not upgrade this to "verified fixed" without a dated entry recording those.
+
+### Superseded (kept for history): `google_egress_hairpin` before native confirmation
 
 Superseded `compat=youtube-direct` as the primary fix
 (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16): the real discriminator is
