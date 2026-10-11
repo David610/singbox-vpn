@@ -620,8 +620,11 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   # that predates the principal (stable v1.1.0) has none: v1.1.0 -> v1.2.0-rc.1
   # failed exactly this way on a real VPS. install.sh makes the same call before
   # its own acceptance; `user create-probe` is idempotent and never rotates or
-  # adopts an existing user.
-  "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create-probe >/dev/null \
+  # adopts an existing user. update.sh holds the global transaction lock here, so
+  # like its other vpn calls this one uses the private inner lock path; without it
+  # the call waits forever on the lock its own parent holds (found on a real VPS).
+  SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
+    "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create-probe >/dev/null \
     || die "could not provision the reserved internal probe principal (vpn user create-probe) that the protocol self-test requires. Rolling back to the previous working binaries/config."
   log "verifying real protocol handshake..."
   doctor_output=""
@@ -1187,8 +1190,11 @@ log "running health check..."
 # that predates the principal (stable v1.1.0) has none: v1.1.0 -> v1.2.0-rc.1
 # failed exactly this way on a real VPS. install.sh makes the same call before
 # its own acceptance; `user create-probe` is idempotent and never rotates or
-# adopts an existing user.
-"$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create-probe >/dev/null \
+# adopts an existing user. update.sh holds the global transaction lock here, so
+# like its other vpn calls this one uses the private inner lock path; without it
+# the call waits forever on the lock its own parent holds (found on a real VPS).
+SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
+  "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create-probe >/dev/null \
   || die "could not provision the reserved internal probe principal (vpn user create-probe) that the protocol self-test requires. Rolling back to $CURRENT_VERSION."
 log "verifying real protocol handshake..."
 doctor_output=""
