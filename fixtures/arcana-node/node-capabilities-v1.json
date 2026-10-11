@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "capability_contract": "arcana.node.capabilities.v1",
-  "node_release": "1.1.0",
+  "node_release": "1.2.0",
   "provisioning_protocol": 2,
   "capabilities": {
     "claim_token": {"version":1,"required_in_claim":true,"echoed_on_complete":true,"echoed_on_fail":true,"absolute_lease_deadline":true,"minimum_lease_seconds":300},
