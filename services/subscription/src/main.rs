@@ -213,6 +213,7 @@ async fn main() -> Result<()> {
         // together after an app/network outage; nginx remains the real
         // per-client abuse boundary on the public side.
         rate_limiter: Mutex::new(RateLimiter::new(1000.0, 250.0)),
+        profile_title: cfg.subscription.profile_title.clone(),
     });
 
     // Loopback only (spec §8/§27) — a reverse proxy terminates public

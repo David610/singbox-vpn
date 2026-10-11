@@ -813,6 +813,16 @@ pub struct SubscriptionSection {
     pub listen_port: u16,
     #[serde(default = "default_public_port")]
     pub public_port: u16,
+    /// Name that Hiddify and other subscription importers show for the
+    /// imported profile, sent as the `profile-title` response header on
+    /// every successful `/sub/{token}` response — the same for every user.
+    /// Without it importers invent a name from the URL (the punycode host
+    /// or the token), which looks broken. Defaults to
+    /// [`crate::render::DEFAULT_PROFILE_TITLE`]; 1–64 characters, no control
+    /// characters. Non-ASCII titles are sent base64-encoded
+    /// ([`crate::render::profile_title_header_value`]).
+    #[serde(default = "default_profile_title")]
+    pub profile_title: String,
 }
 
 fn default_state_dir() -> PathBuf {
@@ -825,6 +835,10 @@ fn default_singbox_binary() -> PathBuf {
 
 fn default_handshake_port() -> u16 {
     443
+}
+
+fn default_profile_title() -> String {
+    crate::render::DEFAULT_PROFILE_TITLE.to_string()
 }
 
 fn default_public_port() -> u16 {
@@ -896,6 +910,7 @@ impl DeploymentConfig {
         if !self.node_id.is_empty() {
             validate_node_id(&self.node_id)?;
         }
+        crate::render::validate_profile_title(&self.subscription.profile_title)?;
 
         let mut seen_access_path_ids: Vec<&str> = Vec::with_capacity(self.access_paths.len());
         for path in &self.access_paths {
@@ -1714,6 +1729,55 @@ handshake_server = "www.google.com"
 listen_port = 443
 "#
         .to_string()
+    }
+
+    fn with_profile_title(title_line: &str) -> DeploymentConfig {
+        let toml_str = format!(
+            "{}
+[subscription]
+listen_port = 9100
+{}
+",
+            base_toml(),
+            title_line
+        );
+        toml::from_str(&toml_str).unwrap()
+    }
+
+    /// Every deployment.toml written before `profile_title` existed must keep
+    /// loading, and its users get the default name.
+    #[test]
+    fn profile_title_defaults_to_arcana_vpn_when_absent() {
+        let cfg = with_profile_title("");
+        assert_eq!(cfg.subscription.profile_title, "Arcana VPN");
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn profile_title_can_be_configured() {
+        let cfg = with_profile_title("profile_title = \"Acme VPN\"");
+        assert_eq!(cfg.subscription.profile_title, "Acme VPN");
+        assert!(cfg.validate().is_ok());
+        let cfg = with_profile_title("profile_title = \"Тамара VPN\"");
+        assert!(cfg.validate().is_ok(), "non-ASCII titles are allowed");
+    }
+
+    #[test]
+    fn invalid_profile_titles_are_refused_at_validation() {
+        for bad in [
+            "profile_title = \"\"",
+            "profile_title = \"   \"",
+            "profile_title = \" padded\"",
+            "profile_title = \"padded \"",
+            "profile_title = \"tab\\there\"",
+            "profile_title = \"line\\nbreak\"",
+            &format!("profile_title = \"{}\"", "x".repeat(65)),
+        ] {
+            let cfg = with_profile_title(bad);
+            assert!(cfg.validate().is_err(), "must be refused: {bad}");
+        }
+        let longest = format!("profile_title = \"{}\"", "x".repeat(64));
+        assert!(with_profile_title(&longest).validate().is_ok());
     }
 
     #[test]

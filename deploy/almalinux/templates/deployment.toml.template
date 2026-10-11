@@ -38,3 +38,8 @@ listen_port = 443
 [subscription]
 listen_port = 9100
 public_port = {{SUBSCRIPTION_PORT}}
+# Name Hiddify and other importers show for the imported profile, the same
+# for every user (sent as the `profile-title` response header). Without it
+# importers invent a name from the URL (the punycode host or the token).
+# Default "Arcana VPN"; 1-64 characters, no control characters.
+# profile_title = "Arcana VPN"
