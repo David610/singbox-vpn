@@ -810,6 +810,18 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   fi
 
   section "13. kill sing-box (SIGKILL) and verify systemd recovers it within a bounded time"
+  # Start this stage with a fresh restart budget. Every sing-box restart counts
+  # against the unit's StartLimitBurst=8 per StartLimitIntervalSec=300, and the
+  # stages before this one restart it in quick succession (the install, and
+  # stage 12's Hysteria2 benchmark creates and removes its user, each of which
+  # restarts sing-box: four restarts in about six seconds on a real host). Without
+  # a reset, the SIGKILL below is refused with "Start request repeated too quickly",
+  # the unit stays failed until vpn-service-watchdog revives it, and this stage
+  # would fail by measuring the budget the harness itself spent, not whether a
+  # crash is recovered. Stage 13b deliberately exhausts the budget and proves the
+  # watchdog; this stage proves plain crash recovery. `reset-failed` is systemd's
+  # documented way to clear the start-limit counter (see 13b and 13c below).
+  ssh_run 'sudo systemctl reset-failed sing-box' >/dev/null 2>&1 || true
   sb_pid_before="$(ssh_run 'systemctl show -p MainPID --value sing-box' 2>/dev/null || true)"
   if [ -n "$sb_pid_before" ] && [ "$sb_pid_before" != "0" ] && ssh_run "sudo kill -9 $sb_pid_before" 2>/dev/null; then
     pass "SIGKILL sent to sing-box (pid $sb_pid_before)"

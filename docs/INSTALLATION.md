@@ -336,7 +336,8 @@ cd "$W/dl"
 curl -fsSL -o SHA256SUMS "$B/SHA256SUMS"
 curl -fsSL -o singbox-vpn-src.tar.gz "$B/singbox-vpn-src.tar.gz"
 grep ' singbox-vpn-src.tar.gz$' SHA256SUMS | sha256sum -c -    # must print OK
-cd "$W/src" && tar xzf ../dl/singbox-vpn-src.tar.gz
+# the archive has a top-level singbox-vpn-src/ directory: strip it so deploy/ is at $W/src
+cd "$W/src" && tar xzf ../dl/singbox-vpn-src.tar.gz --strip-components=1
 bash deploy/almalinux/update.sh --version "$TAG"
 ```
 
