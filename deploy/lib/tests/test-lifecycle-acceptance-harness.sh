@@ -601,6 +601,27 @@ if grep -q -- 'sudo kill -9 1001' "$SSH_LOG"; then
 else
   fail "sing-box was not killed via its captured MainPID"
 fi
+# The reconcile timer must be quiesced for the induced-outage block and the reconcile
+# service must run (successfully) after recovery, BEFORE the post-recovery protocol
+# self-test (found in real runs: a timer tick during the SIGKILL storm left a FAILED
+# record that failed stage 14 and a production update's post-check).
+stop_line="$(grep -n 'systemctl stop vpn-expiry-reconcile.timer' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+kill_first="$(grep -n 'sudo kill -9 1001' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+run_line="$(grep -n 'systemctl start vpn-expiry-reconcile.service' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+rearm_line="$(grep -n 'systemctl start vpn-expiry-reconcile.timer' "$SSH_LOG" | head -1 | cut -d: -f1 || true)"
+post_doctor_line="$(grep -n 'doctor --protocol --require-protocol' "$SSH_LOG" | tail -1 | cut -d: -f1 || true)"
+if [ -n "$stop_line" ] && [ -n "$kill_first" ] && [ "$stop_line" -lt "$kill_first" ]; then
+  ok "the reconcile timer is quiesced before the first SIGKILL"
+else
+  fail "the reconcile timer was not stopped before the SIGKILL storm (stop=$stop_line kill=$kill_first)"
+fi
+if [ -n "$run_line" ] && [ -n "$rearm_line" ] && [ -n "$post_doctor_line" ] \
+   && [ "$run_line" -lt "$post_doctor_line" ] && [ "$run_line" -lt "$rearm_line" ]; then
+  ok "reconcile runs after recovery, before the timer is re-armed and before the post-recovery protocol self-test"
+else
+  fail "reconcile-after-recovery ordering wrong (run=$run_line rearm=$rearm_line post_doctor=$post_doctor_line)"
+fi
+
 # Stage 13 must start with a fresh restart budget (found on a real VPS: stage 12's
 # benchmark restarts sing-box four times in ~6s, the SIGKILL was then refused with
 # "Start request repeated too quickly"). The reset must come BEFORE the kill.
