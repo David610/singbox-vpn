@@ -612,6 +612,17 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   log "running health check..."
   /usr/local/bin/vpn-health-check
 
+  # The L5-6 protocol self-test below dials this node's own loopback listener.
+  # Since C-16 only a RESERVED PROBE principal is exempt from the loopback
+  # confinement, so without one the self-test falls back to the first ordinary
+  # user, is rejected by design, comes back INCONCLUSIVE, and --require-protocol
+  # then rolls back an otherwise healthy update. A host updating from a release
+  # that predates the principal (stable v1.1.0) has none: v1.1.0 -> v1.2.0-rc.1
+  # failed exactly this way on a real VPS. install.sh makes the same call before
+  # its own acceptance; `user create-probe` is idempotent and never rotates or
+  # adopts an existing user.
+  "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create-probe >/dev/null \
+    || die "could not provision the reserved internal probe principal (vpn user create-probe) that the protocol self-test requires. Rolling back to the previous working binaries/config."
   log "verifying real protocol handshake..."
   doctor_output=""
   doctor_rc=0
@@ -1168,6 +1179,17 @@ fi
 log "running health check..."
 /usr/local/bin/vpn-health-check
 
+# The L5-6 protocol self-test below dials this node's own loopback listener.
+# Since C-16 only a RESERVED PROBE principal is exempt from the loopback
+# confinement, so without one the self-test falls back to the first ordinary
+# user, is rejected by design, comes back INCONCLUSIVE, and --require-protocol
+# then rolls back an otherwise healthy update. A host updating from a release
+# that predates the principal (stable v1.1.0) has none: v1.1.0 -> v1.2.0-rc.1
+# failed exactly this way on a real VPS. install.sh makes the same call before
+# its own acceptance; `user create-probe` is idempotent and never rotates or
+# adopts an existing user.
+"$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" user create-probe >/dev/null \
+  || die "could not provision the reserved internal probe principal (vpn user create-probe) that the protocol self-test requires. Rolling back to $CURRENT_VERSION."
 log "verifying real protocol handshake..."
 doctor_output=""
 doctor_rc=0

@@ -318,6 +318,36 @@ protocol health checks, and automatically roll back the complete
 transaction on failure. A no-argument update is rejected so a version
 change never happens by accident.
 
+### Updating a host that is still on v1.1.0
+
+`update.sh` runs from the **installed** release, so it only knows the systemd
+units and acceptance steps of the release you already have. Stable v1.1.0
+predates the egress-isolation unit (`vpn-egress-isolation.service`) and the
+reserved probe principal, so v1.1.0's own updater cannot install a later
+release: it rolls back safely (found updating a real VPS to v1.2.0-rc.1) but
+never succeeds. Run the **target** release's updater instead, from its
+verified source archive. Replace the tag with the release you want:
+
+```bash
+TAG=v1.2.0   # the release to install
+B=https://github.com/David610/singbox-vpn/releases/download/$TAG
+W=/root/singbox-vpn-updater; rm -rf "$W"; install -d -m 0700 "$W/dl" "$W/src"
+cd "$W/dl"
+curl -fsSL -o SHA256SUMS "$B/SHA256SUMS"
+curl -fsSL -o singbox-vpn-src.tar.gz "$B/singbox-vpn-src.tar.gz"
+grep ' singbox-vpn-src.tar.gz$' SHA256SUMS | sha256sum -c -    # must print OK
+cd "$W/src" && tar xzf ../dl/singbox-vpn-src.tar.gz
+bash deploy/almalinux/update.sh --version "$TAG"
+```
+
+The updater then verifies the release's attestations again and runs the same
+transaction (verify, switch, health check, protocol self-test, roll back on
+failure). Once a host runs a release that includes this fix, the normal
+`/opt/singbox-vpn/deploy/almalinux/update.sh --version vX.Y.Z` command works
+for later updates. If the node's `vpn-expiry-reconcile.timer` was stopped by
+hand, start it first (`systemctl start vpn-expiry-reconcile.timer`): the
+post-update health check fails while it is inactive.
+
 ## User management
 
 ```bash
