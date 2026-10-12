@@ -221,7 +221,7 @@ absent; the trial host is called "the trial VPS".
   used during the live trial are outside the repository.
 
 ### R-16 — Test prerequisites
-- See "Automated qualification" in the PR for exact results and what could not
+- See "Automated qualification" below for exact results and what could not
   run. Filtered or skipped tests are not complete evidence.
 
 ### R-17 — Accepted-IP hairpin
@@ -255,7 +255,45 @@ absent; the trial host is called "the trial VPS".
   Still pending there: live renewal after the nginx change (R-9) and the
   general client address-override follow-up (R-12).
 
+## Automated qualification (final tree of this PR)
+
+Environment: Ubuntu 24.04 (WSL2) on a Windows 10 host, Rust 1.94.1 (pinned),
+sing-box 1.14.1 downloaded and **checksum-verified against
+`deploy/lib/versions.env`**, aioquic 1.3.0, `jq` 1.7. The privileged tier ran as
+root (CAP_NET_ADMIN, `/run` and ownership fixtures available), which the earlier
+cloud run lacked. IPv4 and IPv6 loopback available; outbound network available.
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | PASS |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | PASS |
+| `RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --no-deps` | PASS |
+| `cargo test --locked --workspace --all-targets --no-fail-fast` (root, `SINGBOX_VPN_REQUIRE_REAL_INTEROP=1`, pinned core) | PASS — 34 suites, **1019 passed, 0 failed, 0 ignored**; includes `two_hop_system` (22) and the real-core lab |
+| Real-core egress-family lab (`egress_family_interop`, unprivileged) | PASS — **88 assertions** (REALITY + Hysteria2 × allow/reject_google/reject_all) |
+| `deploy/lib/tests/*.sh` (66 fixtures) + `test-egress-tools.py` (7) + `shellcheck -S warning` | PASS — 67 of 67, run as root on an exported (non-git) tree |
+| `check-release-version.sh v1.3.0-rc.1` and `v1.3.0` | PASS; a wrong core (`v1.2.1-rc.1`) is refused |
+
+Failures seen on the way and what they were: (1) my two broken-pipe tests
+launched the binary outside the repository's host-isolation helper — caught by
+`every_binary_invocation_is_guarded`, fixed; (2) the lifecycle-harness fixture
+fails if its tree is an *unborn* git repository (`git rev-parse` prints `HEAD`
+and exits non-zero, so the harness derives a two-line branch) — a property of the
+scratch checkout I used, not of a release (CI has real commits; archives have no
+`.git`); (3) `test-uninstall-idempotency` failed once while the cargo suite was
+creating system accounts concurrently — it passes alone; (4) two benchmark
+fixtures need `jq` (a prerequisite, now installed in the test VM).
+
+**Not run here (CI or external):** the GitHub CI graph, CodeQL, cargo-audit,
+the release build in the pinned AlmaLinux 8.10 container with the glibc ≤ 2.28
+gate, SBOM/attestation generation, packaged-archive execution in AlmaLinux 8/9
+containers (`release-container-smoke`, `os-matrix`), `idn`/pcap-tool branches,
+and everything in R-18…R-20. A passing local run is not release evidence for
+those. Fragmented-TLS and ECH flows are not exercised by the lab (the policy
+cannot match them: no SNI is recovered), and UDP rejection is observed only as
+response absence, not as an ICMP error reaching a client.
+
 ## Final decision
 
 **BLOCKED** for release approval until R-19 and R-20 have PASS evidence on the
-exact RC. The repository work for R-2…R-10 and R-15 is code-verified.
+exact RC (and the GitHub CI graph, which has not yet run on this branch, is
+green). The repository work for R-2…R-10 and R-15 is code-verified locally.
