@@ -7,9 +7,9 @@
 # This is NOT lifecycle-acceptance.sh. That harness starts from a fresh install
 # and ends in an uninstall; a host built that way can never be a hybrid. This
 # script starts from an EXISTING baseline, creates the scenario's state in
-# place, runs the supported updater from the baseline's own installed tree
-# (the v1.2.0 updater — the only updater such a host has before it is updated),
-# and checks the result. It never uninstalls, reinstalls or "repairs toward the
+# place, runs the CANDIDATE's own updater from its checksum-verified source
+# archive (the baseline's installed updater predates the egress guard and the
+# identity recording and cannot be changed), and checks the result. It never uninstalls, reinstalls or "repairs toward the
 # old release" before the transition is tested.
 #
 #   --scenario normal         plain v1.2.0 host -> candidate (policy stays the default `allow`)
@@ -159,11 +159,14 @@ fi
 USERS_BEFORE="$(ssh_run "$FP_USERS" 2>/dev/null || true)"
 [ -n "$USERS_BEFORE" ] && pass "credential fingerprint recorded (SHA-256 only, nothing printed)" || fail "credential fingerprint recorded"
 
-section "3. the supported transition, run by the BASELINE's own installed updater"
-if ssh_run_long "sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version $CANDIDATE" >/dev/null 2>&1; then
-  pass "update.sh --version $CANDIDATE succeeded"
+section "3. the supported transition: the CANDIDATE's own updater, from its verified source archive"
+# The baseline's installed updater (/opt/singbox-vpn) predates the egress guard and the identity
+# recording and cannot be changed, so the documented path (docs/INSTALLATION.md) is to run the
+# TARGET release's updater from its checksum-verified source archive.
+if ssh_run_long "set -e; W=/root/singbox-vpn-updater; rm -rf $W; install -d -m 0700 $W/dl $W/src; cd $W/dl; B=https://github.com/David610/singbox-vpn/releases/download/$CANDIDATE; curl -fsSL -o SHA256SUMS $B/SHA256SUMS; curl -fsSL -o singbox-vpn-src.tar.gz $B/singbox-vpn-src.tar.gz; grep ' singbox-vpn-src.tar.gz$' SHA256SUMS | sha256sum -c -; cd $W/src; tar xzf ../dl/singbox-vpn-src.tar.gz --strip-components=1; sudo bash deploy/almalinux/update.sh --version $CANDIDATE" >/dev/null 2>&1; then
+  pass "candidate updater (checksum-verified source archive) ran update.sh --version $CANDIDATE"
 else
-  fail "update.sh --version $CANDIDATE succeeded" "(the host was left to the updater's own rollback)"
+  fail "candidate updater ran update.sh --version $CANDIDATE" "(the host was left to the updater's own rollback)"
 fi
 
 section "4. the result"
@@ -179,11 +182,11 @@ else
   check "the egress policy is still the default for this scenario (allow)" "sudo /usr/local/bin/vpn-admin egress show | grep -q 'allow (plain exit default)'"
 fi
 check "doctor --protocol --require-protocol passes (real handshake)" "sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol >/dev/null 2>&1"
-check "the old updater could not record executable hashes: identity is UNKNOWN, not a false match" "sudo /usr/local/bin/vpn-admin doctor 2>&1 | grep -q 'release identity UNKNOWN'"
+check "release identity is recorded by the candidate's own updater (no second step needed)" "sudo /usr/local/bin/vpn-admin doctor 2>&1 | grep -q 'release identity: recorded'"
 
-section "5. record identity with the NEW tree's updater, without losing anything"
+section "5. repeated repair from the new tree is idempotent and loses nothing"
 if ssh_run_long "sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair" >/dev/null 2>&1; then pass "update.sh --repair (new tree, recorded release is the candidate) succeeded"; else fail "update.sh --repair (new tree) succeeded"; fi
-check "release identity now matches the recorded candidate" "sudo /usr/local/bin/vpn-admin doctor 2>&1 | grep -q 'release identity: recorded'"
+check "release identity still matches the recorded candidate after repair" "sudo /usr/local/bin/vpn-admin doctor 2>&1 | grep -q 'release identity: recorded'"
 USERS_REPAIR="$(ssh_run "$FP_USERS" 2>/dev/null || true)"
 [ "$USERS_REPAIR" = "$USERS_BEFORE" ] && pass "credentials unchanged by repair" || fail "credentials unchanged by repair"
 if [ "$SCENARIO" = hybrid-policy ]; then

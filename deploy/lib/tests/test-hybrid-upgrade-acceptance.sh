@@ -45,10 +45,10 @@ case "$cmd" in
   *'sha256sum /etc/vpn/compat/users/users.json'*) echo "$(st userfp)"; exit 0 ;;
   *'update.sh --version v1.3.0-rc.1'*)
     echo "UPDATE" >>"$T/events"; [ -z "$(st fail_update)" ] || exit 1
-    set_st manifest v1.3.0-rc.1; set_st binver 1.3.0; set_st binhash release
+    set_st manifest v1.3.0-rc.1; set_st binver 1.3.0; set_st binhash release; set_st identity recorded
     [ -z "$(st change_users)" ] || set_st userfp CHANGED
     exit 0 ;;
-  *'update.sh --repair'*) echo "REPAIR" >>"$T/events"; set_st identity recorded; exit 0 ;;
+  *'update.sh --repair'*) echo "REPAIR" >>"$T/events"; exit 0 ;;
   *'update.sh --version v1.2.0'*)
     echo "DOWNGRADE" >>"$T/events"
     if [ -n "$(st downgrade_accepts)" ]; then set_st manifest v1.2.0; set_st policy ""; set_st binhash old; exit 0; fi
@@ -92,6 +92,7 @@ out="$(run --scenario hybrid-policy 2>&1)" && rc=0 || rc=$?
 [ "$rc" -eq 0 ] && grep -q '^HYBRID UPGRADE GATE: PASS (hybrid-policy)$' <<<"$out" && ok "a correct transition passes the gate" || { fail "a correct transition did not pass (rc=$rc)"; echo "$out" | grep -E "FAIL|UNHANDLED" | head; }
 ev="$(tr '\n' ' ' <"$T/events")"
 [ "$ev" = "HYBRID-COPY POLICY-SET UPDATE REPAIR DOWNGRADE " ] && ok "state is created in place, then updated, then repaired, then the downgrade is attempted (events: $ev)" || fail "unexpected step order: $ev"
+grep -q "singbox-vpn-src.tar.gz.*sha256sum -c -.*sudo bash deploy/almalinux/update.sh --version v1.3.0-rc.1" "$T/ssh.log"   && ! grep -q "/opt/singbox-vpn/deploy/almalinux/update.sh --version v1.3.0-rc.1" "$T/ssh.log"   && ok "the transition runs the candidate's own updater from its checksum-verified source archive, never the baseline's installed one"   || fail "the transition did not use the candidate's verified updater"
 ! grep -qE 'uninstall|install\.sh' "$T/ssh.log" && ok "nothing was uninstalled or reinstalled before the transition" || fail "the harness uninstalled/reinstalled the host"
 [ ! -s "$T/unhandled" ] && ok "every remote command was a known, asserted one" || fail "unasserted remote commands: $(cat "$T/unhandled")"
 grep -q 'sha256' <<<"$out" && fail "the report prints hash material" || ok "no credential/hash material appears in the report"
