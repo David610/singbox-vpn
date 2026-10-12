@@ -406,7 +406,7 @@ verified to fix it without breaking other journeys. If the cause is an external
 restriction of the exit's IP or region, that is reported as the blocker; the
 product is then **not** declared fixed.
 
-## Automated qualification (exact commit `1bba1ff3a273dcc5531481519aa5b1916f83392f`)
+## Automated qualification (exact commit `a9f292c13807e9a67cb5c754799fc785d21557c8`)
 
 Produced by the committed `deploy/lib/qualify-local.sh`, which takes every gate's
 exit status directly (no pipe can hide a failure), keeps each complete log with
@@ -415,8 +415,8 @@ prerequisite is missing as NOT-RUN (which fails the run), never as a pass.
 Environment: Ubuntu 24.04 (WSL2) on a Windows 10 host, root, Rust 1.94.1,
 sing-box 1.14.1 downloaded and **checksum-verified against
 `deploy/lib/versions.env`**, aioquic 1.3.0, `jq` 1.7, IPv4/IPv6 loopback, outbound
-network. Evidence directory (not in the repository): `release-evidence/v1.3.0-prep-1bba1ff3a273/`
-(`SUMMARY.tsv`, `ENVIRONMENT.txt`, one log per gate).
+network. Evidence directory (not in the repository): `release-evidence/v1.3.0-prep-a9f292c13807/`
+(`SUMMARY.tsv`, `ENVIRONMENT.txt`, one log per gate; the directory name carries the commit's first 12 characters). Commits after it change documentation only.
 
 | Gate | Result |
 |---|---|
@@ -436,16 +436,24 @@ policy); `check-release-version.sh` accepts `v1.3.0-rc.1` and `v1.3.0` and refus
 a wrong core; the GitHub CI graph on the earlier head of PR #152 was fully green
 (the head has since moved; CI must be re-read on the final head).
 
-**A failed first run, kept.** The first execution of this script on this commit
-FAILED (`cargo-test-workspace`, exit 101: 904 passed, 1 failed) while I was
-running the website's unit tests and a production build on the same machine. The
-failing test is `provisioning-agent`'s
-`report_queue::tests::enqueue_never_blocks_regardless_of_endpoint_health`, which
-asserts a 500 ms wall-clock bound; it is load-sensitive and unrelated to any
-change here (the agent crate is untouched). The rerun on an idle host passed
-(above). The failed run's logs are retained
-(`…-run1-loaded-host-FAILED/`). Qualification must therefore be run on an idle
-host; the test's bound was **not** loosened to obtain a pass.
+**Two failed runs, kept, and what they were.** `cargo-test-workspace` FAILED in two
+earlier executions of this script (exit 101, 904 passed, 1 failed; logs retained under
+`release-evidence/…-run1-loaded-host-FAILED/` for commit `1bba1ff3a273` and
+`…-510a399d0e2d-FAILED-disk-latency-test/` for `510a399d0e2d`). Both were the same
+test, `provisioning-agent`'s `report_queue::tests::enqueue_never_blocks_regardless_of_endpoint_health`
+(500 ms bound). My first explanation — CPU load from website tests running at the
+same time — was **incomplete**: the second failure happened on an otherwise idle
+machine. The actual cause, reproduced: `enqueue` fsyncs its queue file, and on this
+virtual disk fsync latency spikes under write-back pressure (right after a build, or
+with a concurrent `dd`): the test failed 21 of 30 runs alone in the minutes after a
+heavy build and 1 of 12 under a synthetic write load, while passing in a quiet
+interval. The test asserts independence from the Worker's reachability, so disk
+latency was noise, not a product defect. Fix (commit after `510a399d0e2d`, test code
+only): the queue file lives on RAM-backed storage (`/dev/shm`) when present; the
+500 ms bound is **unchanged**. Under the same synthetic disk pressure the fixed test
+failed 0 of 40 runs, and the whole agent suite passes (125/125). The earlier
+statement that the agent crate was "untouched" is therefore corrected: its test
+module changed (no production code did).
 
 **Corrections to numbers quoted earlier:** the previous section said "66 fixtures"
 and "34 suites, 1019 passed"; the tree then had 65 fixtures and 1019 tests, and
@@ -474,8 +482,7 @@ files, never here.
 
 
 **BLOCKED — not ready for owner release approval, for VPN-only reasons.**
-Done and verified locally on commit `1bba1ff3a273` (later commits are docs-only
-or comment-only): the repository work for R-2…R-10 and R-15, the hardened
+Done and verified locally on commit `a9f292c13807` (later commits are docs-only): the repository work for R-2…R-10 and R-15, the hardened
 downgrade guard (proved against a real v1.2.0 build), mutation-safe output
 handling, running-executable identity, the hybrid-transition script, the soak
 tooling, and a clean 74-gate local qualification. Website, billing, Supabase,
