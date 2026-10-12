@@ -13,11 +13,56 @@ NODE_ID_MAX_LEN=63
 # Printed by every `vpn-admin config validate` that renders relays
 # fail-closed (RELAY_ENFORCEMENT_CAPABILITY in deployment.rs).
 RELAY_ENFORCEMENT_CAPABILITY="capability: relay-fail-closed-forwarding"
+# Printed by every `vpn-admin config validate` that understands the exit
+# `[egress]` section (EXIT_EGRESS_POLICY_CAPABILITY in deployment.rs).
+EXIT_EGRESS_POLICY_CAPABILITY="capability: exit-egress-policy"
 
 # True if `vpn-admin config validate` output ($1) comes from a build that
 # enforces relay forwarding restrictions.
 admin_output_declares_relay_enforcement() {
   printf '%s\n' "${1:-}" | grep -qF "$RELAY_ENFORCEMENT_CAPABILITY"
+}
+
+# True if `vpn-admin config validate` output ($1) comes from a build that
+# understands the exit `[egress]` literal-IPv6 policy.
+admin_output_declares_exit_egress_policy() {
+  printf '%s\n' "${1:-}" | grep -qF "$EXIT_EGRESS_POLICY_CAPABILITY"
+}
+
+# True if the deployment.toml ($1) declares an `[egress]` policy. A binary that
+# predates the table silently ignores it, so switching such a deployment to one
+# (an older release) must be refused, not attempted.
+#
+# TOML spells the same table many ways (`[egress]`, `[ egress ]`, `["egress"]`,
+# `'egress'`, dotted keys `egress.ipv6_literal = ...`, an inline table
+# `egress = { ... }`). The authoritative answer is the one the production
+# parser gives, so when the INSTALLED vpn-admin's `config validate` output ($2)
+# carries an `egress-policy:` line that is used. Only when the installed build
+# predates that line (so there is no parser to ask) does this fall back to a
+# deliberately over-inclusive text match: it may refuse in an odd case where
+# another table has a key called `egress`, never the reverse.
+deployment_declares_egress_policy() {
+  local file="${1:-}" validate_output="${2:-}" state
+  [ -f "$file" ] || return 1
+  state="$(printf '%s\n' "$validate_output" | sed -n 's/^egress-policy: \([a-z]*\).*$/\1/p' | head -n1)"
+  case "$state" in
+    declared) return 0 ;;
+    absent) return 1 ;;
+  esac
+  grep -Eq "^[[:space:]]*(\[{1,2}[[:space:]]*)?(egress|\"egress\"|'egress')[[:space:]]*(\]|\.|=)" "$file"
+}
+
+# Decides whether switching this deployment to the build whose staged
+# `config validate` output is $3 must be refused. $1 = deployment.toml,
+# $2 = the INSTALLED vpn-admin's `config validate` output (may be empty if it
+# could not be run). Prints the refusal reason and returns 0 to refuse; returns
+# 1 when the switch is allowed. Pure decision: it changes nothing.
+egress_policy_switch_refusal() {
+  local toml="$1" installed_output="${2:-}" staged_output="${3:-}"
+  deployment_declares_egress_policy "$toml" "$installed_output" || return 1
+  admin_output_declares_exit_egress_policy "$staged_output" && return 1
+  printf '%s\n' "this deployment declares an [egress] literal-IPv6 policy, and the target's vpn-admin does not understand it: it would ignore the setting without any error and re-render a plain exit. Refusing (update, repair or downgrade). Run 'vpn-admin egress clear' first if you really intend to drop the policy."
+  return 0
 }
 
 # Strict role parser: prints the role and returns 0 for exactly "exit" or

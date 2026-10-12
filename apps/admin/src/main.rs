@@ -6,9 +6,12 @@
 //! at `create` or `rotate-token` time, because only its hash is persisted
 //! (spec §26).
 
+#[macro_use]
+mod safe_io;
 mod external_authorization;
 mod lease_pool;
 mod lock;
+mod release_identity;
 mod service;
 mod static_apply;
 
@@ -510,6 +513,8 @@ enum UserCommands {
     /// `rotate-token`, it does not mint a new subscription token or
     /// change any credential.
     Links {
+        /// The user's stable ID, or a display name that exactly one account
+        /// has (an ambiguous name is rejected, never guessed).
         user_id: String,
         /// Print a terminal QR code for each URI as well.
         #[arg(long)]
@@ -670,10 +675,59 @@ fn command_mutates_state(cmd: &Commands) -> bool {
     )
 }
 
-fn main() -> Result<()> {
+/// Exit status of a process killed by SIGPIPE (128 + 13), the convention
+/// every Unix tool follows when its reader goes away (`... | head -1`).
+const EXIT_BROKEN_PIPE: u8 = 141;
+
+static STDIO_BROKEN_PIPE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Defense in depth only. All of this crate's own output goes through
+/// `safe_io` (best-effort writes that can never panic, so a closed stream cannot
+/// abort a transaction). This hook covers a stray std print from elsewhere: it
+/// recognises only that exact stdout/stderr EPIPE, lets the panic unwind (locks
+/// and rollback guards still run their `Drop`) without the default message, and
+/// `main` maps it to 141. Every other panic keeps its message and status.
+fn install_broken_pipe_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if message.starts_with("failed printing to std") && message.contains("Broken pipe") {
+            STDIO_BROKEN_PIPE.store(true, std::sync::atomic::Ordering::SeqCst);
+            return;
+        }
+        default_hook(info);
+    }));
+}
+
+fn main() -> std::process::ExitCode {
+    install_broken_pipe_panic_hook();
+    match std::panic::catch_unwind(run) {
+        Ok(Ok(())) if safe_io::reader_went_away_on_read_only_command() => {
+            std::process::ExitCode::from(EXIT_BROKEN_PIPE)
+        }
+        Ok(Ok(())) => std::process::ExitCode::SUCCESS,
+        Ok(Err(error)) => {
+            eprintln!("Error: {error:?}");
+            std::process::ExitCode::FAILURE
+        }
+        Err(_) if STDIO_BROKEN_PIPE.load(std::sync::atomic::Ordering::SeqCst) => {
+            std::process::ExitCode::from(EXIT_BROKEN_PIPE)
+        }
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let cfg = DeploymentConfig::load(&cli.config)
         .with_context(|| format!("loading deployment config from {:?}", cli.config))?;
+
+    safe_io::set_mutating(command_mutates_state(&cli.command));
 
     // Held for the ENTIRE duration of a mutating command — not just the
     // file write — so two concurrent `vpn-admin` invocations can never
@@ -2428,6 +2482,18 @@ fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) ->
         compat_config::deployment::RELAY_ENFORCEMENT_CAPABILITY,
         cfg.role.as_str()
     );
+    println!(
+        "{}",
+        compat_config::deployment::EXIT_EGRESS_POLICY_CAPABILITY
+    );
+    // Semantic (parsed) answer, independent of how the TOML spells the table:
+    // `[egress]`, `[ egress ]`, `["egress"]`, dotted keys and inline tables all
+    // deserialize to the same value. `update.sh` trusts this line when the
+    // installed build understands the policy.
+    match &cfg.egress {
+        Some(egress) => println!("egress-policy: declared ({})", egress.ipv6_literal.as_str()),
+        None => println!("egress-policy: absent"),
+    }
 
     let users_path = cfg.users_file();
     match store::detect_users_schema(&users_path) {
@@ -3703,12 +3769,37 @@ fn served_endpoints(
 /// directly — no HTTP fetch, no `subscription_host`/`subscription.
 /// public_port` involved at all, so it keeps working even if the
 /// subscription domain itself is what's blocked.
+/// Resolves the operator-facing selector of a READ-ONLY command to one user.
+/// The stable user ID always wins. Otherwise the selector may be a display
+/// name, accepted only when exactly one visible account has it: two accounts
+/// with the same name are an error that lists their IDs, never a silent pick.
+/// Reserved internal probe principals are reachable by ID only, never by name.
+fn resolve_user_selector<'a>(users: &'a [CompatUser], selector: &str) -> Result<&'a CompatUser> {
+    if let Some(by_id) = users.iter().find(|u| u.id == selector) {
+        return Ok(by_id);
+    }
+    let named: Vec<&CompatUser> = users
+        .iter()
+        .filter(|u| !u.is_reserved_probe && u.name == selector)
+        .collect();
+    match named.as_slice() {
+        [] => bail!("no such user: {selector} (use an ID from `user list`, or a unique name)"),
+        [only] => Ok(*only),
+        many => bail!(
+            "{} users are named {selector:?}; refusing to guess. Use one of these IDs: {}",
+            many.len(),
+            many.iter()
+                .map(|u| u.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn cmd_user_links(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
     let users = store::load_users(&cfg.users_file())?;
-    let user = users
-        .iter()
-        .find(|u| u.id == id)
-        .ok_or_else(|| anyhow::anyhow!("no such user: {id}"))?;
+    let user = resolve_user_selector(&users, id)?;
+    let id = user.id.as_str();
     if !user.enabled {
         println!("WARNING: user {id} is disabled — these URIs will not authenticate.");
         println!();
@@ -5182,20 +5273,19 @@ fn cmd_doctor(
         }
     }
 
-    match std::process::Command::new("firewall-cmd")
-        .arg("--state")
-        .output()
     {
-        Ok(o) if o.status.success() => report_check(CheckStatus::Ok, "L3", "firewalld running"),
-        Ok(_) => {
-            report_check(CheckStatus::Fail, "L3", "firewalld not running");
+        let recorded_backend =
+            read_firewall_ownership(std::path::Path::new(FIREWALL_OWNERSHIP_FILE))
+                .and_then(|map| map.get("firewall_backend").cloned());
+        let (status, message) = firewall_backend_report(
+            recorded_backend.as_deref(),
+            probe_firewalld_state(),
+            probe_ufw_state(),
+        );
+        if status == CheckStatus::Fail {
             failures += 1;
         }
-        Err(_) => report_check(
-            CheckStatus::Warn,
-            "L3",
-            "firewall-cmd not available — firewall check skipped",
-        ),
+        report_check(status, "L3", message);
     }
 
     for (proto_label, port, udp) in [
@@ -5291,6 +5381,7 @@ fn cmd_doctor(
     check_conntrack_pressure();
     check_udp_memory_pressure();
     check_singbox_binary_version_consistency(cfg);
+    check_release_identity();
     report_check(
         CheckStatus::Info,
         "L4",
@@ -6832,6 +6923,16 @@ fn check_public_hostname_and_ipv6_policy(cfg: &DeploymentConfig, failures: &mut 
 /// only ever inspects the ONE binary at `cfg.singbox_binary`, so it
 /// cannot see this class of drift by construction. This check is
 /// read-only: it never changes which binary is active.
+fn check_release_identity() {
+    let (verdict, message) = release_identity::check(env!("CARGO_PKG_VERSION"));
+    let status = match verdict {
+        release_identity::Verdict::Ok => CheckStatus::Ok,
+        release_identity::Verdict::Info => CheckStatus::Info,
+        release_identity::Verdict::Warn => CheckStatus::Warn,
+    };
+    report_check(status, "L1", message);
+}
+
 fn check_singbox_binary_version_consistency(cfg: &DeploymentConfig) {
     let candidates: Vec<std::path::PathBuf> = vec![
         cfg.singbox_binary.clone(),
@@ -7560,9 +7661,13 @@ struct ListenSocket {
 }
 
 impl ListenSocket {
+    /// `ss` prints a bound-interface zone as `127.0.0.53%lo`; that suffix is
+    /// not part of the address and must not stop it parsing, or systemd-
+    /// resolved's loopback-only stub resolver would be reported as a public
+    /// listener.
     fn is_loopback(&self) -> bool {
-        self.addr
-            .parse::<std::net::IpAddr>()
+        let ip = self.addr.split('%').next().unwrap_or(&self.addr);
+        ip.parse::<std::net::IpAddr>()
             .map(|ip| ip.is_loopback())
             .unwrap_or(false)
     }
@@ -7846,8 +7951,11 @@ fn classify_public_surface(
             CheckStatus::Warn,
             format!(
                 "unexpected listener on {addr_port}/{proto}, owned by {owner_desc} — not part \
-                 of singbox-vpn's expected public surface. This may be a legitimate unrelated service \
-                 on this host; vpn doctor never modifies firewall/listener state automatically."
+                 of singbox-vpn's expected public surface. It is bound to a non-loopback address; \
+                 whether it is reachable from the Internet depends on the host and provider \
+                 firewalls, which doctor cannot see (UNKNOWN). This may be a legitimate unrelated \
+                 service on this host; vpn doctor never modifies firewall/listener state \
+                 automatically."
             ),
         ));
     }
@@ -7923,6 +8031,101 @@ fn read_firewall_ownership(
         }
     }
     Some(map)
+}
+
+const FIREWALL_OWNERSHIP_FILE: &str = "/var/lib/singbox-vpn/firewall-owned.env";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FirewallProbe {
+    Active,
+    Inactive,
+    /// The tool is missing, or it could not be queried (typically: not root).
+    Unavailable,
+}
+
+/// `firewall-cmd --state`: read-only.
+fn probe_firewalld_state() -> FirewallProbe {
+    match std::process::Command::new("firewall-cmd")
+        .arg("--state")
+        .output()
+    {
+        Ok(o) if o.status.success() => FirewallProbe::Active,
+        Ok(_) => FirewallProbe::Inactive,
+        Err(_) => FirewallProbe::Unavailable,
+    }
+}
+
+/// `ufw status`: read-only. It needs root; as a normal user it fails, which is
+/// reported as unavailable rather than as an inactive firewall.
+fn probe_ufw_state() -> FirewallProbe {
+    match std::process::Command::new("ufw").arg("status").output() {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            if text
+                .lines()
+                .any(|l| l.trim().eq_ignore_ascii_case("status: active"))
+            {
+                FirewallProbe::Active
+            } else {
+                FirewallProbe::Inactive
+            }
+        }
+        _ => FirewallProbe::Unavailable,
+    }
+}
+
+/// Which host firewall to judge is decided by the backend the installer
+/// RECORDED, not by whichever tool happens to exist: a missing `firewall-cmd`
+/// is the normal state of a ufw (Debian/Ubuntu) host and must not read as a
+/// failed or skipped deployment. This only inspects the HOST firewall;
+/// provider/cloud security groups are invisible to `doctor`, so external
+/// reachability is always reported as UNKNOWN here, never as proven.
+fn firewall_backend_report(
+    recorded_backend: Option<&str>,
+    firewalld: FirewallProbe,
+    ufw: FirewallProbe,
+) -> (CheckStatus, String) {
+    const REACH: &str = "provider/cloud firewalls are not visible to doctor, so external \
+                         reachability of the VPN ports is UNKNOWN from this host";
+    match (recorded_backend, firewalld, ufw) {
+        (Some("ufw"), _, FirewallProbe::Active) => (
+            CheckStatus::Ok,
+            format!("ufw is active (the recorded firewall backend); {REACH}"),
+        ),
+        (Some("ufw"), _, FirewallProbe::Inactive) => (
+            CheckStatus::Warn,
+            format!("ufw is the recorded firewall backend but is NOT active; {REACH}"),
+        ),
+        (Some("ufw"), _, FirewallProbe::Unavailable) => (
+            CheckStatus::Info,
+            format!(
+                "ufw is the recorded firewall backend but `ufw status` could not be read \
+                 (run doctor as root); {REACH}"
+            ),
+        ),
+        (Some("firewalld") | None, FirewallProbe::Active, _) => {
+            (CheckStatus::Ok, "firewalld running".to_string())
+        }
+        (None, _, FirewallProbe::Active) => (
+            CheckStatus::Ok,
+            format!("ufw is active (no firewall backend was recorded); {REACH}"),
+        ),
+        (Some("firewalld") | None, FirewallProbe::Inactive, _) => {
+            (CheckStatus::Fail, "firewalld not running".to_string())
+        }
+        (Some("firewalld"), FirewallProbe::Unavailable, _) => (
+            CheckStatus::Warn,
+            "firewalld is the recorded firewall backend but firewall-cmd is not available"
+                .to_string(),
+        ),
+        (other, _, _) => (
+            CheckStatus::Info,
+            format!(
+                "no inspectable host firewall (recorded backend: {}); {REACH}",
+                other.unwrap_or("none recorded")
+            ),
+        ),
+    }
 }
 
 /// Read-only firewall zone + singbox-vpn-owned-rule reporting. The only
@@ -9887,6 +10090,85 @@ mod doctor_coverage_tests {
 mod public_surface_tests {
     use super::*;
 
+    /// The Ubuntu stub resolver, exactly as `ss` prints it on a stock host
+    /// (zone suffix included). It is loopback-only: it must produce no finding
+    /// at all, not a "public listener" warning.
+    #[test]
+    fn zone_suffixed_loopback_stub_resolver_is_not_a_public_listener() {
+        let text = "LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:* users:((\"systemd-resolve\",pid=1,fd=14))\n\
+                    LISTEN 0 4096 127.0.0.54:53 0.0.0.0:* users:((\"systemd-resolve\",pid=1,fd=16))\n";
+        let listeners = parse_ss_listen_output(text, false);
+        assert_eq!(listeners.len(), 2);
+        assert!(listeners.iter().all(ListenSocket::is_loopback));
+        let findings = classify_public_surface(&listeners, Some(22), &[], 9100);
+        assert!(
+            findings.is_empty(),
+            "loopback listeners reported: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_listener_is_flagged_without_claiming_internet_reachability() {
+        let text = "LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=2,fd=5))\n";
+        let listeners = parse_ss_listen_output(text, false);
+        let findings = classify_public_surface(&listeners, Some(22), &[], 9100);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].0, CheckStatus::Warn);
+        assert!(findings[0].1.contains("UNKNOWN"), "{}", findings[0].1);
+        assert!(
+            findings[0].1.contains("non-loopback address"),
+            "{}",
+            findings[0].1
+        );
+        assert!(!findings[0].1.contains("exposed"), "{}", findings[0].1);
+    }
+
+    #[test]
+    fn missing_firewall_cmd_on_a_ufw_host_is_not_a_warning() {
+        let (status, msg) = firewall_backend_report(
+            Some("ufw"),
+            FirewallProbe::Unavailable,
+            FirewallProbe::Active,
+        );
+        assert_eq!(status, CheckStatus::Ok, "{msg}");
+        assert!(
+            msg.contains("UNKNOWN"),
+            "external reachability must stay UNKNOWN: {msg}"
+        );
+        assert!(!msg.contains("skipped"), "{msg}");
+    }
+
+    #[test]
+    fn firewall_report_follows_the_recorded_backend() {
+        use FirewallProbe::*;
+        let ok = |s: Option<&str>, f, u| firewall_backend_report(s, f, u).0;
+        // ufw host whose firewall-cmd binary exists but firewalld is not running:
+        // that is not a failed firewall.
+        assert_eq!(ok(Some("ufw"), Inactive, Active), CheckStatus::Ok);
+        assert_eq!(ok(Some("ufw"), Unavailable, Inactive), CheckStatus::Warn);
+        assert_eq!(ok(Some("ufw"), Unavailable, Unavailable), CheckStatus::Info);
+        // firewalld host: unchanged from the original behaviour.
+        assert_eq!(ok(Some("firewalld"), Active, Unavailable), CheckStatus::Ok);
+        assert_eq!(
+            ok(Some("firewalld"), Inactive, Unavailable),
+            CheckStatus::Fail
+        );
+        assert_eq!(
+            ok(Some("firewalld"), Unavailable, Unavailable),
+            CheckStatus::Warn
+        );
+        // nothing recorded: infer from what is actually running.
+        assert_eq!(ok(None, Active, Unavailable), CheckStatus::Ok);
+        assert_eq!(ok(None, Inactive, Active), CheckStatus::Ok);
+        assert_eq!(ok(None, Inactive, Inactive), CheckStatus::Fail);
+        assert_eq!(ok(None, Unavailable, Unavailable), CheckStatus::Info);
+        // an unmanaged/other backend is reported honestly, not failed.
+        assert_eq!(
+            ok(Some("none"), Unavailable, Unavailable),
+            CheckStatus::Info
+        );
+    }
+
     #[test]
     fn parses_real_shaped_tcp_ss_output_including_process_name() {
         let text = "LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:((\"sing-box\",pid=1234,fd=10))\n\
@@ -10338,6 +10620,71 @@ mod egress_probe_selection_tests {
         assert_eq!(
             super::preferred_protocol_user(&users, 1).unwrap().id,
             "customer"
+        );
+    }
+}
+
+#[cfg(test)]
+mod user_selector_tests {
+    use super::*;
+
+    fn user(id: &str, name: &str, reserved: bool) -> CompatUser {
+        let (mut u, _) = build_new_operator_user(id.into(), name, None, 0);
+        u.is_reserved_probe = reserved;
+        u
+    }
+
+    #[test]
+    fn the_stable_id_always_wins_over_a_name() {
+        // An account whose NAME equals another account's ID must not shadow it.
+        let users = vec![
+            user("user_a", "user_b", false),
+            user("user_b", "bob", false),
+        ];
+        assert_eq!(resolve_user_selector(&users, "user_b").unwrap().name, "bob");
+    }
+
+    #[test]
+    fn a_unique_name_resolves_to_that_account() {
+        let users = vec![
+            user("user_a", "david", false),
+            user("user_b", "default", false),
+        ];
+        assert_eq!(resolve_user_selector(&users, "david").unwrap().id, "user_a");
+    }
+
+    #[test]
+    fn an_ambiguous_name_is_rejected_and_lists_the_ids() {
+        let users = vec![
+            user("user_a", "david", false),
+            user("user_b", "david", false),
+        ];
+        let message = resolve_user_selector(&users, "david")
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("2 users are named"), "{message}");
+        assert!(
+            message.contains("user_a") && message.contains("user_b"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_selector_is_an_error() {
+        let users = vec![user("user_a", "david", false)];
+        let message = resolve_user_selector(&users, "nobody")
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("no such user: nobody"), "{message}");
+    }
+
+    #[test]
+    fn reserved_probe_principals_are_reachable_by_id_only() {
+        let users = vec![user("user_probe", "arcana-probe", true)];
+        assert!(resolve_user_selector(&users, "arcana-probe").is_err());
+        assert_eq!(
+            resolve_user_selector(&users, "user_probe").unwrap().name,
+            "arcana-probe"
         );
     }
 }

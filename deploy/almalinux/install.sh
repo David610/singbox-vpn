@@ -2991,6 +2991,17 @@ write_install_state_manifest() {
   local singbox_version
   singbox_version="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
   local singbox_vpn_version="${SINGBOX_VPN_VERSION:-main}"
+  # Identity of the executables this installer placed in $BIN_DIR, so
+  # `vpn-admin doctor` can tell the recorded release from a development
+  # build or a hand-copied binary (both report the same Cargo version).
+  # Empty before the binaries exist (the early "installing" write).
+  local vpn_admin_sha256="" subscription_sha256=""
+  if [ -f "$BIN_DIR/vpn-admin" ]; then
+    vpn_admin_sha256="$(sha256sum "$BIN_DIR/vpn-admin" | awk '{print $1}')"
+  fi
+  if [ -f "$BIN_DIR/vpn-subscription-svc" ]; then
+    subscription_sha256="$(sha256sum "$BIN_DIR/vpn-subscription-svc" | awk '{print $1}')"
+  fi
   local pinned_singbox_sha256=""
   case "$ARCH" in
     amd64) pinned_singbox_sha256="$SINGBOX_SHA256_AMD64" ;;
@@ -3000,6 +3011,8 @@ write_install_state_manifest() {
 {
   "singbox_vpn_version": "$singbox_vpn_version",
   "singbox_vpn_repo": "$SINGBOX_VPN_RELEASE_REPO",
+  "vpn_admin_sha256": "$vpn_admin_sha256",
+  "subscription_sha256": "$subscription_sha256",
   "sing_box_version": "$singbox_version",
   "sing_box_version_pinned": "$SINGBOX_VERSION",
   "sing_box_sha256_pinned": "$pinned_singbox_sha256",

@@ -405,7 +405,17 @@ mod tests {
         let server = MockServer::start().await;
         drop(server); // server dropped immediately: connections now fail.
 
-        let dir = tempfile::tempdir().unwrap();
+        // This test asserts independence from the Worker's reachability, so
+        // the persisted queue lives on RAM-backed storage where one is
+        // available: `enqueue` fsyncs the file, and fsync latency on a busy
+        // virtual or network disk (hundreds of milliseconds under write-back
+        // pressure, reproduced locally) is unrelated to what is being measured.
+        // The 500 ms bound is unchanged.
+        let dir = if std::path::Path::new("/dev/shm").is_dir() {
+            tempfile::tempdir_in("/dev/shm").unwrap()
+        } else {
+            tempfile::tempdir().unwrap()
+        };
         let path = dir.path().join("queue.json");
         let client = client_for("http://127.0.0.1:1"); // nothing listens here
         let queue = ReportQueue::spawn(path, client);

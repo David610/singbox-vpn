@@ -39,6 +39,8 @@ ALLOW_DESTROY_EXISTING=0
 UPDATE_TO_REF=""
 UPDATE_TO_VERSION=""
 VERIFY_EGRESS_POLICY=0
+EGRESS_STAGE_RAN=0
+KNOWN_HOSTS_FILE=""
 VERSION=""
 SKIP_REBOOT=0
 SSH_PORT=22
@@ -86,6 +88,10 @@ Options:
   --ssh-port PORT        SSH port for the controller and installer. Default: 22.
   --update-to-ref REF    exercise the development updater against REF.
   --verify-egress-policy  after install/update, exercise candidate exit policies (disposable host only).
+                         A requested stage that does not run is a REQUIRED failure, never a silent skip.
+  --known-hosts-file FILE  verify the target against this known_hosts file (StrictHostKeyChecking=yes).
+                         Without it the controller trusts the first key it sees (accept-new) — acceptable
+                         for a throwaway development host, not for release acceptance evidence.
   --update-to-version VERSION
                          exercise the checksum-verified production updater.
   --version VERSION      exercise the immutable stable-release install path.
@@ -115,6 +121,8 @@ while [ $# -gt 0 ]; do
     --version) VERSION="$2"; shift 2 ;;
     --version=*) VERSION="${1#*=}"; shift ;;
     --verify-egress-policy) VERIFY_EGRESS_POLICY=1; shift ;;
+    --known-hosts-file) KNOWN_HOSTS_FILE="$2"; shift 2 ;;
+    --known-hosts-file=*) KNOWN_HOSTS_FILE="${1#*=}"; shift ;;
     --skip-reboot) SKIP_REBOOT=1; shift ;;
     --domain) DOMAIN="$2"; shift 2 ;;
     --domain=*) DOMAIN="${1#*=}"; shift ;;
@@ -187,7 +195,13 @@ else
   ACCEPTANCE_SCOPE="DEVELOPMENT BRANCH $BRANCH (NOT production acceptance)"
 fi
 
-SSH_OPTS=(-p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+if [ -n "$KNOWN_HOSTS_FILE" ]; then
+  [ -f "$KNOWN_HOSTS_FILE" ] && [ -s "$KNOWN_HOSTS_FILE" ]     || { echo "--known-hosts-file '$KNOWN_HOSTS_FILE' is not a non-empty regular file" >&2; exit 1; }
+  HOSTKEY_OPTS=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS_FILE" -o GlobalKnownHostsFile=/dev/null)
+else
+  HOSTKEY_OPTS=(-o StrictHostKeyChecking=accept-new)
+fi
+SSH_OPTS=(-p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=10 "${HOSTKEY_OPTS[@]}")
 ssh_run() { timeout 180 ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
 # For calls that can legitimately run a from-source Rust build on the
 # target (installing an unpinned dev-channel ref with no prebuilt release
@@ -203,7 +217,7 @@ ssh_run() { timeout 180 ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
 ssh_run_long() { timeout 1200 ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
 ssh_reconnect() {
   timeout 30 ssh -o ControlPath=none -p "$SSH_PORT" -o BatchMode=yes -o ConnectTimeout=15 \
-    -o StrictHostKeyChecking=accept-new "$HOST" "$@"
+    "${HOSTKEY_OPTS[@]}" "$HOST" "$@"
 }
 # Certbot is neither a short probe (ssh_run's 180s) nor a from-source Rust
 # build (ssh_run_long's 1200s) — it needs its OWN bounded timeout class.
@@ -1134,6 +1148,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
 
   if [ "$VERIFY_EGRESS_POLICY" -eq 1 ]; then
     section "16c. candidate standalone exit egress policy convergence"
+    EGRESS_STAGE_RAN=1
     if ssh_run 'sudo SINGBOX_VPN_DISPOSABLE_EGRESS_GATE=1 bash /opt/singbox-vpn/deploy/lib/verify-exit-egress-policy.sh'; then
       pass "candidate exit egress apply/reconcile/doctor (restored allow default)"
     else
@@ -1525,6 +1540,10 @@ mark_unverified "public/internet reachability from outside the target's network"
 mark_unverified "real Hiddify iOS/Android/MagicOS import + connect + sustained traffic" "(client/device property — out of scope for this host lifecycle gate)"
 if [ -z "$UPDATE_TO_VERSION" ]; then mark_unverified "real GitHub release A->B update transition" "(no --update-to-version given)"; fi
 mark_unverified "reboot-triggered client reconnect from a real device (Hiddify/other) after a server-side reboot" "(requires a second physical client; server recovery is tested above)"
+
+if [ "$VERIFY_EGRESS_POLICY" -eq 1 ] && [ "$EGRESS_STAGE_RAN" -ne 1 ]; then
+  fail_required "requested egress policy stage (16c) did not run" "(--verify-egress-policy was given; a skipped gate is not a pass)"
+fi
 
 section "summary"
 if [ -z "$VERSION" ]; then echo "ACCEPTANCE CLASSIFICATION: DEVELOPMENT LIFECYCLE ONLY — NOT PRODUCTION ACCEPTANCE"; fi

@@ -362,6 +362,6 @@ Practical reading of this table:
   they drop the user from the server's own authorization list, not
   just from the subscription/token layer.
 
-For the unreleased standalone literal-IPv6 policy and its PENDING native
-iPhone/VPS acceptance gates, see [exit policy](../EXIT_IPV6_POLICY.md). Rejection is not proof of native IPv4 retry. Published v1.2.0 evidence
-is unchanged and does not accept this candidate.
+For the standalone literal-IPv6 policy (v1.3.0) and its native iPhone/VPS
+acceptance gates, see [exit policy](../EXIT_IPV6_POLICY.md). Rejection is not
+proof of native IPv4 retry. Published v1.2.0 evidence does not accept v1.3.0.

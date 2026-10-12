@@ -390,6 +390,15 @@ cd "$W/src" && tar xzf ../dl/singbox-vpn-src.tar.gz --strip-components=1
 bash deploy/almalinux/update.sh --version "$TAG"
 ```
 
+The same path is the supported one for v1.2.0 → v1.3.0, and it matters more
+there: the v1.2.0 updater has neither the guard that refuses to drop an
+`[egress]` policy nor the executable-hash recording. On a host with a policy or
+with hand-copied executables, never run `update.sh --repair` or
+`--version v1.2.0` from the v1.2.0 tree — it re-installs the recorded v1.2.0
+executables and discards both. Run the target release's updater as above; it
+records the hashes (`vpn-admin doctor` then reports the recorded release) and
+every later update is guarded. See `docs/EXIT_IPV6_POLICY.md`.
+
 The updater then verifies the release's attestations again and runs the same
 transaction (verify, switch, health check, protocol self-test, roll back on
 failure). Once a host runs a release that includes this fix, the normal
@@ -413,6 +422,24 @@ Every reload (`create`/`disable`/`enable`/`remove`/`rotate-*`) briefly
 disconnects **every** connected client, not only the user that changed —
 sing-box has no in-place config reload for this stack, so each change is a
 full stop+start. Reconnecting immediately afterward succeeds.
+
+Two different things can be "rotated", with different blast radii:
+
+- **Subscription token** (`user rotate-token`, and `user qr`, which mints a new
+  token the same way): the old subscription URL stops working; the user's
+  transport credentials are unchanged, so a connected client keeps working until
+  it next refreshes the subscription. Hash-only storage means the raw token can
+  never be shown again, so there is no way to "just print" the current URL.
+- **Transport credentials** (`user rotate-vless`, `rotate-hysteria`,
+  `rotate-credentials`): the old UUID/password is rejected at the next
+  handshake and the client must re-import.
+
+`vpn user links <ID-or-name>` prints the direct `vless://`/`hysteria2://` URIs
+without minting or changing anything (it works while the subscription service
+is down). A name is accepted only if exactly one account has it; an ambiguous
+name is refused and the candidate IDs are listed. These URIs still contain the
+endpoint hostname, so they need DNS; they bypass subscription fetching, not
+name resolution. The `egress` commands never change either kind of credential.
 
 ## Backup
 
@@ -598,7 +625,7 @@ confinement for the entire host, not just this service.
 - [RECOVERY.md](RECOVERY.md) — full-host disaster recovery
 - [clients/README.md](clients/README.md) — per-client setup guides
 
-## Exit literal IPv6 policy (unreleased)
+## Exit literal IPv6 policy (v1.3.0)
 
 See [EXIT_IPV6_POLICY.md](EXIT_IPV6_POLICY.md) for `vpn-admin egress set`,
 rollback, local validation and the device evidence gate. Default plain exits

@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import signal
 import ssl
 import struct
 import subprocess
@@ -140,7 +141,35 @@ def udp_probe(proxy, host, payload):
         control.close()
 
 
+def terminate_owned(processes, sockets=()):
+    """Stop only the processes this lab started (tracked Popen objects), newest first."""
+    for process in reversed(processes):
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    for sock in sockets:
+        sock.close()
+
+
+def unwind_on_termination():
+    """Make SIGTERM/SIGINT unwind the stack so `finally` cleanup runs.
+
+    Python's default SIGTERM disposition kills the interpreter without running
+    `finally`, which would orphan the sing-box children when a CI timeout or an
+    operator stops the lab.
+    """
+    def handler(signum, _frame):
+        raise SystemExit(128 + signum)
+    for name in ("SIGTERM", "SIGINT"):
+        signal.signal(getattr(signal, name), handler)
+
+
 def main():
+    unwind_on_termination()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sing-box", required=True)
     parser.add_argument("--configs-dir", type=Path, required=True)
@@ -298,16 +327,7 @@ def main():
         print(f"LOCAL LAB PASS: {checks} assertions; IPv6 loopback exercised. UDP rejection was response absence, not demonstrated client-visible ICMP or automatic recovery.")
         return 0
     finally:
-        for process in reversed(processes):
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-        for sock in sockets:
-            sock.close()
+        terminate_owned(processes, sockets)
 
 
 if __name__ == "__main__":

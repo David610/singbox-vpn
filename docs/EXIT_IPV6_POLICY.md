@@ -1,9 +1,12 @@
-# Exit literal IPv6 policy (unreleased)
+# Exit literal IPv6 policy (introduced in v1.3.0)
 
-Full standalone YouTube remediation: **BLOCKED_ON_DEVICE_EVIDENCE**.
-This implementation provides an explicit rejection policy and diagnostics;
-it does not promise native iPhone recovery or change published v1.2.0 evidence.
-No production host, DNS record, firewall or sysctl was changed in this task.
+This document describes the mechanism and its operation. It provides an
+explicit rejection policy and diagnostics; it does not promise native iPhone
+recovery. **Whether a given release has been accepted on a real device and a
+disposable VPS is recorded only in** [DEVICE_ACCEPTANCE_TESTS.md](DEVICE_ACCEPTANCE_TESTS.md)
+**and `release-acceptance/<tag>.md`**, never here: until those say PASS for a
+release, full standalone YouTube remediation is **BLOCKED_ON_DEVICE_EVIDENCE**.
+Applying a policy changes the running configuration of the host it is run on.
 
 ## Evidence and mechanism
 
@@ -181,6 +184,64 @@ bash deploy/almalinux/lifecycle-acceptance.sh --host USER@DISPOSABLE_HOST \
 
 Also run a fresh exact-candidate lifecycle with `--version CANDIDATE_RC` and
 the same policy flag. Preserve the documented special updater path when
-coming from v1.1.0. Both live VPS runs, exact RC CI, TLS renewal and the
-[native checklist](NATIVE_IPHONE_IPV6_ACCEPTANCE.md) are **PENDING**. No tag,
-release dispatch, purchase, deployment or merge is authorized by these docs.
+coming from v1.1.0. The release acceptance workflow
+(`.github/workflows/vps-acceptance.yml`) requests this stage by default and
+refuses a release run that omits it, skips the reboot or lacks a verified SSH
+host key; the harness fails if a requested stage did not run. The live VPS
+runs, exact-RC CI, TLS renewal and the
+[native checklist](NATIVE_IPHONE_IPV6_ACCEPTANCE.md) are recorded per release
+(see the top of this document). These docs authorise no tag, release dispatch,
+purchase, deployment or merge.
+
+## Downgrade and rollback safety
+
+A deployment that declares `[egress]` must never silently lose the policy.
+v1.2.0 and earlier ignore an unknown `[egress]` table without any error, so:
+
+- `vpn-admin config validate` of a build that understands the policy prints
+  `capability: exit-egress-policy` and `egress-policy: declared (<value>)` or
+  `egress-policy: absent`, computed by the same parser production uses, so every
+  TOML spelling of the table (`[egress]`, `[ egress ]`, `["egress"]`, dotted
+  keys, an inline table) counts;
+- `update.sh` (update, repair or downgrade) first asks the **installed**
+  vpn-admin whether a policy is declared (only a build that predates that
+  answer falls back to an over-inclusive text match), then checks the **staged
+  target's** `config validate`, and refuses — before any live change — to switch
+  such a deployment to a build that does not print the marker;
+- to leave the policy on purpose, run `vpn-admin egress clear` first, then
+  downgrade; the deployment schema version is deliberately not bumped, because
+  that would break every rollback to v1.2.0 even for hosts with no policy.
+
+The guard lives in the **new** updater. A host still on v1.2.0 only has the
+v1.2.0 updater, which cannot be changed, so update it with the **target
+release's own updater** run from its checksum-verified source archive (the
+documented path in `INSTALLATION.md`): the target understands the policy, and
+that updater records the executable hashes at commit. Never run
+`update.sh --repair` or `--version v1.2.0` from the v1.2.0 tree on a host with a
+policy or hand-copied executables: it re-installs the recorded v1.2.0
+executables and drops the policy. The transition is scripted for disposable
+hosts in `deploy/almalinux/hybrid-upgrade-acceptance.sh`.
+
+Policy commands never change user credentials, subscription tokens or key
+material (covered by an automated test); clients do not need to re-import after
+`egress set`/`clear`. A mutating command whose stdout/stderr pipe closes still
+completes its transaction and reports its real result (a one-time secret
+printed to a closed stdout is lost by definition — mint a replacement with
+`user rotate-token`).
+
+## Release identity
+
+`vpn-admin doctor` (L1 line "release identity") compares the installed
+`vpn-admin`, `vpn` and `vpn-subscription-svc` **and the executable actually
+running the check** with the SHA-256 the installer/updater recorded in
+`install-state.json`, and with the recorded release tag: recorded stable
+release, release candidate, development channel, inconsistent (manual copy,
+partial update, or a development binary started by path) or UNKNOWN (installed
+before hashes were recorded — never reported as a match). A match means "these
+are the bytes the installer recorded", **not** independent proof that they are
+the published artifact (compare the release `SHA256SUMS`/attestation) and says
+nothing about unit files or helper scripts, which are not hashed. To restore a
+consistent deployment use the supported updater for the release you intend to
+run (`update.sh --version <tag>`); do not copy executables by hand, and do not
+use `--repair` when the recorded release is older than the vpn-admin you run or
+your configuration needs a newer one.

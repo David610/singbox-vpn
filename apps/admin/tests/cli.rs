@@ -145,6 +145,331 @@ fn exit_egress_cli_converges_reconciles_and_rolls_back_validation_failure() {
         .is_none());
 }
 
+/// stdout/stderr whose reader is already gone: the very first write fails with
+/// EPIPE, deterministically (no race with the child's startup).
+#[cfg(unix)]
+fn closed_pipe() -> std::process::Stdio {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    std::process::Stdio::from(writer)
+}
+
+#[cfg(unix)]
+fn null() -> std::process::Stdio {
+    std::process::Stdio::null()
+}
+
+/// A deployment in the live-reload configuration (fake systemctl + fake
+/// sing-box), initialised with one user and a rendered config.
+#[cfg(unix)]
+struct Scenario {
+    dir: tempfile::TempDir,
+    cfg: std::path::PathBuf,
+    lock: std::path::PathBuf,
+    systemctl: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl Scenario {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_singbox(dir.path(), false);
+        let cfg = write_deployment_toml_with_singbox(dir.path(), &binary);
+        let lock = dir.path().join("mutation.lock");
+        let systemctl = fake_systemctl(dir.path());
+        let scenario = Scenario {
+            dir,
+            cfg,
+            lock,
+            systemctl,
+        };
+        for args in [
+            vec!["init"],
+            vec!["user", "create", "--name", "david"],
+            vec!["render-config"],
+        ] {
+            assert!(
+                scenario.run(&args, null(), null()).success(),
+                "setup {args:?}"
+            );
+        }
+        scenario
+    }
+
+    /// Runs the real binary (through the host-isolation helper) with the given
+    /// stdout/stderr and returns its exit status.
+    fn run(
+        &self,
+        args: &[&str],
+        stdout: std::process::Stdio,
+        stderr: std::process::Stdio,
+    ) -> std::process::ExitStatus {
+        support::vpn_admin_process()
+            .arg("--config")
+            .arg(&self.cfg)
+            .args(args)
+            .current_dir(self.dir.path())
+            .env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1")
+            .env("SINGBOX_VPN_LOCK_PATH", &self.lock)
+            .env("SINGBOX_VPN_SYSTEMCTL", &self.systemctl)
+            .env("SYSTEMCTL_LOG", self.dir.path().join("systemctl.log"))
+            .stdout(stdout)
+            .stderr(stderr)
+            .status()
+            .unwrap()
+    }
+
+    fn rendered(&self) -> Vec<u8> {
+        std::fs::read(self.dir.path().join("state/sing-box/config.json")).unwrap()
+    }
+
+    fn users(&self) -> Vec<u8> {
+        std::fs::read(self.dir.path().join("state/users/users.json")).unwrap()
+    }
+
+    fn reloads(&self) -> usize {
+        std::fs::read_to_string(self.dir.path().join("systemctl.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.starts_with("reload-or-restart"))
+            .count()
+    }
+
+    fn ipv6_literal_rules(&self) -> usize {
+        let doc: serde_json::Value = serde_json::from_slice(&self.rendered()).unwrap();
+        doc["route"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|rule| rule["ip_version"] == 6)
+            .count()
+    }
+}
+
+/// A closed stdout/stderr during a MUTATION must not become a panic that skips
+/// the apply/rollback code. The transaction completes exactly as with healthy
+/// streams: desired state saved, runtime reloaded once, rendered config equal to
+/// a fresh reconcile, credentials untouched, lock free afterwards.
+#[test]
+#[cfg(unix)]
+fn mutation_completes_when_output_streams_are_closed() {
+    type Streams = fn() -> (std::process::Stdio, std::process::Stdio);
+    let variants: [(&str, Streams); 3] = [
+        ("stdout and stderr closed", || {
+            (closed_pipe(), closed_pipe())
+        }),
+        ("only stderr closed", || (null(), closed_pipe())),
+        ("only stdout closed", || (closed_pipe(), null())),
+    ];
+    for (label, streams) in variants {
+        let scenario = Scenario::new();
+        let users_before = scenario.users();
+        let reloads_before = scenario.reloads();
+        let (out, err) = streams();
+        let status = scenario.run(&["egress", "set", "reject_google"], out, err);
+        assert!(
+            status.success(),
+            "{label}: a completed mutation must report success, got {status:?}"
+        );
+        assert_eq!(
+            compat_config::deployment::DeploymentConfig::load(&scenario.cfg)
+                .unwrap()
+                .egress
+                .unwrap()
+                .ipv6_literal,
+            compat_config::deployment::Ipv6LiteralPolicy::RejectGoogle,
+            "{label}: desired state not saved"
+        );
+        assert_eq!(
+            scenario.reloads() - reloads_before,
+            1,
+            "{label}: the runtime must be reloaded exactly once"
+        );
+        assert_eq!(
+            scenario.ipv6_literal_rules(),
+            2,
+            "{label}: the runtime config lacks the policy's sniff + reject rules"
+        );
+        let rendered = scenario.rendered();
+        assert!(scenario.run(&["render-config"], null(), null()).success());
+        assert_eq!(
+            scenario.rendered(),
+            rendered,
+            "{label}: desired and runtime configuration diverged (a reconcile changed the file)"
+        );
+        assert_eq!(
+            scenario.users(),
+            users_before,
+            "{label}: credentials changed"
+        );
+        assert!(
+            scenario.run(&["egress", "clear"], null(), null()).success(),
+            "{label}: the state lock was left held"
+        );
+    }
+}
+
+/// A genuine failure stays a failure, with the same rollback, when the output
+/// streams are closed: exit status 1 (not 0, not the quiet 141) and nothing
+/// half-applied.
+#[test]
+#[cfg(unix)]
+fn failing_mutation_still_fails_and_rolls_back_with_closed_output() {
+    let scenario = Scenario::new();
+    let toml_before = std::fs::read(&scenario.cfg).unwrap();
+    let rendered_before = scenario.rendered();
+    let users_before = scenario.users();
+    fake_singbox(scenario.dir.path(), true);
+    let status = scenario.run(
+        &["egress", "set", "reject_all"],
+        closed_pipe(),
+        closed_pipe(),
+    );
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "a failed transaction must exit 1, got {status:?}"
+    );
+    assert_eq!(
+        std::fs::read(&scenario.cfg).unwrap(),
+        toml_before,
+        "desired state was not restored"
+    );
+    assert_eq!(
+        scenario.rendered(),
+        rendered_before,
+        "a failed mutation changed the runtime config"
+    );
+    assert_eq!(scenario.users(), users_before, "credentials changed");
+    fake_singbox(scenario.dir.path(), false);
+    assert!(
+        scenario
+            .run(&["egress", "set", "reject_google"], null(), null())
+            .success(),
+        "the failed run left the state lock held"
+    );
+}
+
+/// `user create` with closed streams still creates the account whole: the
+/// credentials a user would be handed (`user links`) are exactly the ones in the
+/// runtime config. (The one-time subscription token printed to a closed stdout
+/// is lost by definition; `rotate-token` mints a replacement.)
+#[test]
+#[cfg(unix)]
+fn user_creation_with_closed_output_keeps_credentials_consistent_with_the_node() {
+    let scenario = Scenario::new();
+    let status = scenario.run(
+        &["user", "create", "--name", "carol"],
+        closed_pipe(),
+        closed_pipe(),
+    );
+    assert!(status.success(), "{status:?}");
+    let links = admin(scenario.dir.path(), &scenario.cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &scenario.lock)
+        .args(["user", "links", "carol"])
+        .assert()
+        .success();
+    let links = String::from_utf8(links.get_output().stdout.clone()).unwrap();
+    let uuid = links
+        .split("vless://")
+        .nth(1)
+        .and_then(|rest| rest.split('@').next())
+        .expect("a vless URI is printed")
+        .to_string();
+    let rendered = String::from_utf8(scenario.rendered()).unwrap();
+    assert!(
+        rendered.contains(&uuid),
+        "the credential handed to the user is not in the rendered node config"
+    );
+}
+
+/// An egress-policy change is network policy only: it must never rotate,
+/// re-issue or otherwise touch a user's credentials or the REALITY keys, and
+/// the credentials a user is handed (`user links`) stay identical through
+/// set / reconcile / clear. Names resolve for `links`, so this also covers
+/// the by-name lookup against a real store.
+#[test]
+#[cfg(unix)]
+fn egress_policy_changes_never_touch_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = fake_singbox(dir.path(), false);
+    let cfg = write_deployment_toml_with_singbox(dir.path(), &binary);
+    let lock = dir.path().join("egress-creds.lock");
+    let run = |args: &[&str]| {
+        admin(dir.path(), &cfg)
+            .env("SINGBOX_VPN_LOCK_PATH", &lock)
+            .args(args)
+            .assert()
+            .success()
+    };
+    run(&["init"]);
+    run(&["user", "create", "--name", "david"]);
+    let users_file = dir.path().join("state/users/users.json");
+    let before_users = std::fs::read(&users_file).expect("users.json exists after user create");
+    let links = |selector: &str| {
+        let out = run(&["user", "links", selector]);
+        String::from_utf8(out.get_output().stdout.clone()).unwrap()
+    };
+    let before_links = links("david");
+    assert!(
+        before_links.contains("vless://") && before_links.contains("hysteria2://"),
+        "links must print both URIs:\n{before_links}"
+    );
+    let reality_dir = dir.path().join("state");
+    let key_snapshot = |root: &std::path::Path| -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut files = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(path) = stack.pop() {
+            for entry in std::fs::read_dir(&path).unwrap().flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|e| e == "key" || e == "pem")
+                    || p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().contains("reality"))
+                {
+                    files.push((p.clone(), std::fs::read(&p).unwrap()));
+                }
+            }
+        }
+        files.sort();
+        files
+    };
+    let before_keys = key_snapshot(&reality_dir);
+    assert!(
+        !before_keys.is_empty(),
+        "the key snapshot must cover real key material, or the comparison below proves nothing"
+    );
+
+    for step in [
+        vec!["egress", "set", "reject_google"],
+        vec!["render-config"],
+        vec!["egress", "set", "reject_all"],
+        vec!["egress", "clear"],
+        vec!["render-config"],
+    ] {
+        run(&step);
+        assert_eq!(
+            std::fs::read(&users_file).unwrap(),
+            before_users,
+            "`vpn-admin {}` changed the user store",
+            step.join(" ")
+        );
+        assert_eq!(
+            links("david"),
+            before_links,
+            "`vpn-admin {}` changed the credentials handed to the user",
+            step.join(" ")
+        );
+        assert_eq!(
+            key_snapshot(&reality_dir),
+            before_keys,
+            "`vpn-admin {}` changed REALITY/TLS key material",
+            step.join(" ")
+        );
+    }
+}
+
 #[test]
 #[cfg(unix)]
 fn exit_egress_cli_restart_failure_restores_desired_and_runtime_config() {
@@ -401,6 +726,183 @@ fn admin(dir: &Path, cfg_path: &Path) -> Command {
     cmd.current_dir(dir);
     cmd.env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1");
     cmd
+}
+
+/// A closed stdout pipe (`vpn-admin ... | head -1`) is a normal Unix
+/// pipeline outcome, not a program bug. Rust's `println!` panics on EPIPE
+/// (exit 101 plus a backtrace hint); the CLI must instead exit quietly with
+/// the conventional SIGPIPE status, while genuine failures stay non-zero.
+#[test]
+#[cfg(unix)]
+fn closed_stdout_pipe_exits_quietly_without_a_panic() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_deployment_toml(dir.path());
+    for _ in 0..25 {
+        let mut child = support::vpn_admin_process()
+            .arg("--config")
+            .arg(&cfg)
+            .args(["egress", "show"])
+            .env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("panicked"),
+            "broken pipe panicked:
+{stderr}"
+        );
+        assert_ne!(out.status.code(), Some(101), "exit 101 means a panic");
+        assert!(
+            out.status.success()
+                || out.status.code() == Some(141)
+                || out.status.signal() == Some(13),
+            "a closed pipe must either finish or report SIGPIPE, got {:?}",
+            out.status
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn real_failures_still_exit_nonzero_with_the_error_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist.toml");
+    let out = support::vpn_admin_process()
+        .arg("--config")
+        .arg(&missing)
+        .args(["egress", "show"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("loading deployment config"));
+}
+
+/// `update.sh` refuses to switch a deployment that declares `[egress]` to a
+/// vpn-admin that does not print this marker (an older build ignores the
+/// table silently), so the marker must be printed by `config validate`.
+#[test]
+fn config_validate_declares_exit_egress_policy_support() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_deployment_toml(dir.path());
+    let out = admin(dir.path(), &cfg)
+        .args(["config", "validate"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == compat_config::deployment::EXIT_EGRESS_POLICY_CAPABILITY),
+        "config validate must print the egress capability marker:\n{stdout}"
+    );
+}
+
+/// The update/downgrade guard decides "does this deployment declare an
+/// [egress] policy?" first by asking the installed build (`config validate`
+/// prints `egress-policy: declared|absent`), and only for builds that predate
+/// that line by a text match. Every spelling TOML allows for the table must be
+/// (1) the same thing to the production parser, (2) reported by `config
+/// validate`, and (3) caught by the shell fallback — and look-alikes must be
+/// none of those.
+#[test]
+#[cfg(unix)]
+fn every_toml_spelling_of_the_egress_table_is_detected() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = std::fs::read_to_string(write_deployment_toml(dir.path())).unwrap();
+    // Dotted keys and inline tables must precede the first [table] header.
+    let split = base
+        .find("\n[reality]")
+        .expect("base has a [reality] table");
+    let (head, tail) = base.split_at(split);
+    let declared: [(&str, String); 7] = [
+        (
+            "header",
+            format!("{base}\n[egress]\nipv6_literal = \"reject_google\"\n"),
+        ),
+        (
+            "spaced",
+            format!("{base}\n[ egress ]\nipv6_literal = \"reject_google\"\n"),
+        ),
+        (
+            "quoted",
+            format!("{base}\n[\"egress\"]\nipv6_literal = \"reject_google\"\n"),
+        ),
+        (
+            "single-quoted",
+            format!("{base}\n['egress']\nipv6_literal = \"reject_google\"\n"),
+        ),
+        (
+            "trailing-comment",
+            format!("{base}\n[egress] # note\nipv6_literal = \"reject_all\"\n"),
+        ),
+        (
+            "dotted",
+            format!("{head}\negress.ipv6_literal = \"reject_google\"{tail}"),
+        ),
+        (
+            "inline",
+            format!("{head}\negress = {{ ipv6_literal = \"reject_all\" }}{tail}"),
+        ),
+    ];
+    let absent: [(&str, String); 3] = [
+        (
+            "comment",
+            format!("{base}\n# [egress] is only mentioned here\n"),
+        ),
+        (
+            "lookalike-table",
+            format!("{base}\n[egress_notes]\nx = 1\n"),
+        ),
+        ("plain", base.clone()),
+    ];
+    let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/lib/node-identity.sh");
+    let shell_says_declared = |file: &Path| {
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg("source \"$1\"; deployment_declares_egress_policy \"$2\"")
+            .arg("_")
+            .arg(&helper)
+            .arg(file)
+            .status()
+            .unwrap()
+            .success()
+    };
+    for (name, text, want) in declared
+        .iter()
+        .map(|(n, t)| (*n, t, true))
+        .chain(absent.iter().map(|(n, t)| (*n, t, false)))
+    {
+        let file = dir.path().join(format!("{name}.toml"));
+        std::fs::write(&file, text).unwrap();
+        let parsed = compat_config::deployment::DeploymentConfig::load(&file)
+            .unwrap_or_else(|e| panic!("{name}: production parser rejected the file: {e}\n{text}"));
+        assert_eq!(parsed.egress.is_some(), want, "{name}: parser disagrees");
+        assert_eq!(
+            shell_says_declared(&file),
+            want,
+            "{name}: shell fallback disagrees with the production parser"
+        );
+        let out = admin(dir.path(), &file)
+            .args(["config", "validate"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let expected_line = if want {
+            "egress-policy: declared"
+        } else {
+            "egress-policy: absent"
+        };
+        assert!(
+            stdout.lines().any(|l| l.starts_with(expected_line)),
+            "{name}: `config validate` must print `{expected_line}`:\n{stdout}"
+        );
+    }
 }
 
 #[test]

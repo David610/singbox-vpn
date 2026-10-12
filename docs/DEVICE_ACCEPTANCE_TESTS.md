@@ -633,3 +633,47 @@ Local real-core TCP/UDP/QUIC controls are code evidence only. Native iPhone
 Shorts and long-video recovery on the exact candidate: **PENDING**,
 BLOCKED_ON_DEVICE_EVIDENCE. Historical device rows remain specific to their
 recorded builds. No production observation was made by this coding task.
+
+### 2026-10-12 — single-VPS trial of `main` (`ceb751c`) and v1.3.0 acceptance matrix
+
+- **What ran (SERVER-VERIFIED, browser-verified; NOT a release candidate):** one
+  Ubuntu 24.04 plain-exit VPS installed from v1.2.0, with `vpn`/`vpn-admin`
+  built from `main` copied over by hand (the situation the release-identity
+  doctor check now reports). `vpn-admin egress set` restarted sing-box once per
+  change and its REALITY self-test passed each time. Chrome iPhone emulation
+  through the real REALITY tunnel, 6 consecutive Shorts per row:
+
+  | Policy | Destination form | Result |
+  |---|---|---|
+  | `allow` | literal IPv4 | 6/6 play |
+  | `allow` | literal IPv6 | 0/6 ("Video unavailable") |
+  | `reject_google` | literal IPv6 | refused in ≈19 ms (no playback possible; this client has no fallback) |
+  | `reject_google` | literal IPv4 | 6/6 play |
+  | `reject_google` | domain | 6/6 play |
+
+  A non-Google literal IPv6 destination stayed reachable under `reject_google`
+  (it left from the host's IPv6 address). Policy set/clear did not modify the
+  user store (file modification time unchanged across the operations).
+- **User-reported (provisional, not acceptance):** the owner then reported that
+  playback "looks like it works" on the phone. Transport, network, duration,
+  app/iOS/Hiddify versions and whether Shorts and a long video both played were
+  not recorded.
+- **Not established by this entry:** that the native YouTube app retries over
+  IPv4 after the proxy closes a literal-IPv6 flow; Hysteria2/QUIC literal-IPv6;
+  ECH/absent-SNI flows; reboot, update, repair and renewal persistence.
+
+#### v1.3.0 exact-candidate native matrix — all cells **PENDING**
+
+Run per `docs/NATIVE_IPHONE_IPV6_ACCEPTANCE.md` against the same immutable RC that
+passed the disposable lifecycle, with Hiddify (iOS) and its embedded core importing
+the normal subscription and a direct link. Record non-secret versions (iPhone/iOS,
+YouTube, TikTok, Hiddify and embedded core, sing-box, server OS/role/policy).
+The website, billing and Tamara are deferred by the owner and are not part of this
+matrix.
+
+| Transport | Network | Import / refresh | YouTube Shorts (`sAcElROnYIE` + ≥ 10) | YouTube long + seek, 15 min | TikTok app (10 videos, 15 min, comments/profile) | TikTok web | Reconnect / idle / handover / reboots | Browsing, IPv6, DNS/ISP-IPv6/WebRTC | Result |
+|---|---|---|---|---|---|---|---|---|---|
+| REALITY | Wi-Fi | — | — | — | — | — | — | — | PENDING |
+| REALITY | cellular | — | — | — | — | — | — | — | PENDING |
+| Hysteria2 | Wi-Fi | — | — | — | — | — | — | — | PENDING |
+| Hysteria2 | cellular | — | — | — | — | — | — | — | PENDING |

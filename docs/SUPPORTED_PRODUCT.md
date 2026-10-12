@@ -212,6 +212,6 @@ else in this workspace. `crates/compat-config` depends on it, not the
 other way around, so the contract model cannot pick up server-side
 concerns (key files, paths, secrets) by accident.
 
-The **unreleased** standalone [exit IPv6 policy](EXIT_IPV6_POLICY.md) preserves
+The standalone [exit IPv6 policy](EXIT_IPV6_POLICY.md) (v1.3.0) preserves
 the plain-exit allow default and adds opt-in literal-family rejection. It is
-not native iPhone Shorts acceptance: see the PENDING device checklist.
+not native iPhone Shorts acceptance: see the device acceptance record.

@@ -629,7 +629,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   log "verifying real protocol handshake..."
   doctor_output=""
   doctor_rc=0
-  doctor_output="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" doctor --protocol --require-protocol 2>&1)" || doctor_rc=$?
+  doctor_output="$(SINGBOX_VPN_RELEASE_IDENTITY_PENDING=1 "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" doctor --protocol --require-protocol 2>&1)" || doctor_rc=$?
   if [ "$doctor_rc" -ne 0 ]; then
     echo "$doctor_output" >&2
     die "post-update protocol acceptance check failed (status $doctor_rc) — see output above. Rolling back to the previous working binaries/config."
@@ -899,6 +899,17 @@ if [ -f "$DEPLOYMENT_TOML" ]; then
           && ! admin_output_declares_relay_enforcement "$precheck_output"; then
         echo "$precheck_output" >&2
         die "this node is a RELAY, and $TARGET_VERSION's vpn-admin does not declare fail-closed relay forwarding. Switching to it (update, repair or downgrade) could render this relay as an unrestricted exit. Nothing live has been changed."
+      fi
+      # The INSTALLED vpn-admin is asked first whether an [egress] policy is
+      # declared (it parses the TOML the way production does); a build that
+      # predates the question falls back to an over-inclusive text match.
+      installed_validate_output=""
+      if [ -x "$BIN_DIR/vpn-admin" ]; then
+        installed_validate_output="$("$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config validate 2>&1 || true)"
+      fi
+      if egress_refusal="$(egress_policy_switch_refusal "$DEPLOYMENT_TOML" "$installed_validate_output" "$precheck_output")"; then
+        echo "$precheck_output" >&2
+        die "$egress_refusal Target: $TARGET_VERSION. Nothing live has been changed."
       fi
       ;;
     *)
@@ -1199,7 +1210,7 @@ SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
 log "verifying real protocol handshake..."
 doctor_output=""
 doctor_rc=0
-doctor_output="$("$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" doctor --protocol --require-protocol 2>&1)" || doctor_rc=$?
+doctor_output="$(SINGBOX_VPN_RELEASE_IDENTITY_PENDING=1 "$BIN_DIR/vpn" --config "$DEPLOYMENT_TOML" doctor --protocol --require-protocol 2>&1)" || doctor_rc=$?
 if [ "$doctor_rc" -ne 0 ]; then
   echo "$doctor_output" >&2
   die "post-update protocol acceptance check failed (status $doctor_rc) — see output above. Rolling back to $CURRENT_VERSION."
@@ -1211,6 +1222,9 @@ fi
 # =======================================================================
 log "writing install-state manifest for $TARGET_VERSION..."
 singbox_version_reported="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
+# Identity of the executables now installed (see install.sh's manifest writer).
+vpn_admin_sha256="$(sha256sum "$BIN_DIR/vpn-admin" | awk '{print $1}')"
+subscription_sha256="$(sha256sum "$BIN_DIR/vpn-subscription-svc" | awk '{print $1}')"
 pinned_singbox_sha256=""
 case "$ARCH" in
   amd64) pinned_singbox_sha256="$TARGET_SINGBOX_SHA256_AMD64" ;;
@@ -1225,6 +1239,8 @@ cat > "$INSTALL_STATE_MANIFEST.tmp" <<EOF
 {
   "singbox_vpn_version": "$TARGET_VERSION",
   "singbox_vpn_repo": "$SINGBOX_VPN_REPO",
+  "vpn_admin_sha256": "$vpn_admin_sha256",
+  "subscription_sha256": "$subscription_sha256",
   "sing_box_version": "$singbox_version_reported",
   "sing_box_version_pinned": "$TARGET_SINGBOX_VERSION",
   "sing_box_sha256_pinned": "$pinned_singbox_sha256",
