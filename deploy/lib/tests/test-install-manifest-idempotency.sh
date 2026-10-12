@@ -162,6 +162,24 @@ run_manifest_flow() {
     [ "$acceptance_field" = "pending" ] || { echo "UNEXPECTED: acceptance field is '$acceptance_field', expected 'pending'"; exit 1; }
     echo "PENDING_OK"
 
+    # 2b. Release identity: the manifest records the SHA-256 of the executables
+    #     actually installed in $BIN_DIR (what `vpn-admin doctor` compares), and
+    #     leaves the fields empty — never invented — when they do not exist yet.
+    [ -z "$(grep -oE '"vpn_admin_sha256": *"[0-9a-f]+"' "$manifest_path")" ] \
+      || { echo "UNEXPECTED: a hash was recorded although no vpn-admin was installed"; exit 1; }
+    BIN_DIR="$TMPDIR_TEST/fakebin"
+    mkdir -p "$BIN_DIR"
+    printf 'fake vpn-admin build\n' >"$BIN_DIR/vpn-admin"
+    printf 'fake subscription build\n' >"$BIN_DIR/vpn-subscription-svc"
+    write_install_state_manifest "pending"
+    want_admin="$(sha256sum "$BIN_DIR/vpn-admin" | awk '{print $1}')"
+    want_sub="$(sha256sum "$BIN_DIR/vpn-subscription-svc" | awk '{print $1}')"
+    grep -q "\"vpn_admin_sha256\": \"$want_admin\"" "$manifest_path" \
+      || { echo "UNEXPECTED: vpn_admin_sha256 missing/wrong in the manifest"; exit 1; }
+    grep -q "\"subscription_sha256\": \"$want_sub\"" "$manifest_path" \
+      || { echo "UNEXPECTED: subscription_sha256 missing/wrong in the manifest"; exit 1; }
+    echo "IDENTITY_OK"
+
     # 3. print_status-equivalent: acceptance_stage succeeded, manifest
     #    upgraded to accepted. Re-running existing_install_present()
     #    must still report an existing install (a repair run must never
@@ -199,6 +217,30 @@ if echo "$out" | grep -q '^PENDING_OK$'; then
 else
   echo "FAIL: pending-manifest / existing_install_present() interaction is broken"
   echo "$out"
+  failures=$((failures + 1))
+fi
+if echo "$out" | grep -q '^IDENTITY_OK$'; then
+  echo "ok: the manifest records the SHA-256 of the installed executables (empty, not invented, before they exist)"
+else
+  echo "FAIL: release-identity hashes are not recorded in the install-state manifest"
+  echo "$out"
+  failures=$((failures + 1))
+fi
+update_commit="$(sed -n '/^# COMMIT/,/^committed=1/p' "$REPO_ROOT/deploy/almalinux/update.sh")"
+if echo "$update_commit" | grep -q '"vpn_admin_sha256": "\$vpn_admin_sha256"' \
+    && echo "$update_commit" | grep -q '"subscription_sha256": "\$subscription_sha256"' \
+    && echo "$update_commit" | grep -q 'sha256sum "\$BIN_DIR/vpn-admin"'; then
+  echo "ok: update.sh's COMMIT step records the identity of the executables it just installed"
+else
+  echo "FAIL: update.sh does not record executable hashes in the manifest it commits"
+  failures=$((failures + 1))
+fi
+pending_runs="$(grep -c 'SINGBOX_VPN_RELEASE_IDENTITY_PENDING=1 "\$BIN_DIR/vpn" --config "\$DEPLOYMENT_TOML" doctor' "$REPO_ROOT/deploy/almalinux/update.sh")"
+if [ "$pending_runs" = 2 ] \
+    && [ "$(grep -c 'doctor --protocol --require-protocol' "$REPO_ROOT/deploy/almalinux/update.sh")" = "$pending_runs" ]; then
+  echo "ok: every pre-commit verification doctor run in update.sh is marked update-in-progress"
+else
+  echo "FAIL: a pre-commit doctor run in update.sh is not marked SINGBOX_VPN_RELEASE_IDENTITY_PENDING=1 (would report a false inconsistency)"
   failures=$((failures + 1))
 fi
 if echo "$out" | grep -q '^ACCEPTED_OK$'; then

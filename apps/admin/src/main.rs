@@ -9,6 +9,7 @@
 mod external_authorization;
 mod lease_pool;
 mod lock;
+mod release_identity;
 mod service;
 mod static_apply;
 
@@ -5344,6 +5345,7 @@ fn cmd_doctor(
     check_conntrack_pressure();
     check_udp_memory_pressure();
     check_singbox_binary_version_consistency(cfg);
+    check_release_identity();
     report_check(
         CheckStatus::Info,
         "L4",
@@ -6885,6 +6887,16 @@ fn check_public_hostname_and_ipv6_policy(cfg: &DeploymentConfig, failures: &mut 
 /// only ever inspects the ONE binary at `cfg.singbox_binary`, so it
 /// cannot see this class of drift by construction. This check is
 /// read-only: it never changes which binary is active.
+fn check_release_identity() {
+    let (verdict, message) = release_identity::check(env!("CARGO_PKG_VERSION"));
+    let status = match verdict {
+        release_identity::Verdict::Ok => CheckStatus::Ok,
+        release_identity::Verdict::Info => CheckStatus::Info,
+        release_identity::Verdict::Warn => CheckStatus::Warn,
+    };
+    report_check(status, "L1", message);
+}
+
 fn check_singbox_binary_version_consistency(cfg: &DeploymentConfig) {
     let candidates: Vec<std::path::PathBuf> = vec![
         cfg.singbox_binary.clone(),
