@@ -390,6 +390,15 @@ cd "$W/src" && tar xzf ../dl/singbox-vpn-src.tar.gz --strip-components=1
 bash deploy/almalinux/update.sh --version "$TAG"
 ```
 
+The same path is the supported one for v1.2.0 → v1.3.0, and it matters more
+there: the v1.2.0 updater has neither the guard that refuses to drop an
+`[egress]` policy nor the executable-hash recording. On a host with a policy or
+with hand-copied executables, never run `update.sh --repair` or
+`--version v1.2.0` from the v1.2.0 tree — it re-installs the recorded v1.2.0
+executables and discards both. Run the target release's updater as above; it
+records the hashes (`vpn-admin doctor` then reports the recorded release) and
+every later update is guarded. See `docs/EXIT_IPV6_POLICY.md`.
+
 The updater then verifies the release's attestations again and runs the same
 transaction (verify, switch, health check, protocol self-test, roll back on
 failure). Once a host runs a release that includes this fix, the normal
