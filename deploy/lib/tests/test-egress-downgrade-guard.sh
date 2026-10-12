@@ -160,11 +160,11 @@ rc=0; run_block "$variants/header.toml" >"$WORK/block.out" 2>&1 || rc=$?
 echo "--- ordering: the refusal sits before any live mutation in update.sh ---"
 block_end="$(awk '/egress_policy_switch_refusal/ {found=NR} END {print found+0}' "$UPDATE_SH")"
 first_mut="$(grep -n '^mutation_started=1$' "$UPDATE_SH" | tail -1 | cut -d: -f1)"
-first_install="$(grep -n 'install -m 0755 .*"\$BIN_DIR/' "$UPDATE_SH" | head -1 | cut -d: -f1)"
+first_install="$(grep -n 'install -d -m 0700 -o root -g root "$BACKUP_ROOT"' "$UPDATE_SH" | head -1 | cut -d: -f1)"
 if [ "$block_end" -gt 0 ] && [ "$block_end" -lt "$first_mut" ] && [ "$block_end" -lt "${first_install:-999999}" ]; then
-  ok "guard (line $block_end) precedes mutation_started=1 (line $first_mut) and the first binary install"
+  ok "guard (line $block_end) precedes the PREPARE backup directory creation (line $first_install) and mutation_started=1 (line $first_mut)"
 else
-  fail "the guard is not provably before the first live mutation (guard=$block_end mutation=$first_mut install=${first_install:-none})"
+  fail "the guard is not provably before the first live mutation (guard=$block_end mutation=$first_mut prepare=${first_install:-none})"
 fi
 
 if [ "$REAL" = 1 ]; then
