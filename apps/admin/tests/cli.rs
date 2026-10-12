@@ -10,6 +10,175 @@ use std::path::Path;
 
 mod support;
 
+#[test]
+#[cfg(unix)]
+fn exit_egress_cli_converges_reconciles_and_rolls_back_validation_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = fake_singbox(dir.path(), false);
+    let cfg = write_deployment_toml_with_singbox(dir.path(), &binary);
+    let lock = dir.path().join("egress.lock");
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .arg("init")
+        .assert()
+        .success();
+    admin(dir.path(), &cfg)
+        .args(["egress", "show"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("allow (plain exit default)"));
+    for policy in ["reject_google", "reject_all"] {
+        admin(dir.path(), &cfg)
+            .env("SINGBOX_VPN_LOCK_PATH", &lock)
+            .args(["egress", "set", policy])
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("NOT verified"));
+        let before = std::fs::read(&cfg).unwrap();
+        admin(dir.path(), &cfg)
+            .env("SINGBOX_VPN_LOCK_PATH", &lock)
+            .args(["egress", "set", policy])
+            .assert()
+            .success();
+        assert_eq!(
+            std::fs::read(&cfg).unwrap(),
+            before,
+            "policy setter must be idempotent"
+        );
+        let rendered = dir.path().join("state/sing-box/config.json");
+        let before_render = std::fs::read(&rendered).unwrap();
+        admin(dir.path(), &cfg)
+            .env("SINGBOX_VPN_LOCK_PATH", &lock)
+            .arg("render-config")
+            .assert()
+            .success();
+        assert_eq!(
+            std::fs::read(rendered).unwrap(),
+            before_render,
+            "reconcile must preserve selected policy"
+        );
+    }
+    let before_toml = std::fs::read(&cfg).unwrap();
+    let before_render = std::fs::read(dir.path().join("state/sing-box/config.json")).unwrap();
+    fake_singbox(dir.path(), true);
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .args(["egress", "set", "allow"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("deployment restored"));
+    assert_eq!(std::fs::read(&cfg).unwrap(), before_toml);
+    assert_eq!(
+        std::fs::read(dir.path().join("state/sing-box/config.json")).unwrap(),
+        before_render
+    );
+    fake_singbox(dir.path(), false);
+    ensure_vpn_subscription_group_exists_for_root_tests();
+    let users_dir = dir.path().join("state/users");
+    std::fs::create_dir_all(&users_dir).unwrap();
+    std::fs::write(
+        users_dir.join("users.json"),
+        r#"{"schema_version":1,"users":[]}"#,
+    )
+    .unwrap();
+    let archive = dir.path().join("egress-backup.tar");
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .args(["backup", "--output"])
+        .arg(&archive)
+        .assert()
+        .success();
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .args(["egress", "clear"])
+        .assert()
+        .success();
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .args(["egress", "set", "reject_google"])
+        .assert()
+        .success();
+    let mut archived = tar::Archive::new(std::fs::File::open(&archive).unwrap());
+    let mut found = false;
+    for entry in archived.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        if entry.path().unwrap() == std::path::Path::new("deployment.toml") {
+            use std::io::Read;
+            let mut text = String::new();
+            entry.read_to_string(&mut text).unwrap();
+            let config: compat_config::deployment::DeploymentConfig =
+                toml::from_str(&text).unwrap();
+            assert_eq!(
+                config.egress.unwrap().ipv6_literal,
+                compat_config::deployment::Ipv6LiteralPolicy::RejectAll
+            );
+            found = true;
+        }
+    }
+    assert!(
+        found,
+        "backup must retain the selected policy for operator recovery"
+    );
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .arg("restore")
+        .arg(&archive)
+        .assert()
+        .success();
+    assert_eq!(
+        compat_config::deployment::DeploymentConfig::load(&cfg)
+            .unwrap()
+            .egress
+            .unwrap()
+            .ipv6_literal,
+        compat_config::deployment::Ipv6LiteralPolicy::RejectGoogle
+    );
+
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .args(["egress", "clear"])
+        .assert()
+        .success();
+    assert!(compat_config::deployment::DeploymentConfig::load(&cfg)
+        .unwrap()
+        .egress
+        .is_none());
+}
+
+#[test]
+#[cfg(unix)]
+fn exit_egress_cli_restart_failure_restores_desired_and_runtime_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = fake_singbox(dir.path(), false);
+    let cfg = write_deployment_toml_with_singbox(dir.path(), &binary);
+    let lock = dir.path().join("egress.lock");
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .arg("init")
+        .assert()
+        .success();
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .arg("render-config")
+        .assert()
+        .success();
+    let before_toml = std::fs::read(&cfg).unwrap();
+    let before_doc = std::fs::read(dir.path().join("state/sing-box/config.json")).unwrap();
+    let systemctl = fake_systemctl_failing_reload_on_call(dir.path(), 1);
+    admin(dir.path(), &cfg)
+        .env("SINGBOX_VPN_LOCK_PATH", &lock)
+        .env("SINGBOX_VPN_SYSTEMCTL", systemctl)
+        .env("SYSTEMCTL_LOG", dir.path().join("calls"))
+        .args(["egress", "set", "reject_google"])
+        .assert()
+        .failure();
+    assert_eq!(std::fs::read(&cfg).unwrap(), before_toml);
+    assert_eq!(
+        std::fs::read(dir.path().join("state/sing-box/config.json")).unwrap(),
+        before_doc
+    );
+}
+
 const REALITY_PRIVATE_A: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
 const REALITY_PUBLIC_A: &str = "pOCSkrZRwni5dyxWn1-puxPZBrRqtoyd-dwrRAn4ogk";
 const REALITY_PRIVATE_B: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";

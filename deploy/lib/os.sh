@@ -8,7 +8,7 @@
 # ("firewalld" | "ufw").
 #
 # OS_SUPPORT below records implementation-path coverage. It is not the public
-# product support boundary; docs/SUPPORTED_PRODUCT.md limits v1.0 support to
+# product support boundary; docs/SUPPORTED_PRODUCT.md limits product support to
 # AlmaLinux 9 x86-64. Unknown OS families still fail loudly.
 
 # Path to the os-release file detect_os() reads. Overridable so tests can
@@ -63,7 +63,7 @@ detect_os() {
           OS_FAMILY="debian"; PKG_MANAGER="apt"; FIREWALL_BACKEND="ufw" ;;
         *)
           echo "unsupported operating system: $OS_PRETTY_NAME (id=$OS_ID)" >&2
-          echo "supported v1.0 target: AlmaLinux 9 x86-64. Additional recognized-but-unsupported implementation paths: Rocky/RHEL 9, Amazon Linux 2023, Ubuntu 22.04/24.04, Debian 12/13." >&2
+          echo "supported target: AlmaLinux 9 x86-64. Additional recognized-but-unsupported implementation paths: Rocky/RHEL 9, Amazon Linux 2023, Ubuntu 22.04/24.04, Debian 12/13." >&2
           return 1
           ;;
       esac

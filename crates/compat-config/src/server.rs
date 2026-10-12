@@ -34,9 +34,8 @@ impl ServerPorts {
 ///
 /// The forwarding policy is derived from `deployment.role` alone:
 ///
-/// * `Exit` — the single-server document (no `route` section, `direct`
-///   egress). Role policy adds nothing to it; the only change an upgrade
-///   from a pre-D4 build makes is [`server_log_options`].
+/// * `Exit` — direct egress after C-16/probe isolation, plus an optional
+///   literal-IPv6 policy and independently configured Google hairpin.
 /// * `Relay` — the same authenticated inbounds, plus a `route.rules` list
 ///   that forwards ONLY to the exits declared in `deployment.toml`
 ///   ([`DeploymentConfig::relay_targets`]) and ends in an unconditional
@@ -99,6 +98,16 @@ pub fn render_server_config_for_deployment(
         ) {
             apply_google_egress_hairpin(&mut config, hairpin, uuid);
         }
+        let hairpin_active = deployment.google_egress_hairpin.is_some()
+            && reality.google_egress_hairpin_uuid.is_some();
+        let mut policy_rules = exit_egress_rules(deployment, hairpin_active);
+        policy_rules.extend(
+            config["route"]["rules"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        );
+        config["route"]["rules"] = json!(policy_rules);
         apply_exit_loopback_selftest_exception(&mut config, deployment, users, now_unix);
         apply_c16_egress_policy(
             &mut config,
@@ -664,6 +673,78 @@ pub fn probe_confinement_rule_count(doc: &serde_json::Value) -> usize {
     }
 }
 
+/// Exit rules after the mandatory C-16/probe prefix. No destination rewrite:
+/// IPVersion is derived from the original literal, while sniff only fills
+/// Domain. Plain exits sniff only IPv6 port 443 TLS/QUIC with a bounded wait;
+/// legacy hairpins retain their broader sniff and exact reject shape.
+pub fn exit_egress_rules(
+    deployment: &DeploymentConfig,
+    hairpin_active: bool,
+) -> Vec<serde_json::Value> {
+    use crate::deployment::Ipv6LiteralPolicy;
+    let policy = deployment
+        .egress
+        .as_ref()
+        .map(|e| e.ipv6_literal)
+        .unwrap_or(if hairpin_active {
+            Ipv6LiteralPolicy::RejectGoogle
+        } else {
+            Ipv6LiteralPolicy::Allow
+        });
+    let mut rules = Vec::new();
+    if hairpin_active {
+        rules.push(json!({"action":"sniff"}));
+    } else if policy == Ipv6LiteralPolicy::RejectGoogle {
+        rules.push(json!({"ip_version":6,"port":443,"action":"sniff","sniffer":["tls","quic"],"timeout":"100ms"}));
+    }
+    if policy != Ipv6LiteralPolicy::Allow {
+        let mut reject =
+            json!({"ip_version":6,"action":"reject","method":"default","no_drop":true});
+        if policy == Ipv6LiteralPolicy::RejectGoogle {
+            reject["domain_suffix"] = json!(crate::model::GOOGLE_EGRESS_DOMAINS);
+            if !hairpin_active {
+                reject["port"] = json!(443);
+            }
+        }
+        rules.push(reject);
+    }
+    rules
+}
+
+/// Exact non-secret exit policy check used by doctor. Missing, duplicate,
+/// shadowed or reordered rules fail rather than accepting a similar shape.
+pub fn exit_egress_policy_matches(deployment: &DeploymentConfig, doc: &serde_json::Value) -> bool {
+    let Some(all) = doc["route"]["rules"].as_array() else {
+        return false;
+    };
+    let prefix = probe_confinement_rule_count(doc);
+    let Some(tail) = all.get(prefix..) else {
+        return false;
+    };
+    let c16 = c16_egress_deny_rules(
+        &doc["inbounds"]
+            .as_array()
+            .map(|ibs| {
+                ibs.iter()
+                    .filter_map(|ib| ib["tag"].as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        None,
+        None,
+        None,
+    );
+    if !tail.starts_with(&c16) {
+        return false;
+    }
+    let hairpin = deployment.google_egress_hairpin.is_some();
+    let mut expected = exit_egress_rules(deployment, hairpin);
+    if hairpin {
+        expected.push(json!({"domain_suffix":crate::model::GOOGLE_EGRESS_DOMAINS,"action":"route","outbound":"google-egress-hairpin"}));
+    }
+    tail[c16.len()..] == expected && doc["route"]["final"] == "direct"
+}
+
 /// Mutates an already-rendered exit document to send the Google/YouTube
 /// domain set out through another node's IP instead of this exit's own —
 /// see `docs/YOUTUBE_FIX_INVARIANTS.md`. The reason is **which IP YouTube
@@ -672,26 +753,13 @@ pub fn probe_confinement_rule_count(doc: &serde_json::Value) -> usize {
 /// Shorts never start while ordinary videos still play
 /// (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §18).
 ///
-/// Adds exactly one outbound (a VLESS+REALITY client dialing the paired
-/// node's hairpin user) and three `route.rules` entries, in this order:
-///
-/// 1. an unconditional sniff, so a client that resolved DNS itself and sent
-///    a bare IP — common on mobile TUN clients — still gets matched by
-///    domain from the TLS/QUIC SNI. Per-inbound `sniff` is a legacy field
-///    removed in sing-box 1.13 (see
-///    <https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions>);
-///    a `{"action": "sniff"}` route rule is the current syntax.
-/// 2. a reject for Google/YouTube destinations given as a **literal IPv6
-///    address**. The paired node is typically IPv4-only, so such a flow
-///    would stall until the client's own timeout instead of falling back
-///    to IPv4. `ip_version` in a route rule is set only from a literal
-///    destination (`route/route.go` `prepareMatchMetadata`) — a domain
-///    destination, even after the C-16 `resolve` action, never matches —
-///    so this cannot reject a normal domain-based flow. `no_drop` is
-///    load-bearing: without it sing-box escalates reject to a silent drop
-///    after 50 rejects in 30 s, restoring the very stall this rule exists
-///    to prevent.
-/// 3. the domain-match route to the hairpin outbound.
+/// Adds one dedicated outbound and its domain route. Shared exit policy
+/// prepends the existing hairpin sniff/reject sequence. Reject closes proxy
+/// connections; no_drop prevents rate-based escalation to silent drops. It
+/// does not prove native iOS recovery or synthesize a TUN ICMP response.
+/// ip_version uses the original literal; resolve only fills address metadata.
+/// Sniffed SNI permits a domain match without changing that destination.
+/// ECH and absent SNI remain outside the scoped domain rule's coverage.
 ///
 /// Every other destination keeps using the pre-existing `direct` outbound
 /// via `route.final`. If the paired node is unreachable, Google/YouTube
@@ -723,24 +791,17 @@ fn apply_google_egress_hairpin(
             }
         }));
     }
-    config["route"] = json!({
-        "rules": [
-            { "action": "sniff" },
-            {
-                "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
-                "ip_version": 6,
-                "action": "reject",
-                "method": "default",
-                "no_drop": true,
-            },
-            {
-                "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
-                "action": "route",
-                "outbound": hairpin_tag,
-            },
-        ],
-        "final": "direct",
-    });
+    let mut rules = config["route"]["rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    rules.push(json!({
+        "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
+        "action": "route",
+        "outbound": hairpin_tag,
+    }));
+    config["route"]["rules"] = json!(rules);
+    config["route"]["final"] = json!("direct");
 }
 
 /// Transport-level document builder: both inbounds for the active users

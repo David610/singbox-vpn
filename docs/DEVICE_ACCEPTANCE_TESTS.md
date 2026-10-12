@@ -27,7 +27,7 @@ is not equivalent to any runtime verification.
 
 ## Canonical evidence ledger
 
-Current as of 2026-08-22 for commit
+Historical audit snapshot as of 2026-08-22 for commit
 `5370a30325bf9d95ab1d5250648809699b6eefff` (the audit baseline). Entries with
 missing device/VPS/version data stay USER-REPORTED or UNVERIFIED.
 
@@ -55,11 +55,11 @@ rule already established in `docs/CLIENT_COMPATIBILITY.md`: a cell only
 ever changes to PASS after a dated, filled-in entry exists below, never
 from spec conformance or code review alone.
 
-## Matrix
+## Matrix (dated evidence; exact new candidate remains PENDING)
 
 | Platform | Client | VLESS+REALITY | Hysteria2 | Subscription refresh | Network switch |
 |---|---|---|---|---|---|
-| iOS | Hiddify | not yet tested | not yet tested | not yet tested | not yet tested |
+| iOS | Hiddify | DEVICE-VERIFIED, 2026-09-27 / v1.1.0-rc.6 | DEVICE-VERIFIED, same dated entry | DEVICE-VERIFIED, same dated entry | DEVICE-VERIFIED, Wi-Fi/cellular in that entry |
 | Android | Hiddify | not yet tested | not yet tested | not yet tested | not yet tested |
 | HONOR MagicOS | Hiddify | not yet tested | not yet tested | not yet tested | not yet tested |
 | Android | v2rayNG | not yet tested | N/A (unsupported/not guaranteed — see `docs/clients/V2RAYNG_ANDROID.md`) | not yet tested | not yet tested |
@@ -67,10 +67,12 @@ from spec conformance or code review alone.
 | Windows | Hiddify | not yet tested | not yet tested | not yet tested | not yet tested |
 | macOS | Hiddify | not yet tested | not yet tested | not yet tested | not yet tested |
 
-## Open: YouTube native-app acceptance
+## YouTube native-app acceptance: historical report, new candidate PENDING
 
-No row above covers native-app media playback, and no YouTube test has
-passed on any device.
+The October 11 owner report describes working native playback on a hand-patched
+v1.1.0 runtime; the later ledger reports both transports. This does not accept
+the exact v1.2.0 RC or this new standalone policy. Follow the separate
+[NATIVE_IPHONE_IPV6_ACCEPTANCE.md](NATIVE_IPHONE_IPV6_ACCEPTANCE.md) checklist.
 
 ### 2026-09-16 — real-device result for `compat=quic-reject`: FAIL
 
@@ -118,7 +120,7 @@ which IP YouTube sees, not CDN peering. Rules that must keep holding:
 | Client | Hiddify on iPhone, plain `?format=hiddify` subscription (version, iOS version, transport and network **not recorded**) |
 | Server | exit `de1` `91.244.71.165`, release v1.1.0 binaries, hand-patched live config with the IPv6 reject rule; paired with `ru1` `135.106.178.167` |
 | Same-day browser gate | Chrome iPhone emulation through the real VLESS+REALITY tunnel: 6/6 consecutive Shorts, before the fix 0/6 |
-| **Not tested** | Hysteria2, cellular, 15-minute sustained session, seeking, post-reboot, a run on a release containing the IPv6 reject rule |
+| **Not accepted on exact new candidate** | REALITY, Hysteria2, cellular, 15-minute sustained session, seeking, post-reboot, a run on a release containing the IPv6 reject rule |
 
 Do not upgrade this to "verified fixed" without a dated entry recording those.
 
@@ -126,7 +128,8 @@ Do not upgrade this to "verified fixed" without a dated entry recording those.
 
 Superseded `compat=youtube-direct` as the primary fix
 (`docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16): the real discriminator is
-per-CDN-edge network latency specific to the exit's provider, not IP class,
+**the disproven hypothesis** of per-CDN-edge latency. Later controlled
+measurements identify refusal of specific egress IPs, independently per family,
 and the fix is entirely server-side (an exit-to-relay hairpin for the
 Google/YouTube domain set), so it needs **no client-side configuration at
 all** and works in Hiddify by default, unlike `compat=youtube-direct`.
@@ -623,3 +626,10 @@ unchanged. A DNS/IPv6 leak-test pass is the one remaining gate.
 - **Device (DEVICE-VERIFIED, maintainer-reported, earlier build):** native iPhone YouTube app through Hiddify; Shorts and long videos play over VLESS+REALITY and over Hysteria2. This ran on 2026-10-11 against the exit on v1.1.0 binaries with the same hairpin rules applied by hand, not on the rc.5 build. Runtime code is unchanged since rc.3.
 - **Rejected RCs in this cycle:** rc.1 (updater from v1.1.0 failed on the new unit; no reserved probe principal), rc.2 (update deadlock on its own lock), rc.3 and rc.4 (acceptance harness: start-limit budget in stage 13, then the reconcile timer racing the SIGKILL stages).
 - **UNVERIFIED here:** profile name "Arcana VPN" on a real device, cellular/handover, 15-minute sustained session, reconnect after server reboot, real-device Hysteria2 on rc.5, reachability from a censoring network.
+
+### 2026-10-12 — standalone exit literal-family policy
+
+Local real-core TCP/UDP/QUIC controls are code evidence only. Native iPhone
+Shorts and long-video recovery on the exact candidate: **PENDING**,
+BLOCKED_ON_DEVICE_EVIDENCE. Historical device rows remain specific to their
+recorded builds. No production observation was made by this coding task.

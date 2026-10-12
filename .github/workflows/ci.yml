@@ -393,6 +393,18 @@ jobs:
           echo "running real sing-box check against the generated server config:"
           sing-box check -c "$STATE/sing-box/config.json"
 
+      - name: Unprivileged literal-family egress policy lab (real core)
+        env:
+          SING_BOX_BIN: /usr/local/bin/sing-box
+          SINGBOX_VPN_REQUIRE_REAL_INTEROP: "1"
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/egress-lab-venv"
+          "$RUNNER_TEMP/egress-lab-venv/bin/pip" install -r deploy/lib/tests/requirements-egress-lab.txt
+          export YOUTUBE_TEST_PYTHON="$RUNNER_TEMP/egress-lab-venv/bin/python"
+          python3 deploy/lib/tests/test-egress-tools.py
+          cargo test --locked -p compat-config --test egress_family_interop -- --nocapture
+
       # A test that always skips is documentation, not regression
       # protection. This is the one job with the pinned, checksum-verified
       # binary on disk, so it is the one responsible for actually RUNNING

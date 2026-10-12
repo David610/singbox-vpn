@@ -343,9 +343,9 @@ pub struct DeploymentConfig {
     pub peer_endpoints: Vec<PeerEndpointSection>,
 
     /// Public (never secret) connection metadata for an EXIT's own
-    /// Google/YouTube egress hairpin through a relay with better network
-    /// peering to Google's CDN — see `CompatUser::google_egress_hairpin`
-    /// and `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16. Only meaningful on an
+    /// Google/YouTube egress hairpin through an owner-approved accepted-IP
+    /// node — see `CompatUser::google_egress_hairpin`
+    /// and `docs/YOUTUBE_FIX_INVARIANTS.md`. Only meaningful on an
     /// exit; ignored on a relay. `None` (the default, and every existing
     /// deployment file) means this exit renders exactly as it always has.
     /// The secret half — this exit's own UUID credential for the relay's
@@ -353,6 +353,11 @@ pub struct DeploymentConfig {
     /// loaded separately from disk, never from this TOML file.
     #[serde(default)]
     pub google_egress_hairpin: Option<GoogleEgressHairpinSection>,
+
+    /// Exit-only, opt-in literal destination policy. Absence preserves a
+    /// plain exit's dual-stack behavior and the hairpin's existing reject.
+    #[serde(default)]
+    pub egress: Option<EgressSection>,
 
     /// This node's own public IPv4 address, captured once (at install/
     /// bootstrap time, or via a later `APPLY_NODE_REVISION`) rather than
@@ -373,6 +378,44 @@ pub struct DeploymentConfig {
     /// IPv6 counterpart of `public_ipv4`. Same semantics.
     #[serde(default)]
     pub public_ipv6: Option<String>,
+}
+
+/// A mechanism, not a promise of client IPv4 recovery. Proxy rejection
+/// closes a flow; native application retry needs separate device evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ipv6LiteralPolicy {
+    Allow,
+    RejectGoogle,
+    RejectAll,
+}
+
+impl Ipv6LiteralPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::RejectGoogle => "reject_google",
+            Self::RejectAll => "reject_all",
+        }
+    }
+}
+
+impl std::str::FromStr for Ipv6LiteralPolicy {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "allow" => Ok(Self::Allow),
+            "reject_google" => Ok(Self::RejectGoogle),
+            "reject_all" => Ok(Self::RejectAll),
+            _ => Err("ipv6_literal must be allow, reject_google or reject_all".into()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EgressSection {
+    pub ipv6_literal: Ipv6LiteralPolicy,
 }
 
 /// See `DeploymentConfig::google_egress_hairpin`. Every field here is
@@ -972,6 +1015,18 @@ impl DeploymentConfig {
         self.validate_access_path_first_hops()?;
         self.validate_credential_refs()?;
         self.validate_relay_routes()?;
+        if let Some(egress) = &self.egress {
+            if self.role != NodeRole::Exit {
+                return Err(CompatError::Parse("[egress] is exit-only".into()));
+            }
+            if self.google_egress_hairpin.is_some()
+                && egress.ipv6_literal == Ipv6LiteralPolicy::Allow
+            {
+                return Err(CompatError::Parse(
+                    "[egress] allow cannot disable the hairpin's literal-IPv6 protection; clear the hairpin first".into(),
+                ));
+            }
+        }
         self.validate_role()?;
 
         if let Some(hairpin) = &self.google_egress_hairpin {
@@ -1653,6 +1708,62 @@ pub fn apply_google_egress_hairpin_toml(
     let backup_path = crate::migrate::backup_before_mutate(path)?;
     crate::migrate::atomic_write(path, patched.as_bytes(), 0o644)?;
     Ok(backup_path)
+}
+
+/// Atomically patch only the exit egress section, preserving all other
+/// operator values and comments. The caller owns live apply and rollback.
+pub fn apply_exit_egress_toml(
+    path: &Path,
+    policy: Option<Ipv6LiteralPolicy>,
+) -> Result<PathBuf, CompatError> {
+    let original = std::fs::read_to_string(path).map_err(|e| CompatError::Io(e.to_string()))?;
+    let old: DeploymentConfig =
+        toml::from_str(&original).map_err(|e| CompatError::Parse(e.to_string()))?;
+    old.validate()?;
+    if old.role != NodeRole::Exit {
+        return Err(CompatError::Parse("[egress] is exit-only".into()));
+    }
+    let lines: Vec<&str> = original.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    if let Some((start, end)) = section_line_range(&lines, "[egress]") {
+        out.extend(lines[..start].iter().map(|s| s.to_string()));
+        out.extend(lines[end..].iter().map(|s| s.to_string()));
+    } else {
+        out.extend(lines.iter().map(|s| s.to_string()));
+    }
+    while out.last().is_some_and(|line| line.trim().is_empty()) {
+        out.pop();
+    }
+    if let Some(policy) = policy {
+        out.push(format!("\n[egress]\nipv6_literal = {:?}", policy.as_str()));
+    }
+    let patched = format!("{}\n", out.join("\n"));
+    let new: DeploymentConfig =
+        toml::from_str(&patched).map_err(|e| CompatError::Parse(e.to_string()))?;
+    new.validate()?;
+    let mut a = serde_json::to_value(old).map_err(|e| CompatError::Parse(e.to_string()))?;
+    let mut b = serde_json::to_value(new).map_err(|e| CompatError::Parse(e.to_string()))?;
+    a.as_object_mut().unwrap().remove("egress");
+    b.as_object_mut().unwrap().remove("egress");
+    if a != b {
+        return Err(CompatError::Parse(
+            "egress patch would change another operator setting; refusing".into(),
+        ));
+    }
+    let backup = crate::migrate::backup_before_mutate(path)?;
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map_err(|e| CompatError::Io(e.to_string()))?
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    #[cfg(not(unix))]
+    let mode = 0o644;
+    crate::migrate::atomic_write(path, patched.as_bytes(), mode)?;
+    Ok(backup)
 }
 
 #[cfg(test)]

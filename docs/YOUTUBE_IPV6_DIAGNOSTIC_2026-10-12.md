@@ -1,6 +1,11 @@
 # YouTube Shorts and IPv6 — full diagnostic and fix plan (2026-10-12)
 
-Status: **diagnosis complete and measured; fix not yet implemented.** This
+Status: **historical diagnosis and proposed plan; implementation/semantics corrected below.**
+
+The measured experiments remain a dated record. The new [exit policy](EXIT_IPV6_POLICY.md)
+supersedes §8 design recommendations: plain exits default to allow; proxy reject
+closes a flow, not demonstrated iPhone ICMP/retry. Full native remediation is
+BLOCKED_ON_DEVICE_EVIDENCE. No current production health is claimed. This
 document records the root cause, every experiment behind it, what is still
 unproven, every inconsistency found in the repository, and an ordered plan to
 fix both the product and the docs. It supersedes nothing by itself: the
@@ -241,47 +246,28 @@ It deserves a troubleshooting entry (§9, D-21).
 
 ## 8. Fix plan
 
-### 8.1 Phase A — stopgap on `157.173.27.46` (no release, reversible, needs owner approval)
+### 8.1 Historical stopgap proposal — not an approved default
 
-The auto-mode classifier refused me this change, so the **owner** runs it on
-the server console as root:
+The earlier host-wide IPv6-disable proposal was not executed/approved by this
+coding task. It can remove live interface addresses/routes and break IPv6 SSH,
+VPN listeners and renewal. Removing a sysctl file and running sysctl --system
+is **not** a guaranteed rollback: prior live values may not be present in any
+file. Do not run it as a general fix. Prefer an explicit bounded exit-policy
+experiment after preparing an IPv4 SSH/console rescue path.
 
-```bash
-cat > /etc/sysctl.d/99-singbox-vpn-no-ipv6-egress.conf <<'EOF'
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-EOF
-sysctl --system
-systemctl restart sing-box && systemctl is-active sing-box nginx vpn-subscription
-curl -4 -s https://ifconfig.me ; echo
-curl -6 -s -m 5 https://ifconfig.me || echo "ipv6 off (expected)"
-vpn doctor --protocol --require-protocol
-```
+If an owner separately authorizes a host-wide experiment, first record all
+prior live per-interface/all/default sysctl values, interface addresses, routes,
+DNS and service/listener state; rollback must explicitly restore those live
+values and any lost addresses/routes, then verify SSH, dual-stack listeners,
+TLS/Certbot and subscription health. No such infrastructure test was run here.
+A VPS OUTPUT ICMP reject does not establish a client-visible iPhone TUN error.
 
-Steps and gates:
+### 8.2 Historical proposed design — superseded by EXIT_IPV6_POLICY.md
 
-1. Verify `sing-box`, `nginx` (`listen [::]:…`) and the subscription still start
-   with IPv6 disabled (a `bind` on `::` should still succeed with the sysctl
-   method; **if `systemctl restart sing-box` fails, run the undo immediately**).
-2. Re-run the E2 controlled test (literal IPv6 must now fail fast, not stall)
-   and, decisively, the **native iPhone test** on REALITY then Hysteria2: Shorts
-   play, normal video plays, 5 consecutive Shorts.
-3. **Gate:** if Shorts still fail, stop. Collect the sampler output (§10, item 4) and
-   reconsider §5 before any code change.
-4. Undo: delete the sysctl file, `sysctl --system`, restart `sing-box`.
-
-Why a stopgap and not the final fix: it also disables the host's own IPv6
-(apt, certbot, updates use IPv4, fine) and does not tell the client why a flow
-failed. ICMP behaviour for UDP/QUIC without a route is unmeasured; the product
-rule in §8.2 gives a deterministic ICMP reject.
-
-Alternative stopgap (surgical, not recommended by hand): an nftables rule in a
-*new* table scoped to the `sing-box` uid with `ct state new` and
-`reject with icmpv6 addr-unreachable`, leaving host IPv6 alone and established
-replies to IPv6 clients untouched. This duplicates the product's own
-`nftables-egress-isolation.sh` and should come in through the release instead.
-
-### 8.2 Phase B — product fix (release v1.2.1, full RC cycle)
+The recommendations below are retained as proposal history, **not operator
+instructions**. In particular default reject_google, guaranteed client
+fallback and deterministic iPhone ICMP were not proven and were not adopted.
+A future version number/RC remains an owner release decision.
 
 **Goal:** a plain exit and a hairpin exit both prevent literal-IPv6 flows to
 the Google/YouTube domain set from leaving through an IPv6 address, with a fast,

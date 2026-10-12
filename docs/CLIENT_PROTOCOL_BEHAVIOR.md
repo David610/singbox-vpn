@@ -86,12 +86,20 @@ remains outside this contract.
   DNS resolution falls back to the IPv4 address like any other IPv4-only
   service — this is normal DNS/happy-eyeballs behavior, not something
   singbox-vpn needs to special-case.
-- **No partial/ambiguous dual-stack behavior is introduced by this
-  project**: the server config is deliberately silent on IPv4-vs-IPv6
-  preference: it does not force one, does not disable one, does not
-  attempt Happy-Eyeballs-style logic. Ambiguity here comes only from
-  whatever the operator's DNS records and the client's own network
-  actually provide.
+- **VPS -> Internet egress is a separate leg**. A domain is resolved by
+  the server; a client-supplied literal IPv6 remains IPv6. An A-only server
+  hostname does not prevent destination IPv6. Plain exits preserve dual-stack
+  behavior by default. The explicit exit `[egress] ipv6_literal` policy
+  (`allow`, `reject_google`, diagnostic `reject_all`) governs literal
+  destinations, not client transport or DNS. A configured hairpin retains
+  its existing scoped reject. See [exact policy and limits](EXIT_IPV6_POLICY.md).
+- **Proxy reject is not TUN reject**. With VLESS/Hysteria2, a rejection closes
+  a proxy flow; `no_drop` prevents escalation to silent drops. Neither this
+  nor a host OUTPUT reject proves an ICMP response reaches iPhone's TUN or
+  that native YouTube retries IPv4. ECH/absent SNI may bypass scoped rejection.
+- **Leak evidence is separate**: server IPv6 egress is not a user's ISP IPv6
+  leak. Client TUN routing, DNS leak captures and exact-candidate native app
+  playback must be tested independently.
 
 ## UDP / TCP behavior
 
@@ -184,13 +192,11 @@ remains outside this contract.
   so `format=uri`/`format=hiddify` return 400. It renders byte-identically
   to the normal profile (same UUIDs, keys, flows, selector, Hysteria2
   offered) plus ONE `route.rules` entry routing the Google/YouTube domain
-  set to the client's `direct` outbound. This is the fixing profile for
-  the real-device Shorts failure (see `docs/YOUTUBE_FINAL_ROOT_CAUSE.md`
-  §14/§15): YouTube's Shorts playability decision rejects sessions that
-  egress from a hosting/datacenter IP, and only egress from the client's
-  own (broadband) line is demonstrated to work. **DOES NOTHING IN
-  HIDDIFY** — hiddify-core rebuilds routing and discards imported
-  `route.rules` (code-verified, §12 of the root-cause doc) — so it only
+  set to the client's `direct` outbound. This is a privacy tradeoff for raw
+  core users, not a demonstrated native iPhone fix. YouTube refuses **some**
+  egress addresses, independently per family; accepted datacenter addresses
+  were also reported. **DOES NOTHING IN HIDDIFY** — hiddify-core rebuilds
+  routing and discards imported `route.rules` (code-verified) — so it only
   has an effect in a client that runs the config as given (sing-box MT,
   Shadowrocket, v2rayNG, Streisand, NekoBox). It trades privacy
   specifically for the Google/YouTube domain set: those destinations now

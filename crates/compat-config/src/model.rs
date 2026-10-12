@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 /// two mechanisms — routing this traffic to the client's own line, or
 /// hairpinning it out through another node's IP — can never silently drift
 /// apart on what counts as "Google/YouTube traffic". See
-/// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §15/§16 for why the set is this broad:
+/// `docs/YOUTUBE_FIX_INVARIANTS.md` for why the set is this broad:
 /// auth, DRM/licensing, the player API, static assets and media each
 /// resolve to a different Google domain, and a hole in any of them breaks
 /// the feature both mechanisms exist to restore.
@@ -756,7 +756,7 @@ pub struct RealityServerParams {
 
     /// This exit's own credential for the relay's
     /// `google_egress_hairpin` user (see that field's doc comment and
-    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16) — the UUID an EXIT dials
+    /// `docs/YOUTUBE_FIX_INVARIANTS.md`) — the UUID an EXIT dials
     /// the relay with so Google/YouTube traffic can egress from the
     /// relay's network instead of the exit's own. `None` (the default)
     /// on every deployment that has not opted into this: the exit then

@@ -1,7 +1,7 @@
 # deploy/almalinux/
 
 Production deployment tooling for the Hiddify/VLESS-REALITY/Hysteria2
-compatibility stack. The public v1.0 target is **AlmaLinux 9 x86-64 only**.
+compatibility stack. The public supported target is **AlmaLinux 9 x86-64 only**.
 Other distro branches in `deploy/lib/os.sh` are implementation paths, not a
 support claim. See `../../docs/SUPPORTED_PRODUCT.md` for the authoritative
 scope and `../../docs/ALMALINUX_DEPLOYMENT.md` for the full runbook.

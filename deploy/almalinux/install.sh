@@ -4,7 +4,7 @@
 # re-running skips already-generated secrets and already-installed
 # packages. See docs/ALMALINUX_DEPLOYMENT.md.
 #
-# The public v1.0 target is AlmaLinux 9 x86-64 only (see
+# The public supported target is AlmaLinux 9 x86-64 only (see
 # docs/SUPPORTED_PRODUCT.md). deploy/lib/os.sh retains additional RHEL/Debian
 # implementation paths for compatibility and experimentation, but their
 # presence is not a public support claim. Package-manager/firewall logic is
@@ -136,6 +136,8 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/ownership.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/nginx-default.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/state-schema.sh"
 # shellcheck source=/dev/null
@@ -660,7 +662,7 @@ preflight_stage() {
   case "$OS_ID-$OS_VERSION_ID" in
     almalinux-9*) ;;
     *)
-      warn "this OS is outside the supported v1.0 target (AlmaLinux 9 x86-64). A package/firewall implementation path exists and the installer will continue for backwards compatibility, but this is an unsupported/unverified deployment." ;;
+      warn "this OS is outside the supported target (AlmaLinux 9 x86-64). A package/firewall implementation path exists and the installer will continue for backwards compatibility, but this is an unsupported/unverified deployment." ;;
   esac
   case "$OS_SUPPORT" in
     tested) ;;
@@ -669,10 +671,10 @@ preflight_stage() {
     *)
       warn "this OS/version implementation path has no dedicated coverage; continuing as unsupported/unverified." ;;
   esac
-  ARCH="$(detect_arch)" || die "unsupported CPU architecture: $(uname -m). Available implementation paths are x86_64 and aarch64; the supported v1.0 target is x86_64."
+  ARCH="$(detect_arch)" || die "unsupported CPU architecture: $(uname -m). Available implementation paths are x86_64 and aarch64; the supported target is x86_64."
   log "detected architecture: $ARCH ($(uname -m))"
   if [ "$ARCH" != "amd64" ]; then
-    warn "this architecture is outside the supported v1.0 target (AlmaLinux 9 x86-64). The release pipeline no longer publishes a prebuilt arm64 singbox-vpn binary (see docs/SUPPORTED_PRODUCT.md's 'Architecture support') — this run will fall back to building singbox-vpn from source, which requires a Rust toolchain."
+    warn "this architecture is outside the supported target (AlmaLinux 9 x86-64). The release pipeline no longer publishes a prebuilt arm64 singbox-vpn binary (see docs/SUPPORTED_PRODUCT.md's 'Architecture support') — this run will fall back to building singbox-vpn from source, which requires a Rust toolchain."
   fi
   preflight_require_systemd
   preflight_require_commands curl tar awk sed grep
@@ -775,7 +777,7 @@ dry_run_report() {
   if detect_os; then
     case "$OS_ID-$OS_VERSION_ID" in
       almalinux-9*) dr_pass "OS" "$OS_PRETTY_NAME" ;;
-      *) dr_warn "OS" "$OS_PRETTY_NAME is outside the supported v1.0 target (AlmaLinux 9 x86_64); implementation_coverage=$OS_SUPPORT" ;;
+      *) dr_warn "OS" "$OS_PRETTY_NAME is outside the supported target (AlmaLinux 9 x86_64); implementation_coverage=$OS_SUPPORT" ;;
     esac
   else
     dr_fail "OS" "cannot detect OS (/etc/os-release missing)"
@@ -783,7 +785,7 @@ dry_run_report() {
 
   local dr_arch
   if dr_arch="$(detect_arch 2>/dev/null)"; then
-    if [ "$dr_arch" = "amd64" ]; then dr_pass "architecture" "$dr_arch"; else dr_warn "architecture" "$dr_arch is outside the supported v1.0 target (x86_64)"; fi
+    if [ "$dr_arch" = "amd64" ]; then dr_pass "architecture" "$dr_arch"; else dr_warn "architecture" "$dr_arch is outside the supported target (x86_64)"; fi
   else
     dr_fail "architecture" "unsupported CPU architecture: $(uname -m)"
   fi
@@ -2435,11 +2437,13 @@ configure_nginx() {
   # SUBSCRIPTION_PORT change never actually took effect. Always
   # explicitly reload-or-restart after enabling, regardless of prior
   # state.
+  nginx_disable_packaged_default
   if nginx -t && systemctl enable nginx >/dev/null 2>&1 \
       && systemctl reload-or-restart nginx; then
     rm -f "$nginx_backup"
   else
     warn "new nginx vhost failed validation/reload; restoring previous file"
+    if [ "$NGINX_DEFAULT_CHANGED_THIS_RUN" -eq 1 ]; then nginx_restore_packaged_default; fi
     if [ "$nginx_had_previous" -eq 1 ]; then
       mv -f "$nginx_backup" "$NGINX_CONF"
     else

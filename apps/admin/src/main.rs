@@ -16,7 +16,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use common::UnixSeconds;
 use compat_config::credential_policy;
-use compat_config::deployment::{DeploymentConfig, GoogleEgressHairpinSection};
+use compat_config::deployment::{DeploymentConfig, GoogleEgressHairpinSection, Ipv6LiteralPolicy};
 use compat_config::model::{
     CompatUser, CredentialClass, CredentialGrant, Hysteria2ServerParams, RealityServerParams,
 };
@@ -273,6 +273,9 @@ enum Commands {
     Config(ConfigCommands),
     #[command(subcommand)]
     GoogleEgressHairpin(GoogleEgressHairpinCommands),
+    /// Exit-only literal IPv6 policy; rejection does not guarantee client IPv4 retry.
+    #[command(subcommand)]
+    Egress(EgressCommands),
     /// ADR-0003 ephemeral managed authorization: the provisioning agent's
     /// bounded lease pool of pseudonymous credential slots.
     #[command(subcommand)]
@@ -347,6 +350,17 @@ enum GoogleEgressHairpinCommands {
     /// credential file, restoring its ordinary (non-hairpin) routing.
     /// Every user on this exit is affected immediately. Idempotent — a
     /// no-op if nothing was configured.
+    Clear,
+}
+
+#[derive(Subcommand)]
+enum EgressCommands {
+    /// Read-only: show explicit and effective literal IPv6 policy.
+    Show,
+    /// Set allow, reject_google (TLS/QUIC port 443) or reject_all (breaks IPv6-only destinations).
+    /// Validates, applies and reloads with rollback. No guaranteed iOS fallback.
+    Set { policy: Ipv6LiteralPolicy },
+    /// Restore legacy defaults: plain exit allow; hairpin reject_google.
     Clear,
 }
 
@@ -600,9 +614,10 @@ enum UserCommands {
         #[arg(long)]
         off: bool,
     },
-    /// RELAY ROLE ONLY, and never for a real end user: mark this user as
+    /// RELAY ROLE ONLY flag; an EXIT-role target uses a dedicated plain user.
+    /// Never for a real end user: mark this user as
     /// the Google/YouTube egress hairpin credential (see
-    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §16 and
+    /// `docs/YOUTUBE_FIX_INVARIANTS.md` and
     /// `compat_config::model::CompatUser::google_egress_hairpin`). This
     /// is meant to be run once, on a RELAY, against a dedicated user
     /// created just for this — the resulting UUID then gets copied into
@@ -645,6 +660,7 @@ fn command_mutates_state(cmd: &Commands) -> bool {
         cmd,
         Commands::Version
             | Commands::Status
+            | Commands::Egress(EgressCommands::Show)
             | Commands::Doctor { .. }
             | Commands::User(UserCommands::List)
             | Commands::User(UserCommands::Subscription { .. })
@@ -695,6 +711,28 @@ fn main() -> Result<()> {
             performance,
             json,
         ),
+        Commands::Egress(EgressCommands::Show) => {
+            if cfg.role != compat_config::deployment::NodeRole::Exit {
+                bail!("egress policy is exit-only; relays remain fail-closed");
+            }
+            println!(
+                "ipv6_literal: {}",
+                cfg.egress
+                    .as_ref()
+                    .map(|e| e.ipv6_literal.as_str())
+                    .unwrap_or(if cfg.google_egress_hairpin.is_some() {
+                        "reject_google (hairpin default)"
+                    } else {
+                        "allow (plain exit default)"
+                    })
+            );
+            println!("Proxy rejection closes a flow; native client IPv4 recovery is unverified.");
+            Ok(())
+        }
+        Commands::Egress(EgressCommands::Set { policy }) => {
+            cmd_egress_set(&cfg, &cli.config, Some(policy))
+        }
+        Commands::Egress(EgressCommands::Clear) => cmd_egress_set(&cfg, &cli.config, None),
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::Repair => cmd_repair(),
@@ -1673,6 +1711,69 @@ fn rollback_outcome_message(restore_ok: bool) -> &'static str {
     }
 }
 
+/// Transactional exit policy update; explicit offline mode never claims a live reload.
+fn cmd_egress_set(
+    cfg: &DeploymentConfig,
+    path: &std::path::Path,
+    policy: Option<Ipv6LiteralPolicy>,
+) -> Result<()> {
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)?.permissions().mode() & 0o777
+    };
+    #[cfg(not(unix))]
+    let mode = 0o644;
+    let backup = compat_config::deployment::apply_exit_egress_toml(path, policy)?;
+    let outcome = (|| -> Result<bool> {
+        let candidate = DeploymentConfig::load(path)?;
+        let users = store::load_users(&candidate.users_file())?;
+        render_and_apply_singbox_config(&candidate, &users, true)
+    })();
+    let applied = match outcome {
+        Ok(applied) => applied,
+        Err(error) => {
+            let bytes = std::fs::read(&backup)?;
+            compat_config::migrate::atomic_write(path, &bytes, mode).context(
+                "egress apply failed and deployment rollback failed; inspect retained backup",
+            )?;
+            // Existing live apply restores the runtime config on validation/restart failure.
+            // Re-render the original desired state as well, keeping persistent/runtime rollback coherent.
+            let recovered = store::load_users(&cfg.users_file())
+                .and_then(|users| {
+                    render_and_apply_singbox_config(cfg, &users, true)
+                        .map_err(|e| compat_config::CompatError::Parse(e.to_string()))
+                })
+                .is_ok_and(|applied| applied);
+            return Err(error).context(format!(
+                "egress apply FAILED; deployment restored; runtime recovery {}",
+                if recovered {
+                    "verified"
+                } else {
+                    "unverified; inspect service and retained backup"
+                }
+            ));
+        }
+    };
+    println!(
+        "Exit IPv6 literal policy saved: {}",
+        policy.map(|p| p.as_str()).unwrap_or("legacy default")
+    );
+    println!(
+        "Runtime application: {}",
+        if applied {
+            "verified"
+        } else {
+            "NOT verified (explicit offline development mode)"
+        }
+    );
+    if policy == Some(Ipv6LiteralPolicy::RejectAll) {
+        println!("WARNING: reject_all breaks every IPv6-only literal destination.");
+    }
+    println!("Rejection closes proxy flows. Native iPhone IPv4 recovery remains BLOCKED_ON_DEVICE_EVIDENCE.");
+    Ok(())
+}
+
 /// EXIT ROLE ONLY. See `GoogleEgressHairpinCommands::Set`'s doc comment
 /// for the user-facing contract. Sequence: guard role -> back up + write
 /// the hairpin credential file -> back up + patch deployment.toml (via
@@ -2563,13 +2664,10 @@ fn subscription_url_quic_reject(cfg: &DeploymentConfig, token: &str) -> String {
 /// the only difference is one `route.rules` entry that routes the
 /// Google/YouTube domain set to the client's `direct` outbound.
 ///
-/// This is the profile for the real-device issue documented in
-/// `docs/YOUTUBE_INVESTIGATION_2026-09-17.md` and re-closed in
-/// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §14: YouTube Shorts play fine from
-/// the client's own broadband line but fail from every hosting/datacenter
-/// egress IP, whatever the transport, client, or exit. Routing the
-/// YouTube/Google domain set direct makes YouTube leave from the
-/// proven-working path while the rest of the tunnel is unchanged.
+/// This raw-core option exposes the client's own egress address to Google.
+/// Some datacenter addresses work; others are refused, independently per
+/// family. Hiddify discards this route. This is not a native iPhone fix;
+/// see `docs/YOUTUBE_FIX_INVARIANTS.md` and `docs/EXIT_IPV6_POLICY.md`.
 ///
 /// `?format=singbox` and NOT `?format=hiddify`, unlike every other link
 /// this app prints: a routing rule has no representation in
@@ -4223,58 +4321,16 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
     let probe_rules = compat_config::server::probe_confinement_rule_count(doc);
     match cfg.role {
         NodeRole::Exit => {
-            // Leading probe-confinement rules come first (see
-            // `apply_probe_user_confinement`'s doc comment on ordering),
-            // then the mandatory C-16 egress-isolation rules every exit
-            // renders unconditionally (`apply_c16_egress_policy`) — both
-            // role-independent/always-on and not evidence of a role/
-            // renderer mismatch by themselves. Skip past both before
-            // judging what remains.
-            let rules = rules.map(|rules| &rules[probe_rules..]);
-            let is_c16 = |r: &serde_json::Value| {
-                r.get("auth_user").is_none()
-                    && (r.get("action") == Some(&serde_json::json!("resolve"))
-                        || r.get("ip_cidr").is_some()
-                        || r.get("port")
-                            == Some(&serde_json::json!(compat_config::model::C16_DENY_TCP_PORT)))
-            };
-            let c16_rules = rules.map_or(0, |rules| {
-                rules.iter().take(4).take_while(|r| is_c16(r)).count()
-            });
-            let rules = rules
-                .map(|rules| &rules[c16_rules..])
-                .filter(|rules| !rules.is_empty());
-            // The one legitimate exception: the Google/YouTube egress
-            // hairpin (`docs/YOUTUBE_FIX_INVARIANTS.md`) adds exactly
-            // three route.rules entries to an exit — sniff, a no_drop
-            // reject of literal-IPv6 Google destinations, and the route to
-            // the hairpin outbound. Anything else — no hairpin configured
-            // but rules present, or rules present that don't match that
-            // exact shape (including a reject without `no_drop`, which
-            // silently becomes a drop and restores the stall) — is the
-            // role/renderer mismatch this check exists to catch.
-            let google_domains = serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS);
-            let is_expected_hairpin_shape = cfg.google_egress_hairpin.is_some()
-                && rules.is_some_and(|rules| {
-                    rules.len() == 3
-                        && rules[0]["action"] == "sniff"
-                        && rules[1]["action"] == "reject"
-                        && rules[1]["ip_version"] == 6
-                        && rules[1]["no_drop"] == true
-                        && rules[1]["domain_suffix"] == google_domains
-                        && rules[2]["outbound"] == "google-egress-hairpin"
-                        && rules[2]["domain_suffix"] == google_domains
-                        && doc["route"]["final"] == "direct"
-                });
-            if rules.is_some() && !is_expected_hairpin_shape {
-                report_check(
-                    CheckStatus::Fail,
-                    "L2",
-                    "exit node renders relay forwarding rules — role/renderer mismatch",
-                );
+            if !compat_config::server::exit_egress_policy_matches(cfg, doc) {
+                report_check(CheckStatus::Fail, "L2", "exit egress policy mismatch: missing, duplicated, shadowed or reordered C-16/IPv6/hairpin rules");
                 *failures += 1;
             }
+            if let Some(egress) = &cfg.egress {
+                report_check(CheckStatus::Info, "L2", format!("exit ipv6_literal={}: rejection is a proxy close, not proof of native IPv4 retry{}", egress.ipv6_literal.as_str(),
+                    if egress.ipv6_literal == Ipv6LiteralPolicy::RejectAll { "; IPv6-only literal destinations fail" } else { "" }));
+            }
         }
+
         NodeRole::Relay => {
             let targets = cfg.relay_targets();
             // Google-egress-hairpin rules (`CompatUser::google_egress_hairpin`)
@@ -7418,6 +7474,15 @@ enum HandshakeVerification {
     NotRun(String),
 }
 
+/// Prefer the explicitly confined health principal over a customer whose
+/// loopback request C-16 correctly rejects.
+fn preferred_protocol_user(users: &[CompatUser], now: i64) -> Option<&CompatUser> {
+    users
+        .iter()
+        .find(|u| u.is_active(now) && u.is_reserved_probe)
+        .or_else(|| users.iter().find(|u| u.is_active(now)))
+}
+
 /// Runs the real REALITY handshake self-test against candidate/live key
 /// material as a live-health gate for the apply/rotate transactions (not
 /// just `doctor --protocol`, which is diagnostic-only and never blocks
@@ -7440,7 +7505,7 @@ fn verify_reality_handshake_or_warn(
         ));
     }
     let now = UnixSeconds::now().0 as i64;
-    let Some(test_user) = users.iter().find(|u| u.is_active(now)) else {
+    let Some(test_user) = preferred_protocol_user(users, now) else {
         return HandshakeVerification::NotRun(
             "no enabled, unexpired VLESS user to test with".to_string(),
         );
@@ -8940,9 +9005,10 @@ fn cmd_restore(
     if restored_deployment_toml.exists() {
         println!(
             "Note: the backup's deployment.toml was NOT applied automatically (host/port \
-             settings are not safe to overwrite blindly). It was extracted for reference at \
+             and egress policy are not safe to overwrite blindly). It was extracted for reference at \
              {restored_deployment_toml:?} before this temporary directory is removed; the live \
-             config remains {config_path:?}."
+             config remains {config_path:?}. The archived egress policy remains in the backup; \
+             use egress set/clear explicitly if you intend to change this host policy."
         );
     }
 
@@ -10253,5 +10319,25 @@ mod peer_credential_cli_tests {
         ] {
             assert!(!credentials::is_uuid_v4_shaped(bad), "{bad:?} accepted");
         }
+    }
+}
+
+#[cfg(test)]
+mod egress_probe_selection_tests {
+    #[test]
+    fn mutations_prefer_the_confined_protocol_probe() {
+        let (customer, _) = super::build_new_operator_user("customer".into(), "customer", None, 0);
+        let (mut probe, _) = super::build_new_operator_user("probe".into(), "probe", None, 0);
+        probe.is_reserved_probe = true;
+        let mut users = vec![customer, probe];
+        assert_eq!(
+            super::preferred_protocol_user(&users, 1).unwrap().id,
+            "probe"
+        );
+        users[1].enabled = false;
+        assert_eq!(
+            super::preferred_protocol_user(&users, 1).unwrap().id,
+            "customer"
+        );
     }
 }
