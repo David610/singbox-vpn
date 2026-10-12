@@ -56,8 +56,17 @@ on:
         description: "Hostname pointed at the disposable VPS, used for install/reinstall and certificate/lifecycle acceptance (e.g. vpn.example.com). Strongly preferred over relying on lifecycle-acceptance.sh's automatic sslip.io fallback for real RC acceptance. Validated the same way as the installer's own --domain before use."
         required: false
         default: ""
+      verify_egress_policy:
+        description: "Run the candidate exit egress-policy stage (16c). Required (and enforced) whenever `version` is set: release acceptance cannot omit it."
+        required: false
+        default: true
+        type: boolean
+      ssh_known_hosts:
+        description: "known_hosts line(s) for the disposable target (e.g. from `ssh-keyscan -p PORT HOST`, checked out-of-band against the provider console). Required whenever `version` is set; without it only an UNVERIFIED development run may trust the first key seen."
+        required: false
+        default: ""
       skip_reboot:
-        description: "Skip the reboot+health stage"
+        description: "Skip the reboot+health stage (rejected whenever `version` is set: release acceptance includes the reboot)"
         required: false
         default: false
         type: boolean
@@ -87,6 +96,21 @@ jobs:
               exit 1 ;;
           esac
           echo "ok: ssh_host is not an obvious loopback address (lifecycle-acceptance.sh performs the authoritative check)"
+
+      - name: Enforce release-acceptance prerequisites
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          VERIFY_EGRESS_POLICY: ${{ inputs.verify_egress_policy }}
+          SKIP_REBOOT: ${{ inputs.skip_reboot }}
+          SSH_KNOWN_HOSTS: ${{ inputs.ssh_known_hosts }}
+        run: |
+          set -euo pipefail
+          [ -n "$RELEASE_VERSION" ] || { echo "development run: not release acceptance evidence"; exit 0; }
+          fail=0
+          [ "$VERIFY_EGRESS_POLICY" = "true" ] || { echo "::error::release acceptance requires verify_egress_policy=true"; fail=1; }
+          [ "$SKIP_REBOOT" != "true" ] || { echo "::error::release acceptance cannot skip the reboot stage"; fail=1; }
+          [ -n "$SSH_KNOWN_HOSTS" ] || { echo "::error::release acceptance requires ssh_known_hosts (verified host key); first-use trust is not acceptable evidence"; fail=1; }
+          exit "$fail"
 
   acceptance:
     needs: guard
@@ -133,9 +157,20 @@ jobs:
           DOMAIN: ${{ inputs.domain }}
           SKIP_REBOOT: ${{ inputs.skip_reboot }}
           ALLOW_DESTROY_EXISTING: ${{ inputs.allow_destroy_existing }}
+          VERIFY_EGRESS_POLICY: ${{ inputs.verify_egress_policy }}
+          SSH_KNOWN_HOSTS: ${{ inputs.ssh_known_hosts }}
         run: |
           set -euo pipefail
           args=(--host "$SSH_HOST" --i-understand-this-is-destructive --ssh-port "$SSH_PORT")
+          if [ -n "$SSH_KNOWN_HOSTS" ]; then
+            kh="$(mktemp)"
+            trap 'rm -f "$kh"' EXIT
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > "$kh"
+            args+=(--known-hosts-file "$kh")
+          fi
+          if [ "$VERIFY_EGRESS_POLICY" = "true" ]; then
+            args+=(--verify-egress-policy)
+          fi
           if [ -n "$RELEASE_VERSION" ]; then
             args+=(--version "$RELEASE_VERSION")
           fi
@@ -153,6 +188,25 @@ jobs:
           fi
           echo "running: deploy/almalinux/lifecycle-acceptance.sh ${args[*]/--i-understand-this-is-destructive/[ack]}"
           bash deploy/almalinux/lifecycle-acceptance.sh "${args[@]}" 2>&1 | tee lifecycle-acceptance.log
+
+      - name: Require the egress-policy stage evidence in the log
+        if: ${{ inputs.verify_egress_policy }}
+        run: |
+          set -euo pipefail
+          # The harness already fails when a requested stage did not run;
+          # this independent check keeps a regression in the harness from
+          # silently turning the gate into a no-op.
+          grep -q '^=== 16c\. candidate standalone exit egress policy convergence ===$' lifecycle-acceptance.log \
+            || { echo "::error::egress-policy stage (16c) is absent from the acceptance log"; exit 1; }
+          grep -q '^\[PASS\] candidate exit egress apply/reconcile/doctor' lifecycle-acceptance.log \
+            || { echo "::error::egress-policy stage (16c) did not PASS"; exit 1; }
+          grep -q '^LIFECYCLE GATE: PASS$' lifecycle-acceptance.log \
+            || { echo "::error::lifecycle gate did not report PASS"; exit 1; }
+          {
+            echo "### VPS acceptance"
+            echo "- lifecycle gate: PASS"
+            echo "- egress-policy stage 16c: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Defensive scrub before upload (belt-and-suspenders; the harness itself never prints secrets)
         if: always()

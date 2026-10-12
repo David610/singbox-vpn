@@ -321,6 +321,8 @@ USERCREATE
     echo "mock-id-1 lifecycle-test-user yes mock-scratch-id-1 lifecycle-scratch-user yes"
     exit 0 ;;
   *vpn-admin\ user*) exit 0 ;;
+  *verify-exit-egress-policy.sh*)
+    [ -f "$TMPDIR_TEST/mock_egress_gate_fail" ] && exit 1 || exit 0 ;;
   *install.sh*) exit 0 ;;
   *SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch*update.sh*) exit 1 ;;
   *update.sh*) exit 0 ;;
@@ -1660,6 +1662,68 @@ if grep -q 'unverified items: [1-9]' "$TMPDIR_TEST/out-2222.log"; then
   ok "summary carries a non-zero unverified-item count distinct from failing stages"
 else
   fail "summary did not carry a distinct unverified-item count"
+fi
+
+echo
+echo "--- --verify-egress-policy is a required gate: executed, visible, and failing closed ---"
+rm -f "$TMPDIR_TEST/mock_egress_gate_fail"
+set +e
+run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot --verify-egress-policy >"$TMPDIR_TEST/out-egress-pass.log" 2>&1
+rc=$?
+set -e
+if grep -q '^=== 16c\. candidate standalone exit egress policy convergence ===$' "$TMPDIR_TEST/out-egress-pass.log"   && grep -q '^\[PASS\] candidate exit egress apply/reconcile/doctor' "$TMPDIR_TEST/out-egress-pass.log"   && grep -q 'SINGBOX_VPN_DISPOSABLE_EGRESS_GATE=1 bash /opt/singbox-vpn/deploy/lib/verify-exit-egress-policy.sh' "$SSH_LOG"; then
+  ok "the requested egress-policy stage executes on the target and its PASS is visible in the log"
+else
+  fail "the requested egress-policy stage did not run or did not report PASS"
+fi
+touch "$TMPDIR_TEST/mock_egress_gate_fail"
+set +e
+run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot --verify-egress-policy >"$TMPDIR_TEST/out-egress-fail.log" 2>&1
+rc=$?
+set -e
+rm -f "$TMPDIR_TEST/mock_egress_gate_fail"
+if [ "$rc" -ne 0 ] && grep -q '^\[FAIL\]\[required\] candidate exit egress policy gate' "$TMPDIR_TEST/out-egress-fail.log"   && grep -q '^LIFECYCLE GATE: FAIL$' "$TMPDIR_TEST/out-egress-fail.log"; then
+  ok "a failing egress-policy stage fails the whole lifecycle gate"
+else
+  fail "a failing egress-policy stage did not fail the gate (rc=$rc)"
+fi
+set +e
+run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot >"$TMPDIR_TEST/out-egress-off.log" 2>&1
+set -e
+if grep -q 'verify-exit-egress-policy.sh' "$SSH_LOG"; then
+  fail "the egress-policy stage ran although it was not requested"
+else
+  ok "the egress-policy stage stays opt-in on the harness (the release workflow always requests it)"
+fi
+
+echo
+echo "--- verified SSH host keys: --known-hosts-file switches to StrictHostKeyChecking=yes ---"
+printf 'disposable-test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOnotARealKeyJustAFixtureForTheMockedSshTest
+' > "$TMPDIR_TEST/known_hosts"
+set +e
+run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot --known-hosts-file "$TMPDIR_TEST/known_hosts" >"$TMPDIR_TEST/out-kh.log" 2>&1
+set -e
+if grep -q 'StrictHostKeyChecking=yes' "$SSH_LOG" && grep -q "UserKnownHostsFile=$TMPDIR_TEST/known_hosts" "$SSH_LOG"   && ! grep -q 'accept-new' "$SSH_LOG"; then
+  ok "a supplied known_hosts file enforces strict host-key checking on every ssh invocation"
+else
+  fail "known_hosts file was not enforced on every ssh invocation"
+fi
+set +e
+run_harness --host root@disposable-test --i-understand-this-is-destructive --skip-reboot >"$TMPDIR_TEST/out-nokh.log" 2>&1
+set -e
+if grep -q 'accept-new' "$SSH_LOG"; then
+  ok "without a known_hosts file the legacy first-use trust is unchanged (development runs only)"
+else
+  fail "default host-key policy changed unexpectedly"
+fi
+set +e
+out="$(run_harness --host root@disposable-test --i-understand-this-is-destructive --known-hosts-file "$TMPDIR_TEST/missing" 2>&1)"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && grep -q 'not a non-empty regular file' <<<"$out" && [ ! -s "$SSH_LOG" ]; then
+  ok "a missing known_hosts file aborts before any ssh connection is attempted"
+else
+  fail "missing known_hosts file did not abort cleanly (rc=$rc)"
 fi
 
 echo
