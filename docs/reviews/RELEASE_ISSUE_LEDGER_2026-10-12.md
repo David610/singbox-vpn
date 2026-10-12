@@ -465,7 +465,13 @@ the mandatory P-1…P-11 gates. Fragmented-TLS and ECH flows are not exercised b
 cannot match them: no SNI is recovered), and UDP rejection is observed only as
 response absence, not as an ICMP error reaching a client.
 
-## Final decision
+## Final decision (as of 2026-10-12, before any RC)
+
+This is a dated pre-RC snapshot. RELEASE.md freezes everything except `README.md`,
+`docs/DEVICE_ACCEPTANCE_TESTS.md` and the stable acceptance record once an RC is
+accepted, so the **current** status of the release is recorded only in those
+files, never here.
+
 
 **BLOCKED — not ready for owner release approval, for VPN-only reasons.**
 Done and verified locally on commit `1bba1ff3a273` (later commits are docs-only
