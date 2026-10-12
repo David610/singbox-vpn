@@ -13,6 +13,7 @@
 #   bash deploy/lib/qualify-local.sh --out /path/to/evidence-dir \
 #        [--sing-box /path/to/pinned/sing-box] [--python /path/to/venv/python] [--allow-not-run]
 #
+# From an exported tree (no .git) set QUALIFY_COMMIT=<full sha> so the evidence names the exact commit.
 # Run it as root on a Linux host (the privileged fixtures and the two-hop system
 # tests need root/CAP_NET_ADMIN) and from an exported or git checkout of the exact
 # commit under test. It changes nothing outside --out and the build directory.
@@ -37,7 +38,7 @@ mkdir -p "$OUT"
 SUMMARY="$OUT/SUMMARY.tsv"
 printf 'gate\tresult\texit\tseconds\tlog_sha256\n' >"$SUMMARY"
 {
-  echo "commit: $(git rev-parse HEAD 2>/dev/null || echo 'not a git checkout (exported tree)')"
+  echo "commit: ${QUALIFY_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo 'UNKNOWN (exported tree: set QUALIFY_COMMIT)')}"
   echo "tree_clean: $(if [ -n "$(git status --porcelain 2>/dev/null)" ]; then echo no; else echo yes-or-not-git; fi)"
   echo "workspace_version: $(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
   echo "date_utc: $(date -u +%FT%TZ)"
