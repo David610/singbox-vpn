@@ -6,6 +6,8 @@
 //! at `create` or `rotate-token` time, because only its hash is persisted
 //! (spec §26).
 
+#[macro_use]
+mod safe_io;
 mod external_authorization;
 mod lease_pool;
 mod lock;
@@ -679,11 +681,12 @@ const EXIT_BROKEN_PIPE: u8 = 141;
 
 static STDIO_BROKEN_PIPE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Rust ignores SIGPIPE, so `println!` into a closed pipe panics. Treat only
-/// that exact stdout/stderr EPIPE as a quiet, conventional exit: the panic
-/// still unwinds (state locks and rollback guards run their `Drop`), the
-/// default message is suppressed, and `main` maps it to status 141. Any other
-/// panic or error keeps its normal message and non-zero status.
+/// Defense in depth only. All of this crate's own output goes through
+/// `safe_io` (best-effort writes that can never panic, so a closed stream cannot
+/// abort a transaction). This hook covers a stray std print from elsewhere: it
+/// recognises only that exact stdout/stderr EPIPE, lets the panic unwind (locks
+/// and rollback guards still run their `Drop`) without the default message, and
+/// `main` maps it to 141. Every other panic keeps its message and status.
 fn install_broken_pipe_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -701,19 +704,13 @@ fn install_broken_pipe_panic_hook() {
     }));
 }
 
-fn is_broken_pipe(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
-    })
-}
-
 fn main() -> std::process::ExitCode {
     install_broken_pipe_panic_hook();
     match std::panic::catch_unwind(run) {
+        Ok(Ok(())) if safe_io::reader_went_away_on_read_only_command() => {
+            std::process::ExitCode::from(EXIT_BROKEN_PIPE)
+        }
         Ok(Ok(())) => std::process::ExitCode::SUCCESS,
-        Ok(Err(error)) if is_broken_pipe(&error) => std::process::ExitCode::from(EXIT_BROKEN_PIPE),
         Ok(Err(error)) => {
             eprintln!("Error: {error:?}");
             std::process::ExitCode::FAILURE
@@ -729,6 +726,8 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let cfg = DeploymentConfig::load(&cli.config)
         .with_context(|| format!("loading deployment config from {:?}", cli.config))?;
+
+    safe_io::set_mutating(command_mutates_state(&cli.command));
 
     // Held for the ENTIRE duration of a mutating command — not just the
     // file write — so two concurrent `vpn-admin` invocations can never
