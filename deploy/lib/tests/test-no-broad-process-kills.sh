@@ -11,10 +11,13 @@ cd "$ROOT"
 
 # This file and deploy/lib/test-isolation.sh (which lists such commands in
 # order to NEUTRALISE them inside test sandboxes) are the only mentions allowed.
+# `pkill -u USER` (kill by owning user, as printed in uninstall advice) is a
+# narrow, user-scoped form and is not flagged; `-f` pattern kills and bare
+# name kills are.
 hits="$(git ls-files -- deploy .github bin install.sh uninstall.sh 2>/dev/null \
   | grep -vE '^deploy/lib/(tests/test-no-broad-process-kills\.sh|test-isolation\.sh)$' \
   | while IFS= read -r f; do
-      [ -f "$f" ] && grep -HnE '(^|[^[:alnum:]_.-])(pkill|killall)([[:space:]]|$)' "$f" || true
+      [ -f "$f" ] && grep -HnE '(^|[^[:alnum:]_.-])(killall([[:space:]]|$)|pkill[[:space:]]+(-[A-Za-z]*f|[^-[:space:]]))' "$f" || true
     done)"
 if [ -n "$hits" ]; then
   echo "FAIL: broad process-kill commands found (track and kill owned PIDs instead):" >&2
