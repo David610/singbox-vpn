@@ -598,7 +598,7 @@ confinement for the entire host, not just this service.
 - [RECOVERY.md](RECOVERY.md) — full-host disaster recovery
 - [clients/README.md](clients/README.md) — per-client setup guides
 
-## Exit literal IPv6 policy (unreleased)
+## Exit literal IPv6 policy (v1.3.0)
 
 See [EXIT_IPV6_POLICY.md](EXIT_IPV6_POLICY.md) for `vpn-admin egress set`,
 rollback, local validation and the device evidence gate. Default plain exits

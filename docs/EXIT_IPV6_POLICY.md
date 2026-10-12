@@ -1,9 +1,12 @@
-# Exit literal IPv6 policy (unreleased)
+# Exit literal IPv6 policy (introduced in v1.3.0)
 
-Full standalone YouTube remediation: **BLOCKED_ON_DEVICE_EVIDENCE**.
-This implementation provides an explicit rejection policy and diagnostics;
-it does not promise native iPhone recovery or change published v1.2.0 evidence.
-No production host, DNS record, firewall or sysctl was changed in this task.
+This document describes the mechanism and its operation. It provides an
+explicit rejection policy and diagnostics; it does not promise native iPhone
+recovery. **Whether a given release has been accepted on a real device and a
+disposable VPS is recorded only in** [DEVICE_ACCEPTANCE_TESTS.md](DEVICE_ACCEPTANCE_TESTS.md)
+**and `release-acceptance/<tag>.md`**, never here: until those say PASS for a
+release, full standalone YouTube remediation is **BLOCKED_ON_DEVICE_EVIDENCE**.
+Applying a policy changes the running configuration of the host it is run on.
 
 ## Evidence and mechanism
 
@@ -181,6 +184,39 @@ bash deploy/almalinux/lifecycle-acceptance.sh --host USER@DISPOSABLE_HOST \
 
 Also run a fresh exact-candidate lifecycle with `--version CANDIDATE_RC` and
 the same policy flag. Preserve the documented special updater path when
-coming from v1.1.0. Both live VPS runs, exact RC CI, TLS renewal and the
-[native checklist](NATIVE_IPHONE_IPV6_ACCEPTANCE.md) are **PENDING**. No tag,
-release dispatch, purchase, deployment or merge is authorized by these docs.
+coming from v1.1.0. The release acceptance workflow
+(`.github/workflows/vps-acceptance.yml`) requests this stage by default and
+refuses a release run that omits it, skips the reboot or lacks a verified SSH
+host key; the harness fails if a requested stage did not run. The live VPS
+runs, exact-RC CI, TLS renewal and the
+[native checklist](NATIVE_IPHONE_IPV6_ACCEPTANCE.md) are recorded per release
+(see the top of this document). These docs authorise no tag, release dispatch,
+purchase, deployment or merge.
+
+## Downgrade and rollback safety
+
+A deployment that declares `[egress]` must never silently lose the policy.
+v1.2.0 and earlier ignore an unknown `[egress]` table without any error, so:
+
+- `vpn-admin config validate` of a build that understands the policy prints
+  `capability: exit-egress-policy`;
+- `update.sh` (update, repair or downgrade) checks the **staged target's**
+  `config validate` before any live change and refuses to switch a deployment
+  that declares `[egress]` to a build that does not print the marker;
+- to leave the policy on purpose, run `vpn-admin egress clear` first, then
+  downgrade; the deployment schema version is deliberately not bumped, because
+  that would break every rollback to v1.2.0 even for hosts with no policy.
+
+Policy commands never change user credentials, subscription tokens or key
+material (covered by an automated test); clients do not need to re-import after
+`egress set`/`clear`.
+
+## Release identity
+
+`vpn-admin doctor` (L1 line "release identity") compares the installed
+`vpn-admin`, `vpn` and `vpn-subscription-svc` with the SHA-256 recorded by the
+installer/updater in `install-state.json` and with the recorded release tag:
+published stable, release candidate, development channel, inconsistent
+(manual copy or partial update) or UNKNOWN (installed before hashes were
+recorded). Repair a reported inconsistency with `update.sh --repair`; do not
+copy executables by hand.
