@@ -312,16 +312,20 @@ sudo firewall-cmd --list-all              # or: sudo ufw status verbose
 
 ## TLS / Certbot
 
-Two independent TLS certificates are used:
+The default single-hostname install uses one certificate lineage for nginx
+and a restricted copy of that certificate/key for Hysteria2. If the optional
+`subscription_host` differs from `public_host`, separate names/lineages are
+needed. REALITY still uses its public decoy and needs no certificate.
 
 | | Hysteria2 TLS | Subscription HTTPS |
 |---|---|---|
-| Hostname (example) | `vpn.example.com` | `sub.example.com` |
+| Hostname (default) | `vpn.example.com` | `vpn.example.com` |
+| Optional separate name | `vpn.example.com` | `sub.example.com` |
 | Port | `443/udp` | `8443/tcp` |
 | Consumed by | `sing-box` directly | `nginx` (reverse proxy) |
 
 VLESS+REALITY needs **no certificate** — it dials a real site's TLS
-handshake as a disguise. Both certificates above are auto-issued via
+handshake as a disguise. Required certificate names are auto-issued via
 certbot's HTTP-01 challenge if no domain-specific certificate already
 exists, which requires TCP/80 to be reachable from the public internet
 for the few seconds each challenge takes — both at the initial install
@@ -593,3 +597,33 @@ confinement for the entire host, not just this service.
   (native adaptive stack, Docker services), unrelated to this installer
 - [RECOVERY.md](RECOVERY.md) — full-host disaster recovery
 - [clients/README.md](clients/README.md) — per-client setup guides
+
+## Exit literal IPv6 policy (unreleased)
+
+See [EXIT_IPV6_POLICY.md](EXIT_IPV6_POLICY.md) for `vpn-admin egress set`,
+rollback, local validation and the device evidence gate. Default plain exits
+remain `allow`. `reject_google` is an explicit TLS/QUIC port-443 mechanism,
+not guaranteed native YouTube IPv4 recovery. It cannot fix a refused IPv4.
+No manual edits to rendered `config.json` or host IPv6 shutdown are needed.
+
+### Newly created hostname: Failed host lookup
+
+A router/ISP may cache NXDOMAIN from before the DNS record existed. Verify
+the DNS-only A record at authoritative/public resolvers, then compare mobile
+data with Wi-Fi and wait for the negative TTL or flush the router cache.
+Changing the server AAAA affects client-to-VPS connectivity only. Do not
+Cloudflare-proxy REALITY/Hysteria2. Keep TLS hostname validation: an IP HTTPS
+URL with a hostname-only certificate is not a valid recovery path. `user
+links` avoids subscription fetching, but its endpoint hostnames still need
+DNS. Restoring valid DNS or using a client-supported address override with
+the original verified TLS hostname is required; no general Hiddify override
+is claimed. Rotate exposed historical credentials through the owner, never
+copy them from old reports.
+
+### nginx TCP/80 welcome site
+
+Debian-family setup disables only the unmodified nginx package default-site
+symlink, records ownership, and restores it on failed configuration/uninstall.
+Administrator-modified or unrelated sites are retained; a doctor warning
+requires an ownership-aware operator review, not a blanket listener exemption.
+Standalone Certbot HTTP-01 and existing temporary firewall hooks are unchanged.

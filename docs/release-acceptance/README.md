@@ -17,3 +17,7 @@ Certificate renewal: PASS
 ```
 
 Also record links/notes needed to reproduce the decision, but never include credentials, subscription tokens, passwords, private keys, REALITY private material, or TLS private keys.
+
+For the unreleased standalone literal-IPv6 policy and its PENDING native
+iPhone/VPS acceptance gates, see [exit policy](../EXIT_IPV6_POLICY.md). Rejection is not proof of native IPv4 retry. Published v1.2.0 evidence
+is unchanged and does not accept this candidate.

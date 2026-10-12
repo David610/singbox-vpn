@@ -8,6 +8,178 @@
 
 mod common;
 
+#[test]
+fn plain_exit_ipv6_policy_is_explicit_and_scoped() {
+    let cfg = load(&(base("exit") + "\n[egress]\nipv6_literal = \"reject_google\"\n")).unwrap();
+    let doc =
+        render_server_config_for_deployment(&cfg, &[user()], &reality(), &hysteria(), 1).unwrap();
+    let rules = doc["route"]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 6);
+    assert_eq!(
+        rules[4],
+        serde_json::json!({"ip_version":6,"port":443,"action":"sniff","sniffer":["tls","quic"],"timeout":"100ms"})
+    );
+    assert_eq!(
+        rules[5],
+        serde_json::json!({"domain_suffix":compat_config::model::GOOGLE_EGRESS_DOMAINS,"ip_version":6,"port":443,"action":"reject","method":"default","no_drop":true})
+    );
+    assert_eq!(doc["outbounds"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["route"]["final"], "direct");
+}
+
+#[test]
+fn exit_policy_values_and_relay_role_are_validated() {
+    expect_err(
+        &(base("exit") + "\n[egress]\nipv6_literal = \"prefer_ipv4\"\n"),
+        "ipv6_literal",
+    );
+    expect_err(
+        &(base("relay") + "\n[egress]\nipv6_literal = \"allow\"\n"),
+        "exit",
+    );
+    expect_err(
+        &(base("exit") + "\n[egress]\nipv6_litreal = \"reject_google\"\n"),
+        "unknown field",
+    );
+}
+
+#[test]
+fn exit_ipv6_policy_defaults_roundtrip_and_doctor_tamper_detection() {
+    use compat_config::server::exit_egress_policy_matches;
+    for policy in [
+        None,
+        Some("allow"),
+        Some("reject_google"),
+        Some("reject_all"),
+    ] {
+        let text = base("exit")
+            + &policy
+                .map(|p| format!("\n[egress]\nipv6_literal = {p:?}\n"))
+                .unwrap_or_default();
+        let cfg = load(&text).unwrap();
+        let roundtrip = toml::to_string(&cfg).unwrap();
+        let cfg = load(&roundtrip).unwrap();
+        let doc = render_server_config_for_deployment(&cfg, &[user()], &reality(), &hysteria(), 1)
+            .unwrap();
+        assert!(exit_egress_policy_matches(&cfg, &doc));
+        assert_eq!(doc["outbounds"].as_array().unwrap().len(), 1);
+        if policy.is_none() || policy == Some("allow") {
+            assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 4);
+        }
+        if policy == Some("reject_all") {
+            assert_eq!(doc["route"]["rules"].as_array().unwrap().len(), 5);
+            assert_eq!(
+                doc["route"]["rules"][4],
+                serde_json::json!({"ip_version":6,"action":"reject","method":"default","no_drop":true})
+            );
+        }
+        let mut bad = doc.clone();
+        bad["route"]["rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"action":"route","outbound":"direct"}));
+        assert!(!exit_egress_policy_matches(&cfg, &bad));
+        if policy == Some("reject_google") {
+            for mutation in 0..4 {
+                let mut bad = doc.clone();
+                let rules = bad["route"]["rules"].as_array_mut().unwrap();
+                match mutation {
+                    0 => {
+                        rules.remove(5);
+                    }
+                    1 => {
+                        rules.push(rules[5].clone());
+                    }
+                    2 => {
+                        rules.swap(4, 5);
+                    }
+                    _ => {
+                        rules[5]["no_drop"] = serde_json::json!(false);
+                    }
+                }
+                assert!(!exit_egress_policy_matches(&cfg, &bad));
+            }
+        }
+    }
+}
+
+#[test]
+fn exit_hairpin_policy_remains_protected_and_probe_prefix_is_preserved() {
+    use compat_config::server::exit_egress_policy_matches;
+    let baseline = load(&exit_hairpin_deployment_toml()).unwrap();
+    let doc = render_server_config_for_deployment(
+        &baseline,
+        &[user()],
+        &hairpin_reality(),
+        &hysteria(),
+        1,
+    )
+    .unwrap();
+    let cfg =
+        load(&(exit_hairpin_deployment_toml() + "\n[egress]\nipv6_literal = \"reject_google\"\n"))
+            .unwrap();
+    assert_eq!(
+        doc,
+        render_server_config_for_deployment(&cfg, &[user()], &hairpin_reality(), &hysteria(), 1)
+            .unwrap()
+    );
+    assert!(exit_egress_policy_matches(&cfg, &doc));
+    expect_err(
+        &(exit_hairpin_deployment_toml() + "\n[egress]\nipv6_literal = \"allow\"\n"),
+        "hairpin",
+    );
+    let cfg =
+        load(&(exit_hairpin_deployment_toml() + "\n[egress]\nipv6_literal = \"reject_all\"\n"))
+            .unwrap();
+    let mut probe = user();
+    probe.is_reserved_probe = true;
+    probe.name = compat_config::model::PROBE_USER_NAME.into();
+    let doc = render_server_config_for_deployment(
+        &cfg,
+        &[user(), probe],
+        &hairpin_reality(),
+        &hysteria(),
+        1,
+    )
+    .unwrap();
+    assert!(exit_egress_policy_matches(&cfg, &doc));
+    assert_eq!(doc["route"]["rules"][8]["action"], "sniff");
+    assert_eq!(doc["route"]["rules"][9]["ip_version"], 6);
+    assert!(doc["route"]["rules"][9].get("domain_suffix").is_none());
+    assert_eq!(
+        doc["route"]["rules"][10]["outbound"],
+        "google-egress-hairpin"
+    );
+}
+
+#[test]
+fn egress_toml_patch_is_atomic_validated_and_migration_preserves_it() {
+    use compat_config::deployment::{apply_exit_egress_toml, Ipv6LiteralPolicy};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("deployment.toml");
+    let text = base("exit") + "\n# operator comment\n";
+    std::fs::write(&path, &text).unwrap();
+    let backup = apply_exit_egress_toml(&path, Some(Ipv6LiteralPolicy::RejectGoogle)).unwrap();
+    assert_eq!(std::fs::read_to_string(backup).unwrap(), text);
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("# operator comment"));
+    migrate_deployment_toml(&path).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    migrate_deployment_toml(&path).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(
+        DeploymentConfig::load(&path)
+            .unwrap()
+            .egress
+            .unwrap()
+            .ipv6_literal,
+        Ipv6LiteralPolicy::RejectGoogle
+    );
+    apply_exit_egress_toml(&path, None).unwrap();
+    assert!(DeploymentConfig::load(&path).unwrap().egress.is_none());
+}
+
 use compat_config::contract::{
     infrastructure_endpoint_ids, provisioning_document_with_mode_and_access_paths, DiagnosticMode,
 };

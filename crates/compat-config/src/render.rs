@@ -471,18 +471,11 @@ pub enum CompatibilityMode {
     /// (YouTube) and, on a Privacy+ profile, silently routes around the
     /// enforced relay path.
     HiddifyPinned,
-    /// Opt-in profile for the real-device issue recorded in
-    /// `docs/YOUTUBE_INVESTIGATION_2026-09-17.md` and re-closed in
-    /// `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §14: YouTube **Shorts** play
-    /// fine from the client's own broadband line but fail with YouTube's
-    /// "content is unavailable" UI through every VPN profile, no matter
-    /// the transport, client, or exit. Ordinary (long-form) video keeps
-    /// working. The demonstrated discriminator is the egress IP class:
-    /// every working path leaves from a non-hosting (residential/
-    /// broadband) address; every failing path — RU and DE exits alike —
-    /// leaves from a hosting/datacenter address. YouTube's short-form
-    /// playability decision rejects the hosting-IP class; nothing a VPN
-    /// config can change about a hosting source repairs that.
+    /// Opt-in raw-core privacy tradeoff: route Google traffic through the
+    /// client's own line. Some egress addresses are refused independently
+    /// per family, not the whole datacenter class. Hiddify discards this
+    /// imported route; it is not a native iPhone remediation. See
+    /// `docs/YOUTUBE_FIX_INVARIANTS.md` and `docs/EXIT_IPV6_POLICY.md`.
     ///
     /// This mode makes YouTube/Google consumer traffic egress `direct`
     /// from the client's own access line — the proven-working path —
@@ -2038,7 +2031,7 @@ mod tests {
     // --- CompatibilityMode::YouTubeDirect ---
     //
     // The mode's whole value is the domain->direct rule (see
-    // `docs/YOUTUBE_FINAL_ROOT_CAUSE.md` §14): every otherwise-working
+    // `docs/YOUTUBE_FIX_INVARIANTS.md`): every otherwise-working
     // Shorts path leaves from the client's own broadband line, and this
     // rule is the only way a profile can express that while keeping the
     // rest of the tunnel. The domain set is load-bearing — a missing

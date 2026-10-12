@@ -38,6 +38,7 @@ ACK=0
 ALLOW_DESTROY_EXISTING=0
 UPDATE_TO_REF=""
 UPDATE_TO_VERSION=""
+VERIFY_EGRESS_POLICY=0
 VERSION=""
 SKIP_REBOOT=0
 SSH_PORT=22
@@ -84,6 +85,7 @@ Required:
 Options:
   --ssh-port PORT        SSH port for the controller and installer. Default: 22.
   --update-to-ref REF    exercise the development updater against REF.
+  --verify-egress-policy  after install/update, exercise candidate exit policies (disposable host only).
   --update-to-version VERSION
                          exercise the checksum-verified production updater.
   --version VERSION      exercise the immutable stable-release install path.
@@ -112,6 +114,7 @@ while [ $# -gt 0 ]; do
     --update-to-version=*) UPDATE_TO_VERSION="${1#*=}"; shift ;;
     --version) VERSION="$2"; shift 2 ;;
     --version=*) VERSION="${1#*=}"; shift ;;
+    --verify-egress-policy) VERIFY_EGRESS_POLICY=1; shift ;;
     --skip-reboot) SKIP_REBOOT=1; shift ;;
     --domain) DOMAIN="$2"; shift 2 ;;
     --domain=*) DOMAIN="${1#*=}"; shift ;;
@@ -1127,6 +1130,15 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   else
     section "16. safe update path (SKIPPED: no --update-to-ref given)"
     section "16b. injected failed update -> rollback proof (SKIPPED: no --update-to-ref given)"
+  fi
+
+  if [ "$VERIFY_EGRESS_POLICY" -eq 1 ]; then
+    section "16c. candidate standalone exit egress policy convergence"
+    if ssh_run 'sudo SINGBOX_VPN_DISPOSABLE_EGRESS_GATE=1 bash /opt/singbox-vpn/deploy/lib/verify-exit-egress-policy.sh'; then
+      pass "candidate exit egress apply/reconcile/doctor (restored allow default)"
+    else
+      fail_required "candidate exit egress policy gate"
+    fi
   fi
 
   section "17. create vpn backup"

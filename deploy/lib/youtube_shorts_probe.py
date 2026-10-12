@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import sys
 
-from playwright.sync_api import sync_playwright
 
 # SOCS pre-accepts the EU consent dialog so it cannot mask a result.
 CONSENT_COOKIE = {
@@ -47,12 +46,13 @@ PLAYER_STATE_JS = """() => {
 
 
 def run(proxy: str | None, count: int, start_id: str, channel: str) -> int:
+    from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(
             channel=channel,
             headless=True,
             proxy={"server": proxy} if proxy else None,
-            args=["--mute-audio", "--autoplay-policy=no-user-gesture-required"],
+            args=["--mute-audio", "--autoplay-policy=no-user-gesture-required", "--disable-quic"],
         )
         context = browser.new_context(
             **p.devices["iPhone 13"], locale="en-US", timezone_id="Europe/Berlin"
@@ -92,7 +92,21 @@ def main() -> int:
     parser.add_argument("--count", type=int, default=6, help="consecutive Shorts to try")
     parser.add_argument("--start-id", default="sAcElROnYIE", help="first Short's video id")
     parser.add_argument("--channel", default="chrome", help="Playwright browser channel")
+    parser.add_argument("--literal-family", type=int, choices=(4, 6), help="resolve on probe machine and send literals through loopback SOCKS; TCP only")
     args = parser.parse_args()
+    if not 1 <= args.count <= 20:
+        parser.error("count must be 1..20")
+    if args.literal_family and not args.proxy:
+        parser.error("literal-family requires a loopback SOCKS proxy")
+    print("Evidence: browser emulation, TCP only; NOT native iPhone acceptance or automatic IPv4 fallback")
+    if args.literal_family:
+        from literal_ip_socks_front import literal_front
+        try:
+            with literal_front(args.proxy, args.literal_family) as proxy:
+                print(f"Destination form: literal IPv{args.literal_family}; DNS runs on probe machine")
+                return run(proxy, args.count, args.start_id, args.channel)
+        except ValueError:
+            parser.error("literal mode requires a credential-free loopback SOCKS URL")
     return run(args.proxy, args.count, args.start_id, args.channel)
 
 

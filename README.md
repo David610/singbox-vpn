@@ -197,8 +197,10 @@ sudo vpn-admin google-egress-hairpin set ...   # see docs/INSTALLATION.md
 sudo vpn-admin google-egress-hairpin clear     # back to a plain single exit
 ```
 
-A plain single-server install does not do this, so on a refused IP Shorts
-stay broken. Details, the proven root cause and the rules that must not be
+A plain single-server install has no accepted-IP hairpin. A refused IPv4
+still needs that remedy; an IPv4-good/IPv6-refused exit can use the unreleased
+opt-in [literal policy](docs/EXIT_IPV6_POLICY.md), whose native recovery
+remains unverified. Details, the proven root cause and the rules that must not be
 broken: [docs/YOUTUBE_FIX_INVARIANTS.md](docs/YOUTUBE_FIX_INVARIANTS.md).
 Cloudflare WARP is not part of the solution and must not be used.
 
@@ -265,3 +267,7 @@ or behavior on a censored network. See
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
+
+For the unreleased standalone literal-IPv6 policy and its PENDING native
+iPhone/VPS acceptance gates, see [exit policy](docs/EXIT_IPV6_POLICY.md). Rejection is not proof of native IPv4 retry. Published v1.2.0 evidence
+is unchanged and does not accept this candidate.

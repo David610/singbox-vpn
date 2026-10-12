@@ -34,6 +34,8 @@ die() { echo "[uninstall] ERROR: $*" >&2; exit 1; }
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/ownership.sh"
 # shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/nginx-default.sh"
+# shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/preflight.sh"
 
 # This script (and everything it execs, e.g. vpn-admin) runs as root
@@ -382,6 +384,7 @@ fi
 log "removing/restoring singbox-vpn nginx configuration..."
 if [ -e /etc/nginx/conf.d/vpn-subscription.conf ]; then
   restore_or_remove_fixed_path /etc/nginx/conf.d/vpn-subscription.conf NGINX_CONF
+  nginx_restore_packaged_default || warn "could not restore the retained packaged nginx default link"
   rm -f /etc/nginx/conf.d/vpn-subscription.conf.install-bak /etc/nginx/conf.d/vpn-subscription.conf.tmp
   if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
     systemctl reload nginx 2>/dev/null || true

@@ -56,7 +56,7 @@ implementation intent — `deploy/lib/os.sh` recognizing an OS ID is
 necessary but never sufficient for a tier above UNSUPPORTED. Tier
 definitions:
 
-- **SUPPORTED TARGET** — the v1.0 target and primary CI target. This names the
+- **SUPPORTED TARGET** — AlmaLinux 9 x86_64 and primary CI target. This names the
   intended support boundary; it does not imply current HEAD has a complete
   real-host acceptance record. Runtime evidence lives only in the canonical
   ledger.
@@ -211,3 +211,7 @@ validation for the first-party contract, with no dependency on anything
 else in this workspace. `crates/compat-config` depends on it, not the
 other way around, so the contract model cannot pick up server-side
 concerns (key files, paths, secrets) by accident.
+
+The **unreleased** standalone [exit IPv6 policy](EXIT_IPV6_POLICY.md) preserves
+the plain-exit allow default and adds opt-in literal-family rejection. It is
+not native iPhone Shorts acceptance: see the PENDING device checklist.

@@ -14,7 +14,7 @@ const DEPLOYMENT_RS: &str = include_str!("../src/deployment.rs");
 
 #[test]
 fn every_invariant_is_still_documented() {
-    for n in 1..=12 {
+    for n in 1..=13 {
         assert!(
             INVARIANTS.contains(&format!("INV-{n} ")),
             "docs/YOUTUBE_FIX_INVARIANTS.md lost INV-{n}; remove an invariant only on purpose"
@@ -28,6 +28,7 @@ fn the_tests_the_invariants_name_still_exist() {
         "exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule",
         "exit_hairpin_rejects_literal_ipv6_google_destinations_without_dropping",
         "exit_hairpin_has_exactly_one_route_for_google_domains_and_no_fallback",
+        "plain_exit_ipv6_policy_is_explicit_and_scoped",
     ] {
         assert!(
             INVARIANTS.contains(name),
@@ -82,4 +83,11 @@ fn no_third_party_egress_service_is_wired_into_the_renderer() {
             );
         }
     }
+}
+
+#[test]
+fn per_family_evidence_never_claims_native_recovery() {
+    assert!(INVARIANTS.contains("BLOCKED_ON_DEVICE_EVIDENCE"));
+    assert!(INVARIANTS.contains("does not prove"));
+    assert!(INVARIANTS.contains("real_core_literal_family_and_proxy_recovery_boundaries"));
 }

@@ -10,7 +10,7 @@
 > (`google_egress_hairpin`) stays, with the IPv6 correction in §18.3.
 > Sections 1–17 are kept unedited so the reasoning stays auditable.
 
-**Status (2026-09-20): FIXED and device-path-verified (real browser session
+**Historical, DISPROVED status claim (2026-09-20; not current): FIXED and device-path-verified (real browser session
 through the live production exit; real iPhone/Hiddify confirmation still
 pending — see §16.6). §15's "hosting IP raises Shorts risk" framing is
 superseded: the actual mechanism is ordinary CDN edge-latency variance
@@ -1005,8 +1005,9 @@ accepted IP. Two corrections:
   no relay-side sniff (§17's bug cannot occur).
 - The target node is IPv4-only. A client sending a **literal IPv6** Google
   destination reached the hairpin and stalled (0/20 QUIC handshakes). The exit
-  now rejects those immediately with `no_drop` so the client falls back to
-  IPv4 (INV-5). `ip_version` in route rules is set only from a literal
+  rejects those with `no_drop`. Correction: proxy flow closure is verified;
+  native IPv4 retry was not separately measured and must not be inferred
+  (INV-5/INV-13). `ip_version` in route rules is set only from a literal
   destination (sing-box `route/route.go` `prepareMatchMetadata`), so domain
   flows, including after the C-16 `resolve` action, are unaffected.
 
@@ -1033,3 +1034,11 @@ dropping every connection and invalidating every native credential
 connections; `NATIVE_LEASE_SECS` is 30 minutes). Any node whose agent cannot
 reach its control plane degrades this way. On `ru1` the agent is stopped and
 disabled (INV-10).
+
+## 19. Per-family correction (2026-10-12)
+
+The new standalone measurement reports accepted IPv4 versus refused IPv6;
+§18 eliminates transport hypotheses for the older IPv4-refused nodes only.
+Current live state is unverified. See [exit policy](EXIT_IPV6_POLICY.md) for
+source-verified proxy semantics and the opt-in implementation. Full standalone
+YouTube remediation is BLOCKED_ON_DEVICE_EVIDENCE; no new device PASS is claimed.

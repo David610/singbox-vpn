@@ -83,6 +83,7 @@ pub const FORBIDDEN_TOP_LEVEL_FIELDS: &[&str] = &[
     "access_paths",
     "peer_endpoints",
     "google_egress_hairpin",
+    "egress",
     "subscription",
 ];
 
