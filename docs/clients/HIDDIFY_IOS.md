@@ -193,6 +193,16 @@ unverified until it is.
 
 ## YouTube does not play (check this FIRST)
 
+> **Current status (v1.2.0).** The usual reason Shorts fail through this VPN
+> is the exit's **IP address**: YouTube's media server refuses Shorts to some
+> datacenter IPs and shows "Video unavailable" while the player API says OK.
+> v1.2.0 fixes this on the server (the exit sends only the Google/YouTube
+> domain set out through an IP YouTube accepts), with no client change. See
+> `docs/YOUTUBE_FIX_INVARIANTS.md`. The balancer, QUIC and Vision sections
+> below were earlier hypotheses; keep them for reference, but check the
+> server first. A short check: a long video plays but Shorts do not, on both
+> REALITY and Hysteria2.
+
 Hiddify does not run the profile we serve. Its core reads only the
 `outbounds` array, discards our `selector`, our `urltest` and our
 `route.final`, and rebuilds its own proxy groups. If more than one route

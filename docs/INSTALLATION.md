@@ -62,7 +62,16 @@ dig +short vpn.example.com
 ```
 
 The returned IP must match your VPS. Do not add an `AAAA` record unless
-IPv6 is configured and working.
+IPv6 is configured and working: a broken IPv6 path stalls clients and
+certificate issuance, and some hosts lose IPv6 neighbour discovery after a
+reboot. One `A` record is all the VPN needs; both certificates and the
+subscription use that single name.
+
+- For an internationalized domain (for example a Cyrillic one), pass the
+  ASCII/punycode form to the installer (`vpn.xn--...`).
+- If the zone has a `CAA` record, it must allow `letsencrypt.org`.
+- Records for other purposes on the same zone (website apex, mail) are not
+  used by the VPN and should be left alone.
 
 ### Cloudflare DNS
 
@@ -222,6 +231,42 @@ Open the matching TCP port in your provider firewall too.
 
 A successful installation prints the first user's subscription URL and QR
 code. See the top-level `README.md` for the short Hiddify connection steps.
+
+## YouTube Shorts and your exit's IP
+
+YouTube refuses Shorts video to some datacenter IPs (the player says "OK",
+then shows "Video unavailable"; long videos still play). This is decided by the
+exit's IP address, so no protocol or client setting can fix it. A fresh
+install is a plain single exit and has no workaround: test Shorts through it
+first (`docs/YOUTUBE_FIX_INVARIANTS.md` documents the browser probe,
+`deploy/lib/youtube_shorts_probe.py`).
+
+If your exit's IP is refused and you operate a second node whose IP YouTube
+accepts, the exit can send only the Google/YouTube domain set through a
+dedicated static user on that node. On the **exit**:
+
+```bash
+printf '%s\n' "$HAIRPIN_UUID" | sudo vpn-admin google-egress-hairpin set \
+  --relay-host NODE_B_IP --relay-port 443 \
+  --relay-server-name NODE_B_REALITY_SERVER_NAME \
+  --relay-reality-public-key NODE_B_REALITY_PUBLIC_KEY \
+  --relay-reality-short-id NODE_B_SHORT_ID \
+  --uuid-stdin
+sudo vpn doctor --protocol --require-protocol
+```
+
+Use a dedicated user on the other node for `HAIRPIN_UUID`, never a real
+client's credential. `set` validates the candidate config with `sing-box
+check`, applies it, and rolls back on failure. To remove it and return to a
+plain single exit:
+
+```bash
+sudo vpn-admin google-egress-hairpin clear
+```
+
+The rendered rules, ordering and the things that must never change (no
+WARP, fail closed, IPv6 reject) are in
+[YOUTUBE_FIX_INVARIANTS.md](YOUTUBE_FIX_INVARIANTS.md).
 
 ## Distribution-specific notes
 
