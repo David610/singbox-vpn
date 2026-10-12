@@ -30,7 +30,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$OUT" ] || { echo "--out DIR is required" >&2; exit 2; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 2
 mkdir -p "$OUT"
 [ -z "$(ls -A "$OUT" 2>/dev/null)" ] || { echo "refusing to reuse a non-empty --out directory" >&2; exit 2; }
 
@@ -79,7 +79,7 @@ if [ -n "$SING_BOX" ] && [ -x "$SING_BOX" ] && [ -n "$PYTHON_BIN" ] && [ -x "$PY
     YOUTUBE_TEST_PYTHON="$PYTHON_BIN" SINGBOX_VPN_LOCK_PATH="$OUT/test-state.lock" \
     cargo test --locked --workspace --all-targets --no-fail-fast
   # a run that executed no tests at all is not a pass, whatever cargo's exit status says
-  passed="$(grep -E '^test result: ok' "$OUT/cargo-test-workspace.log" | sed -E 's/.* ([0-9]+) passed.*/\1/' | paste -sd+ - | bc 2>/dev/null || echo 0)"
+  passed="$(grep -E '^test result: ok' "$OUT/cargo-test-workspace.log" | sed -E 's/.* ([0-9]+) passed.*/\1/' | awk '{s+=$1} END {print s+0}')"
   suites="$(grep -cE '^test result:' "$OUT/cargo-test-workspace.log" || true)"
   echo "tests passed: ${passed:-0} in $suites suites" >>"$OUT/ENVIRONMENT.txt"
   if [ "${passed:-0}" -eq 0 ]; then echo "no test executed" >>"$OUT/cargo-test-workspace.log"; overall=1; fi
