@@ -9,10 +9,13 @@ never edited into the result.
 A criterion with no usable data FAILS (missing data is not a pass).
 
 Criteria (defaults):
-  duration        >= 5400 s (90 min): long enough to cross three 30-minute
-                  credential/grant lifetimes and at least eight 10-minute
-                  reconcile cycles, so a lease or renewal problem that a
-                  15-minute test cannot show has time to appear.
+  duration        >= 5400 s (90 min): long enough for at least eight 10-minute
+                  reconcile cycles and many watchdog intervals, so a restart,
+                  drift or resource problem that a 15-minute test cannot show
+                  has time to appear. Account-expiry boundaries are exercised
+                  separately (see docs/reviews/RELEASE_1_3_0_PREPARATION.md);
+                  standalone accounts have static credentials and no leases, and
+                  nothing here requires a provisioning agent or native grants.
   availability    sing-box and the subscription service active in 100% of
                   samples (an unavailable sample is an outage window).
   restarts        sing-box restarts (NRestarts delta + MainPID changes) <= 0
