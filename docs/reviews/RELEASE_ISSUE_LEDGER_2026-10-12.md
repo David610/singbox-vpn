@@ -352,7 +352,7 @@ cannot be called complete.
 - **R-3 was marked FIXED on a detector that only recognised the literal `[egress]` header.** Valid TOML spellings (`[ egress ]`, `["egress"]`, dotted keys, inline tables) escaped it. Re-fixed and re-verified (see P-10); the earlier "static grep" evidence is superseded.
 - **R-6 covered only a read-only command.** A closed stdout/stderr during a *mutating* command could panic between "install configuration" and "reload" and skip rollback. Output now goes through a best-effort layer that cannot abort a transaction; tests close the streams during mutations, assert desired = runtime configuration, exactly one reload, unchanged credentials, a free lock, and that genuine failures still exit 1 with rollback. One residual: a one-time secret printed to a closed stdout (`user create`, `rotate-token`) is lost by definition; the account is still created whole and `rotate-token` mints a replacement.
 - **R-2's wording over-claimed.** The identity line said "published stable release"; it now says what is true (the installer's recorded hashes match; not independent provenance; units/helpers not hashed), also checks the **running** executable, and no longer advises `--repair` toward an older release.
-- **Test totals:** the earlier "66 fixtures" figure was wrong — the 67 passing items were 65 shell fixtures + the egress tools test + shellcheck. Final counts are recorded with the qualification run below.
+- **Test totals:** the earlier "66 fixtures" figure was wrong — the 67 passing items were 65 shell fixtures + the egress tools test + shellcheck. Final counts come from the committed qualification script and are recorded below.
 - **A committed `.pyc`** (`deploy/lib/__pycache__/…`) was removed and Python caches are ignored.
 
 ## TikTok diagnostic procedure (owner device; nothing here changes production)
@@ -383,45 +383,94 @@ verified to fix it without breaking other journeys. If the cause is an external
 restriction of the exit's IP or region, that is reported as the blocker; the
 product is then **not** declared fixed.
 
-## Automated qualification (final tree of this PR)
+## Automated qualification (exact commit `1bba1ff3a273dcc5531481519aa5b1916f83392f`)
 
-Environment: Ubuntu 24.04 (WSL2) on a Windows 10 host, Rust 1.94.1 (pinned),
+Produced by the committed `deploy/lib/qualify-local.sh`, which takes every gate's
+exit status directly (no pipe can hide a failure), keeps each complete log with
+its SHA-256, records the commit and tool versions, and reports a gate whose
+prerequisite is missing as NOT-RUN (which fails the run), never as a pass.
+Environment: Ubuntu 24.04 (WSL2) on a Windows 10 host, root, Rust 1.94.1,
 sing-box 1.14.1 downloaded and **checksum-verified against
-`deploy/lib/versions.env`**, aioquic 1.3.0, `jq` 1.7. The privileged tier ran as
-root (CAP_NET_ADMIN, `/run` and ownership fixtures available), which the earlier
-cloud run lacked. IPv4 and IPv6 loopback available; outbound network available.
+`deploy/lib/versions.env`**, aioquic 1.3.0, `jq` 1.7, IPv4/IPv6 loopback, outbound
+network. Evidence directory (not in the repository): `release-evidence/v1.3.0-prep-1bba1ff3a273/`
+(`SUMMARY.tsv`, `ENVIRONMENT.txt`, one log per gate).
 
-| Check | Result |
+| Gate | Result |
 |---|---|
 | `cargo fmt --all -- --check` | PASS |
 | `cargo clippy --locked --workspace --all-targets -- -D warnings` | PASS |
 | `RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --no-deps` | PASS |
-| `cargo test --locked --workspace --all-targets --no-fail-fast` (root, `SINGBOX_VPN_REQUIRE_REAL_INTEROP=1`, pinned core) | PASS — 34 suites, **1019 passed, 0 failed, 0 ignored**; includes `two_hop_system` (22) and the real-core lab |
-| Real-core egress-family lab (`egress_family_interop`, unprivileged) | PASS — **88 assertions** (REALITY + Hysteria2 × allow/reject_google/reject_all) |
-| `deploy/lib/tests/*.sh` (66 fixtures) + `test-egress-tools.py` (7) + `shellcheck -S warning` | PASS — 67 of 67, run as root on an exported (non-git) tree |
-| `check-release-version.sh v1.3.0-rc.1` and `v1.3.0` | PASS; a wrong core (`v1.2.1-rc.1`) is refused |
+| `cargo test --locked --workspace --all-targets --no-fail-fast`, real-core interop **required** | PASS — **1029 tests, 34 suites, 0 failed, 0 ignored** (includes `two_hop_system` and the 88-assertion real-core lab) |
+| every `deploy/lib/tests/*.sh` fixture (68), as root | PASS 68/68 |
+| `test-egress-tools.py` | PASS |
+| `shellcheck -S warning` over installer/uninstaller/`deploy/**` | PASS |
+| Overall | **QUALIFICATION: PASS** (74 gates, 0 FAIL, 0 NOT-RUN) |
 
-Failures seen on the way and what they were: (1) my two broken-pipe tests
-launched the binary outside the repository's host-isolation helper — caught by
-`every_binary_invocation_is_guarded`, fixed; (2) the lifecycle-harness fixture
-fails if its tree is an *unborn* git repository (`git rev-parse` prints `HEAD`
-and exits non-zero, so the harness derives a two-line branch) — a property of the
-scratch checkout I used, not of a release (CI has real commits; archives have no
-`.git`); (3) `test-uninstall-idempotency` failed once while the cargo suite was
-creating system accounts concurrently — it passes alone; (4) two benchmark
-fixtures need `jq` (a prerequisite, now installed in the test VM).
+Also, outside the script: the downgrade-guard fixture was run against the **real**
+v1.2.0 `vpn-admin` (built from its tag) and this tree's build — PASS (7/7 TOML
+spellings refused; the old build loads the file and says nothing about the
+policy); `check-release-version.sh` accepts `v1.3.0-rc.1` and `v1.3.0` and refuses
+a wrong core; the GitHub CI graph on the earlier head of PR #152 was fully green
+(the head has since moved; CI must be re-read on the final head).
 
-**Not run here (CI or external):** the GitHub CI graph, CodeQL, cargo-audit,
-the release build in the pinned AlmaLinux 8.10 container with the glibc ≤ 2.28
-gate, SBOM/attestation generation, packaged-archive execution in AlmaLinux 8/9
-containers (`release-container-smoke`, `os-matrix`), `idn`/pcap-tool branches,
-and everything in R-18…R-20. A passing local run is not release evidence for
-those. Fragmented-TLS and ECH flows are not exercised by the lab (the policy
+**A failed first run, kept.** The first execution of this script on this commit
+FAILED (`cargo-test-workspace`, exit 101: 904 passed, 1 failed) while I was
+running the website's unit tests and a production build on the same machine. The
+failing test is `provisioning-agent`'s
+`report_queue::tests::enqueue_never_blocks_regardless_of_endpoint_health`, which
+asserts a 500 ms wall-clock bound; it is load-sensitive and unrelated to any
+change here (the agent crate is untouched). The rerun on an idle host passed
+(above). The failed run's logs are retained
+(`…-run1-loaded-host-FAILED/`). Qualification must therefore be run on an idle
+host; the test's bound was **not** loosened to obtain a pass.
+
+**Corrections to numbers quoted earlier:** the previous section said "66 fixtures"
+and "34 suites, 1019 passed"; the tree then had 65 fixtures and 1019 tests, and
+now has 68 fixtures and 1029 tests because tests were added. The ledger no longer
+quotes figures that no committed artifact can reproduce.
+
+**Website (separate repository, offline gates only).** `David610/vpn-web`
+`origin/main` = `55277ed74afefedc585f55c8bcd90ac2149fc73e`, Node 26, `npm ci` from the
+lockfile: `npm test` **122 files / 1303 tests passed**; `npm run lint` 0 errors, 10
+warnings; `npm run build` (static export + CSP nonce stamping) succeeded;
+`npm run check-log-secrets` OK (279 files). This is CODE-VERIFIED for the website
+code at that commit. It is **not** a journey test: the real-stack e2e suites
+(`scripts/e2e/*.mjs`) need a local Supabase stack and were not run, and nothing
+about the deployed site was exercised.
+
+**Not run here (CI or external):** the GitHub CI graph on the final head, CodeQL,
+cargo-audit, the release build in the pinned AlmaLinux 8.10 container with the
+glibc ≤ 2.28 gate, SBOM/attestation generation, packaged-archive execution in
+AlmaLinux 8/9 containers, `idn`/pcap-tool branches, and everything in R-18…R-20 and
+P-1…P-11. Fragmented-TLS and ECH flows are not exercised by the lab (the policy
 cannot match them: no SNI is recovered), and UDP rejection is observed only as
 response absence, not as an ICMP error reaching a client.
 
 ## Final decision
 
-**BLOCKED** for release approval until R-19 and R-20 have PASS evidence on the
-exact RC (and the GitHub CI graph, which has not yet run on this branch, is
-green). The repository work for R-2…R-10 and R-15 is code-verified locally.
+**BLOCKED — not ready for owner release approval.** What is done and verified
+locally on commit `1bba1ff3a273`: the repository work for R-2…R-10 and R-15, the
+hardened downgrade guard (proved against a real v1.2.0 build), mutation-safe
+output handling, running-executable identity, the hybrid-transition script,
+the soak tooling, and a clean 74-gate local qualification.
+
+What blocks release, precisely:
+1. **No RC exists** — tagging is the owner's action; all exact-RC evidence below
+   depends on it.
+2. **Disposable-host lifecycle** (AlmaLinux 9 and Ubuntu 24.04), the three
+   hybrid-transition scenarios, and the soak — need authorised hosts and verified
+   host keys (R-19, P-9, P-10).
+3. **Native iPhone matrix** for YouTube Shorts/long-form **and TikTok**, both
+   transports, Wi-Fi and cellular (R-20, P-1…P-4, P-8). TikTok's cause is UNKNOWN
+   and may be an external restriction of the exit; no claim is made.
+4. **The website**: its production hostname does not serve a website (DNS points
+   at a VPN exit; see P-5), the deployed frontend/Functions/migration level is
+   UNKNOWN, and no journey has been run (P-5…P-7). A backend-only release would
+   not complete the product.
+5. **GitHub CI on the final PR head**, then the owner's merge.
+
+The smallest concrete owner action that unblocks the most: tell me the real
+production hostname/Pages project of the website (and approve a sandbox or
+prefixed-test-row target), and authorise two disposable hosts — then I can
+prepare the RC commands, run the lifecycle/hybrid/soak gates and the website
+e2e, leaving only the iPhone matrix and the publish/cutover approvals.
