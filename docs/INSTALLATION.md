@@ -414,6 +414,24 @@ disconnects **every** connected client, not only the user that changed —
 sing-box has no in-place config reload for this stack, so each change is a
 full stop+start. Reconnecting immediately afterward succeeds.
 
+Two different things can be "rotated", with different blast radii:
+
+- **Subscription token** (`user rotate-token`, and `user qr`, which mints a new
+  token the same way): the old subscription URL stops working; the user's
+  transport credentials are unchanged, so a connected client keeps working until
+  it next refreshes the subscription. Hash-only storage means the raw token can
+  never be shown again, so there is no way to "just print" the current URL.
+- **Transport credentials** (`user rotate-vless`, `rotate-hysteria`,
+  `rotate-credentials`): the old UUID/password is rejected at the next
+  handshake and the client must re-import.
+
+`vpn user links <ID-or-name>` prints the direct `vless://`/`hysteria2://` URIs
+without minting or changing anything (it works while the subscription service
+is down). A name is accepted only if exactly one account has it; an ambiguous
+name is refused and the candidate IDs are listed. These URIs still contain the
+endpoint hostname, so they need DNS; they bypass subscription fetching, not
+name resolution. The `egress` commands never change either kind of credential.
+
 ## Backup
 
 ```bash
