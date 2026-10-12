@@ -670,7 +670,59 @@ fn command_mutates_state(cmd: &Commands) -> bool {
     )
 }
 
-fn main() -> Result<()> {
+/// Exit status of a process killed by SIGPIPE (128 + 13), the convention
+/// every Unix tool follows when its reader goes away (`... | head -1`).
+const EXIT_BROKEN_PIPE: u8 = 141;
+
+static STDIO_BROKEN_PIPE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Rust ignores SIGPIPE, so `println!` into a closed pipe panics. Treat only
+/// that exact stdout/stderr EPIPE as a quiet, conventional exit: the panic
+/// still unwinds (state locks and rollback guards run their `Drop`), the
+/// default message is suppressed, and `main` maps it to status 141. Any other
+/// panic or error keeps its normal message and non-zero status.
+fn install_broken_pipe_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if message.starts_with("failed printing to std") && message.contains("Broken pipe") {
+            STDIO_BROKEN_PIPE.store(true, std::sync::atomic::Ordering::SeqCst);
+            return;
+        }
+        default_hook(info);
+    }));
+}
+
+fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+    })
+}
+
+fn main() -> std::process::ExitCode {
+    install_broken_pipe_panic_hook();
+    match std::panic::catch_unwind(run) {
+        Ok(Ok(())) => std::process::ExitCode::SUCCESS,
+        Ok(Err(error)) if is_broken_pipe(&error) => std::process::ExitCode::from(EXIT_BROKEN_PIPE),
+        Ok(Err(error)) => {
+            eprintln!("Error: {error:?}");
+            std::process::ExitCode::FAILURE
+        }
+        Err(_) if STDIO_BROKEN_PIPE.load(std::sync::atomic::Ordering::SeqCst) => {
+            std::process::ExitCode::from(EXIT_BROKEN_PIPE)
+        }
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let cfg = DeploymentConfig::load(&cli.config)
         .with_context(|| format!("loading deployment config from {:?}", cli.config))?;

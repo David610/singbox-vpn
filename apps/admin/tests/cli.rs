@@ -403,6 +403,59 @@ fn admin(dir: &Path, cfg_path: &Path) -> Command {
     cmd
 }
 
+/// A closed stdout pipe (`vpn-admin ... | head -1`) is a normal Unix
+/// pipeline outcome, not a program bug. Rust's `println!` panics on EPIPE
+/// (exit 101 plus a backtrace hint); the CLI must instead exit quietly with
+/// the conventional SIGPIPE status, while genuine failures stay non-zero.
+#[test]
+#[cfg(unix)]
+fn closed_stdout_pipe_exits_quietly_without_a_panic() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_deployment_toml(dir.path());
+    let bin = assert_cmd::cargo::cargo_bin("vpn-admin");
+    for _ in 0..25 {
+        let mut child = std::process::Command::new(&bin)
+            .arg("--config")
+            .arg(&cfg)
+            .args(["egress", "show"])
+            .env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("panicked"), "broken pipe panicked:
+{stderr}");
+        assert_ne!(out.status.code(), Some(101), "exit 101 means a panic");
+        assert!(
+            out.status.success()
+                || out.status.code() == Some(141)
+                || out.status.signal() == Some(13),
+            "a closed pipe must either finish or report SIGPIPE, got {:?}",
+            out.status
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn real_failures_still_exit_nonzero_with_the_error_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist.toml");
+    let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("vpn-admin"))
+        .arg("--config")
+        .arg(&missing)
+        .args(["egress", "show"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("loading deployment config"));
+}
+
 #[test]
 fn release_binary_exposes_package_version() {
     support::vpn_admin()
