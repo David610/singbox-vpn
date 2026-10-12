@@ -501,9 +501,8 @@ fn closed_stdout_pipe_exits_quietly_without_a_panic() {
     use std::process::Stdio;
     let dir = tempfile::tempdir().unwrap();
     let cfg = write_deployment_toml(dir.path());
-    let bin = assert_cmd::cargo::cargo_bin("vpn-admin");
     for _ in 0..25 {
-        let mut child = std::process::Command::new(&bin)
+        let mut child = support::vpn_admin_process()
             .arg("--config")
             .arg(&cfg)
             .args(["egress", "show"])
@@ -536,7 +535,7 @@ fn closed_stdout_pipe_exits_quietly_without_a_panic() {
 fn real_failures_still_exit_nonzero_with_the_error_message() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("does-not-exist.toml");
-    let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("vpn-admin"))
+    let out = support::vpn_admin_process()
         .arg("--config")
         .arg(&missing)
         .args(["egress", "show"])
