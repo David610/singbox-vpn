@@ -36,7 +36,7 @@ make_fake() { # $1 = path, $2 = old|new
   cat >"$1" <<EOF
 #!/usr/bin/env bash
 # stand-in for a vpn-admin '$2' build: only 'config validate' is implemented
-[ "\${3:-} \${4:-}" = "config validate" ] || [ "\${1:-} \${2:-}" = "config validate" ] || exit 64
+[ "\${3:-} \${4:-}" = "config validate" ] || exit 64
 echo "deployment.toml: CURRENT (schema_version 2)"
 echo "$RELAY_ENFORCEMENT_CAPABILITY (node role: exit)"
 if [ "$2" = new ]; then
@@ -55,26 +55,61 @@ else
   make_fake "$OLD" old; make_fake "$NEW" new; REAL=0
 fi
 
-# ---- TOML spellings -------------------------------------------------------------
-variants="$WORK/variants"; mkdir -p "$variants"
-base='role = "exit"
+# ---- a complete, loadable deployment in every spelling TOML allows ---------------
+variants="$WORK/variants"; negatives="$WORK/negatives"; mkdir -p "$variants" "$negatives"
+write_toml() { # $1 = output file, $2 = lines placed before the first table, $3 = lines after the tables
+  {
+    cat <<'TOP'
+public_host = "vpn.example.com"
+subscription_host = "sub.example.com"
+state_dir = "/var/lib/vpn-test"
+singbox_binary = "/usr/local/bin/sing-box"
+role = "exit"
 node_id = "n1"
 schema_version = 2
-'
-printf '%s\n[egress]\nipv6_literal = "reject_google"\n' "$base" >"$variants/header.toml"
-printf '%s\n[ egress ]\nipv6_literal = "reject_google"\n' "$base" >"$variants/spaced.toml"
-printf '%s\n["egress"]\nipv6_literal = "reject_google"\n' "$base" >"$variants/quoted.toml"
-printf "%s\n['egress']\nipv6_literal = \"reject_google\"\n" "$base" >"$variants/single-quoted.toml"
-printf '%s\n[egress] # explained\nipv6_literal = "reject_all"\n' "$base" >"$variants/trailing-comment.toml"
-# dotted key and inline table must come before any [table] header
-printf 'role = "exit"\nnode_id = "n1"\nschema_version = 2\negress.ipv6_literal = "reject_google"\n' >"$variants/dotted.toml"
-printf 'role = "exit"\nnode_id = "n1"\nschema_version = 2\negress = { ipv6_literal = "reject_all" }\n' >"$variants/inline.toml"
-negatives="$WORK/negatives"; mkdir -p "$negatives"
-printf '%s\n# [egress] only mentioned in a comment\n' "$base" >"$negatives/comment.toml"
-printf '%s\n[egress_notes]\nx = 1\n' "$base" >"$negatives/lookalike.toml"
-printf '%s\n' "$base" >"$negatives/plain.toml"
+TOP
+    printf '%s\n' "$2"
+    cat <<'TABLES'
 
-validate_of() { # $1 = binary, $2 = toml, $3 = state for the new fake
+[reality]
+listen_port = 443
+handshake_server = "www.google.com"
+
+[hysteria2]
+listen_port = 443
+
+[subscription]
+listen_port = 9100
+TABLES
+    printf '%s\n' "$3"
+  } >"$1"
+}
+write_toml "$variants/header.toml" '' '
+[egress]
+ipv6_literal = "reject_google"'
+write_toml "$variants/spaced.toml" '' '
+[ egress ]
+ipv6_literal = "reject_google"'
+write_toml "$variants/quoted.toml" '' '
+["egress"]
+ipv6_literal = "reject_google"'
+write_toml "$variants/single-quoted.toml" '' "
+['egress']
+ipv6_literal = \"reject_google\""
+write_toml "$variants/trailing-comment.toml" '' '
+[egress] # explained
+ipv6_literal = "reject_all"'
+# dotted keys and inline tables must precede the first [table] header
+write_toml "$variants/dotted.toml" 'egress.ipv6_literal = "reject_google"' ''
+write_toml "$variants/inline.toml" 'egress = { ipv6_literal = "reject_all" }' ''
+write_toml "$negatives/comment.toml" '' '
+# [egress] is only mentioned in a comment'
+write_toml "$negatives/lookalike.toml" '' '
+[egress_notes]
+x = 1'
+write_toml "$negatives/plain.toml" '' ''
+
+validate_of() { # $1 = binary, $2 = toml, $3 = state for the stand-in new build
   FAKE_EGRESS_STATE="${3:-absent}" "$1" --config "$2" config validate 2>&1 || true
 }
 state_for() { # state a correct new build reports for a file (stand-in only)
@@ -130,7 +165,7 @@ cp "$NEW" "$live/bin/vpn-admin"       # the host currently runs a build that und
 cp "$OLD" "$staged/vpn-admin"         # the target is an older release
 printf 'live binary\n' >"$live/bin/vpn-subscription-svc"
 printf 'rendered config\n' >"$live/config.json"
-run_block() { # $1 toml; runs the extracted block in a subshell, returns its status; stderr kept
+run_block() { # $1 toml; runs the extracted block in a subshell, returns its status; output kept
   (
     set -euo pipefail
     BIN_DIR="$live/bin"; STAGED_BIN_DIR="$staged"; DEPLOYMENT_TOML="$1"; TARGET_VERSION="v1.2.0"
@@ -168,12 +203,20 @@ else
 fi
 
 if [ "$REAL" = 1 ]; then
-  echo "--- real binaries: v1.2.0 really does ignore [egress] ---"
-  for f in "$variants"/header.toml "$variants"/inline.toml; do
-    if "$OLD" --config "$f" config validate >/dev/null 2>&1 || [ $? -eq 2 ]; then
-      ok "$(basename "$f"): the old build loads the file without complaint (the silent-ignore hazard)"
+  echo "--- real binaries: v1.2.0 really does load a file with [egress] and say nothing ---"
+  for f in "$variants"/header.toml "$variants"/inline.toml "$variants"/dotted.toml; do
+    rc=0; out="$("$OLD" --config "$f" config validate 2>&1)" || rc=$?
+    if [ "$rc" -le 2 ] && ! printf '%s' "$out" | grep -qi 'egress'; then
+      ok "$(basename "$f"): the old build accepts the file and never mentions the policy (the silent-ignore hazard)"
     else
-      fail "$(basename "$f"): the old build rejected the file; the hazard assumption changed"
+      fail "$(basename "$f"): the old build did not behave as a silent-ignore (rc=$rc): $out"
+    fi
+  done
+  for f in "$variants"/*.toml; do
+    if "$NEW" --config "$f" config validate 2>&1 | grep -q '^egress-policy: declared'; then
+      ok "$(basename "$f"): the new build reports the policy as declared"
+    else
+      fail "$(basename "$f"): the new build did not report the policy"
     fi
   done
 fi
