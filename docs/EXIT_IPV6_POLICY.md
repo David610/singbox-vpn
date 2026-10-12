@@ -199,24 +199,48 @@ A deployment that declares `[egress]` must never silently lose the policy.
 v1.2.0 and earlier ignore an unknown `[egress]` table without any error, so:
 
 - `vpn-admin config validate` of a build that understands the policy prints
-  `capability: exit-egress-policy`;
-- `update.sh` (update, repair or downgrade) checks the **staged target's**
-  `config validate` before any live change and refuses to switch a deployment
-  that declares `[egress]` to a build that does not print the marker;
+  `capability: exit-egress-policy` and `egress-policy: declared (<value>)` or
+  `egress-policy: absent`, computed by the same parser production uses, so every
+  TOML spelling of the table (`[egress]`, `[ egress ]`, `["egress"]`, dotted
+  keys, an inline table) counts;
+- `update.sh` (update, repair or downgrade) first asks the **installed**
+  vpn-admin whether a policy is declared (only a build that predates that
+  answer falls back to an over-inclusive text match), then checks the **staged
+  target's** `config validate`, and refuses — before any live change — to switch
+  such a deployment to a build that does not print the marker;
 - to leave the policy on purpose, run `vpn-admin egress clear` first, then
   downgrade; the deployment schema version is deliberately not bumped, because
   that would break every rollback to v1.2.0 even for hosts with no policy.
 
+The guard lives in the **new** updater. A host still on v1.2.0 only has the
+v1.2.0 updater, which cannot be changed: update it with
+`update.sh --version <new release>` (the target understands the policy), then
+run `update.sh --repair` from the new tree to record the executable hashes.
+Never run `--repair` first from the v1.2.0 tree on a host with a policy or with
+hand-copied executables: it re-installs the recorded v1.2.0 executables and drops
+the policy. The full transition is scripted for disposable hosts in
+`deploy/almalinux/hybrid-upgrade-acceptance.sh`.
+
 Policy commands never change user credentials, subscription tokens or key
 material (covered by an automated test); clients do not need to re-import after
-`egress set`/`clear`.
+`egress set`/`clear`. A mutating command whose stdout/stderr pipe closes still
+completes its transaction and reports its real result (a one-time secret
+printed to a closed stdout is lost by definition — mint a replacement with
+`user rotate-token`).
 
 ## Release identity
 
 `vpn-admin doctor` (L1 line "release identity") compares the installed
-`vpn-admin`, `vpn` and `vpn-subscription-svc` with the SHA-256 recorded by the
-installer/updater in `install-state.json` and with the recorded release tag:
-published stable, release candidate, development channel, inconsistent
-(manual copy or partial update) or UNKNOWN (installed before hashes were
-recorded). Repair a reported inconsistency with `update.sh --repair`; do not
-copy executables by hand.
+`vpn-admin`, `vpn` and `vpn-subscription-svc` **and the executable actually
+running the check** with the SHA-256 the installer/updater recorded in
+`install-state.json`, and with the recorded release tag: recorded stable
+release, release candidate, development channel, inconsistent (manual copy,
+partial update, or a development binary started by path) or UNKNOWN (installed
+before hashes were recorded — never reported as a match). A match means "these
+are the bytes the installer recorded", **not** independent proof that they are
+the published artifact (compare the release `SHA256SUMS`/attestation) and says
+nothing about unit files or helper scripts, which are not hashed. To restore a
+consistent deployment use the supported updater for the release you intend to
+run (`update.sh --version <tag>`); do not copy executables by hand, and do not
+use `--repair` when the recorded release is older than the vpn-admin you run or
+your configuration needs a newer one.
