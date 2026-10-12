@@ -250,10 +250,8 @@ egress_marker="$(sed -n 's/^pub const EXIT_EGRESS_POLICY_CAPABILITY: &str = "\(.
 [ -n "$egress_marker" ] && [ "$egress_marker" = "$EXIT_EGRESS_POLICY_CAPABILITY" ] \
   && ok "shell and Rust agree on the exit egress capability marker" \
   || fail "EXIT_EGRESS_POLICY_CAPABILITY differs: rust='$egress_marker' shell='$EXIT_EGRESS_POLICY_CAPABILITY'"
-echo "$precheck_body" | grep -q 'deployment_declares_egress_policy "\$DEPLOYMENT_TOML"' \
-  && echo "$precheck_body" | grep -q 'admin_output_declares_exit_egress_policy "\$precheck_output"' \
-  && echo "$precheck_body" | grep -q 'does not understand it' \
-  && ok "update.sh's pre-switch check refuses a target without egress-policy support" \
+echo "$precheck_body" | grep -q 'egress_policy_switch_refusal "\$DEPLOYMENT_TOML" "\$installed_validate_output" "\$precheck_output"' \
+  && ok "update.sh's pre-switch check refuses a target without egress-policy support (behaviour: test-egress-downgrade-guard.sh)" \
   || fail "update.sh does not guard [egress] deployments against an older vpn-admin"
 admin_output_declares_exit_egress_policy "deployment.toml: CURRENT
 $EXIT_EGRESS_POLICY_CAPABILITY" \
@@ -263,18 +261,6 @@ $RELAY_ENFORCEMENT_CAPABILITY (node role: exit)"; then
   fail "a v1.2.0-style output (relay marker only) was accepted as egress-capable"
 else
   ok "output of a build that predates [egress] is refused"
-fi
-printf 'role = "exit"\n\n[egress]\nipv6_literal = "reject_google"\n' >"$WORK/with-egress.toml"
-printf 'role = "exit"\n\n[egress] # explained\nipv6_literal = "reject_all"\n' >"$WORK/with-egress-comment.toml"
-printf 'role = "exit"\n# [egress] mentioned only in a comment\n' >"$WORK/without-egress.toml"
-printf 'role = "exit"\n\n[egress_notes]\nx = 1\n' >"$WORK/lookalike.toml"
-deployment_declares_egress_policy "$WORK/with-egress.toml" && deployment_declares_egress_policy "$WORK/with-egress-comment.toml" \
-  && ok "an [egress] table is detected (with or without a trailing comment)" || fail "[egress] table not detected"
-if deployment_declares_egress_policy "$WORK/without-egress.toml" || deployment_declares_egress_policy "$WORK/lookalike.toml" \
-    || deployment_declares_egress_policy "$WORK/does-not-exist.toml"; then
-  fail "a comment, a look-alike table or a missing file counted as an egress policy"
-else
-  ok "comments, look-alike tables and missing files are not an egress policy"
 fi
 
 echo

@@ -900,10 +900,16 @@ if [ -f "$DEPLOYMENT_TOML" ]; then
         echo "$precheck_output" >&2
         die "this node is a RELAY, and $TARGET_VERSION's vpn-admin does not declare fail-closed relay forwarding. Switching to it (update, repair or downgrade) could render this relay as an unrestricted exit. Nothing live has been changed."
       fi
-      if deployment_declares_egress_policy "$DEPLOYMENT_TOML" \
-          && ! admin_output_declares_exit_egress_policy "$precheck_output"; then
+      # The INSTALLED vpn-admin is asked first whether an [egress] policy is
+      # declared (it parses the TOML the way production does); a build that
+      # predates the question falls back to an over-inclusive text match.
+      installed_validate_output=""
+      if [ -x "$BIN_DIR/vpn-admin" ]; then
+        installed_validate_output="$("$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" config validate 2>&1 || true)"
+      fi
+      if egress_refusal="$(egress_policy_switch_refusal "$DEPLOYMENT_TOML" "$installed_validate_output" "$precheck_output")"; then
         echo "$precheck_output" >&2
-        die "this deployment declares an [egress] literal-IPv6 policy, and $TARGET_VERSION's vpn-admin does not understand it: it would ignore the setting without any error and re-render a plain exit. Refusing (update, repair or downgrade). Run 'vpn-admin egress clear' first if you really intend to drop the policy. Nothing live has been changed."
+        die "$egress_refusal Target: $TARGET_VERSION. Nothing live has been changed."
       fi
       ;;
     *)

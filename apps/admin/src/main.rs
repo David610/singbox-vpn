@@ -2487,6 +2487,14 @@ fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) ->
         "{}",
         compat_config::deployment::EXIT_EGRESS_POLICY_CAPABILITY
     );
+    // Semantic (parsed) answer, independent of how the TOML spells the table:
+    // `[egress]`, `[ egress ]`, `["egress"]`, dotted keys and inline tables all
+    // deserialize to the same value. `update.sh` trusts this line when the
+    // installed build understands the policy.
+    match &cfg.egress {
+        Some(egress) => println!("egress-policy: declared ({})", egress.ipv6_literal.as_str()),
+        None => println!("egress-policy: absent"),
+    }
 
     let users_path = cfg.users_file();
     match store::detect_users_schema(&users_path) {
