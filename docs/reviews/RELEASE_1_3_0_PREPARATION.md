@@ -51,13 +51,13 @@ For each, obtain the host's SSH public key out-of-band (provider console) and
 build a `known_hosts` line, then dispatch
 `.github/workflows/vps-acceptance.yml` with: `ssh_host`, `domain`,
 `version=v1.3.0-rc.1`, `verify_egress_policy=true`, `ssh_known_hosts=<LINE>`,
-`skip_reboot=false`. Three runs per OS family as applicable:
+`skip_reboot=false`. Three kinds of run per OS family (runs 1–2 use the workflow, run 3 the script):
 
 | # | Inputs | Proves |
 |---|---|---|
 | 1 | `version=v1.3.0-rc.1` | fresh install, repair/reconcile, reboot, renewal, uninstall/reinstall, egress stage 16c |
 | 2 | `version=v1.2.0`, `update_to_version=v1.3.0-rc.1` | published stable → RC update, injected-failure rollback, policy persistence |
-| 3 | run 2 preceded by hand-copying a development `vpn-admin`/`vpn` onto the v1.2.0 host (disposable only) | doctor reports "INCONSISTENT"; the supported update replaces it and records hashes |
+| 3 | `deploy/almalinux/hybrid-upgrade-acceptance.sh`, once per scenario (`normal`, `hybrid`, `hybrid-policy`), each on its own baseline-prepared host — **not** the lifecycle workflow, which installs fresh and so can never be a hybrid | the three real v1.2.0 → RC transitions, credential preservation, policy persistence, downgrade refusal (see §6) |
 
 The workflow refuses a release run without the egress stage, with the reboot
 skipped, or without a verified host key, and independently requires the stage
@@ -126,21 +126,62 @@ one-command bootstrap on a disposable host.
 
 ## 6. Production upgrade (separate authorisation)
 
-Use the supported package, never copied executables:
+Use the supported package, never copied executables. **Which updater runs
+matters**: a v1.2.0 host only has the v1.2.0 updater (`/opt/singbox-vpn`), which
+cannot be changed and cannot protect an `[egress]` policy. The transition that
+is safe for all three real starting points — a normal v1.2.0 host, a host with
+development executables copied over it, and a host already using `reject_google`
+— is:
 
 ```sh
+# 1. DO NOT run `update.sh --repair` first: on a v1.2.0 tree it re-installs the
+#    recorded v1.2.0 executables and drops the policy.
 sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version v1.3.0
 sudo vpn-admin doctor --protocol --require-protocol
+# 2. The old updater cannot record executable hashes. Record them with the NEW tree:
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair
+sudo vpn-admin doctor      # "release identity: recorded stable release v1.3.0 ..."
+sudo vpn-admin egress show # unchanged policy
 ```
 
+This exact sequence is scripted for a disposable host in
+`deploy/almalinux/hybrid-upgrade-acceptance.sh` (`--scenario normal|hybrid|hybrid-policy`),
+which starts from an existing baseline (it never uninstalls or reinstalls first),
+fingerprints credentials, compares the installed executable with the published
+release independently of the manifest, runs the sequence above and then proves a
+downgrade is refused. Run each scenario once on its own prepared baseline host
+before touching the owner's host (§3, run 3).
+
 `update.sh` is transactional (staged verification, switch, protocol
-acceptance, commit; automatic rollback on failure). A host whose binaries were
-copied by hand is brought back to a consistent state by this update, which also
-records the executable hashes the identity check compares. Afterwards verify:
-the "release identity" doctor line names the published stable release with
-matching hashes; users and `[egress]` are preserved; REALITY and Hysteria2
-handshakes; subscription refresh; one native playback test; and observe one full
-reconcile (10 min) and watchdog cycle.
+acceptance, commit; automatic rollback on failure). Afterwards verify: the
+"release identity" doctor line names the recorded stable release with matching
+hashes (an installer-recorded match is not independent provenance — compare the
+release `SHA256SUMS`/attestation for that); users and `[egress]` are preserved;
+REALITY and Hysteria2 handshakes; subscription refresh; one native playback test
+(Shorts **and** TikTok); and observe one full reconcile (10 min) and watchdog
+cycle, then the bounded soak below.
+
+**Soak (bounded, measurable).** On the disposable host and again on the owner's
+host after cutover:
+
+```sh
+sudo bash deploy/lib/soak-sampler.sh --duration 5400 --interval 30 --output /root/soak.csv
+python3 deploy/lib/soak_evaluate.py /root/soak.csv      # exit 0 = PASS
+```
+
+The criteria (≥ 90 minutes, 100 % availability, no unplanned sing-box restart,
+bounded RSS/fd growth, ≥ 8 successful reconciles, watchdog active, every
+protocol self-test passed) are fixed in the evaluator before the run; missing
+data fails. Keep a client connected throughout so grant/credential expiry is
+exercised, and record any disconnect with its time.
+
+**The website is a separate component.** This release does not deploy the
+frontend, Pages Functions or database. Before the stable record is written, name
+the accepted frontend commit/build, Functions version and applied migration level
+(see the ledger's component manifest) and deploy them by their own procedure;
+the "agreed website journeys" gate (ledger P-5…P-7) must pass against that exact
+set, and a public smoke repeated after cutover. A backend release alone is not
+completion.
 
 **Rollback.** A failed update rolls back by itself. A deliberate downgrade to
 v1.2.0 is refused while `[egress]` is present (v1.2.0 would ignore it

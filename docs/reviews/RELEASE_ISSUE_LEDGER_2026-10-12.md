@@ -54,6 +54,7 @@ absent; the trial host is called "the trial VPS".
 | R-21 | Passwords/tokens pasted into chat during investigation | EXTERNAL | Owner must rotate; none copied here |
 | R-22 | Live inventory of the earlier two-node deployment | HISTORY | UNVERIFIED; not inferred |
 | R-23 | D-1…D-25 consistency audit | — | Carried from the audit; not reopened |
+| P-1…P-11 | Product gates: Shorts, long-form, TikTok app/web, website host, website journeys, provisioning, ordinary use, grant renewal/soak, lifecycle + hybrid transition, owner cutover | EXTERNAL / EVIDENCE | see "Product acceptance gates"; **none has native-device or live-site evidence** |
 
 ## Detail
 
@@ -254,6 +255,133 @@ absent; the trial host is called "the trial VPS".
   `docs/reviews/YOUTUBE_IPV6_CONSISTENCY_AUDIT_2026-10-12.md`; none reopened.
   Still pending there: live renewal after the nginx change (R-9) and the
   general client address-override follow-up (R-12).
+
+## Product acceptance gates (second pass)
+
+The release target is the whole product, not one fix: the website, its customer
+journeys, provisioning to the node, VPN usage, YouTube **and TikTok**, and the
+lifecycle operations that must keep all of it working. Nothing below is removed
+from scope; each item states what is verified, what is not, and what blocks it.
+Evidence levels as above. "Candidate" means the exact immutable RC, which does
+not exist yet (no tag has been created); every device/server cell therefore says
+NOT RUN unless a dated trial entry is cited.
+
+### Component manifest (what is known, and what is not)
+
+| Component | Identity found | Deployed identity |
+|---|---|---|
+| singbox-vpn backend | PR #152, branch `release/1.3.0-prep`; proposed `v1.3.0-rc.1` (not tagged) | none yet — no RC exists |
+| Latest published backend | `v1.2.0` | the owner's single VPS runs v1.2.0 plus hand-copied `main` (`ceb751c`) executables and `reject_google` (a hybrid, see P-10) |
+| Website / frontend | repo `David610/vpn-web`, `origin/main` = `55277ed` (PR #82 merged 2026-10-08); Next.js static export (`arcana-web` 0.1.0) on Cloudflare Pages, Pages Functions, Supabase (Postgres, RLS), Stripe, Telegram bot | **UNKNOWN.** No GitHub deployment records; the repo's own runbook still calls the build an "offline-qualified release candidate"; the Pages project was reported blocked by Cloudflare (code 8000119) on 2026-10-08/09 and its production deployment state has not been read |
+| Database | latest migration in `main`: `20261017000000_link_access_link_and_location_mode.sql` | **UNKNOWN** whether it is applied (it was written "apply before deploying the build"); the Supabase project is the production DB with test rows mixed in (owner decision 2026-10-06) |
+| Provisioning agent | `apps/provisioning-agent` in this repo (v1.3.0 in this PR) | not installed on the single VPS; deliberately stopped and disabled on the earlier relay node (owner decision, preserved) |
+| Client / core | Hiddify (iOS) with its embedded sing-box fork; native YouTube and TikTok apps | versions not recorded in any acceptance entry; must be recorded per run |
+| sing-box | `1.14.1`, checksum-pinned in `deploy/lib/versions.env` | `1.14.1` on the single VPS |
+| Website hostnames | `vpn.у-тамары.com` = `vpn.xn----8sba1cvaif4e.com` | see P-5; note it is a **different** name from the VPN host `vpn.утамары.com` = `vpn.xn--80aa9argf5d.com` used in the trial |
+
+A singbox-vpn release does not deploy the website, the Pages Functions or the
+database. Their accepted versions must be named in the stable acceptance record
+and deployed through their own supported procedure; until then the product
+cannot be called complete.
+
+### P-1 — YouTube Shorts (native iPhone)
+- **Reproduction:** native YouTube app through Hiddify; open `sAcElROnYIE`, then ≥ 10 consecutive Shorts.
+- **Expected:** playback starts and continues on REALITY and Hysteria2, Wi-Fi and cellular.
+- **Root cause:** per-family refusal by YouTube of the exit's IPv6 range (measured with browser emulation); the native retry behaviour after a proxy reject is UNKNOWN.
+- **Implementation:** `[egress] ipv6_literal` (#151); explicit persisted policy for the owner's host at cutover (P-11); accepted-IP hairpin unchanged for exits whose IPv4 is refused.
+- **Automated:** policy tests, 88-assertion real-core lab. **Server:** trial 2026-10-12 (browser emulation, 6/6 on IPv4/domain, IPv6 refused in ≈19 ms). **Device:** owner-reported "looks like it works" (provisional; version/transport/network not recorded).
+- **Blockers:** exact-RC native run on the 4-cell matrix.
+
+### P-2 — YouTube long-form
+- **Reproduction:** a long video, seek forward/back, 15 minutes sustained, reconnect mid-play.
+- **Expected:** no stall beyond normal buffering; plays on both transports and networks.
+- **Root cause:** n/a (not reported failing). **Implementation:** none specific. **Automated/Server/Device:** none recorded for the candidate; the owner's 2026-10-11 report covered a normal video once.
+- **Blockers:** exact-RC native run.
+
+### P-3 — TikTok (native app)
+- **Reproduction:** cold start, feed load, thumbnails, video start, 10 consecutive videos, 15 minutes of scrolling, comments and profile views, account access, on each transport/network; with a VPN-off baseline.
+- **Expected:** all of the above work, or the failing hosts and cause are identified.
+- **Root cause: UNKNOWN.** `docs/TIKTOK_INVESTIGATION.md` holds hypotheses only (QUIC/UDP preference, DNS, IPv6, routing/sniffing, exit-IP or region restriction) — all UNKNOWN; the baseline "TikTok fails" is user-reported with no device, client, network or transport record. The Google IPv6 policy is **not** assumed to apply and no TikTok domain list or rule is added.
+- **Implementation:** none. Existing read-only server probe `vpn-investigate.sh tiktok` (root domains only). A TCP-only profile (`?compat=tcp-only`) is available as a controlled diagnostic experiment and is not a proposed default.
+- **Automated/Server/Device:** NOT RUN.
+- **Blockers (device, owner):** run the matrix in "TikTok diagnostic procedure" below; a deliberate service refusal of the exit IP, if that is the answer, is an external restriction to be reported, not fixed in code.
+
+### P-4 — TikTok web
+- **Reproduction:** tiktok.com in a mobile and a desktop browser through the VPN: home feed, one video, search. **Expected:** loads and plays; **Root cause:** UNKNOWN. **Evidence:** NOT RUN. **Blockers:** needs a browser on the accepted network; HTTP 200 on the root page is not success — a video must play.
+
+### P-5 — The website host `vpn.у-тамары.com`
+- **Reproduction (read-only, from the investigation machine, 2026-10-12):** `vpn.xn----8sba1cvaif4e.com` resolves (Cloudflare nameservers, DNS-only) to **91.244.71.165 — the earlier de1 VPN exit**, not to a Pages deployment. TCP 80, 443 and 8443 to it all timed out from this network; the VPN host `vpn.xn--80aa9argf5d.com` (157.173.27.46) answered on 443 and 8443 from the same network.
+- **Expected:** the customer website answers on its public hostname with valid TLS.
+- **Root cause: UNKNOWN, with a hard architectural conflict.** On a node, port 443 belongs to the REALITY listener (and UDP 443 to Hysteria2); a static Pages site cannot be served from that address. Either the hostname is not the website's real address (the site may live at an apex/other name or a `*.pages.dev` URL), or the record is stale/mis-pointed. Whether de1 is down, firewalled or blocked from this network cannot be told from one vantage point. This is **not** a website outage finding and **not** a fix: no DNS was changed.
+- **Implementation:** none possible without the owner naming the real deployment (Pages project/custom domain) and authorising a probe from a second network. The IDN round-trip (`у-тамары` ↔ `xn----8sba1cvaif4e`) is consistent; the two names `у-тамары.com` and `утамары.com` must not be conflated in configuration.
+- **Evidence:** DNS only. **Blockers:** owner confirms the intended production hostname for the website vs the VPN; authorised public smoke after any cutover.
+
+### P-6 — Website customer journeys
+- **Inventory (from the repo, not from a running site):** landing/navigation; registration and login (Supabase auth) with session handling; `/account` dashboard; `/account/devices`, `/account/links` (+ new, detail), `/account/subscription`, `/account/billing` (Stripe checkout and portal), `/account/settings`, `/account/help`; Telegram Mini App with Telegram-authenticated routes; admin console (AAL2/RBAC); subscription retrieval `/sub/<token>`; node bootstrap/agent API (`functions/v1`).
+- **Expected:** each journey works end to end in a sandbox: verification email, login/logout/session renewal, password reset, sandbox checkout → entitlement → provisioning, QR/import presentation, subscription refresh, expiry/disable/reactivate, clear recoverable errors when API, payment provider or node is unavailable. Negative cases: no cross-account access to links; webhook/job replays create no duplicate users or credentials; client-side checkout success grants nothing by itself; expired access rejected; sensitive responses uncached and unlogged; a job is not "succeeded" before the node operation succeeded; delivered credentials equal the node's rendered ones.
+- **Root cause / Implementation:** n/a — nothing has been observed failing; nothing was changed in the website. The repo already ships real-stack e2e suites (`scripts/e2e/portal.mjs`, `admin.mjs`, `telegram.mjs`, `docs/runbooks/LOCAL_E2E.md`).
+- **Evidence:** NOT RUN. This pass had no sandbox Supabase/Stripe project, no approved test inbox, and the only database known is the production one (rules in the owner's note: prefix test rows, never touch existing rows, treat Stripe/RLS/rotation tests as production-data operations).
+- **Blockers:** owner supplies/approves a staging or sandbox target (or explicitly authorises prefixed test rows in production) and a test inbox; then run the e2e suites and the manual journeys above, record versions per the manifest, and repeat a public smoke after cutover.
+
+### P-7 — Website → agent → node provisioning
+- **Reproduction:** sandbox purchase → control-plane job → provisioning agent claims it → node renders the user → client receives credentials that authenticate.
+- **Expected:** at-most-once effect per job, credentials identical to the node's, job reports success only after the node operation, grants renew before expiry.
+- **Facts established:** operator-created users (`vpn user create`) carry static legacy credentials with no lease; native grants (30-minute leases) exist only for authorisation-backed principals and are renewed by the agent/lease pool; the agent is a separate service (`vpn-provisioning-agent`), not installed on the single VPS, and deliberately disabled on the earlier relay while its control plane was unreachable.
+- **Root cause:** n/a. **Implementation:** none. **Evidence:** NOT RUN (needs a live control plane, P-6). **Blockers:** if the journey requires the agent on a node, the exact change (install/enable on named host, its control-plane URL, claim-token handling) is prepared for approval — it is **not** enabled and manual user creation is **not** substituted for it.
+
+### P-8 — Ordinary VPN use
+- **Reproduction:** browsing, representative video/large-asset sites, a sustained download and a controlled upload, non-Google IPv6 and IPv6-only destinations, DNS/ISP-IPv6/WebRTC leak checks, subscription refresh, disconnect/reconnect, idle/resume, Wi-Fi↔cellular handover, client reboot, authorised server reboot — on all four transport/network cells.
+- **Evidence:** server side: trial showed non-Google literal IPv6 reachable under `reject_google`; REALITY handshake passes after policy changes. Device: NOT RUN. **Blockers:** exact-RC device run.
+
+### P-9 — Credential/grant renewal and expiry
+- **Reproduction:** keep a client connected across ≥ 3 grant lifetimes and ≥ 8 reconcile cycles; observe disconnects, renewal errors, restarts, resource growth.
+- **Implementation:** `deploy/lib/soak-sampler.sh` (read-only, private CSV, no secrets) and `deploy/lib/soak_evaluate.py` with criteria fixed in advance (≥ 5400 s; 100 % availability; zero unplanned sing-box restarts; RSS ≤ +25 % and ≤ +64 MiB; fds ≤ +50 % and ≤ +64; every reconcile successful and ≥ 8 runs; watchdog active; every self-test passed and ≥ 1 ran; missing data fails). Evaluator and sampler are unit/fixture tested.
+- **Evidence:** tooling verified locally; **no soak has been run** (no authorised host/time window). **Blockers:** run on the disposable host and on the owner's host after cutover, attach the CSV and verdict.
+
+### P-10 — Supported lifecycle operations and the hybrid transition
+- **Transitions (all use the verified updater of the host's own installed tree, never a generic repair toward an older release):** normal v1.2.0 → candidate; v1.2.0 with development executables copied over → candidate; v1.2.0 hybrid with `reject_google` → candidate. Scripted and mock-tested in `deploy/almalinux/hybrid-upgrade-acceptance.sh`; it never uninstalls or reinstalls before the transition, fingerprints credentials, checks the installed executable against the published release independently of the manifest, runs `--repair` from the new tree only to record identity, and proves a downgrade is refused while `[egress]` is set.
+- **Guard coverage:** the `[egress]` detector now follows the production parser (header, spaced, quoted, single-quoted, trailing-comment, dotted-key and inline-table spellings), is exercised against a **real** v1.2.0 binary (which loads the file and ignores the policy) and the real current build, and runs update.sh's own pre-switch block, proving the live tree is byte-identical after a refusal.
+- **Old-updater limit:** the v1.2.0 updater cannot be changed. It will update the host (the target understands the policy) but cannot record executable hashes; identity stays UNKNOWN until `update.sh --repair` is run from the new tree. **Never** run `--repair` from the v1.2.0 tree on a host with an `[egress]` policy or hybrid binaries — it re-installs v1.2.0 and drops the policy.
+- **Evidence:** automated only; the disposable-host runs are PENDING (R-19).
+
+### P-11 — The owner's cutover leaves the verified policy explicit and persistent
+- The policy is stored in `deployment.toml` (`[egress] ipv6_literal = "reject_google"`), is re-rendered by the single production renderer on every reconcile/update/repair, and survives them (tested). The owner's single VPS currently has it applied by hand with hand-copied executables. Cutover (needs authorisation): supported update to the accepted stable, then verify `vpn-admin egress show`, the "release identity" doctor line, REALITY/Hysteria2 handshakes, and a native playback test. Unrelated deployments keep the `allow` default.
+
+## Corrections to earlier dispositions
+
+- **R-3 was marked FIXED on a detector that only recognised the literal `[egress]` header.** Valid TOML spellings (`[ egress ]`, `["egress"]`, dotted keys, inline tables) escaped it. Re-fixed and re-verified (see P-10); the earlier "static grep" evidence is superseded.
+- **R-6 covered only a read-only command.** A closed stdout/stderr during a *mutating* command could panic between "install configuration" and "reload" and skip rollback. Output now goes through a best-effort layer that cannot abort a transaction; tests close the streams during mutations, assert desired = runtime configuration, exactly one reload, unchanged credentials, a free lock, and that genuine failures still exit 1 with rollback. One residual: a one-time secret printed to a closed stdout (`user create`, `rotate-token`) is lost by definition; the account is still created whole and `rotate-token` mints a replacement.
+- **R-2's wording over-claimed.** The identity line said "published stable release"; it now says what is true (the installer's recorded hashes match; not independent provenance; units/helpers not hashed), also checks the **running** executable, and no longer advises `--repair` toward an older release.
+- **Test totals:** the earlier "66 fixtures" figure was wrong — the 67 passing items were 65 shell fixtures + the egress tools test + shellcheck. Final counts are recorded with the qualification run below.
+- **A committed `.pyc`** (`deploy/lib/__pycache__/…`) was removed and Python caches are ignored.
+
+## TikTok diagnostic procedure (owner device; nothing here changes production)
+
+Record per run: iPhone/iOS, TikTok version, Hiddify and embedded core versions,
+transport, network, server RC, policy, date. For each of REALITY/Wi-Fi,
+REALITY/cellular, Hysteria2/Wi-Fi, Hysteria2/cellular, and once with the VPN off:
+1. cold start; 2. feed metadata; 3. thumbnails; 4. video start; 5. 10 consecutive
+videos; 6. 15 minutes of scrolling; 7. comments/profile; 8. login/account access;
+9. TikTok web. Mark each step PASS/FAIL/slow.
+
+Then, only for a failing cell, on an owner-authorised **test** window:
+1. raise the node's sing-box log level temporarily (per-flow logging is off by
+   default and must be restored — record the restore), capture the failing
+   hostnames (SNI) and the transport (TCP/UDP) from restricted logs, never
+   keep them in the repository;
+2. compare with `?compat=tcp-only` as a **controlled experiment** (if TCP-only
+   fixes it, UDP/QUIC is implicated; if it does not, it is disproved);
+3. check DNS A/AAAA for those hosts from the node and from the client, IPv4 vs
+   IPv6 reachability, MTU (`vpn-investigate.sh mtu`), and whether the exit IP is
+   refused (fetch the same media URL from another vantage already available);
+4. classify: DNS / TCP / destination QUIC-UDP / IPv4-IPv6 / MTU / routing /
+   exit-IP or region restriction.
+
+No domain is added to any rule, no UDP is blocked globally and no profile is
+made default unless the specific failure was reproduced and the change was
+verified to fix it without breaking other journeys. If the cause is an external
+restriction of the exit's IP or region, that is reported as the blocker; the
+product is then **not** declared fixed.
 
 ## Automated qualification (final tree of this PR)
 
