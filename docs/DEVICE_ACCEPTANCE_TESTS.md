@@ -664,13 +664,16 @@ recorded builds. No production observation was made by this coding task.
 
 #### v1.3.0 exact-candidate native matrix — all cells **PENDING**
 
-Run per `docs/NATIVE_IPHONE_IPV6_ACCEPTANCE.md` against the same immutable RC
-that passed the disposable lifecycle. Record non-secret versions (iPhone/iOS,
-YouTube, Hiddify and embedded core, sing-box, server OS/role/policy).
+Run per `docs/NATIVE_IPHONE_IPV6_ACCEPTANCE.md` against the same immutable RC that
+passed the disposable lifecycle, with Hiddify (iOS) and its embedded core importing
+the normal subscription and a direct link. Record non-secret versions (iPhone/iOS,
+YouTube, TikTok, Hiddify and embedded core, sing-box, server OS/role/policy).
+The website, billing and Tamara are deferred by the owner and are not part of this
+matrix.
 
-| Transport | Network | Subscription import/refresh | Shorts incl. `sAcElROnYIE` + ≥5 consecutive | Long video + seek | 15-min session | Reconnect / idle / handover / reboot | Non-Google IPv6, ISP-IPv6 and DNS leak | Result |
-|---|---|---|---|---|---|---|---|---|
-| REALITY | Wi-Fi | — | — | — | — | — | — | PENDING |
-| REALITY | cellular | — | — | — | — | — | — | PENDING |
-| Hysteria2 | Wi-Fi | — | — | — | — | — | — | PENDING |
-| Hysteria2 | cellular | — | — | — | — | — | — | PENDING |
+| Transport | Network | Import / refresh | YouTube Shorts (`sAcElROnYIE` + ≥ 10) | YouTube long + seek, 15 min | TikTok app (10 videos, 15 min, comments/profile) | TikTok web | Reconnect / idle / handover / reboots | Browsing, IPv6, DNS/ISP-IPv6/WebRTC | Result |
+|---|---|---|---|---|---|---|---|---|---|
+| REALITY | Wi-Fi | — | — | — | — | — | — | — | PENDING |
+| REALITY | cellular | — | — | — | — | — | — | — | PENDING |
+| Hysteria2 | Wi-Fi | — | — | — | — | — | — | — | PENDING |
+| Hysteria2 | cellular | — | — | — | — | — | — | — | PENDING |

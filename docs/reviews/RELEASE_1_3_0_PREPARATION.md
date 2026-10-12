@@ -9,6 +9,14 @@ the real SHAs, run URLs and versions are recorded only in
 `docs/DEVICE_ACCEPTANCE_TESTS.md` and `docs/release-acceptance/v1.3.0.md`
 after the fact (those are the paths RELEASE.md lets change after RC acceptance).
 
+**Scope.** This is a **VPN-only** release of singbox-vpn. The Arcana website,
+billing, Supabase, Telegram Mini App and the Tamara app are DEFERRED BY OWNER and
+are neither prerequisites nor part of any decision here; backend contracts they
+consume (subscription format and profile title, provisioning contract and agent)
+are preserved and keep their tests. The device client is **Hiddify** (iOS) with
+its embedded core, importing the normal subscription URL or a `vpn user links`
+direct link.
+
 ## 1. Proposed release identity
 
 **Proposal: SemVer core `1.3.0`** (RC tags `v1.3.0-rc.N`, stable `v1.3.0`).
@@ -25,6 +33,14 @@ The RC suffix lives only in the tag. Rust 1.94.1 and sing-box 1.14.1 pins are
 unchanged; no dependency PR (#121, #147, #148) is included.
 
 ## 2. Freeze and RC creation (owner)
+
+**Approval package (one decision, nothing else is needed from the owner for this
+step).** Authorise: (a) merging PR #152 after reading CI on its final head, and
+(b) creating the annotated tag `v1.3.0-rc.1` on the merge commit. Effects: `main`
+gains the reviewed changes; the Release workflow publishes an immutable
+**pre-release** only (never selected by the stable installer); no host is touched.
+Verification before and after is listed below. Rollback: a bad RC is never moved
+or deleted — it is superseded by `v1.3.0-rc.2`; a merge is reverted by a new PR.
 
 1. Merge this PR through the normal reviewed path (required CI + Security).
 2. From the merge commit, verify locally:
@@ -76,24 +92,47 @@ updater path documented in `docs/INSTALLATION.md`.
 
 ## 4. Native iPhone acceptance (needs the owner's device)
 
-Same immutable RC on a disposable or owner-authorised host. Full procedure and
-evidence template: `docs/NATIVE_IPHONE_IPV6_ACCEPTANCE.md`; the matrix to fill
-is in `docs/DEVICE_ACCEPTANCE_TESTS.md` ("v1.3.0 exact-candidate native
-matrix"). Minimum: REALITY and Hysteria2, each on Wi-Fi and cellular, via the
-normal HTTPS subscription; compare `allow` and `reject_google`; `sAcElROnYIE`
-plus ≥ 5 consecutive Shorts; long video with seeking; 15 minutes sustained;
-reconnect, idle, Wi-Fi↔cellular handover, client reboot, authorised server
-reboot, subscription refresh; ordinary browsing and non-Google IPv6; client-ISP
-IPv6 and DNS leak checks recorded separately. Also regression-test the existing
-accepted-IP hairpin (no change to its target, credential or owner decisions).
-Browser emulation is not a substitute.
+Same immutable RC on a disposable or owner-authorised host, using **Hiddify** and
+its embedded core with the normal HTTPS subscription and, separately, a direct
+link from `vpn user links`. Record per run: RC tag and SHA, server role and active
+policy, iPhone/iOS, YouTube, TikTok, Hiddify and core versions, transport,
+network, import method. Full YouTube procedure and evidence template:
+`docs/NATIVE_IPHONE_IPV6_ACCEPTANCE.md`; the matrix to fill is in
+`docs/DEVICE_ACCEPTANCE_TESTS.md` ("v1.3.0 exact-candidate native matrix").
 
-If the device gate fails, **do not widen the claim**: capture sanitised
-evidence (which transport, which family, whether the app retried), prepare the
-next RC only for a justified change, and repeat §3–§4. If no single-server
-mechanism satisfies native playback within the constraints, the release is
-BLOCKED and the Shorts claim stays unmade (the policy's default remains
-`allow`, so shipping it harms nobody who does not opt in).
+**Smoke first (≈ 15 minutes, one cell: REALITY on Wi-Fi), to find a major failure
+before the full matrix:** import the subscription; `sAcElROnYIE` and 3 more
+Shorts; one long video with a seek; TikTok cold start, feed, 3 videos; open
+tiktok.com and play one video; one ordinary HTTPS site. Any FAIL is investigated
+before the full matrix is run.
+
+**Full matrix — REALITY and Hysteria2, each on Wi-Fi and cellular:**
+- YouTube: `sAcElROnYIE` and ≥ 10 consecutive Shorts; long-form with seeking;
+  15 minutes sustained; reconnect and idle/resume. Compare `allow` with
+  `reject_google` and establish that playback **recovers** after the IPv6 flow is
+  closed (a correct rejection alone is not success); restore the prior policy.
+- TikTok: cold start, feed and thumbnails, video start, ≥ 10 consecutive videos,
+  ≥ 15 minutes of scrolling/playback, comments and profile views, applicable
+  account access; TikTok web playback; a VPN-off baseline once.
+- General: subscription refresh, direct link, ordinary HTTPS and media/large-asset
+  sites, sustained download and controlled upload, non-Google and IPv6-only
+  destinations, DNS/ISP-IPv6/WebRTC leak checks, Wi-Fi↔cellular handover, client
+  reboot, authorised server reboot.
+- Regression-test the existing accepted-IP hairpin (no change to its target,
+  credential or owner decisions). Browser emulation is not a substitute.
+
+**If TikTok (or Shorts) fails:** follow the ledger's "TikTok diagnostic procedure"
+to separate DNS, routing, TCP, destination QUIC/UDP, address family, MTU and
+service/exit restrictions from restricted diagnostics. Do not assume Google's
+policy applies to TikTok, invent domain lists, globally block UDP or disable host
+IPv6. Diagnosis alone is not a PASS: either a verified change in a new RC fixes
+it, or the precise external blocker and the options that need owner authorisation
+are reported and the claim stays unmade.
+
+If the device gate fails, **do not widen the claim**: capture sanitised evidence
+(which transport, which family, whether the app retried), prepare the next RC
+only for a justified change, and repeat §3–§4. Shipping the policy with its
+default `allow` harms nobody who does not opt in.
 
 ## 5. Stable record (only after every gate passes)
 
@@ -167,7 +206,7 @@ acceptance, commit; automatic rollback on failure). Afterwards verify: the
 hashes (an installer-recorded match is not independent provenance — the updater's
 source-archive checksum and attestation checks are what establish that); users and `[egress]` are preserved;
 REALITY and Hysteria2 handshakes; subscription refresh; one native playback test
-(Shorts **and** TikTok); and observe one full reconcile (10 min) and watchdog
+(Shorts **and** TikTok, via Hiddify); and observe one full reconcile (10 min) and watchdog
 cycle, then the bounded soak below.
 
 **Soak (bounded, measurable).** On the disposable host and again on the owner's
@@ -184,13 +223,11 @@ protocol self-test passed) are fixed in the evaluator before the run; missing
 data fails. Keep a client connected throughout so grant/credential expiry is
 exercised, and record any disconnect with its time.
 
-**The website is a separate component.** This release does not deploy the
-frontend, Pages Functions or database. Before the stable record is written, name
-the accepted frontend commit/build, Functions version and applied migration level
-(see the ledger's component manifest) and deploy them by their own procedure;
-the "agreed website journeys" gate (ledger P-5…P-7) must pass against that exact
-set, and a public smoke repeated after cutover. A backend release alone is not
-completion.
+**Expiry boundary (standalone accounts).** During the soak create a test account
+with a short expiry (`vpn user create --name soak-expiry --expires-at <epoch>`),
+confirm it authenticates before and is rejected after the boundary, extend it with
+`vpn user set-expiry` and confirm it works again, then remove it. The provisioning
+agent and 30-minute native grants are not part of this mode and are not required.
 
 **Rollback.** A failed update rolls back by itself. A deliberate downgrade to
 v1.2.0 is refused while `[egress]` is present (v1.2.0 would ignore it
