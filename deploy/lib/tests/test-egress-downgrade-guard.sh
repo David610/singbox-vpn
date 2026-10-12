@@ -168,6 +168,7 @@ printf 'rendered config\n' >"$live/config.json"
 run_block() { # $1 toml; runs the extracted block in a subshell, returns its status; output kept
   (
     set -euo pipefail
+    # shellcheck disable=SC2034 # read by the eval'd update.sh block
     BIN_DIR="$live/bin"; STAGED_BIN_DIR="$staged"; DEPLOYMENT_TOML="$1"; TARGET_VERSION="v1.2.0"
     export FAKE_EGRESS_STATE; FAKE_EGRESS_STATE="$(state_for "$1")"
     log() { echo "[log] $*"; }

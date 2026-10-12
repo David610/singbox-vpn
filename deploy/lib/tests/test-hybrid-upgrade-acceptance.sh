@@ -9,6 +9,7 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SCRIPT="$ROOT/deploy/almalinux/hybrid-upgrade-acceptance.sh"
 T="$(mktemp -d)"
+export T
 trap 'rm -rf "$T"' EXIT
 failures=0
 ok() { echo "ok: $*"; }
@@ -70,14 +71,14 @@ set_baseline() { printf 'v1.2.0' >"$T/state/manifest"; printf '1.2.0' >"$T/state
 flag() { printf '1' >"$T/state/$1"; }
 khf="$T/known_hosts"; echo 'host ssh-ed25519 AAAA' >"$khf"
 run() { # run <args...>: runs the script with the mock ssh first on PATH
-  T="$T" PATH="$T/bin:$PATH" bash "$SCRIPT" --host root@disposable.example --candidate v1.3.0-rc.1 --known-hosts-file "$khf" --i-understand-this-modifies-the-host "$@"
+  PATH="$T/bin:$PATH" bash "$SCRIPT" --host root@disposable.example --candidate v1.3.0-rc.1 --known-hosts-file "$khf" --i-understand-this-modifies-the-host "$@"
 }
 export T
 
 echo "--- safety guards ---"
 fresh_state
-if T="$T" PATH="$T/bin:$PATH" bash "$SCRIPT" --host root@h --candidate v1.3.0-rc.1 --scenario normal --known-hosts-file "$khf" >/dev/null 2>&1; then fail "ran without the acknowledgement"; else ok "refuses without --i-understand-this-modifies-the-host"; fi
-if T="$T" PATH="$T/bin:$PATH" bash "$SCRIPT" --host root@h --candidate v1.3.0-rc.1 --scenario normal --i-understand-this-modifies-the-host >/dev/null 2>&1; then fail "ran without a host key policy"; else ok "refuses without a verified host key (or the explicit unverified flag)"; fi
+if PATH="$T/bin:$PATH" bash "$SCRIPT" --host root@h --candidate v1.3.0-rc.1 --scenario normal --known-hosts-file "$khf" >/dev/null 2>&1; then fail "ran without the acknowledgement"; else ok "refuses without --i-understand-this-modifies-the-host"; fi
+if PATH="$T/bin:$PATH" bash "$SCRIPT" --host root@h --candidate v1.3.0-rc.1 --scenario normal --i-understand-this-modifies-the-host >/dev/null 2>&1; then fail "ran without a host key policy"; else ok "refuses without a verified host key (or the explicit unverified flag)"; fi
 for bad in "--candidate main" "--scenario weird" "--host root@127.0.0.1"; do
   # shellcheck disable=SC2086
   if run --scenario normal $bad >/dev/null 2>&1; then fail "accepted invalid input: $bad"; else ok "rejects invalid input: $bad"; fi
