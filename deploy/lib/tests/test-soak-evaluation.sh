@@ -23,7 +23,7 @@ cat >"$T/bin/systemctl" <<'EOF'
 case "$1" in
   is-active) exit 0 ;;
   show)
-    case "$3" in
+    case "$4" in
       MainPID) echo 4242 ;;
       NRestarts) echo 0 ;;
       Result) echo success ;;
