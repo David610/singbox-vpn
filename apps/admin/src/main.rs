@@ -5236,20 +5236,19 @@ fn cmd_doctor(
         }
     }
 
-    match std::process::Command::new("firewall-cmd")
-        .arg("--state")
-        .output()
     {
-        Ok(o) if o.status.success() => report_check(CheckStatus::Ok, "L3", "firewalld running"),
-        Ok(_) => {
-            report_check(CheckStatus::Fail, "L3", "firewalld not running");
+        let recorded_backend =
+            read_firewall_ownership(std::path::Path::new(FIREWALL_OWNERSHIP_FILE))
+                .and_then(|map| map.get("firewall_backend").cloned());
+        let (status, message) = firewall_backend_report(
+            recorded_backend.as_deref(),
+            probe_firewalld_state(),
+            probe_ufw_state(),
+        );
+        if status == CheckStatus::Fail {
             failures += 1;
         }
-        Err(_) => report_check(
-            CheckStatus::Warn,
-            "L3",
-            "firewall-cmd not available — firewall check skipped",
-        ),
+        report_check(status, "L3", message);
     }
 
     for (proto_label, port, udp) in [
@@ -7625,9 +7624,13 @@ struct ListenSocket {
 }
 
 impl ListenSocket {
+    /// `ss` prints a bound-interface zone as `127.0.0.53%lo`; that suffix is
+    /// not part of the address and must not stop it parsing, or systemd-
+    /// resolved's loopback-only stub resolver would be reported as a public
+    /// listener.
     fn is_loopback(&self) -> bool {
-        self.addr
-            .parse::<std::net::IpAddr>()
+        let ip = self.addr.split('%').next().unwrap_or(&self.addr);
+        ip.parse::<std::net::IpAddr>()
             .map(|ip| ip.is_loopback())
             .unwrap_or(false)
     }
@@ -7911,8 +7914,11 @@ fn classify_public_surface(
             CheckStatus::Warn,
             format!(
                 "unexpected listener on {addr_port}/{proto}, owned by {owner_desc} — not part \
-                 of singbox-vpn's expected public surface. This may be a legitimate unrelated service \
-                 on this host; vpn doctor never modifies firewall/listener state automatically."
+                 of singbox-vpn's expected public surface. It is bound to a non-loopback address; \
+                 whether it is reachable from the Internet depends on the host and provider \
+                 firewalls, which doctor cannot see (UNKNOWN). This may be a legitimate unrelated \
+                 service on this host; vpn doctor never modifies firewall/listener state \
+                 automatically."
             ),
         ));
     }
@@ -7988,6 +7994,97 @@ fn read_firewall_ownership(
         }
     }
     Some(map)
+}
+
+const FIREWALL_OWNERSHIP_FILE: &str = "/var/lib/singbox-vpn/firewall-owned.env";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FirewallProbe {
+    Active,
+    Inactive,
+    /// The tool is missing, or it could not be queried (typically: not root).
+    Unavailable,
+}
+
+/// `firewall-cmd --state`: read-only.
+fn probe_firewalld_state() -> FirewallProbe {
+    match std::process::Command::new("firewall-cmd")
+        .arg("--state")
+        .output()
+    {
+        Ok(o) if o.status.success() => FirewallProbe::Active,
+        Ok(_) => FirewallProbe::Inactive,
+        Err(_) => FirewallProbe::Unavailable,
+    }
+}
+
+/// `ufw status`: read-only. It needs root; as a normal user it fails, which is
+/// reported as unavailable rather than as an inactive firewall.
+fn probe_ufw_state() -> FirewallProbe {
+    match std::process::Command::new("ufw").arg("status").output() {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            if text.lines().any(|l| l.trim().eq_ignore_ascii_case("status: active")) {
+                FirewallProbe::Active
+            } else {
+                FirewallProbe::Inactive
+            }
+        }
+        _ => FirewallProbe::Unavailable,
+    }
+}
+
+/// Which host firewall to judge is decided by the backend the installer
+/// RECORDED, not by whichever tool happens to exist: a missing `firewall-cmd`
+/// is the normal state of a ufw (Debian/Ubuntu) host and must not read as a
+/// failed or skipped deployment. This only inspects the HOST firewall;
+/// provider/cloud security groups are invisible to `doctor`, so external
+/// reachability is always reported as UNKNOWN here, never as proven.
+fn firewall_backend_report(
+    recorded_backend: Option<&str>,
+    firewalld: FirewallProbe,
+    ufw: FirewallProbe,
+) -> (CheckStatus, String) {
+    const REACH: &str = "provider/cloud firewalls are not visible to doctor, so external \
+                         reachability of the VPN ports is UNKNOWN from this host";
+    match (recorded_backend, firewalld, ufw) {
+        (Some("ufw"), _, FirewallProbe::Active) => (
+            CheckStatus::Ok,
+            format!("ufw is active (the recorded firewall backend); {REACH}"),
+        ),
+        (Some("ufw"), _, FirewallProbe::Inactive) => (
+            CheckStatus::Warn,
+            format!("ufw is the recorded firewall backend but is NOT active; {REACH}"),
+        ),
+        (Some("ufw"), _, FirewallProbe::Unavailable) => (
+            CheckStatus::Info,
+            format!(
+                "ufw is the recorded firewall backend but `ufw status` could not be read \
+                 (run doctor as root); {REACH}"
+            ),
+        ),
+        (Some("firewalld") | None, FirewallProbe::Active, _) => {
+            (CheckStatus::Ok, "firewalld running".to_string())
+        }
+        (None, _, FirewallProbe::Active) => (
+            CheckStatus::Ok,
+            format!("ufw is active (no firewall backend was recorded); {REACH}"),
+        ),
+        (Some("firewalld") | None, FirewallProbe::Inactive, _) => {
+            (CheckStatus::Fail, "firewalld not running".to_string())
+        }
+        (Some("firewalld"), FirewallProbe::Unavailable, _) => (
+            CheckStatus::Warn,
+            "firewalld is the recorded firewall backend but firewall-cmd is not available".to_string(),
+        ),
+        (other, _, _) => (
+            CheckStatus::Info,
+            format!(
+                "no inspectable host firewall (recorded backend: {}); {REACH}",
+                other.unwrap_or("none recorded")
+            ),
+        ),
+    }
 }
 
 /// Read-only firewall zone + singbox-vpn-owned-rule reporting. The only
@@ -9951,6 +10048,66 @@ mod doctor_coverage_tests {
 #[cfg(test)]
 mod public_surface_tests {
     use super::*;
+
+    /// The Ubuntu stub resolver, exactly as `ss` prints it on a stock host
+    /// (zone suffix included). It is loopback-only: it must produce no finding
+    /// at all, not a "public listener" warning.
+    #[test]
+    fn zone_suffixed_loopback_stub_resolver_is_not_a_public_listener() {
+        let text = "LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:* users:((\"systemd-resolve\",pid=1,fd=14))\n\
+                    LISTEN 0 4096 127.0.0.54:53 0.0.0.0:* users:((\"systemd-resolve\",pid=1,fd=16))\n";
+        let listeners = parse_ss_listen_output(text, false);
+        assert_eq!(listeners.len(), 2);
+        assert!(listeners.iter().all(ListenSocket::is_loopback));
+        let findings = classify_public_surface(&listeners, Some(22), &[], 9100);
+        assert!(findings.is_empty(), "loopback listeners reported: {findings:?}");
+    }
+
+    #[test]
+    fn a_wildcard_listener_is_flagged_without_claiming_internet_reachability() {
+        let text = "LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=2,fd=5))\n";
+        let listeners = parse_ss_listen_output(text, false);
+        let findings = classify_public_surface(&listeners, Some(22), &[], 9100);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].0, CheckStatus::Warn);
+        assert!(findings[0].1.contains("UNKNOWN"), "{}", findings[0].1);
+        assert!(findings[0].1.contains("non-loopback address"), "{}", findings[0].1);
+        assert!(!findings[0].1.contains("exposed"), "{}", findings[0].1);
+    }
+
+    #[test]
+    fn missing_firewall_cmd_on_a_ufw_host_is_not_a_warning() {
+        let (status, msg) = firewall_backend_report(
+            Some("ufw"),
+            FirewallProbe::Unavailable,
+            FirewallProbe::Active,
+        );
+        assert_eq!(status, CheckStatus::Ok, "{msg}");
+        assert!(msg.contains("UNKNOWN"), "external reachability must stay UNKNOWN: {msg}");
+        assert!(!msg.contains("skipped"), "{msg}");
+    }
+
+    #[test]
+    fn firewall_report_follows_the_recorded_backend() {
+        use FirewallProbe::*;
+        let ok = |s: Option<&str>, f, u| firewall_backend_report(s, f, u).0;
+        // ufw host whose firewall-cmd binary exists but firewalld is not running:
+        // that is not a failed firewall.
+        assert_eq!(ok(Some("ufw"), Inactive, Active), CheckStatus::Ok);
+        assert_eq!(ok(Some("ufw"), Unavailable, Inactive), CheckStatus::Warn);
+        assert_eq!(ok(Some("ufw"), Unavailable, Unavailable), CheckStatus::Info);
+        // firewalld host: unchanged from the original behaviour.
+        assert_eq!(ok(Some("firewalld"), Active, Unavailable), CheckStatus::Ok);
+        assert_eq!(ok(Some("firewalld"), Inactive, Unavailable), CheckStatus::Fail);
+        assert_eq!(ok(Some("firewalld"), Unavailable, Unavailable), CheckStatus::Warn);
+        // nothing recorded: infer from what is actually running.
+        assert_eq!(ok(None, Active, Unavailable), CheckStatus::Ok);
+        assert_eq!(ok(None, Inactive, Active), CheckStatus::Ok);
+        assert_eq!(ok(None, Inactive, Inactive), CheckStatus::Fail);
+        assert_eq!(ok(None, Unavailable, Unavailable), CheckStatus::Info);
+        // an unmanaged/other backend is reported honestly, not failed.
+        assert_eq!(ok(Some("none"), Unavailable, Unavailable), CheckStatus::Info);
+    }
 
     #[test]
     fn parses_real_shaped_tcp_ss_output_including_process_name() {
