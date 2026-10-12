@@ -511,6 +511,8 @@ enum UserCommands {
     /// `rotate-token`, it does not mint a new subscription token or
     /// change any credential.
     Links {
+        /// The user's stable ID, or a display name that exactly one account
+        /// has (an ambiguous name is rejected, never guessed).
         user_id: String,
         /// Print a terminal QR code for each URI as well.
         #[arg(long)]
@@ -3757,12 +3759,34 @@ fn served_endpoints(
 /// directly — no HTTP fetch, no `subscription_host`/`subscription.
 /// public_port` involved at all, so it keeps working even if the
 /// subscription domain itself is what's blocked.
+/// Resolves the operator-facing selector of a READ-ONLY command to one user.
+/// The stable user ID always wins. Otherwise the selector may be a display
+/// name, accepted only when exactly one visible account has it: two accounts
+/// with the same name are an error that lists their IDs, never a silent pick.
+/// Reserved internal probe principals are reachable by ID only, never by name.
+fn resolve_user_selector<'a>(users: &'a [CompatUser], selector: &str) -> Result<&'a CompatUser> {
+    if let Some(by_id) = users.iter().find(|u| u.id == selector) {
+        return Ok(by_id);
+    }
+    let named: Vec<&CompatUser> = users
+        .iter()
+        .filter(|u| !u.is_reserved_probe && u.name == selector)
+        .collect();
+    match named.as_slice() {
+        [] => bail!("no such user: {selector} (use an ID from `user list`, or a unique name)"),
+        [only] => Ok(*only),
+        many => bail!(
+            "{} users are named {selector:?}; refusing to guess. Use one of these IDs: {}",
+            many.len(),
+            many.iter().map(|u| u.id.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
 fn cmd_user_links(cfg: &DeploymentConfig, id: &str, qr: bool) -> Result<()> {
     let users = store::load_users(&cfg.users_file())?;
-    let user = users
-        .iter()
-        .find(|u| u.id == id)
-        .ok_or_else(|| anyhow::anyhow!("no such user: {id}"))?;
+    let user = resolve_user_selector(&users, id)?;
+    let id = user.id.as_str();
     if !user.enabled {
         println!("WARNING: user {id} is disabled — these URIs will not authenticate.");
         println!();
@@ -10560,6 +10584,55 @@ mod egress_probe_selection_tests {
         assert_eq!(
             super::preferred_protocol_user(&users, 1).unwrap().id,
             "customer"
+        );
+    }
+}
+
+#[cfg(test)]
+mod user_selector_tests {
+    use super::*;
+
+    fn user(id: &str, name: &str, reserved: bool) -> CompatUser {
+        let (mut u, _) = build_new_operator_user(id.into(), name, None, 0);
+        u.is_reserved_probe = reserved;
+        u
+    }
+
+    #[test]
+    fn the_stable_id_always_wins_over_a_name() {
+        // An account whose NAME equals another account's ID must not shadow it.
+        let users = vec![user("user_a", "user_b", false), user("user_b", "bob", false)];
+        assert_eq!(resolve_user_selector(&users, "user_b").unwrap().name, "bob");
+    }
+
+    #[test]
+    fn a_unique_name_resolves_to_that_account() {
+        let users = vec![user("user_a", "david", false), user("user_b", "default", false)];
+        assert_eq!(resolve_user_selector(&users, "david").unwrap().id, "user_a");
+    }
+
+    #[test]
+    fn an_ambiguous_name_is_rejected_and_lists_the_ids() {
+        let users = vec![user("user_a", "david", false), user("user_b", "david", false)];
+        let message = resolve_user_selector(&users, "david").unwrap_err().to_string();
+        assert!(message.contains("2 users are named"), "{message}");
+        assert!(message.contains("user_a") && message.contains("user_b"), "{message}");
+    }
+
+    #[test]
+    fn an_unknown_selector_is_an_error() {
+        let users = vec![user("user_a", "david", false)];
+        let message = resolve_user_selector(&users, "nobody").unwrap_err().to_string();
+        assert!(message.contains("no such user: nobody"), "{message}");
+    }
+
+    #[test]
+    fn reserved_probe_principals_are_reachable_by_id_only() {
+        let users = vec![user("user_probe", "arcana-probe", true)];
+        assert!(resolve_user_selector(&users, "arcana-probe").is_err());
+        assert_eq!(
+            resolve_user_selector(&users, "user_probe").unwrap().name,
+            "arcana-probe"
         );
     }
 }
