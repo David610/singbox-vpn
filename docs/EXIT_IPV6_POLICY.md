@@ -213,13 +213,14 @@ v1.2.0 and earlier ignore an unknown `[egress]` table without any error, so:
   that would break every rollback to v1.2.0 even for hosts with no policy.
 
 The guard lives in the **new** updater. A host still on v1.2.0 only has the
-v1.2.0 updater, which cannot be changed: update it with
-`update.sh --version <new release>` (the target understands the policy), then
-run `update.sh --repair` from the new tree to record the executable hashes.
-Never run `--repair` first from the v1.2.0 tree on a host with a policy or with
-hand-copied executables: it re-installs the recorded v1.2.0 executables and drops
-the policy. The full transition is scripted for disposable hosts in
-`deploy/almalinux/hybrid-upgrade-acceptance.sh`.
+v1.2.0 updater, which cannot be changed, so update it with the **target
+release's own updater** run from its checksum-verified source archive (the
+documented path in `INSTALLATION.md`): the target understands the policy, and
+that updater records the executable hashes at commit. Never run
+`update.sh --repair` or `--version v1.2.0` from the v1.2.0 tree on a host with a
+policy or hand-copied executables: it re-installs the recorded v1.2.0
+executables and drops the policy. The transition is scripted for disposable
+hosts in `deploy/almalinux/hybrid-upgrade-acceptance.sh`.
 
 Policy commands never change user credentials, subscription tokens or key
 material (covered by an automated test); clients do not need to re-import after

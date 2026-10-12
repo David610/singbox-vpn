@@ -127,36 +127,45 @@ one-command bootstrap on a disposable host.
 ## 6. Production upgrade (separate authorisation)
 
 Use the supported package, never copied executables. **Which updater runs
-matters**: a v1.2.0 host only has the v1.2.0 updater (`/opt/singbox-vpn`), which
-cannot be changed and cannot protect an `[egress]` policy. The transition that
-is safe for all three real starting points — a normal v1.2.0 host, a host with
-development executables copied over it, and a host already using `reject_google`
-— is:
+matters**: a v1.2.0 host's installed updater (`/opt/singbox-vpn`) predates the
+egress guard and the identity recording and cannot be changed. For a normal
+v1.2.0 host, a host with development executables copied over it, and a host
+already using `reject_google`, run the **target release's own updater from its
+checksum-verified source archive** (the documented path in
+`docs/INSTALLATION.md` "Updating a host that is still on v1.1.0" — it applies to
+any host whose installed updater predates the target):
 
 ```sh
-# 1. DO NOT run `update.sh --repair` first: on a v1.2.0 tree it re-installs the
-#    recorded v1.2.0 executables and drops the policy.
-sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version v1.3.0
+TAG=v1.3.0
+B=https://github.com/David610/singbox-vpn/releases/download/$TAG
+W=/root/singbox-vpn-updater; rm -rf "$W"; install -d -m 0700 "$W/dl" "$W/src"
+cd "$W/dl" && curl -fsSL -o SHA256SUMS "$B/SHA256SUMS" && curl -fsSL -o singbox-vpn-src.tar.gz "$B/singbox-vpn-src.tar.gz"
+grep ' singbox-vpn-src.tar.gz$' SHA256SUMS | sha256sum -c -        # must print OK
+cd "$W/src" && tar xzf ../dl/singbox-vpn-src.tar.gz --strip-components=1
+sudo bash deploy/almalinux/update.sh --version "$TAG"
 sudo vpn-admin doctor --protocol --require-protocol
-# 2. The old updater cannot record executable hashes. Record them with the NEW tree:
-sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair
-sudo vpn-admin doctor      # "release identity: recorded stable release v1.3.0 ..."
-sudo vpn-admin egress show # unchanged policy
+sudo vpn-admin doctor      # "release identity: recorded stable release v1.3.0 ..." (recorded by this updater)
+sudo vpn-admin egress show # policy unchanged
 ```
+
+**Do not run `update.sh --repair` from the v1.2.0 tree first** (or
+`--version v1.2.0`): that re-installs the recorded v1.2.0 executables and drops
+the policy and the hand-copied build. After this update `/opt/singbox-vpn` holds
+the new tree, and every later update/repair is guarded.
 
 This exact sequence is scripted for a disposable host in
 `deploy/almalinux/hybrid-upgrade-acceptance.sh` (`--scenario normal|hybrid|hybrid-policy`),
 which starts from an existing baseline (it never uninstalls or reinstalls first),
 fingerprints credentials, compares the installed executable with the published
-release independently of the manifest, runs the sequence above and then proves a
-downgrade is refused. Run each scenario once on its own prepared baseline host
-before touching the owner's host (§3, run 3).
+release independently of the manifest, runs the sequence above, repeats a repair
+from the new tree and proves a downgrade is refused. Run each scenario once on
+its own prepared baseline host before touching the owner's host (§3, run 3).
 
 `update.sh` is transactional (staged verification, switch, protocol
 acceptance, commit; automatic rollback on failure). Afterwards verify: the
 "release identity" doctor line names the recorded stable release with matching
-hashes (an installer-recorded match is not independent provenance — compare the
-release `SHA256SUMS`/attestation for that); users and `[egress]` are preserved;
+hashes (an installer-recorded match is not independent provenance — the updater's
+source-archive checksum and attestation checks are what establish that); users and `[egress]` are preserved;
 REALITY and Hysteria2 handshakes; subscription refresh; one native playback test
 (Shorts **and** TikTok); and observe one full reconcile (10 min) and watchdog
 cycle, then the bounded soak below.
