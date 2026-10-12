@@ -150,16 +150,16 @@ tcp/25 reject; `final: direct`. **No `sniff`, no IPv6 reject, no Google rule.**
 * `vpn doctor --protocol --require-protocol` passes; it **warns** that nginx
   listens on `0.0.0.0:80` and `[::]:80` (Ubuntu's `default` site is enabled)
   and on `127.0.0.53:53` (systemd-resolved) — "not part of expected public
-  surface". ufw blocks :80 from outside, so this is cosmetic but noisy (§9, D-17).
+  surface". ufw blocks :80 from outside, so this is cosmetic but noisy (§9, D-19).
 * `vpn-expiry-reconcile.timer` and `vpn-service-watchdog.timer` are active.
 
 ---
 
 ## 4. Mechanism (end to end)
 
-1. Hiddify (iOS) runs a TUN. The phone's resolver (inside Hiddify) returns A and
-   AAAA records for `*.googlevideo.com`, `*.youtube.com`, etc. Apps connect by
-   address. (INV-4: iOS TUN clients "resolve DNS themselves and send bare IPs".)
+1. Hiddify (iOS) runs a TUN and, per INV-4, iOS TUN clients "resolve DNS
+   themselves and send bare IPs". E3 shows both families arriving at the exit
+   from the phone; which A/AAAA answers the phone's resolver returned was not captured.
 2. Whatever address the app picks is sent over VLESS+REALITY or Hysteria2 to the
    exit as the *destination*. Nothing in the subscription expresses IPv4/IPv6
    preference (`CLIENT_PROTOCOL_BEHAVIOR.md`, "IPv4 / IPv6").
@@ -235,7 +235,7 @@ The new hostname did not exist when the home router (`fritz.box`) first
 looked it up, so the router cached NXDOMAIN. Public resolvers (1.1.1.1,
 8.8.8.8, 9.9.9.9) answered correctly (measured). It is independent of Shorts
 and goes away on mobile data, with a public DNS, or after the cache expires.
-It deserves a troubleshooting entry (§9, D-10).
+It deserves a troubleshooting entry (§9, D-21).
 
 ---
 
@@ -266,7 +266,7 @@ Steps and gates:
 2. Re-run the E2 controlled test (literal IPv6 must now fail fast, not stall)
    and, decisively, the **native iPhone test** on REALITY then Hysteria2: Shorts
    play, normal video plays, 5 consecutive Shorts.
-3. **Gate:** if Shorts still fail, stop. Collect the sampler output (§10.4) and
+3. **Gate:** if Shorts still fail, stop. Collect the sampler output (§10, item 4) and
    reconsider §5 before any code change.
 4. Undo: delete the sysctl file, `sysctl --system`, restart `sing-box`.
 
@@ -319,8 +319,9 @@ Rendered rules (`crates/compat-config/src/server.rs`), exit role only:
 * Default is `reject_google` because it matches the proven hairpin semantics and
   changes least. `reject_all` is the escape hatch when SNI cannot be recovered
   (R-2). **Owner decision D-A: default `reject_google` vs `reject_all`.**
-* Update/repair re-render the config, so existing exits pick the rule up on
-  `update.sh`/`vpn repair`; the 10-minute reconcile timer keeps it.
+* Update/repair re-render the config, so existing exits are expected to pick the
+  rule up on `update.sh`/`vpn repair` (to be proven by the A→B update test),
+  and the 10-minute reconcile timer keeps it.
 * `vpn doctor` must accept exactly these shapes (plain/hairpin × policy) and
   **fail** an exit whose policy is `reject_google` but lacks the rules
   (extends today's hairpin-only check in `apps/admin/src/main.rs`).
@@ -376,7 +377,7 @@ versions exist; they need cleanup and tests, and no credentials.)
 |---|---|---|
 | R-1 | `reject_google` default changes behaviour for IPv6-literal Google traffic | That is the intent; clients fall back to IPv4; covered by behaviour test |
 | R-2 | `sniff` fails to recover SNI (ECH, SNI-less QUIC, fragmented Initial) → flow reaches refused IPv6 | `reject_all` option; probe matrix; doctor documents the limit; ECH is not used by Google endpoints today (unverified) |
-| R-3 | Sniffing adds a wait on server-first protocols (default sniff timeout) | Rule only matches after sniff; measure latency on non-TLS flows in acceptance; only tcp/25 is server-first and is rejected already |
+| R-3 | Sniffing may add a wait on server-first protocols (SSH, IMAP, FTP; default sniff timeout) | Unmeasured: measure latency on non-TLS flows in acceptance; if material, scope the sniff rule to port 443 |
 | R-4 | `reject_all` breaks IPv6-only sites for TUN clients | Opt-in; documented |
 | R-5 | New RC reveals unrelated harness flakiness (seen in rc.1–rc.5) | Keep the existing quiesce/start-limit fixes; do not widen scope |
 | R-6 | Plain exits on refused-IPv4 nodes still fail Shorts | Out of scope: owner decision (INV-7/INV-8) |
@@ -403,7 +404,7 @@ stale statement; **L** wording/housekeeping. "Fix" is the proposed change.
 | D-4 | INV-5 / `server.rs:684–690` / `server.rs:728` | Reject exists only with a hairpin and is justified only by "paired node is IPv4-only" | H | Generalise (§8.2) |
 | D-5 | INV-7, INV-8, "Known gaps", `CLAUDE.md` | Name two operated nodes (`de1`, `ru1`) and the hairpin target as fixed; reality now has a third node, `de1` reinstalled plain | H | Update inventory with the owner; mark `de1` state |
 | D-6 | INV "Known gaps" bullet 1 | Says the exit runs v1.1.0 binaries with a hand patch and the reconcile timer stopped — long false (rc.5 deployed, then reinstalled) | M | Rewrite or delete |
-| D-7 | INV "Status" table | "Hysteria2 … not tested" although the owner reported REACTIVE+Hysteria2 working, and the acceptance record says PASS | M | Reconcile with `DEVICE_ACCEPTANCE_TESTS.md` and `docs/release-acceptance/v1.2.0.md` |
+| D-7 | INV "Status" table | "Hysteria2 … not tested" although the owner reported REALITY+Hysteria2 working, and the acceptance record says PASS | M | Reconcile with `DEVICE_ACCEPTANCE_TESTS.md` and `docs/release-acceptance/v1.2.0.md` |
 | D-8 | `CLIENT_PROTOCOL_BEHAVIOR.md` "IPv4 / IPv6" | "deliberately silent on IPv4-vs-IPv6 preference … does not force one, does not disable one" — false for an exit with the reject rule; also omits the exit→internet leg | H | Rewrite section; document `[egress].ipv6_literal` |
 | D-9 | `CLIENT_PROTOCOL_BEHAVIOR.md:~190` (`youtube-direct`) | "YouTube's Shorts playability decision rejects sessions that egress from a hosting/datacenter IP, and only egress from the client's own line is demonstrated to work" — disproved (Selectel, and the new node's IPv4, play) | M | Correct to "some datacenter IPs/ranges" |
 
@@ -483,7 +484,7 @@ Pass criteria: every row above passes; any literal-IPv6 Google flow is rejected
 | `ru1` `135.106.178.167` | Still on an older release; provisioning agent must stay disabled; `hairpin-de1` user exists; remove `ios-test` |
 | Hetzner `62.238.46.190` | Disposable acceptance host; its AAAA record is deleted; clean leftovers |
 | Leftovers on old nodes | `/root/arcana-backup-*`, `/root/config.json.pre-*`, `/root/rc*-updater`, `/root/warp-test` (inert WARP registration — delete with owner approval) |
-| DNS | `vpn.utamary.com` (IDN `vpn.xn--80aa9argf5d.com`) points at `157.173.27.46`; stale records for dropped nodes should be removed; keep one A, DNS-only, no AAAA unless needed |
+| DNS | `vpn.утамары.com` (ASCII `vpn.xn--80aa9argf5d.com`) points at `157.173.27.46`; stale records for dropped nodes should be removed; keep one A, DNS-only, no AAAA unless needed |
 | `update.sh` cosign (141 MB) download sticks on slow flows | Add a download timeout + retry; separate small fix (new RC) |
 | Memory/notes | Update the project memory when the plan changes state |
 
