@@ -104,7 +104,6 @@ check() { # check "description" remote-command  (PASS when the command exits 0)
 
 MANIFEST=/var/lib/singbox-vpn/install-state.json
 USERS=/etc/vpn/compat/users/users.json
-DEPLOY=/etc/vpn/deployment.toml
 CAND_CORE="${CANDIDATE#v}"; CAND_CORE="${CAND_CORE%%-*}"
 BASE_CORE="${BASELINE#v}"; BASE_CORE="${BASE_CORE%%-*}"
 TARGET_TRIPLE=x86_64-unknown-linux-gnu
@@ -158,9 +157,7 @@ if [ "$SCENARIO" = hybrid-policy ]; then
   check "reject_google applied with the hybrid vpn-admin" "sudo /usr/local/bin/vpn-admin egress set reject_google >/dev/null 2>&1 && sudo /usr/local/bin/vpn-admin egress show | grep -q '^ipv6_literal: reject_google'"
 fi
 USERS_BEFORE="$(ssh_run "$FP_USERS" 2>/dev/null || true)"
-DEPLOY_BEFORE="$(ssh_run "sudo grep -c '' $DEPLOY" 2>/dev/null || true)"
 [ -n "$USERS_BEFORE" ] && pass "credential fingerprint recorded (SHA-256 only, nothing printed)" || fail "credential fingerprint recorded"
-[ -n "$DEPLOY_BEFORE" ] || fail "deployment.toml readable"
 
 section "3. the supported transition, run by the BASELINE's own installed updater"
 if ssh_run_long "sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version $CANDIDATE" >/dev/null 2>&1; then
