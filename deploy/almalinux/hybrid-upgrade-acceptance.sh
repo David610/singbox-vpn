@@ -163,7 +163,7 @@ section "3. the supported transition: the CANDIDATE's own updater, from its veri
 # The baseline's installed updater (/opt/singbox-vpn) predates the egress guard and the identity
 # recording and cannot be changed, so the documented path (docs/INSTALLATION.md) is to run the
 # TARGET release's updater from its checksum-verified source archive.
-if ssh_run_long "set -e; W=/root/singbox-vpn-updater; rm -rf $W; install -d -m 0700 $W/dl $W/src; cd $W/dl; B=https://github.com/David610/singbox-vpn/releases/download/$CANDIDATE; curl -fsSL -o SHA256SUMS $B/SHA256SUMS; curl -fsSL -o singbox-vpn-src.tar.gz $B/singbox-vpn-src.tar.gz; grep ' singbox-vpn-src.tar.gz$' SHA256SUMS | sha256sum -c -; cd $W/src; tar xzf ../dl/singbox-vpn-src.tar.gz --strip-components=1; sudo bash deploy/almalinux/update.sh --version $CANDIDATE" >/dev/null 2>&1; then
+if ssh_run_long "set -e; W=/root/singbox-vpn-updater; rm -rf \$W; install -d -m 0700 \$W/dl \$W/src; cd \$W/dl; B=https://github.com/David610/singbox-vpn/releases/download/$CANDIDATE; curl -fsSL -o SHA256SUMS \$B/SHA256SUMS; curl -fsSL -o singbox-vpn-src.tar.gz \$B/singbox-vpn-src.tar.gz; grep ' singbox-vpn-src.tar.gz$' SHA256SUMS | sha256sum -c -; cd \$W/src; tar xzf ../dl/singbox-vpn-src.tar.gz --strip-components=1; sudo bash deploy/almalinux/update.sh --version $CANDIDATE" >/dev/null 2>&1; then
   pass "candidate updater (checksum-verified source archive) ran update.sh --version $CANDIDATE"
 else
   fail "candidate updater ran update.sh --version $CANDIDATE" "(the host was left to the updater's own rollback)"
