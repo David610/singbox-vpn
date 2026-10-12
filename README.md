@@ -38,6 +38,12 @@ Deploy on a VPS → import the provisioning URL in Tamara → connect.
 
 No web control panel is required.
 
+**Current stable release: [v1.2.0](https://github.com/David610/singbox-vpn/releases/tag/v1.2.0).**
+It fixes YouTube Shorts through the VPN (see
+[YouTube and your exit's IP](#youtube-and-your-exits-ip)) and names every
+subscription profile **Arcana VPN** in Hiddify. Acceptance record:
+[docs/release-acceptance/v1.2.0.md](docs/release-acceptance/v1.2.0.md).
+
 ### Clients: one contract, two tiers
 
 The server owns endpoints and credentials; the client owns everything
@@ -84,7 +90,12 @@ are an implemented provisioning extension; they are not a fleet manager.
 ## Requirements
 
 - A supported VPS (see above), root or sudo access, public IPv4, ~1 GB RAM.
-- A domain or subdomain pointing to the VPS.
+- A domain or subdomain pointing to the VPS: **one `A` record, DNS only**
+  (grey cloud in Cloudflare, never proxied) and **no `AAAA` record** unless
+  IPv6 really works on the host. See [DNS setup](docs/INSTALLATION.md#dns-setup).
+- Open in the provider firewall: TCP 22 (SSH), TCP 80 (certificate issuance
+  and renewal), TCP 443 (REALITY), **UDP 443** (Hysteria2, a separate rule)
+  and TCP 8443 (subscription).
 - [Tamara](https://github.com/David610/tamara) for the first-party provisioning path, or a documented fallback client such as [Hiddify](https://hiddify.com).
 
 **Bootstrap prerequisites** (must already be on the VPS *before* the
@@ -160,8 +171,36 @@ Tamara can keep an Automatic route or pin one concrete endpoint manually.
 Hiddify and other documented sing-box-compatible clients continue to consume
 `/sub/{token}` share links or sing-box JSON. See [docs/clients/README.md](docs/clients/README.md).
 
-Native YouTube app fails on iOS while Safari works fine? See
-[docs/clients/HIDDIFY_IOS.md](docs/clients/HIDDIFY_IOS.md).
+Hiddify names the imported profile **Arcana VPN**. The name comes from the
+subscription's `profile-title` header and can be changed per deployment
+([docs/INSTALLATION.md](docs/INSTALLATION.md#profile-name-shown-in-hiddify)).
+
+YouTube not playing, or Shorts showing "Video unavailable"? Read the next
+section, then [docs/clients/HIDDIFY_IOS.md](docs/clients/HIDDIFY_IOS.md).
+
+### YouTube and your exit's IP
+
+YouTube's media server refuses **Shorts** video to some datacenter IPs while
+long videos from the same IP still play (the player even reports "OK", then
+shows "Video unavailable"). That is a property of the exit's IP address, not
+of the VPN protocol, the client or QUIC. Whether your VPS IP is affected can
+only be found by testing; some hosting ranges are refused and some are
+accepted.
+
+If your exit's IP is refused, an exit can send **only** the Google/YouTube
+domain set out through a second node whose IP YouTube accepts (everything
+else still leaves from the exit's own IP). It is applied on the server, for
+every user, with no client change:
+
+```bash
+sudo vpn-admin google-egress-hairpin set ...   # see docs/INSTALLATION.md
+sudo vpn-admin google-egress-hairpin clear     # back to a plain single exit
+```
+
+A plain single-server install does not do this, so on a refused IP Shorts
+stay broken. Details, the proven root cause and the rules that must not be
+broken: [docs/YOUTUBE_FIX_INVARIANTS.md](docs/YOUTUBE_FIX_INVARIANTS.md).
+Cloudflare WARP is not part of the solution and must not be used.
 
 ## Commands
 
@@ -178,6 +217,18 @@ sudo /opt/singbox-vpn/bin/singbox-vpn-uninstall --yes      # complete offline un
 
 Full command reference, troubleshooting, updating, and credential rotation:
 **[docs/INSTALLATION.md](docs/INSTALLATION.md)**.
+
+## Updating
+
+```bash
+sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest
+```
+
+A host still on **v1.1.0** must run the target release's own `update.sh`
+(the installed v1.1.0 updater cannot start v1.2.0's new units). The exact
+steps are in
+[docs/INSTALLATION.md](docs/INSTALLATION.md#updating-a-host-that-is-still-on-v110).
+Updates are transactional and roll back on a failed health gate.
 
 ## Security
 
@@ -205,6 +256,8 @@ or behavior on a censored network. See
 - [Client setup](docs/clients/README.md)
 - [Device acceptance status](docs/DEVICE_ACCEPTANCE_TESTS.md)
 - [Release policy](docs/RELEASE.md) — RC acceptance and stable-release gates
+- [YouTube / Shorts fix and its invariants](docs/YOUTUBE_FIX_INVARIANTS.md) —
+  root cause, what is verified, what must never change
 - [Threat model](docs/THREAT_MODEL.md)
 - [Release and supply-chain security](docs/SUPPLY_CHAIN_SECURITY.md)
 - [Recovery](docs/RECOVERY.md)

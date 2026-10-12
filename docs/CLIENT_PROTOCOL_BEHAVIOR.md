@@ -172,6 +172,12 @@ remains outside this contract.
   `docs/YOUTUBE_NATIVE_APP_INVESTIGATION.md` §9.5a only — Vision is what
   hides a proxied TLS session's TLS-in-TLS pattern, so this profile is
   more fingerprintable and must not be used as a default.
+- **Shipped in v1.2.0 (server side, all clients)**:
+  the exit's `google_egress_hairpin` sends the Google/YouTube domain set out
+  through a node whose IP YouTube accepts, so it works in Hiddify by default
+  with no client change and no compat parameter. The root cause is the
+  exit's IP, not routing or QUIC (`docs/YOUTUBE_FIX_INVARIANTS.md`). The
+  mode below remains available for clients that run the config as given.
 - **Also available, raw-sing-box only**: `?compat=youtube-direct`
   (`CompatibilityMode::YouTubeDirect`), on `format=singbox` only — a
   route rule has no `vless://`/`hysteria2://` share-link representation,
