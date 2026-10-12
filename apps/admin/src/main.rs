@@ -2483,7 +2483,10 @@ fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) ->
         compat_config::deployment::RELAY_ENFORCEMENT_CAPABILITY,
         cfg.role.as_str()
     );
-    println!("{}", compat_config::deployment::EXIT_EGRESS_POLICY_CAPABILITY);
+    println!(
+        "{}",
+        compat_config::deployment::EXIT_EGRESS_POLICY_CAPABILITY
+    );
 
     let users_path = cfg.users_file();
     match store::detect_users_schema(&users_path) {
@@ -3778,7 +3781,10 @@ fn resolve_user_selector<'a>(users: &'a [CompatUser], selector: &str) -> Result<
         many => bail!(
             "{} users are named {selector:?}; refusing to guess. Use one of these IDs: {}",
             many.len(),
-            many.iter().map(|u| u.id.as_str()).collect::<Vec<_>>().join(", ")
+            many.iter()
+                .map(|u| u.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
@@ -8048,7 +8054,10 @@ fn probe_ufw_state() -> FirewallProbe {
     match std::process::Command::new("ufw").arg("status").output() {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
-            if text.lines().any(|l| l.trim().eq_ignore_ascii_case("status: active")) {
+            if text
+                .lines()
+                .any(|l| l.trim().eq_ignore_ascii_case("status: active"))
+            {
                 FirewallProbe::Active
             } else {
                 FirewallProbe::Inactive
@@ -8099,7 +8108,8 @@ fn firewall_backend_report(
         }
         (Some("firewalld"), FirewallProbe::Unavailable, _) => (
             CheckStatus::Warn,
-            "firewalld is the recorded firewall backend but firewall-cmd is not available".to_string(),
+            "firewalld is the recorded firewall backend but firewall-cmd is not available"
+                .to_string(),
         ),
         (other, _, _) => (
             CheckStatus::Info,
@@ -10084,7 +10094,10 @@ mod public_surface_tests {
         assert_eq!(listeners.len(), 2);
         assert!(listeners.iter().all(ListenSocket::is_loopback));
         let findings = classify_public_surface(&listeners, Some(22), &[], 9100);
-        assert!(findings.is_empty(), "loopback listeners reported: {findings:?}");
+        assert!(
+            findings.is_empty(),
+            "loopback listeners reported: {findings:?}"
+        );
     }
 
     #[test]
@@ -10095,7 +10108,11 @@ mod public_surface_tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, CheckStatus::Warn);
         assert!(findings[0].1.contains("UNKNOWN"), "{}", findings[0].1);
-        assert!(findings[0].1.contains("non-loopback address"), "{}", findings[0].1);
+        assert!(
+            findings[0].1.contains("non-loopback address"),
+            "{}",
+            findings[0].1
+        );
         assert!(!findings[0].1.contains("exposed"), "{}", findings[0].1);
     }
 
@@ -10107,7 +10124,10 @@ mod public_surface_tests {
             FirewallProbe::Active,
         );
         assert_eq!(status, CheckStatus::Ok, "{msg}");
-        assert!(msg.contains("UNKNOWN"), "external reachability must stay UNKNOWN: {msg}");
+        assert!(
+            msg.contains("UNKNOWN"),
+            "external reachability must stay UNKNOWN: {msg}"
+        );
         assert!(!msg.contains("skipped"), "{msg}");
     }
 
@@ -10122,15 +10142,24 @@ mod public_surface_tests {
         assert_eq!(ok(Some("ufw"), Unavailable, Unavailable), CheckStatus::Info);
         // firewalld host: unchanged from the original behaviour.
         assert_eq!(ok(Some("firewalld"), Active, Unavailable), CheckStatus::Ok);
-        assert_eq!(ok(Some("firewalld"), Inactive, Unavailable), CheckStatus::Fail);
-        assert_eq!(ok(Some("firewalld"), Unavailable, Unavailable), CheckStatus::Warn);
+        assert_eq!(
+            ok(Some("firewalld"), Inactive, Unavailable),
+            CheckStatus::Fail
+        );
+        assert_eq!(
+            ok(Some("firewalld"), Unavailable, Unavailable),
+            CheckStatus::Warn
+        );
         // nothing recorded: infer from what is actually running.
         assert_eq!(ok(None, Active, Unavailable), CheckStatus::Ok);
         assert_eq!(ok(None, Inactive, Active), CheckStatus::Ok);
         assert_eq!(ok(None, Inactive, Inactive), CheckStatus::Fail);
         assert_eq!(ok(None, Unavailable, Unavailable), CheckStatus::Info);
         // an unmanaged/other backend is reported honestly, not failed.
-        assert_eq!(ok(Some("none"), Unavailable, Unavailable), CheckStatus::Info);
+        assert_eq!(
+            ok(Some("none"), Unavailable, Unavailable),
+            CheckStatus::Info
+        );
     }
 
     #[test]
@@ -10601,28 +10630,44 @@ mod user_selector_tests {
     #[test]
     fn the_stable_id_always_wins_over_a_name() {
         // An account whose NAME equals another account's ID must not shadow it.
-        let users = vec![user("user_a", "user_b", false), user("user_b", "bob", false)];
+        let users = vec![
+            user("user_a", "user_b", false),
+            user("user_b", "bob", false),
+        ];
         assert_eq!(resolve_user_selector(&users, "user_b").unwrap().name, "bob");
     }
 
     #[test]
     fn a_unique_name_resolves_to_that_account() {
-        let users = vec![user("user_a", "david", false), user("user_b", "default", false)];
+        let users = vec![
+            user("user_a", "david", false),
+            user("user_b", "default", false),
+        ];
         assert_eq!(resolve_user_selector(&users, "david").unwrap().id, "user_a");
     }
 
     #[test]
     fn an_ambiguous_name_is_rejected_and_lists_the_ids() {
-        let users = vec![user("user_a", "david", false), user("user_b", "david", false)];
-        let message = resolve_user_selector(&users, "david").unwrap_err().to_string();
+        let users = vec![
+            user("user_a", "david", false),
+            user("user_b", "david", false),
+        ];
+        let message = resolve_user_selector(&users, "david")
+            .unwrap_err()
+            .to_string();
         assert!(message.contains("2 users are named"), "{message}");
-        assert!(message.contains("user_a") && message.contains("user_b"), "{message}");
+        assert!(
+            message.contains("user_a") && message.contains("user_b"),
+            "{message}"
+        );
     }
 
     #[test]
     fn an_unknown_selector_is_an_error() {
         let users = vec![user("user_a", "david", false)];
-        let message = resolve_user_selector(&users, "nobody").unwrap_err().to_string();
+        let message = resolve_user_selector(&users, "nobody")
+            .unwrap_err()
+            .to_string();
         assert!(message.contains("no such user: nobody"), "{message}");
     }
 

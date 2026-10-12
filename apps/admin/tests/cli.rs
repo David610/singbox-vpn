@@ -187,7 +187,8 @@ fn egress_policy_changes_never_touch_credentials() {
                 if p.is_dir() {
                     stack.push(p);
                 } else if p.extension().is_some_and(|e| e == "key" || e == "pem")
-                    || p.file_name().is_some_and(|n| n.to_string_lossy().contains("reality"))
+                    || p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().contains("reality"))
                 {
                     files.push((p.clone(), std::fs::read(&p).unwrap()));
                 }
@@ -514,8 +515,11 @@ fn closed_stdout_pipe_exits_quietly_without_a_panic() {
         drop(child.stdout.take());
         let out = child.wait_with_output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(!stderr.contains("panicked"), "broken pipe panicked:
-{stderr}");
+        assert!(
+            !stderr.contains("panicked"),
+            "broken pipe panicked:
+{stderr}"
+        );
         assert_ne!(out.status.code(), Some(101), "exit 101 means a panic");
         assert!(
             out.status.success()

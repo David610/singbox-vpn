@@ -112,7 +112,11 @@ pub fn evaluate(
     };
     let tag = manifest["singbox_vpn_version"].as_str().unwrap_or("");
     let class = classify(tag);
-    let shown = if tag.is_empty() { "<none recorded>" } else { tag };
+    let shown = if tag.is_empty() {
+        "<none recorded>"
+    } else {
+        tag
+    };
     if update_in_progress {
         return (
             Verdict::Info,
@@ -274,7 +278,12 @@ mod tests {
     #[test]
     fn missing_executable_is_a_problem() {
         let m = manifest("v1.2.1", Some(H_ADMIN), Some(H_SUB));
-        let (v, msg) = evaluate(Some(&m), "1.2.1", |f| (f != "vpn-subscription-svc").then(|| H_ADMIN.to_string()), false);
+        let (v, msg) = evaluate(
+            Some(&m),
+            "1.2.1",
+            |f| (f != "vpn-subscription-svc").then(|| H_ADMIN.to_string()),
+            false,
+        );
         assert_eq!(v, Verdict::Warn);
         assert!(msg.contains("vpn-subscription-svc is missing"), "{msg}");
     }
