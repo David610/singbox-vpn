@@ -145,6 +145,92 @@ fn exit_egress_cli_converges_reconciles_and_rolls_back_validation_failure() {
         .is_none());
 }
 
+/// An egress-policy change is network policy only: it must never rotate,
+/// re-issue or otherwise touch a user's credentials or the REALITY keys, and
+/// the credentials a user is handed (`user links`) stay identical through
+/// set / reconcile / clear. Names resolve for `links`, so this also covers
+/// the by-name lookup against a real store.
+#[test]
+#[cfg(unix)]
+fn egress_policy_changes_never_touch_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = fake_singbox(dir.path(), false);
+    let cfg = write_deployment_toml_with_singbox(dir.path(), &binary);
+    let lock = dir.path().join("egress-creds.lock");
+    let run = |args: &[&str]| {
+        admin(dir.path(), &cfg)
+            .env("SINGBOX_VPN_LOCK_PATH", &lock)
+            .args(args)
+            .assert()
+            .success()
+    };
+    run(&["init"]);
+    run(&["user", "create", "--name", "david"]);
+    let users_file = dir.path().join("state/users/users.json");
+    let before_users = std::fs::read(&users_file).expect("users.json exists after user create");
+    let links = |selector: &str| {
+        let out = run(&["user", "links", selector]);
+        String::from_utf8(out.get_output().stdout.clone()).unwrap()
+    };
+    let before_links = links("david");
+    assert!(
+        before_links.contains("vless://") && before_links.contains("hysteria2://"),
+        "links must print both URIs:\n{before_links}"
+    );
+    let reality_dir = dir.path().join("state");
+    let key_snapshot = |root: &std::path::Path| -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut files = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(path) = stack.pop() {
+            for entry in std::fs::read_dir(&path).unwrap().flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|e| e == "key" || e == "pem")
+                    || p.file_name().is_some_and(|n| n.to_string_lossy().contains("reality"))
+                {
+                    files.push((p.clone(), std::fs::read(&p).unwrap()));
+                }
+            }
+        }
+        files.sort();
+        files
+    };
+    let before_keys = key_snapshot(&reality_dir);
+    assert!(
+        !before_keys.is_empty(),
+        "the key snapshot must cover real key material, or the comparison below proves nothing"
+    );
+
+    for step in [
+        vec!["egress", "set", "reject_google"],
+        vec!["render-config"],
+        vec!["egress", "set", "reject_all"],
+        vec!["egress", "clear"],
+        vec!["render-config"],
+    ] {
+        run(&step);
+        assert_eq!(
+            std::fs::read(&users_file).unwrap(),
+            before_users,
+            "`vpn-admin {}` changed the user store",
+            step.join(" ")
+        );
+        assert_eq!(
+            links("david"),
+            before_links,
+            "`vpn-admin {}` changed the credentials handed to the user",
+            step.join(" ")
+        );
+        assert_eq!(
+            key_snapshot(&reality_dir),
+            before_keys,
+            "`vpn-admin {}` changed REALITY/TLS key material",
+            step.join(" ")
+        );
+    }
+}
+
 #[test]
 #[cfg(unix)]
 fn exit_egress_cli_restart_failure_restores_desired_and_runtime_config() {
