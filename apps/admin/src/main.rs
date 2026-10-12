@@ -2480,6 +2480,7 @@ fn cmd_config_validate(cfg: &DeploymentConfig, config_path: &std::path::Path) ->
         compat_config::deployment::RELAY_ENFORCEMENT_CAPABILITY,
         cfg.role.as_str()
     );
+    println!("{}", compat_config::deployment::EXIT_EGRESS_POLICY_CAPABILITY);
 
     let users_path = cfg.users_file();
     match store::detect_users_schema(&users_path) {

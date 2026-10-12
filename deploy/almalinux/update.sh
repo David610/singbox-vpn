@@ -900,6 +900,11 @@ if [ -f "$DEPLOYMENT_TOML" ]; then
         echo "$precheck_output" >&2
         die "this node is a RELAY, and $TARGET_VERSION's vpn-admin does not declare fail-closed relay forwarding. Switching to it (update, repair or downgrade) could render this relay as an unrestricted exit. Nothing live has been changed."
       fi
+      if deployment_declares_egress_policy "$DEPLOYMENT_TOML" \
+          && ! admin_output_declares_exit_egress_policy "$precheck_output"; then
+        echo "$precheck_output" >&2
+        die "this deployment declares an [egress] literal-IPv6 policy, and $TARGET_VERSION's vpn-admin does not understand it: it would ignore the setting without any error and re-render a plain exit. Refusing (update, repair or downgrade). Run 'vpn-admin egress clear' first if you really intend to drop the policy. Nothing live has been changed."
+      fi
       ;;
     *)
       echo "$precheck_output" >&2

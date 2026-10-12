@@ -26,6 +26,16 @@ pub const DEPLOYMENT_SCHEMA_VERSION: u32 = 2;
 /// `deploy/lib/node-identity.sh` by `deploy/lib/tests/test-node-identity.sh`.
 pub const RELAY_ENFORCEMENT_CAPABILITY: &str = "capability: relay-fail-closed-forwarding";
 
+/// Printed by every `vpn-admin config validate` from a build that understands
+/// the exit `[egress]` section. A v1.2.0 `DeploymentConfig` does not reject
+/// unknown top-level tables, so an older binary would silently ignore a
+/// configured literal-IPv6 policy and re-render a plain exit. `update.sh`
+/// therefore refuses to switch a deployment that declares `[egress]` to a
+/// `vpn-admin` that does not print this line (update, repair or downgrade).
+/// Kept in sync with `deploy/lib/node-identity.sh` by
+/// `deploy/lib/tests/test-node-identity.sh`.
+pub const EXIT_EGRESS_POLICY_CAPABILITY: &str = "capability: exit-egress-policy";
+
 /// Endpoint id of this deployment's own VLESS+REALITY listener. On a relay
 /// node this is the authenticated first hop, never a final exit.
 pub const LOCAL_REALITY_ENDPOINT_ID: &str = "reality-1";

@@ -13,11 +13,28 @@ NODE_ID_MAX_LEN=63
 # Printed by every `vpn-admin config validate` that renders relays
 # fail-closed (RELAY_ENFORCEMENT_CAPABILITY in deployment.rs).
 RELAY_ENFORCEMENT_CAPABILITY="capability: relay-fail-closed-forwarding"
+# Printed by every `vpn-admin config validate` that understands the exit
+# `[egress]` section (EXIT_EGRESS_POLICY_CAPABILITY in deployment.rs).
+EXIT_EGRESS_POLICY_CAPABILITY="capability: exit-egress-policy"
 
 # True if `vpn-admin config validate` output ($1) comes from a build that
 # enforces relay forwarding restrictions.
 admin_output_declares_relay_enforcement() {
   printf '%s\n' "${1:-}" | grep -qF "$RELAY_ENFORCEMENT_CAPABILITY"
+}
+
+# True if `vpn-admin config validate` output ($1) comes from a build that
+# understands the exit `[egress]` literal-IPv6 policy.
+admin_output_declares_exit_egress_policy() {
+  printf '%s\n' "${1:-}" | grep -qF "$EXIT_EGRESS_POLICY_CAPABILITY"
+}
+
+# True if the deployment.toml ($1) declares an `[egress]` table. A binary
+# that predates the table would silently ignore it, so switching such a
+# deployment to one (an older release) must be refused, not attempted.
+deployment_declares_egress_policy() {
+  [ -f "${1:-}" ] || return 1
+  grep -Eq '^[[:space:]]*\[egress\][[:space:]]*(#.*)?$' "$1"
 }
 
 # Strict role parser: prints the role and returns 0 for exactly "exit" or

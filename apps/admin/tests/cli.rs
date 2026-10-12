@@ -456,6 +456,26 @@ fn real_failures_still_exit_nonzero_with_the_error_message() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("loading deployment config"));
 }
 
+/// `update.sh` refuses to switch a deployment that declares `[egress]` to a
+/// vpn-admin that does not print this marker (an older build ignores the
+/// table silently), so the marker must be printed by `config validate`.
+#[test]
+fn config_validate_declares_exit_egress_policy_support() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_deployment_toml(dir.path());
+    let out = admin(dir.path(), &cfg)
+        .args(["config", "validate"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == compat_config::deployment::EXIT_EGRESS_POLICY_CAPABILITY),
+        "config validate must print the egress capability marker:\n{stdout}"
+    );
+}
+
 #[test]
 fn release_binary_exposes_package_version() {
     support::vpn_admin()
