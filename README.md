@@ -38,11 +38,15 @@ Deploy on a VPS → import the provisioning URL in Tamara → connect.
 
 No web control panel is required.
 
-**Current stable release: [v1.2.0](https://github.com/David610/singbox-vpn/releases/tag/v1.2.0).**
-It fixes YouTube Shorts through the VPN (see
-[YouTube and your exit's IP](#youtube-and-your-exits-ip)) and names every
-subscription profile **Arcana VPN** in Hiddify. Acceptance record:
-[docs/release-acceptance/v1.2.0.md](docs/release-acceptance/v1.2.0.md).
+**Current stable release: [v1.3.0](https://github.com/David610/singbox-vpn/releases/tag/v1.3.0).**
+It adds the standalone exit literal-IPv6 policy (`[egress] ipv6_literal`, see
+[exit policy](docs/EXIT_IPV6_POLICY.md)), a downgrade guard in the updater,
+installed-release identity in `vpn-admin doctor`, and keeps the YouTube Shorts
+fix from v1.2.0 (see [YouTube and your exit's IP](#youtube-and-your-exits-ip)).
+Acceptance record, including what was **not** verified on a real device:
+[docs/release-acceptance/v1.3.0.md](docs/release-acceptance/v1.3.0.md).
+The previous release, [v1.2.0](docs/release-acceptance/v1.2.0.md), remains
+available.
 
 ### Clients: one contract, two tiers
 
@@ -270,4 +274,5 @@ Apache License 2.0. See [LICENSE](LICENSE).
 
 For the standalone literal-IPv6 policy (v1.3.0) and its native iPhone/VPS
 acceptance gates, see [exit policy](docs/EXIT_IPV6_POLICY.md). Rejection is not
-proof of native IPv4 retry. Published v1.2.0 evidence does not accept v1.3.0.
+proof of native IPv4 retry. The v1.3.0 acceptance record states which native-device
+results exist and which remain unverified; v1.2.0 evidence does not substitute for them.
