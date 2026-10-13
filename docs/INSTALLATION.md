@@ -186,6 +186,13 @@ inconclusive:
 
 Every installation has a stable `node_id` and a `role`:
 
+- `--ipv6-literal-policy allow|reject_google|reject_all` (exit role; default
+  `reject_google` on a fresh install) — how the exit treats literal-IPv6 Google
+  destinations. `reject_google` is what makes native YouTube Shorts play on an
+  IPv6-capable host. Ignored for an existing `deployment.toml`; see
+  [EXIT_IPV6_POLICY.md](EXIT_IPV6_POLICY.md). On Ubuntu, `sshd` is
+  socket-activated: from a console session pass `--ssh-port 22` or the installer
+  refuses (it cannot positively detect the port).
 - `--role exit` (default) — an ordinary VPN exit; identical to every earlier
   installation.
 - `--role relay` — a first hop that forwards authenticated traffic only to

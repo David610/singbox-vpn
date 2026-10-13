@@ -1150,7 +1150,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
     section "16c. candidate standalone exit egress policy convergence"
     EGRESS_STAGE_RAN=1
     if ssh_run 'sudo SINGBOX_VPN_DISPOSABLE_EGRESS_GATE=1 bash /opt/singbox-vpn/deploy/lib/verify-exit-egress-policy.sh'; then
-      pass "candidate exit egress apply/reconcile/doctor (restored allow default)"
+      pass "candidate exit egress apply/reconcile/doctor (restored initial policy)"
     else
       fail_required "candidate exit egress policy gate"
     fi

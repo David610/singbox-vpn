@@ -53,7 +53,7 @@ prereq v9.9.9-rc.1 true false "host ssh-ed25519 AAAA" && ok "a complete release-
 good="$TMP/good.log"
 cat > "$good" <<'LOG'
 === 16c. candidate standalone exit egress policy convergence ===
-[PASS] candidate exit egress apply/reconcile/doctor (restored allow default)
+[PASS] candidate exit egress apply/reconcile/doctor (restored initial policy)
 LIFECYCLE GATE: PASS
 LOG
 evidence() { (cd "$TMP" && GITHUB_STEP_SUMMARY="$TMP/summary.md" bash "$TMP/evidence.sh" >/dev/null 2>&1); }
