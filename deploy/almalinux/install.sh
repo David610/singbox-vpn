@@ -207,6 +207,14 @@ DRY_RUN=0
 # for automation; the flags win.
 NODE_ROLE="${SINGBOX_VPN_ROLE:-}"
 NODE_ID="${SINGBOX_VPN_NODE_ID:-}"
+# Exit literal-IPv6 policy written into a FRESH deployment.toml (exit role
+# only; docs/EXIT_IPV6_POLICY.md). Empty = the installer default, reject_google:
+# a standalone exit with a working IPv6 address otherwise lets the native
+# YouTube app send literal-IPv6 Google destinations that YouTube refuses for
+# that address, so Shorts never play (found on a fresh v1.3.0 install).
+# `allow` writes no [egress] section (the pre-1.3.1 behaviour). An existing
+# deployment.toml is never rewritten, so a repair/update never changes it.
+IPV6_LITERAL_POLICY="${SINGBOX_VPN_IPV6_LITERAL_POLICY:-}"
 print_install_help() {
   cat <<'USAGE'
 singbox-vpn installer (deploy/almalinux/install.sh).
@@ -243,6 +251,15 @@ Optional flags (all have environment-variable equivalents):
                                     firewall (and thus never packages_stage's
                                     firewalld activation) without a confirmed
                                     SSH port. Never assume 22.
+  --ipv6-literal-policy POLICY     same as SINGBOX_VPN_IPV6_LITERAL_POLICY; exit
+                                    role only. How the exit treats literal-IPv6
+                                    Google destinations: reject_google (the
+                                    default for a fresh install; makes native
+                                    YouTube Shorts work on an IPv6-capable
+                                    host), reject_all, or allow (writes no
+                                    [egress] section). See
+                                    docs/EXIT_IPV6_POLICY.md. Never applied to
+                                    an existing deployment.toml.
   --non-interactive                never prompt on /dev/tty; fail fast with
                                     a precise error instead of blocking if a
                                     required value (e.g. the REALITY decoy)
@@ -285,6 +302,8 @@ parse_cli_args() {
       --node-id=*) NODE_ID="${1#*=}"; shift ;;
       --ssh-port) SINGBOX_VPN_SSH_PORT="$2"; shift 2 ;;
       --ssh-port=*) SINGBOX_VPN_SSH_PORT="${1#*=}"; shift ;;
+      --ipv6-literal-policy) IPV6_LITERAL_POLICY="${2:-}"; shift 2 ;;
+      --ipv6-literal-policy=*) IPV6_LITERAL_POLICY="${1#*=}"; shift ;;
       --non-interactive) NONINTERACTIVE=1; shift ;;
       --allow-ip-hostname) ALLOW_IP_HOSTNAME=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
@@ -296,6 +315,13 @@ parse_cli_args() {
   # --dry-run report that would otherwise look ready).
   if [ -n "$NODE_ROLE" ] && ! node_role_is_valid "$NODE_ROLE"; then
     die "invalid --role '$NODE_ROLE' (expected exactly 'exit' or 'relay')"
+  fi
+  case "$IPV6_LITERAL_POLICY" in
+    ""|allow|reject_google|reject_all) ;;
+    *) die "invalid --ipv6-literal-policy '$IPV6_LITERAL_POLICY' (expected exactly 'allow', 'reject_google' or 'reject_all')" ;;
+  esac
+  if [ -n "$IPV6_LITERAL_POLICY" ] && [ "$NODE_ROLE" = "relay" ]; then
+    die "--ipv6-literal-policy is exit-only: a relay has no [egress] section"
   fi
   if [ -n "$NODE_ID" ] && ! node_id_is_valid "$NODE_ID"; then
     die "invalid --node-id '$NODE_ID' (1-63 characters of A-Z a-z 0-9 . _ -, starting with a letter or digit)"
@@ -2285,6 +2311,16 @@ render_deployment_toml() {
     printf 'public_ipv4 = "%s"\n' "$PUBLIC_IP" >>"$rendered"
   elif [ -n "${PUBLIC_IPV4:-}" ]; then
     printf 'public_ipv4 = "%s"\n' "$PUBLIC_IPV4" >>"$rendered"
+  fi
+  if [ "$NODE_ROLE" = "exit" ]; then
+    local ipv6_policy="${IPV6_LITERAL_POLICY:-reject_google}"
+    if [ "$ipv6_policy" != "allow" ]; then
+      printf '
+[egress]
+ipv6_literal = "%s"
+' "$ipv6_policy" >>"$rendered"
+      log "exit literal-IPv6 policy: $ipv6_policy (change later with: vpn-admin egress set allow|reject_google|reject_all)"
+    fi
   fi
   chmod 0644 "$rendered"
   mv -f "$rendered" "$DEPLOYMENT_TOML"

@@ -43,6 +43,19 @@ evade scoped matching. No ECH or native-device recovery PASS is claimed.
 
 ## Configuration and defaults
 
+**Fresh installs (v1.3.1 and later) declare `reject_google`.** On a standalone
+exit with a working IPv6 address the native YouTube app sends literal-IPv6 Google
+destinations that YouTube refuses for that address, so Shorts never play unless
+the policy rejects them (found on a fresh v1.3.0 install: default `allow`, 0
+Shorts; fixed by `vpn-admin egress set reject_google`). The installer therefore
+writes `[egress] ipv6_literal = "reject_google"` into a *new* `deployment.toml`
+for the exit role. Choose another value with `--ipv6-literal-policy
+allow|reject_google|reject_all` (`allow` writes no section). A relay never gets
+the section. An existing `deployment.toml` is never rewritten, so a repair or an
+update keeps whatever the host already declares, and a host installed before
+v1.3.1 keeps its policy (an absent section still means `allow`): run
+`vpn-admin egress set reject_google` on such a host if Shorts do not play.
+
 ```toml
 [egress]
 ipv6_literal = "reject_google"

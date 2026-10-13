@@ -169,6 +169,45 @@ else
   fail "relay fresh install render is wrong: $(cat "$WORK/fresh-relay.toml" 2>/dev/null)"
 fi
 
+# Fresh exit installs declare the literal-IPv6 policy (default reject_google);
+# `allow` writes no [egress] section; a relay never gets one.
+render_policy_fixture() {
+  local role="$1" policy="$2" dest="$3"
+  with_install_functions "
+    DEPLOYMENT_TOML='$dest'
+    PUBLIC_HOST=de1.example.test SUBSCRIPTION_HOST=de1.example.test SUBSCRIPTION_PORT=8443
+    REALITY_HANDSHAKE_SERVER=www.example.com
+    NODE_ROLE='$role' NODE_ID=''
+    IPV6_LITERAL_POLICY='$policy'
+    resolve_node_identity
+    render_deployment_toml
+  " >/dev/null 2>&1
+}
+if grep -qx '\[egress\]' "$WORK/fresh-default.toml"     && [ "$(grep -c '^ipv6_literal = "reject_google"$' "$WORK/fresh-default.toml")" = 1 ]     && [ "$(grep -c '^\[egress\]$' "$WORK/fresh-default.toml")" = 1 ]     && [ "$(deployment_top_level_value "$WORK/fresh-default.toml" role)" = "exit" ]; then
+  ok "a default fresh exit install declares [egress] ipv6_literal = reject_google exactly once"
+else
+  fail "default fresh exit install is missing the reject_google policy: $(cat "$WORK/fresh-default.toml" 2>/dev/null)"
+fi
+render_policy_fixture exit allow "$WORK/fresh-allow.toml" || true
+if [ -f "$WORK/fresh-allow.toml" ] && ! grep -q '^\[egress\]' "$WORK/fresh-allow.toml"; then
+  ok "--ipv6-literal-policy allow writes no [egress] section"
+else
+  fail "allow policy rendered an [egress] section: $(cat "$WORK/fresh-allow.toml" 2>/dev/null)"
+fi
+render_policy_fixture exit reject_all "$WORK/fresh-rejectall.toml" || true
+grep -q '^ipv6_literal = "reject_all"$' "$WORK/fresh-rejectall.toml" 2>/dev/null   && ok "--ipv6-literal-policy reject_all is written" || fail "reject_all not written"
+if ! grep -q '^\[egress\]' "$WORK/fresh-relay.toml"; then
+  ok "a relay deployment never gets an [egress] section"
+else
+  fail "relay deployment carries [egress]"
+fi
+out="$(with_install_functions 'parse_cli_args --ipv6-literal-policy=bogus; echo PARSED' 2>&1 || true)"
+echo "$out" | grep -q "DIE: invalid --ipv6-literal-policy 'bogus'" && ! echo "$out" | grep -q PARSED   && ok "an unknown --ipv6-literal-policy is refused before any mutation" || fail "bad policy not refused: $out"
+out="$(with_install_functions 'parse_cli_args --role=relay --ipv6-literal-policy=reject_google; echo PARSED' 2>&1 || true)"
+echo "$out" | grep -q "DIE: --ipv6-literal-policy is exit-only" && ! echo "$out" | grep -q PARSED   && ok "--ipv6-literal-policy with --role relay is refused" || fail "relay + policy not refused: $out"
+# The rendered default must be accepted by the Rust parser's own spelling.
+grep -q 'ipv6_literal' "$DEPLOYMENT_RS" && grep -q '"reject_google"' "$DEPLOYMENT_RS"   && ok "the rendered policy spelling matches the Rust parser" || fail "Rust parser does not mention reject_google"
+
 echo
 echo "--- functional: repair keeps the existing role/identity and refuses conflicting flags ---"
 cp "$WORK/fresh-relay.toml" "$WORK/existing.toml"
