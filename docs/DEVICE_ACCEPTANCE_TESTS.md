@@ -662,7 +662,7 @@ recorded builds. No production observation was made by this coding task.
   IPv4 after the proxy closes a literal-IPv6 flow; Hysteria2/QUIC literal-IPv6;
   ECH/absent-SNI flows; reboot, update, repair and renewal persistence.
 
-#### v1.3.0 exact-candidate native matrix — all cells **PENDING**
+#### v1.3.0 exact-candidate native matrix — per-cell results **NOT RECORDED** (see the 2026-10-13 entry)
 
 Run per `docs/NATIVE_IPHONE_IPV6_ACCEPTANCE.md` against the same immutable RC that
 passed the disposable lifecycle, with Hiddify (iOS) and its embedded core importing
@@ -673,7 +673,18 @@ matrix.
 
 | Transport | Network | Import / refresh | YouTube Shorts (`sAcElROnYIE` + ≥ 10) | YouTube long + seek, 15 min | TikTok app (10 videos, 15 min, comments/profile) | TikTok web | Reconnect / idle / handover / reboots | Browsing, IPv6, DNS/ISP-IPv6/WebRTC | Result |
 |---|---|---|---|---|---|---|---|---|---|
-| REALITY | Wi-Fi | — | — | — | — | — | — | — | PENDING |
-| REALITY | cellular | — | — | — | — | — | — | — | PENDING |
-| Hysteria2 | Wi-Fi | — | — | — | — | — | — | — | PENDING |
-| Hysteria2 | cellular | — | — | — | — | — | — | — | PENDING |
+| REALITY | Wi-Fi | — | — | — | — | — | — | — | NOT RECORDED |
+| REALITY | cellular | — | — | — | — | — | — | — | NOT RECORDED |
+| Hysteria2 | Wi-Fi | — | — | — | — | — | — | — | NOT RECORDED |
+| Hysteria2 | cellular | — | — | — | — | — | — | — | NOT RECORDED |
+
+### 2026-10-13 — v1.3.0-rc.1 acceptance (disposable VPS hosts + maintainer-reported device)
+
+- **Release tag / commit:** `v1.3.0-rc.1` / `e2bac43e63b80ffe4a6635f0224e73eea6b88746`. No implementation change after the RC.
+- **VPS (SERVER-VERIFIED, local harness runs — not a GitHub Actions run):** `deploy/almalinux/lifecycle-acceptance.sh` from the RC's checksum-verified source against a disposable AlmaLinux 9.8 x86_64 host with a verified host key: fresh install and full lifecycle 56 PASS, 0 failing; published v1.2.0 → rc.1 update with injected-failure rollback 59 PASS, 0 failing; reboot, certificate renewal with TCP/80 firewall restoration, backup/restore and uninstall/reinstall included. `.github/workflows/vps-acceptance.yml` was **not** run (it needs a repository SSH-key secret that was not replaced for this acceptance).
+- **Ubuntu 24.04.5 (SERVER-VERIFIED, equivalent stages run by hand):** repair ×2, no-restart reconcile, policy persistence, backup/restore, renewal, injected rollback: 31 PASS; real reboot persistence: 16 PASS; uninstall residue audit and reinstall through the public bootstrap: PASS (two "FAIL" lines in those logs are check-script defects, documented in the evidence); 90-minute soak PASS (5421 s, 181 samples, 0 restarts, flat RSS/fds, 9 reconcile runs, watchdog active, 10/10 handshakes).
+- **In-place transitions through the candidate's own updater (SERVER-VERIFIED):** v1.2.0 with hand-copied `main` executables and `reject_google` ("hybrid-policy"), the same without the policy ("hybrid"), and plain v1.2.0 ("normal"), on both AlmaLinux 9.8 and Ubuntu 24.04.5: all PASS; credentials and policy preserved.
+- **Owner's exit (SERVER-VERIFIED):** fresh `v1.3.0-rc.1` through the public bootstrap on Ubuntu 24.04.5, `[egress] ipv6_literal = "reject_google"`. Release identity recorded; `doctor --protocol --require-protocol` pass; REALITY and Hysteria2 authenticate and transfer (25 MB at 2–5 MB/s); Chrome iPhone emulation 6/6 consecutive Shorts through each transport, repeated after a coordinated reboot (boot id changed; credentials, policy, release, firewall rules, services and timers unchanged; public surface TCP 22/443/8443 + UDP 443); certificate renewal dry-run pass with the firewall rule count unchanged; no TCP/80 listener; a protected off-server backup of accounts and key material was taken (it does not contain release binaries).
+- **Device (USER-REPORTED, maintainer-accepted):** the maintainer tested the subscription, the REALITY link and the Hysteria2 link on an iPhone against that host and reported on 2026-10-13 that they work and that random YouTube Shorts play (a specific Short could not be repeated), and approved the release on that basis, explicitly waiving the unrecorded matrix (maintainer exception; the missing results stay UNVERIFIED / NOT RECORDED and do not imply TikTok, leak or native IPv4-recovery verification). **Not recorded:** iPhone model/iOS, Hiddify and embedded-core versions, YouTube/TikTok versions, which transport ran on Wi-Fi versus cellular, per-cell results of the matrix above, ≥10-Short and 15-minute runs, TikTok app and web, handover, idle, leak checks, and phone behaviour after the server reboot.
+- **Observation, not a defect:** a Hysteria2 client on the maintainer's workstation timed out at the QUIC handshake against the exit while a client on another network passed; a server-side capture saw no UDP/443 from the workstation but did see test datagrams from the other network. That path was not investigated further; the phone result above is the relevant one.
+- **Known limitations accepted with this release:** hosts updated from v1.2.0 keep the distribution's default nginx site listening on TCP/80 (doctor WARN; blocked by the default host firewalls, renewal verified; fresh installs disable it); the lifecycle harness supports AlmaLinux only; an egress IP that YouTube refuses (proven per IP) cannot play Shorts without a hairpin to an accepted IP.
