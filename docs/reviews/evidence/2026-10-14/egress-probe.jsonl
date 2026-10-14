@@ -1,0 +1,10 @@
+{"target":"loopback literal","url":"http://127.0.0.1:8081/ok","control_from_exit":"200","via_reality":"000","via_hysteria2":"000"}
+{"target":"own public IP literal","url":"http://11.0.2.2:8081/ok","control_from_exit":"200","via_reality":"000","via_hysteria2":"000"}
+{"target":"domain -> 127.0.0.1 (rebinding)","url":"http://rebind.test:8081/ok","control_from_exit":"200","via_reality":"000","via_hysteria2":"000"}
+{"target":"domain -> own public IP","url":"http://self.test:8081/ok","control_from_exit":"200","via_reality":"000","via_hysteria2":"000"}
+{"target":"metadata literal 169.254.169.254","url":"http://169.254.169.254/ok","control_from_exit":"200","via_reality":"000","via_hysteria2":"000"}
+{"target":"domain -> metadata","url":"http://meta.test/ok","control_from_exit":"200","via_reality":"000","via_hysteria2":"000"}
+{"target":"RFC1918 literal 10.20.30.40","url":"http://10.20.30.40:8081/ok","control_from_exit":"200","via_reality":"000","via_hysteria2":"000"}
+{"target":"ordinary destination (positive control)","url":"http://dest.test/ok","control_from_exit":"200","via_reality":"200","via_hysteria2":"200"}
+{"target":"TCP/25 (SMTP)","control_from_exit":"ok","via_reality":"refused","via_hysteria2":"refused"}
+{"target":"relay first hop as an exit (must fail closed)","relay_only_route":"000","relay_to_exit_route":"200"}

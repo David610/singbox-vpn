@@ -1,0 +1,14 @@
+diff --git a/protocol/hysteria2/inbound.go b/protocol/hysteria2/inbound.go
+index ef9233f..dc2317f 100644
+--- a/protocol/hysteria2/inbound.go
++++ b/protocol/hysteria2/inbound.go
+@@ -287,8 +287,8 @@ func (h *Inbound) InterfaceUpdated(ctx context.Context) {
+ 
+ func (h *Inbound) Close() error {
+ 	return common.Close(
++		common.PtrOrNil(h.service),
+ 		h.listener,
+ 		h.tlsConfig,
+-		common.PtrOrNil(h.service),
+ 	)
+ }

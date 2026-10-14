@@ -1,0 +1,4 @@
+{"client":"BBR client (declares nothing): both directions BBR","condition":"20 ms / 0 %","download_mbps":86,"same_connection_ping_p50_ms":524,"p95_ms":538.3,"n":24}
+{"client":"client declares up_mbps=50 only (sing-quic still runs BBR on BOTH sides: the exit answers RxAuto because the client declares no down rate, and the client then also picks BBR)","condition":"20 ms / 0 %","download_mbps":86,"same_connection_ping_p50_ms":524.9,"p95_ms":533.7,"n":24}
+{"client":"BBR client (declares nothing): both directions BBR","condition":"80 ms / 1 %","download_mbps":77,"same_connection_ping_p50_ms":398,"p95_ms":536.3,"n":31}
+{"client":"client declares up_mbps=50 only (sing-quic still runs BBR on BOTH sides: the exit answers RxAuto because the client declares no down rate, and the client then also picks BBR)","condition":"80 ms / 1 %","download_mbps":76,"same_connection_ping_p50_ms":364.8,"p95_ms":543.3,"n":34}

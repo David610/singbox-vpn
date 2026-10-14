@@ -1,0 +1,18 @@
+# Hysteria2 opt-in bandwidth caps vs clients that declare no bandwidth (R2/W-fix)
+# Lab, loopback, real sing-box 1.14.1, Salamander on, throwaway keys. Server documents differ only in ignore_client_bandwidth.
+
+## server A: up_mbps=100, down_mbps=100, ignore_client_bandwidth=true (what compat-config rendered before this branch)
+### standard client (declares nothing, i.e. every client this product provisions):
+ERROR[0000] [1075025225 8ms] connection: open connection to 127.0.0.1:24999 using outbound/hysteria2[Hysteria2]: authentication failed, status code: 404
+### server log for that attempt:
+DEBUG[0001] inbound/hysteria2[hysteria2-in]: process connection from 127.0.0.1:60392: BBR disabled by server
+### client that declares up/down 50/50:
+DEBUG[0000] [379195537 14ms] connection: connection download finished
+
+## server B: up_mbps=100, down_mbps=100, no ignore_client_bandwidth (what compat-config renders now)
+### standard client:
+DEBUG[0000] [3695437133 13ms] connection: connection download finished
+### client that declares up/down 50/50:
+DEBUG[0000] [2722059665 12ms] connection: connection download finished
+
+# CI keeps the fixed behaviour (caps rendered without ignore_client_bandwidth; a standard client gets HTTP 200 through a capped server) in crates/compat-config/tests/hysteria2_interop.rs::hysteria2_bandwidth_caps_keep_standard_clients_working (real binary).

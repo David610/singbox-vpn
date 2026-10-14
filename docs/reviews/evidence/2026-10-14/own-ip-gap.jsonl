@@ -1,0 +1,4 @@
+{"case":"exit rendered WITHOUT public_ipv4 (domain-based install)","rendered_ip_cidr_rule_sizes":[1,1,14,10],"target":"own public IP literal","url":"http://11.0.2.2:8081/ok","via_reality":"200"}
+{"case":"exit rendered WITHOUT public_ipv4 (domain-based install)","rendered_ip_cidr_rule_sizes":[1,1,14,10],"target":"domain -> own public IP","url":"http://self.test:8081/ok","via_reality":"200"}
+{"case":"exit rendered WITHOUT public_ipv4 (domain-based install)","rendered_ip_cidr_rule_sizes":[1,1,14,10],"target":"loopback literal (positive control for C-16)","url":"http://127.0.0.1:8081/ok","via_reality":"000"}
+{"case":"exit rendered WITHOUT public_ipv4 (domain-based install)","rendered_ip_cidr_rule_sizes":[1,1,14,10],"target":"ordinary destination","url":"http://dest.test/ok","via_reality":"200"}

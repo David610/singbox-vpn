@@ -1,0 +1,16 @@
+{"singbox":"1.14.1","payload":"https","round":1,"mbps":4537.8,"server_cpu_pct":85}
+{"singbox":"1.14.1","payload":"http","round":1,"mbps":2507.6,"server_cpu_pct":78}
+{"singbox":"1.14.3","payload":"https","round":1,"mbps":4479.2,"server_cpu_pct":81}
+{"singbox":"1.14.3","payload":"http","round":1,"mbps":2694.2,"server_cpu_pct":88}
+{"singbox":"1.14.1","payload":"https","round":2,"mbps":4292.8,"server_cpu_pct":87}
+{"singbox":"1.14.1","payload":"http","round":2,"mbps":2464.1,"server_cpu_pct":78}
+{"singbox":"1.14.3","payload":"https","round":2,"mbps":4734.4,"server_cpu_pct":85}
+{"singbox":"1.14.3","payload":"http","round":2,"mbps":2207.0,"server_cpu_pct":75}
+{"singbox":"1.14.1","payload":"https","round":3,"mbps":5356.5,"server_cpu_pct":86}
+{"singbox":"1.14.1","payload":"http","round":3,"mbps":2615.9,"server_cpu_pct":81}
+{"singbox":"1.14.3","payload":"https","round":3,"mbps":4792.6,"server_cpu_pct":85}
+{"singbox":"1.14.3","payload":"http","round":3,"mbps":2154.9,"server_cpu_pct":78}
+{"singbox":"1.14.1","payload":"https","round":4,"mbps":4648.2,"server_cpu_pct":84}
+{"singbox":"1.14.1","payload":"http","round":4,"mbps":2372.0,"server_cpu_pct":77}
+{"singbox":"1.14.3","payload":"https","round":4,"mbps":5480.4,"server_cpu_pct":87}
+{"singbox":"1.14.3","payload":"http","round":4,"mbps":2673.3,"server_cpu_pct":77}

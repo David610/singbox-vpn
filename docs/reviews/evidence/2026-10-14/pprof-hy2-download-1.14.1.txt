@@ -1,0 +1,39 @@
+# transfer: {"label":"hy2","mbps":529,"retrans":17,"server_cpu_pct":79,"client_cpu_pct":72,"error":null}
+File: sing-box
+Type: cpu
+Time: 2026-10-14 12:01:21 UTC
+Duration: 8.01s, Total samples = 6.19s (77.32%)
+Showing nodes accounting for 4.72s, 76.25% of 6.19s total
+Dropped 198 nodes (cum <= 0.03s)
+Showing top 30 nodes out of 145
+      flat  flat%   sum%        cum   cum%
+     2.63s 42.49% 42.49%      2.63s 42.49%  internal/runtime/syscall/linux.Syscall6
+     0.62s 10.02% 52.50%      3.79s 61.23%  github.com/sagernet/sing-quic/hysteria2.(*VectorisedSalamanderPacketConn).WriteTo
+     0.17s  2.75% 55.25%      0.17s  2.75%  crypto/internal/fips140/aes/gcm.gcmAesEnc
+     0.14s  2.26% 57.51%      0.14s  2.26%  internal/sync.(*Mutex).Unlock (inline)
+     0.10s  1.62% 59.13%      0.10s  1.62%  runtime.memmove
+     0.08s  1.29% 60.42%      0.08s  1.29%  runtime.unlock2
+     0.07s  1.13% 61.55%      0.07s  1.13%  sync.(*poolDequeue).pushHead
+     0.06s  0.97% 62.52%      0.91s 14.70%  github.com/sagernet/quic-go.(*packetPacker).appendPacket
+     0.06s  0.97% 63.49%      0.23s  3.72%  runtime.mallocgcSmallScanNoHeader
+     0.06s  0.97% 64.46%      0.18s  2.91%  runtime.selectgo
+     0.06s  0.97% 65.43%      0.06s  0.97%  sync/atomic.(*Int32).Add (inline)
+     0.05s  0.81% 66.24%      0.05s  0.81%  crypto/internal/fips140/aes.encryptBlockAsm
+     0.05s  0.81% 67.04%      0.05s  0.81%  internal/sync.(*Mutex).Lock (inline)
+     0.05s  0.81% 67.85%      0.05s  0.81%  runtime.nextFreeFast (inline)
+     0.05s  0.81% 68.66%      0.06s  0.97%  sync.(*poolDequeue).popHead
+     0.04s  0.65% 69.31%      1.72s 27.79%  github.com/sagernet/quic-go.(*Conn).run
+     0.04s  0.65% 69.95%      0.12s  1.94%  github.com/sagernet/quic-go.(*SendStream).getDataForWriting
+     0.04s  0.65% 70.60%      0.43s  6.95%  github.com/sagernet/quic-go.(*packetPacker).composeNextPacket
+     0.04s  0.65% 71.24%      0.04s  0.65%  golang.org/x/crypto/blake2b.hashBlocksAVX2
+     0.04s  0.65% 71.89%      0.06s  0.97%  internal/poll.(*FD).writeLock (inline)
+     0.04s  0.65% 72.54%      0.12s  1.94%  io.ReadAtLeast
+     0.04s  0.65% 73.18%      0.04s  0.65%  sync/atomic.(*Bool).CompareAndSwap (inline)
+     0.03s  0.48% 73.67%      0.41s  6.62%  github.com/sagernet/quic-go.(*packetPacker).appendShortHeaderPacket
+     0.03s  0.48% 74.15%      0.05s  0.81%  github.com/sagernet/quic-go/internal/wire.putStreamFrame (inline)
+     0.03s  0.48% 74.64%      0.07s  1.13%  golang.org/x/crypto/blake2b.checkSum
+     0.02s  0.32% 74.96%      0.07s  1.13%  crypto/internal/fips140/aes.encryptBlock
+     0.02s  0.32% 75.28%      1.13s 18.26%  github.com/sagernet/quic-go.(*Conn).appendOneShortHeaderPacket
+     0.02s  0.32% 75.61%      0.20s  3.23%  github.com/sagernet/quic-go.(*Conn).registerPackedShortHeaderPacket
+     0.02s  0.32% 75.93%      0.39s  6.30%  github.com/sagernet/quic-go.(*framer).Append
+     0.02s  0.32% 76.25%      3.82s 61.71%  github.com/sagernet/quic-go.(*sconn).writePacket

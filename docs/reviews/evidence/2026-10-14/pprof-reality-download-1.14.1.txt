@@ -1,0 +1,39 @@
+# transfer: {"label":"reality","mbps":2573.7,"retrans":1053,"server_cpu_pct":84,"client_cpu_pct":89,"error":null}
+File: sing-box
+Type: cpu
+Time: 2026-10-14 12:01:01 UTC
+Duration: 8s, Total samples = 5.73s (71.59%)
+Showing nodes accounting for 5.47s, 95.46% of 5.73s total
+Dropped 34 nodes (cum <= 0.03s)
+Showing top 30 nodes out of 45
+      flat  flat%   sum%        cum   cum%
+     3.95s 68.94% 68.94%      3.95s 68.94%  internal/runtime/syscall/linux.Syscall6
+     1.21s 21.12% 90.05%      1.21s 21.12%  crypto/internal/fips140/aes/gcm.gcmAesEnc
+     0.16s  2.79% 92.84%      0.16s  2.79%  runtime.memmove
+     0.03s  0.52% 93.37%      4.25s 74.17%  github.com/metacubex/utls.(*Conn).writeRecordLocked
+     0.02s  0.35% 93.72%      3.97s 69.28%  syscall.Syscall
+     0.01s  0.17% 93.89%      0.03s  0.52%  github.com/metacubex/utls.(*Conn).handshakeContext
+     0.01s  0.17% 94.07%      2.75s 47.99%  github.com/metacubex/utls.(*Conn).write
+     0.01s  0.17% 94.24%      1.44s 25.13%  github.com/metacubex/utls.(*halfConn).encrypt
+     0.01s  0.17% 94.42%      4.33s 75.57%  github.com/sagernet/sing-vmess/vless.(*serverConn).Write
+     0.01s  0.17% 94.59%      4.35s 75.92%  github.com/sagernet/sing/common/bufio.(*ExtendedWriterWrapper).WriteBuffer
+     0.01s  0.17% 94.76%      1.29s 22.51%  github.com/sagernet/sing/common/bufio.(*syscallReadWaiter).InitializeReadWaiter.func1
+     0.01s  0.17% 94.94%      1.32s 23.04%  github.com/sagernet/sing/common/bufio.(*syscallReadWaiter).WaitReadBuffer
+     0.01s  0.17% 95.11%      1.31s 22.86%  internal/poll.(*FD).RawRead
+     0.01s  0.17% 95.29%      0.03s  0.52%  runtime.exitsyscall
+     0.01s  0.17% 95.46%      3.91s 68.24%  syscall.RawSyscall6
+         0     0% 95.46%      1.24s 21.64%  crypto/internal/fips140/aes/gcm.(*GCM).Seal
+         0     0% 95.46%      1.24s 21.64%  crypto/internal/fips140/aes/gcm.(*GCM).sealAfterIndicator
+         0     0% 95.46%      1.24s 21.64%  crypto/internal/fips140/aes/gcm.seal
+         0     0% 95.46%      0.03s  0.52%  github.com/metacubex/utls.(*Conn).Handshake (inline)
+         0     0% 95.46%      0.03s  0.52%  github.com/metacubex/utls.(*Conn).HandshakeContext (inline)
+         0     0% 95.46%      4.30s 75.04%  github.com/metacubex/utls.(*Conn).Write
+         0     0% 95.46%      1.24s 21.64%  github.com/metacubex/utls.(*xorNonceAEAD).Seal
+         0     0% 95.46%      5.67s 98.95%  github.com/sagernet/sing-box/route.(*ConnectionManager).connectionCopy
+         0     0% 95.46%      4.33s 75.57%  github.com/sagernet/sing-vmess/vless.(*VisionConn).Write
+         0     0% 95.46%      0.03s  0.52%  github.com/sagernet/sing/common/buf.NewSize
+         0     0% 95.46%      5.67s 98.95%  github.com/sagernet/sing/common/bufio.CopyWithCounters
+         0     0% 95.46%      5.67s 98.95%  github.com/sagernet/sing/common/bufio.CopyWithIncreateBuffer
+         0     0% 95.46%      5.67s 98.95%  github.com/sagernet/sing/common/bufio.copyExtended
+         0     0% 95.46%      5.67s 98.95%  github.com/sagernet/sing/common/bufio.copyWaitWithPool
+         0     0% 95.46%      0.03s  0.52%  github.com/sagernet/sing/common/network.ReadWaitOptions.NewBuffer

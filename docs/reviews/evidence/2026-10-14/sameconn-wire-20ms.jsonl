@@ -1,0 +1,1 @@
+{"pings": 14, "matched": 14, "app_to_wire_ms_p50": 498.4, "wire_to_exit_arrival_ms_p50": 10.4, "exit_arrival_to_echo_ms_p50": 0.5, "client_udp_len_histogram": {"35": 24, "36": 69, "37": 106, "38": 7068, "39": 967, "40": 34465, "41": 2265, "42": 262, "43": 359, "44": 20, "45": 1, "46": 2}}

@@ -1,0 +1,8 @@
+{"transport":"reality","round":1,"pre_idle_s":2,"idle_gap_s":3,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":4.56}
+{"transport":"hy2","round":1,"pre_idle_s":2,"idle_gap_s":3,"server_config":"rendered","failed_requests":10,"seconds_from_restart_to_first_success":34.82}
+{"transport":"hy2","round":2,"pre_idle_s":2,"idle_gap_s":3,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":4.31}
+{"transport":"reality","round":2,"pre_idle_s":2,"idle_gap_s":3,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":4.32}
+{"transport":"reality","round":3,"pre_idle_s":2,"idle_gap_s":3,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":4.32}
+{"transport":"hy2","round":3,"pre_idle_s":2,"idle_gap_s":3,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":4.31}
+{"transport":"reality","round":4,"pre_idle_s":2,"idle_gap_s":3,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":4.31}
+{"transport":"hy2","round":4,"pre_idle_s":2,"idle_gap_s":3,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":4.31}

@@ -1,0 +1,15 @@
+--- a/hysteria2/client.go	2026-10-14 10:22:10.554362628 +0000
++++ b/hysteria2/client.go	2026-10-14 15:12:35.062508773 +0000
+@@ -584,7 +584,11 @@
+ 	if actualTx == 0 || actualTx > c.sendBPS {
+ 		actualTx = c.sendBPS
+ 	}
+-	if !authResponse.RxAuto && actualTx > 0 {
++	if os.Getenv("LAB_CLIENT_FIXED_RATE_CC") != "" {
++		// LAB ONLY (attribution): client sends with a fixed 1 Gbit/s rate
++		// controller while the server keeps BBR.
++		quicConn.SetCongestionControl(hyCC.NewBrutalSender(125_000_000, quicConn.InitialPacketSize(), c.brutalDebug, c.logger))
++	} else if !authResponse.RxAuto && actualTx > 0 {
+ 		quicConn.SetCongestionControl(hyCC.NewBrutalSender(actualTx, quicConn.InitialPacketSize(), c.brutalDebug, c.logger))
+ 	} else {
+ 		quicConn.SetCongestionControl(congestion_meta2.NewBbrSenderWithProfile(
