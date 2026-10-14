@@ -431,11 +431,13 @@ jobs:
           # Assert the exact number of tests that actually executed.
           # Update this count deliberately when adding a test — never by
           # pasting whatever the log happened to print.
-          #   3 reality_interop + 1 reality_decoy_budget + 5 hysteria2_interop
+          #   3 reality_interop + 1 reality_decoy_budget + 7 hysteria2_interop
           #   (2 original + 2 added for salamander obfuscation coverage +
-          #   1 added for the optional Brutal up_mbps/down_mbps config,
-          #   validated against the real pinned binary via `sing-box check`)
-          expected=9
+          #   1 for the optional up_mbps/down_mbps caps via `sing-box check`
+          #   + 1 proving a capped server still serves the standard client
+          #   + 1 proving the default (BBR-forcing) server still serves a
+          #   client that declares a bandwidth)
+          expected=11
           total_ok="$(grep -c "^test .* \.\.\. ok$" interop.log || true)"
           if [ "$total_ok" != "$expected" ]; then
             echo "::error::expected $expected real interop tests to run and pass, saw $total_ok"

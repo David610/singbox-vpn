@@ -911,17 +911,34 @@ pub fn render_singbox_server_config(
             "password": obfs_pw.expose(),
         });
     }
-    // Fixed-rate (Brutal) congestion control, opt-in only (never
-    // hardcode a guessed bandwidth — see model.rs doc comment on
+    // Optional bandwidth caps, opt-in only (never hardcode a guessed
+    // bandwidth — see model.rs doc comment on
     // `Hysteria2ServerParams::up_mbps`/`down_mbps`). Both fields absent
     // (the default) leaves sing-box's adaptive BBR-based congestion
-    // control in place. `ignore_client_bandwidth: true` accompanies an
-    // explicit rate so sing-box enforces the operator-measured value
-    // rather than trusting a client-declared one, per upstream sing-box
-    // guidance for servers whose admin already knows the real bandwidth.
+    // control in place.
+    //
+    // What the caps do (sing-quic `hysteria2/service.go`, pinned 1.14.1):
+    // the server uses Brutal (fixed rate) only for a client that DECLARES
+    // its own receive bandwidth, at min(client rate, `up_mbps`); a client
+    // that declares none keeps BBR. Every subscription this product
+    // renders declares none. `ignore_client_bandwidth` must never be
+    // combined with the caps: together they mean "deny BBR clients", and
+    // the real binary then refuses every standard client ("BBR disabled by
+    // server", HTTP 404 auth failure) — verified with
+    // `hysteria2_bandwidth_caps_keep_standard_clients_working`.
+    //
+    // Without caps (the default) the same field means the opposite: the
+    // server tells every client to use BBR. Rendered then, because a
+    // client can declare a rate on the user's own device and sing-quic
+    // would otherwise send to it with Brutal at that rate, uncapped: in the
+    // 2026-10-14 lab one client declaring 500 Mbit/s took 88 of a shared
+    // 100 Mbit/s link and left two other users 0.1–16 Mbit/s; with this
+    // field it got a fair share. Clients that declare nothing take exactly
+    // the same server path either way (BBR, `RxAuto`).
     if let (Some(up), Some(down)) = (hysteria.up_mbps, hysteria.down_mbps) {
         hysteria_inbound["up_mbps"] = json!(up);
         hysteria_inbound["down_mbps"] = json!(down);
+    } else {
         hysteria_inbound["ignore_client_bandwidth"] = json!(true);
     }
 
@@ -1603,8 +1620,13 @@ mod tests {
         assert!(cfg["inbounds"][1].get("masquerade").is_none());
     }
 
+    /// No caps by default, and without caps the server answers every client
+    /// with BBR (`ignore_client_bandwidth`), so a client that declares a
+    /// bandwidth cannot get an uncapped fixed-rate (Brutal) sender that
+    /// starves everyone else on the node. Before 2026-10-14 this test
+    /// asserted the field's absence; the flag is now deliberate.
     #[test]
-    fn hysteria_bandwidth_omitted_by_default() {
+    fn hysteria_default_has_no_caps_and_forces_bbr_for_every_client() {
         let cfg = render_singbox_server_config(
             &users(),
             &reality(),
@@ -1618,7 +1640,7 @@ mod tests {
         let inbound = &cfg["inbounds"][1];
         assert!(inbound.get("up_mbps").is_none());
         assert!(inbound.get("down_mbps").is_none());
-        assert!(inbound.get("ignore_client_bandwidth").is_none());
+        assert_eq!(inbound["ignore_client_bandwidth"], true);
     }
 
     /// docs/CLIENT_PROTOCOL_BEHAVIOR.md's IPv4/IPv6 statement depends on
@@ -1642,8 +1664,11 @@ mod tests {
         assert_eq!(cfg["inbounds"][1]["listen"], "::");
     }
 
+    /// The caps are rendered, but never `ignore_client_bandwidth`: with
+    /// both set, that flag makes sing-box refuse every client that does not
+    /// declare its own bandwidth, i.e. every client this product provisions.
     #[test]
-    fn hysteria_bandwidth_set_together_forces_ignore_client_bandwidth() {
+    fn hysteria_bandwidth_caps_never_lock_out_bbr_clients() {
         let mut h = hysteria();
         h.up_mbps = Some(100);
         h.down_mbps = Some(80);
@@ -1660,6 +1685,6 @@ mod tests {
         let inbound = &cfg["inbounds"][1];
         assert_eq!(inbound["up_mbps"], 100);
         assert_eq!(inbound["down_mbps"], 80);
-        assert_eq!(inbound["ignore_client_bandwidth"], true);
+        assert!(inbound.get("ignore_client_bandwidth").is_none());
     }
 }

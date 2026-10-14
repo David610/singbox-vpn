@@ -116,6 +116,7 @@ fn build_configs(
     sni: &str,
     server_obfs_password: Option<&str>,
     client_obfs_password: Option<&str>,
+    bandwidth_mbps: Option<(u32, u32)>,
 ) -> (serde_json::Value, serde_json::Value) {
     // REALITY params are required by the renderer signature but
     // irrelevant to this Hysteria2-only test.
@@ -132,8 +133,8 @@ fn build_configs(
         tls_key_path: key_path.display().to_string(),
         obfs_password: server_obfs_password.map(|s| SecretString::new(s.to_string())),
         masquerade_dir_path: None,
-        up_mbps: None,
-        down_mbps: None,
+        up_mbps: bandwidth_mbps.map(|(up, _)| up),
+        down_mbps: bandwidth_mbps.map(|(_, down)| down),
     };
     let users = vec![test_user(password)];
     let mut server_cfg = render_singbox_server_config(
@@ -254,6 +255,7 @@ fn hysteria2_handshake_succeeds_with_matched_password() {
         "hysteria2-test.invalid",
         None,
         None,
+        None,
     );
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
     let client_path = write_json(dir.path(), "client.json", &client_cfg);
@@ -314,6 +316,7 @@ fn hysteria2_handshake_fails_with_wrong_password() {
         "hysteria2-test.invalid",
         None,
         None,
+        None,
     );
     let (_unused_server_cfg, mismatched_client_cfg) = build_configs(
         hysteria_port,
@@ -322,6 +325,7 @@ fn hysteria2_handshake_fails_with_wrong_password() {
         &cert,
         &key,
         "hysteria2-test.invalid",
+        None,
         None,
         None,
     );
@@ -379,6 +383,7 @@ fn hysteria2_obfuscated_handshake_succeeds_with_matched_obfs_password() {
         "hysteria2-test.invalid",
         Some(obfs_password),
         Some(obfs_password),
+        None,
     );
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
     let client_path = write_json(dir.path(), "client.json", &client_cfg);
@@ -434,6 +439,7 @@ fn hysteria2_handshake_fails_with_wrong_obfs_password() {
         "hysteria2-test.invalid",
         Some("server-obfs-password"),
         Some("server-obfs-password"),
+        None,
     );
     let (_unused_server_cfg, mismatched_client_cfg) = build_configs(
         hysteria_port,
@@ -444,6 +450,7 @@ fn hysteria2_handshake_fails_with_wrong_obfs_password() {
         "hysteria2-test.invalid",
         Some("server-obfs-password"),
         Some("a-completely-different-obfs-password"),
+        None,
     );
 
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
@@ -467,12 +474,11 @@ fn hysteria2_handshake_fails_with_wrong_obfs_password() {
     );
 }
 
-/// Validates the OPTIONAL Brutal fixed-bandwidth Hysteria2 configuration
-/// (`up_mbps`/`down_mbps` + `ignore_client_bandwidth` — see
-/// `Hysteria2ServerParams::up_mbps`/`down_mbps` in `model.rs`, and
+/// Validates the OPTIONAL Hysteria2 bandwidth caps (`up_mbps`/`down_mbps`
+/// — see `Hysteria2ServerParams::up_mbps`/`down_mbps` in `model.rs`, and
 /// `server.rs`'s rendering of them) against the REAL pinned sing-box
 /// binary via `sing-box check`. `server.rs`'s own unit tests
-/// (`hysteria_bandwidth_set_together_forces_ignore_client_bandwidth`)
+/// (`hysteria_bandwidth_caps_never_lock_out_bbr_clients`)
 /// only prove this crate PRODUCES the expected JSON shape; they cannot
 /// prove the exact pinned sing-box version actually ACCEPTS it as a
 /// valid Hysteria2 inbound — a field-name typo or a schema change in a
@@ -539,9 +545,9 @@ fn hysteria2_brutal_bandwidth_config_passes_real_sing_box_check() {
         hy_inbound["down_mbps"], 80,
         "test setup bug: rendered config is missing down_mbps"
     );
-    assert_eq!(
-        hy_inbound["ignore_client_bandwidth"], true,
-        "test setup bug: rendered config is missing ignore_client_bandwidth"
+    assert!(
+        hy_inbound.get("ignore_client_bandwidth").is_none(),
+        "ignore_client_bandwidth with caps would refuse every standard client"
     );
 
     let server_path = write_json(dir.path(), "server.json", &server_cfg);
@@ -549,9 +555,135 @@ fn hysteria2_brutal_bandwidth_config_passes_real_sing_box_check() {
     assert!(
         output.status.success(),
         "real sing-box check REJECTED a Hysteria2 inbound with \
-         up_mbps/down_mbps/ignore_client_bandwidth set (pinned version: see \
+         up_mbps/down_mbps set (pinned version: see \
          deploy/almalinux/install.sh SINGBOX_VERSION).\n--- stdout ---\n{}\n--- stderr ---\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Runtime proof for the default (no caps) rendering, which carries
+/// `ignore_client_bandwidth: true` so the server answers every client with
+/// BBR: a client that DOES declare a bandwidth (possible on any user's own
+/// device) must still connect and carry traffic — the flag only takes away
+/// its uncapped fixed-rate sender, it must not lock it out. The standard
+/// client is covered by every other handshake test here, which use the same
+/// default rendering.
+#[test]
+fn hysteria2_default_server_still_serves_clients_that_declare_bandwidth() {
+    let Some(sb) = common::SingBox::find() else {
+        skip_or_fail("no sing-box binary available (set SING_BOX_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let Some((cert, key)) = generate_self_signed_cert(dir.path(), "hysteria2-test.invalid") else {
+        skip_or_fail("openssl not available to generate a test certificate");
+        return;
+    };
+
+    let hysteria_port = free_port();
+    let mixed_port = free_port();
+    let password = "declared-bandwidth-test-password";
+    let (server_cfg, mut client_cfg) = build_configs(
+        hysteria_port,
+        mixed_port,
+        password,
+        &cert,
+        &key,
+        "hysteria2-test.invalid",
+        Some("declared-test-obfs-password"),
+        Some("declared-test-obfs-password"),
+        None,
+    );
+    let hy_inbound = &server_cfg["inbounds"][0];
+    assert_eq!(
+        hy_inbound["ignore_client_bandwidth"], true,
+        "test setup: the default rendering must force BBR"
+    );
+    assert!(hy_inbound.get("up_mbps").is_none(), "test setup: no caps");
+    client_cfg["outbounds"][0]["up_mbps"] = serde_json::json!(50);
+    client_cfg["outbounds"][0]["down_mbps"] = serde_json::json!(500);
+    let server_path = write_json(dir.path(), "server.json", &server_cfg);
+    let client_path = write_json(dir.path(), "client.json", &client_cfg);
+    let target = spawn_local_http_target();
+    let server_log = dir.path().join("server.log");
+    let client_log = dir.path().join("client.log");
+
+    let _server = common::Guard(sb.run_logged(&server_path, &server_log));
+    std::thread::sleep(Duration::from_millis(500));
+    let _client = common::Guard(sb.run_logged(&client_path, &client_log));
+    assert!(
+        wait_for_port(mixed_port, Duration::from_secs(5)),
+        "client never bound its local SOCKS port. client log:\n{}",
+        common::read_log(&client_log)
+    );
+    assert!(
+        socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
+        "the default server refused a client that declares a bandwidth.\n\
+         --- server log ---\n{}\n--- client log ---\n{}",
+        common::read_log(&server_log),
+        common::read_log(&client_log)
+    );
+}
+
+/// Runtime proof for the bandwidth caps (a `sing-box check` pass says
+/// nothing about who may connect): a server rendered WITH
+/// `up_mbps`/`down_mbps` must still carry traffic for the client this
+/// product actually provisions, which declares no bandwidth of its own.
+/// With the earlier `ignore_client_bandwidth: true` rendering, the real
+/// binary refused exactly this client ("BBR disabled by server", auth 404).
+#[test]
+fn hysteria2_bandwidth_caps_keep_standard_clients_working() {
+    let Some(sb) = common::SingBox::find() else {
+        skip_or_fail("no sing-box binary available (set SING_BOX_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let Some((cert, key)) = generate_self_signed_cert(dir.path(), "hysteria2-test.invalid") else {
+        skip_or_fail("openssl not available to generate a test certificate");
+        return;
+    };
+
+    let hysteria_port = free_port();
+    let mixed_port = free_port();
+    let password = "bandwidth-caps-test-password";
+    let (server_cfg, client_cfg) = build_configs(
+        hysteria_port,
+        mixed_port,
+        password,
+        &cert,
+        &key,
+        "hysteria2-test.invalid",
+        Some("caps-test-obfs-password"),
+        Some("caps-test-obfs-password"),
+        Some((100, 80)),
+    );
+    let hy_inbound = &server_cfg["inbounds"][0];
+    assert_eq!(hy_inbound["up_mbps"], 100, "test setup: caps not rendered");
+    assert_eq!(hy_inbound["down_mbps"], 80, "test setup: caps not rendered");
+    assert!(
+        client_cfg["outbounds"][0].get("down_mbps").is_none(),
+        "test setup: the provisioned client must not declare a bandwidth"
+    );
+    let server_path = write_json(dir.path(), "server.json", &server_cfg);
+    let client_path = write_json(dir.path(), "client.json", &client_cfg);
+    let target = spawn_local_http_target();
+    let server_log = dir.path().join("server.log");
+    let client_log = dir.path().join("client.log");
+
+    let _server = common::Guard(sb.run_logged(&server_path, &server_log));
+    std::thread::sleep(Duration::from_millis(500));
+    let _client = common::Guard(sb.run_logged(&client_path, &client_log));
+    assert!(
+        wait_for_port(mixed_port, Duration::from_secs(5)),
+        "client never bound its local SOCKS port. client log:\n{}",
+        common::read_log(&client_log)
+    );
+    assert!(
+        socks5_http_get_is_200(mixed_port, "127.0.0.1", target.port),
+        "a server with bandwidth caps refused the standard provisioned client.\n\
+         --- server log ---\n{}\n--- client log ---\n{}",
+        common::read_log(&server_log),
+        common::read_log(&client_log)
     );
 }
