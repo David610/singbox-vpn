@@ -37,14 +37,39 @@ for u in sing-box vpn-subscription; do
   id "$u" >/dev/null 2>&1 && { echo "SKIP: system user '$u' already exists — refusing to run the real uninstall.sh here."; unsafe=1; }
 done
 getent group vpn-compat >/dev/null 2>&1 && { echo "SKIP: group 'vpn-compat' already exists — refusing to run the real uninstall.sh here."; unsafe=1; }
+# uninstall.sh reports any running sing-box as critical residue, whoever owns
+# it (a lab or another proxy on a dev box), so such a host cannot show the
+# clean "nothing to remove" result this test asserts.
+pgrep -x sing-box >/dev/null 2>&1 && { echo "SKIP: a sing-box process is running on this host — refusing to run the real uninstall.sh here."; unsafe=1; }
 if [ "$unsafe" -eq 1 ]; then
   echo "SKIP: environment is not provably clean of singbox-vpn resources; skipping test-uninstall-idempotency.sh to avoid touching unrelated host state."
   exit 0
 fi
 
+# A sing-box binary that singbox-vpn did not install (no ownership record on
+# a never-installed host) must survive. Keep a copy so the host is restored
+# even when running against an uninstall.sh that still deletes it.
+foreign_sb=""
+foreign_sb_backup=""
+if [ -e /usr/local/bin/sing-box ]; then
+  foreign_sb="$(sha256sum /usr/local/bin/sing-box | cut -d' ' -f1)"
+  foreign_sb_backup="$(mktemp)"
+  cp -p /usr/local/bin/sing-box "$foreign_sb_backup"
+fi
+restore_foreign_sb() {
+  if [ -n "$foreign_sb_backup" ] && [ ! -e /usr/local/bin/sing-box ]; then
+    cp -p "$foreign_sb_backup" /usr/local/bin/sing-box
+  fi
+  [ -n "$foreign_sb_backup" ] && rm -f "$foreign_sb_backup"
+  return 0
+}
+trap restore_foreign_sb EXIT
+
 echo "--- first run: uninstall.sh on a never-installed host ---"
-out1="$("$UNINSTALL_SH" --yes 2>&1)"
-rc1=$?
+# `|| rc=$?`: under `set -e` a failing command substitution would end this
+# test before it could print what went wrong.
+rc1=0
+out1="$("$UNINSTALL_SH" --yes 2>&1)" || rc1=$?
 if [ "$rc1" -eq 0 ]; then
   ok "first run exits 0"
 else
@@ -58,8 +83,8 @@ fi
 
 echo
 echo "--- second run: re-running uninstall.sh after a successful (no-op) uninstall ---"
-out2="$("$UNINSTALL_SH" --yes 2>&1)"
-rc2=$?
+rc2=0
+out2="$("$UNINSTALL_SH" --yes 2>&1)" || rc2=$?
 if [ "$rc2" -eq 0 ]; then
   ok "second run exits 0 (idempotent)"
 else
@@ -69,6 +94,18 @@ if echo "$out2" | grep -qi "nothing to remove"; then
   ok "second run correctly reports nothing to remove"
 else
   fail "second run did not report 'nothing to remove'; got: $out2"
+fi
+
+echo
+echo "--- a sing-box binary singbox-vpn never installed is left alone ---"
+if [ -n "$foreign_sb" ]; then
+  if [ -e /usr/local/bin/sing-box ] && [ "$(sha256sum /usr/local/bin/sing-box | cut -d' ' -f1)" = "$foreign_sb" ]; then
+    ok "pre-existing /usr/local/bin/sing-box survived both runs unchanged"
+  else
+    fail "uninstall.sh removed or changed a /usr/local/bin/sing-box it never installed (restored from backup)"
+  fi
+else
+  ok "no pre-existing /usr/local/bin/sing-box on this host (nothing to check)"
 fi
 
 echo

@@ -321,7 +321,13 @@ for f in vpn-admin vpn vpn-subscription-svc vpn-health-check vpn-benchmark vpn-b
     note_removed
   fi
 done
-if [ "$(ownership_get SINGBOX_BIN_PRE_EXISTED "0")" = "1" ]; then
+# Default "1": with no ownership record (a host singbox-vpn never installed
+# on, or an install older than the record), ownership is unknown and the
+# binary may belong to someone else, so it stays. Only a recorded "0" (this
+# installer put it there) removes it. Before 2026-10-14 the default was "0"
+# and running this script on a never-installed host deleted a foreign
+# /usr/local/bin/sing-box (reproduced by test-uninstall-idempotency.sh).
+if [ "$(ownership_get SINGBOX_BIN_PRE_EXISTED "1")" = "1" ]; then
   log "sing-box binary pre-dated singbox-vpn (or ownership could not be determined) — leaving /usr/local/bin/sing-box in place."
 else
   if [ -e /usr/local/bin/sing-box ]; then rm -f /usr/local/bin/sing-box; note_removed; fi

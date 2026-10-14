@@ -35,6 +35,16 @@ awk '
   && ok "sing-box binary removal is textually inside the SINGBOX_BIN_PRE_EXISTED-gated branch" \
   || fail "sing-box binary removal is not gated on SINGBOX_BIN_PRE_EXISTED in uninstall.sh — a pre-existing binary could be deleted"
 
+echo "--- unknown ownership keeps the sing-box binary (default of the lookup is \"1\") ---"
+# With no ownership record the lookup's default decides. "0" there deleted a
+# foreign binary on a host singbox-vpn was never installed on (2026-10-14).
+if grep -q 'ownership_get SINGBOX_BIN_PRE_EXISTED "1"' "$UNINSTALL_SH" \
+  && ! grep -q 'ownership_get SINGBOX_BIN_PRE_EXISTED "0"' "$UNINSTALL_SH"; then
+  ok "SINGBOX_BIN_PRE_EXISTED defaults to 1 (leave in place) when ownership is unknown"
+else
+  fail "uninstall.sh must default SINGBOX_BIN_PRE_EXISTED to \"1\": an unknown owner's sing-box binary would be deleted"
+fi
+
 echo "--- provisioning-agent binary removal is gated on AGENT_BINARY_INSTALLED + AGENT_BINARY_PRE_EXISTED ---"
 if grep -q 'ownership_get AGENT_BINARY_INSTALLED' "$UNINSTALL_SH" \
   && grep -q 'ownership_get AGENT_BINARY_PRE_EXISTED' "$UNINSTALL_SH"; then
