@@ -84,6 +84,7 @@ profiles one download and restarts them without it.
 | `restart-recovery.sh` | client recovery after an exit restart (`PRE_IDLE`, `IDLE_GAP`, `SERVER_CFG`) |
 | `egress-probe.sh` | C-16 and relay fail-closed probes |
 | `soak.sh` | long-running mixed load with RSS/fd/CPU sampling |
+| `outage.sh SECONDS` | a full client↔exit outage: does an open connection survive, how soon does a new request work |
 
 Restart the clients whenever the exit restarts: a running Hysteria2 client
 otherwise stalls for up to 30 s against a 1.14.1 exit (see the audit), and the

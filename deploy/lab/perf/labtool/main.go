@@ -420,6 +420,7 @@ func rtt(args []string) {
 	interval := fs.Duration("interval", 20*time.Millisecond, "")
 	duration := fs.Duration("duration", 0, "if set, run for this long instead of n samples")
 	name := fs.String("name", "rtt", "")
+	timeout := fs.Duration("timeout", 10*time.Second, "per-ping deadline; a longer one tells a connection that survived an outage from one that died")
 	fs.Parse(args)
 	c, err := socksConnect(*socks, *target, 15*time.Second)
 	if err != nil {
@@ -441,7 +442,7 @@ func rtt(args []string) {
 		} else if i >= *n {
 			break
 		}
-		c.SetDeadline(time.Now().Add(10 * time.Second))
+		c.SetDeadline(time.Now().Add(*timeout))
 		t0 := time.Now()
 		if _, err := c.Write(msg); err != nil {
 			fails++
