@@ -146,7 +146,10 @@ pub fn socks5_http_get_is_200(socks_port: u16, host: &str, port: u16) -> bool {
 /// The old 1.13.x pin additionally required every TLS record to stay under
 /// an 8192-byte REALITY budget. The 1.14.1 interop suite deliberately keeps
 /// a second, much larger certificate fixture to prove that limitation does
-/// not regress.
+/// not regress. The current code still has a limit: it drops the connection
+/// once more than 16384 decoy bytes are buffered unparsed, so a flight whose
+/// Certificate record plus the records after it approaches 16 KB can fail
+/// depending on how the bytes arrive.
 ///
 /// The SNI must be a hostname, not an IP literal (uTLS omits SNI for IPs, and
 /// the REALITY server matches `config.ServerNames[clientHello.serverName]`),
@@ -171,8 +174,10 @@ pub enum DecoyCertSize {
     /// A minimal single self-signed cert — every record stays well under
     /// the 8192-byte budget.
     Small,
-    /// Inflated with hundreds of SANs so the Certificate record exceeds
-    /// the historical 8192-byte limit. Current sing-box must still carry it.
+    /// Inflated with hundreds of SANs so the Certificate record (~12.25 KB)
+    /// exceeds the historical 8192-byte limit while the whole flight stays
+    /// clear of the current 16384-byte buffer limit. Current sing-box must
+    /// still carry it.
     OverBudget,
 }
 
@@ -204,16 +209,28 @@ pub fn spawn_local_tls13_decoy(size: DecoyCertSize) -> Option<LocalDecoy> {
         .arg("-subj")
         .arg("/CN=localhost");
     if let DecoyCertSize::OverBudget = size {
-        // Each SAN adds ~20 bytes to the leaf certificate; enough of them
-        // push the Certificate record past the historical 8192-byte budget.
+        // Each SAN adds 19 bytes to the leaf certificate; 600 of them give a
+        // Certificate record of ~12.25 KB (measured: DER 12213 bytes, record
+        // 12248 bytes; the whole server flight is ~12.75 KB).
         //
-        // The count is deliberately well past the threshold rather than
-        // just over it: DER encoding of the serial and signature varies by
-        // a few bytes per generation, and a margin that put the record near
+        // Lower bound: well past the historical 8192-byte budget rather than
+        // just over it. DER encoding of the serial and signature varies by a
+        // few bytes per generation, and a margin that put the record near
         // 8192 produced a test that passed only ~75% of the time (observed:
         // one run framed the Certificate at 7938 and the tunnel worked).
+        //
+        // Upper bound: the current REALITY code (metacubex/utls v1.8.7, used
+        // by sing-box 1.14.1 and 1.14.3) gives up once its buffer of not yet
+        // parsed decoy bytes exceeds 16384. With 800 SANs the Certificate
+        // record was 16048 bytes. When the first read from the decoy happened
+        // to stop inside it (CI: a 4096-byte read), the rest of it plus
+        // CertificateVerify and Finished arrived in the next read, the buffer
+        // held 16392 bytes (> 16384) and the connection was dropped — a
+        // timing race that failed CI once (2026-10-14) and has nothing to do
+        // with the 8192 regression this fixture guards. A whole flight below
+        // 16384 bytes cannot hit it, however the reads are split.
         // Fixed-width labels keep the size stable across runs too.
-        let sans: Vec<String> = (0..800)
+        let sans: Vec<String> = (0..600)
             .map(|i| format!("DNS:pad{i:04}.localhost"))
             .collect();
         req.arg("-addext")

@@ -7,10 +7,15 @@
 //! third-party decoy certificate growth capable of breaking every user.
 //!
 //! sing-box 1.14.1 no longer exhibits that failure in the real-binary interop
-//! harness: the same deliberately large (~16 KiB Certificate record) decoy
-//! completes the tunnel after REALITY authentication succeeds. Keep this test
-//! as a forward regression guard. If a future data-plane update reintroduces
-//! the old record-size failure, CI must catch it before release.
+//! harness: a deliberately large (~12 KiB Certificate record) decoy completes
+//! the tunnel after REALITY authentication succeeds. Keep this test as a
+//! forward regression guard. If a future data-plane update reintroduces the
+//! old record-size failure, CI must catch it before release.
+//!
+//! The fixture is not larger on purpose: the current REALITY code drops a
+//! connection once more than 16384 decoy bytes are buffered unparsed, so a
+//! ~16 KiB Certificate record failed intermittently depending on how the
+//! decoy's bytes were split across reads (see `spawn_local_tls13_decoy`).
 
 mod common;
 

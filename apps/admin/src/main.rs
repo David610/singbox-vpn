@@ -8401,12 +8401,14 @@ fn check_l5_l6_protocol_selftest(
                      exactly that; if they passed, this is NOT your cause.\n\
                      \n\
                      (b) The configured handshake_server (\"{decoy}\") returns a TLS 1.3 flight \
-                     that sing-box's REALITY implementation refuses. It rejects ANY record larger \
-                     than its hard-coded 8192-byte budget (metacubex/utls reality.go: \
-                     `if handshakeLen > int(realitySize) {{ break f }}`), which an oversized \
-                     certificate chain easily exceeds. Authentication SUCCEEDS and the connection \
-                     is still dropped. This is edge- and CDN-dependent, so it can appear without \
-                     any change on your side. Try a different handshake_server and re-run this \
+                     that sing-box's REALITY implementation refuses. It drops the connection when \
+                     a record is larger than its 16384-byte buffer, or when more than 16384 bytes \
+                     of the decoy's reply are buffered before they can be parsed — which a large \
+                     certificate chain can cause intermittently, depending on how its bytes \
+                     arrive (metacubex/utls reality.go, `realitySize`; older sing-box pins had \
+                     an 8192-byte limit). Authentication SUCCEEDS and the connection is still \
+                     dropped. This is edge- and CDN-dependent, so it can appear without any \
+                     change on your side. Try a different handshake_server and re-run this \
                      check.",
                     decoy = reality.handshake_server
                 ),
@@ -8697,8 +8699,10 @@ fn server_journal_shows_local_processed_invalid_connection_after(cursor: Option<
 /// `HandshakeRejected` is a hard verdict that the handshake does not work,
 /// but deliberately NOT a verdict about *why*: sing-box emits the same
 /// "processed invalid connection" for a key/short_id mismatch and for a
-/// handshake_server whose TLS records exceed REALITY's 8192-byte budget
-/// (auth succeeds, connection still dropped). Conflating the two is what
+/// handshake_server whose TLS flight REALITY refuses — a record larger than
+/// its 16384-byte buffer, more than 16384 decoy bytes buffered before they
+/// can be parsed, or (on the old 1.13.x pin) a record over 8192 bytes (auth
+/// succeeds, connection still dropped). Conflating the two is what
 /// sent three separate investigations after the wrong cause. `Inconclusive`
 /// means exactly that
 /// — a timeout with no corroborating client-side rejection proves
