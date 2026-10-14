@@ -38,7 +38,7 @@
 //! control plane can lease already works. Secrets never reach a log line.
 
 use crate::config::AgentConfig;
-use crate::dispatch::{parse_json_output, vpn_admin_command};
+use crate::dispatch::{parse_json_output, run_vpn_admin, vpn_admin_command};
 use crate::worker_client::WorkerClient;
 use anyhow::{anyhow, Context, Result};
 use compat_config::authorization::CredentialClass;
@@ -600,16 +600,12 @@ impl LeasePool {
             let mut f = opts.open(&input).context("creating lease-pool input")?;
             f.write_all(&serde_json::to_vec(&vpn_admin_input(&self.state))?)?;
         }
-        let output = tokio::time::timeout(
-            VPN_ADMIN_TIMEOUT,
-            vpn_admin_command(cfg)
-                .args(["lease-pool", "sync", "--input"])
-                .arg(&input)
-                .output(),
-        )
-        .await
-        .context("vpn-admin lease-pool sync timed out after 60s")?
-        .context("spawning vpn-admin lease-pool sync")?;
+        // Through run_vpn_admin, not `timeout(.., output())`: on timeout the
+        // child (blocked on the state lock, for example) is killed and
+        // reaped, so a sync the agent gave up on cannot apply later.
+        let mut command = vpn_admin_command(cfg);
+        command.args(["lease-pool", "sync", "--input"]).arg(&input);
+        let output = run_vpn_admin(command, VPN_ADMIN_TIMEOUT, "vpn-admin lease-pool sync").await?;
         let parsed = parse_json_output(&output, "lease-pool sync")?;
         if parsed.get("live").and_then(Value::as_bool) != Some(true) {
             // Fail closed: never report a generation the running sing-box
