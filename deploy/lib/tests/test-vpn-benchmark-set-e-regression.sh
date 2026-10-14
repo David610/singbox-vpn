@@ -92,6 +92,7 @@ LIB_DIR="$LIB_DIR"
 . "\$LIB_DIR/vpn-benchmark-lib.sh"
 
 kv() { printf '%-28s %s\n' "\$1:" "\$2"; }
+note() { :; }
 section() { :; }
 have() { command -v "\$1" >/dev/null 2>&1; }
 sample_min_median_max() { echo "unused"; }
@@ -102,6 +103,10 @@ CONFIG="$CONFIG_STUB"
 DOWNLOAD_URL="https://example.invalid/unused"
 RUNS=1
 SKIP_TUNNEL=0
+# The live-listener layer is opt-in (it restarts sing-box); this test
+# exercises that layer's discovery path, so it opts in explicitly.
+PRODUCTION_LISTENER=1
+BENCH_USER_TTL=1800
 
 curl() {
   case "\$*" in

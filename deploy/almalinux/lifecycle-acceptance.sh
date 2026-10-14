@@ -807,7 +807,11 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   fi
 
   section "12. Hysteria2 real handshake+transfer proof (deploy/lib/vpn-benchmark.sh)"
-  if HY_OUT="$(ssh_run "sudo /opt/singbox-vpn/deploy/lib/vpn-benchmark.sh --runs 1 --download-url 'https://speed.cloudflare.com/__down?bytes=2000000'" 2>&1)"; then hy_rc=0; else hy_rc=$?; fi
+  # --production-listener is required here: this stage must prove the LIVE
+  # Hysteria2 listener (real certificate, port, obfuscation). Without it
+  # vpn-benchmark only exercises a disposable loopback instance. This is a
+  # disposable host, so the sing-box restarts that mode causes are accepted.
+  if HY_OUT="$(ssh_run "sudo /opt/singbox-vpn/deploy/lib/vpn-benchmark.sh --production-listener --runs 1 --download-url 'https://speed.cloudflare.com/__down?bytes=2000000'" 2>&1)"; then hy_rc=0; else hy_rc=$?; fi
   hy_block="$(printf '%s\n' "$HY_OUT" | sed -n '/^Hysteria2 protocol\/server-side overhead/,/^Assessment$/p' || true)"
   # vpn-benchmark.sh's `kv "throughput (Mbps), N run(s)" "min=... median=... max=..."`
   # prints key and value on the SAME line — a real run showed

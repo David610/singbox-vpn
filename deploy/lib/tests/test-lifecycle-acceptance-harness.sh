@@ -652,6 +652,14 @@ if grep -q 'vpn-benchmark.sh' "$SSH_LOG"; then
 else
   fail "no invocation of deploy/lib/vpn-benchmark.sh was found"
 fi
+# vpn-benchmark only touches the live listener when asked: without
+# --production-listener this stage would prove a disposable loopback
+# instance, not the deployed Hysteria2 listener.
+if grep 'vpn-benchmark.sh' "$SSH_LOG" | grep -q -- '--production-listener'; then
+  ok "the Hysteria2 proof stage requests the live listener (--production-listener)"
+else
+  fail "the Hysteria2 proof stage does not pass --production-listener, so it would not test the live listener"
+fi
 if grep -A6 '=== 12. Hysteria2' "$TMPDIR_TEST/out-2222.log" | grep -q '\[PASS\]'; then
   ok "the Hysteria2 proof stage reports PASS against a healthy mocked transfer"
 else
