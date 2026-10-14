@@ -17,7 +17,7 @@ use common::{free_port, socks5_http_get_is_200, spawn_local_http_target, wait_fo
 use compat_config::model::{Hysteria2ServerParams, RealityServerParams};
 use compat_config::secret::SecretString;
 use compat_config::server::{render_singbox_server_config, ServerPorts};
-use compat_config::{render, CompatUser};
+use compat_config::{credentials, render, CompatUser};
 use std::time::Duration;
 
 /// Generates a throwaway self-signed EC certificate via the `openssl`
@@ -583,16 +583,18 @@ fn hysteria2_default_server_still_serves_clients_that_declare_bandwidth() {
 
     let hysteria_port = free_port();
     let mixed_port = free_port();
-    let password = "declared-bandwidth-test-password";
+    // Fresh secrets from the production generators, never literals.
+    let password = credentials::generate_hysteria2_password();
+    let obfs = credentials::generate_hysteria2_obfs_password();
     let (server_cfg, mut client_cfg) = build_configs(
         hysteria_port,
         mixed_port,
-        password,
+        &password,
         &cert,
         &key,
         "hysteria2-test.invalid",
-        Some("declared-test-obfs-password"),
-        Some("declared-test-obfs-password"),
+        Some(&obfs),
+        Some(&obfs),
         None,
     );
     let hy_inbound = &server_cfg["inbounds"][0];
@@ -646,16 +648,18 @@ fn hysteria2_bandwidth_caps_keep_standard_clients_working() {
 
     let hysteria_port = free_port();
     let mixed_port = free_port();
-    let password = "bandwidth-caps-test-password";
+    // Fresh secrets from the production generators, never literals.
+    let password = credentials::generate_hysteria2_password();
+    let obfs = credentials::generate_hysteria2_obfs_password();
     let (server_cfg, client_cfg) = build_configs(
         hysteria_port,
         mixed_port,
-        password,
+        &password,
         &cert,
         &key,
         "hysteria2-test.invalid",
-        Some("caps-test-obfs-password"),
-        Some("caps-test-obfs-password"),
+        Some(&obfs),
+        Some(&obfs),
         Some((100, 80)),
     );
     let hy_inbound = &server_cfg["inbounds"][0];
