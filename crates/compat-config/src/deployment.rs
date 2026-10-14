@@ -845,13 +845,17 @@ pub struct RealitySection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hysteria2Section {
     pub listen_port: u16,
-    /// Fixed-rate (Brutal) congestion-control bandwidth, Mbps. Leave
-    /// unset (the default) unless the real sustained throughput of this
-    /// VPS has actually been measured (`vpn benchmark` /
-    /// docs/PERFORMANCE_OPTIMIZATION_PLAN.md) — an unmeasured/guessed
-    /// value causes self-induced congestion, not a speedup. Both fields
-    /// must be set together; setting only one is rejected by
-    /// `DeploymentConfig::validate` (see `store.rs`/tests below).
+    /// Bandwidth caps, Mbps, for clients that ask for Hysteria's fixed-rate
+    /// (Brutal) congestion control by declaring their own bandwidth. Clients
+    /// that declare none — every subscription this product renders — keep
+    /// BBR, so these do not turn Brutal on for them. Leave unset (the
+    /// default) unless the real sustained throughput of this VPS has been
+    /// measured (docs/PERFORMANCE_OPTIMIZATION_PLAN.md) — an inflated value
+    /// causes self-induced congestion, not a speedup. Unset, the server
+    /// tells every client to use BBR (`ignore_client_bandwidth`), so a
+    /// client that declares a bandwidth cannot get an uncapped fixed-rate
+    /// sender. Both fields must be set together; setting only one is
+    /// rejected by `DeploymentConfig::validate` (see `store.rs`/tests below).
     #[serde(default)]
     pub up_mbps: Option<u32>,
     #[serde(default)]

@@ -1392,6 +1392,40 @@ fn user_create_json_output_has_no_server_secrets() {
     assert!(parsed.get("private_key").is_none());
 }
 
+/// SVPN-F17: a display name is printed back to the operator, so control
+/// characters (forged lines, terminal escapes) and unbounded lengths are
+/// refused before anything is written; ordinary Unicode names still work.
+#[test]
+fn user_create_rejects_control_characters_and_overlong_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    for bad in [
+        "evil\nname",
+        "tab\tname",
+        "esc\u{1b}[31mred",
+        &"x".repeat(129),
+    ] {
+        admin(dir.path(), &cfg_path)
+            .args(["user", "create", "--name", bad])
+            .assert()
+            .failure();
+    }
+    let users_file = dir.path().join("state").join("users").join("users.json");
+    let stored = std::fs::read_to_string(&users_file).unwrap_or_default();
+    assert!(
+        !stored.contains("evil") && !stored.contains("tab") && !stored.contains("esc"),
+        "a rejected name must not reach the user store"
+    );
+    admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "Мария · Berlin", "--json"])
+        .assert()
+        .success();
+    admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", &"y".repeat(128)])
+        .assert()
+        .success();
+}
+
 /// The EXPERIMENTAL Vision-off link is emitted additively — every
 /// pre-existing key keeps its previous value, and the new link points at
 /// the same token with `compat=vision-off` (see

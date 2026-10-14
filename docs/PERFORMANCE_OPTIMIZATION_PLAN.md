@@ -4,6 +4,28 @@ Status: implemented (P0/P1 items below are shipped). This document is
 the evidence trail for those changes and the measurement methodology for
 everything that still needs production data.
 
+> **2026-10-14 corrections** (lab-measured with the pinned binary; details in
+> [`reviews/2026-10-14-vpn-audit/`](reviews/2026-10-14-vpn-audit/VPN_PERFORMANCE_BASELINE.md)):
+>
+> - The pinned sing-box is now **1.14.1** (`deploy/lib/versions.env`); the
+>   1.13.x version notes below are historical.
+> - **G1 does not reach the Hysteria2 server socket.** With Salamander
+>   obfuscation (the default after `vpn-admin init`) sing-box 1.14.1 never asks
+>   for a larger buffer on the server's UDP socket, so it keeps
+>   `net.core.rmem_default` (208 KiB); the 16 MiB ceilings only help sockets
+>   that request more (the sing-box *client* does). Under a lab upload the
+>   server socket dropped about 2% of datagrams (`RcvbufErrors`), with no
+>   measurable throughput loss. `RcvbufErrors` (H6) remains the signal to
+>   watch on the real host; do not raise `rmem_default` without that evidence.
+> - **`vpn-benchmark` no longer restarts sing-box by default.** The old
+>   default created and removed a real user per transport (four restarts, all
+>   users disconnected). The default protocol layer now runs a disposable
+>   loopback instance; the live-listener test needs `--production-listener`
+>   and should run only in a maintenance window.
+> - `net.core.default_qdisc` only applies to qdiscs created after it changes;
+>   the live NIC keeps its qdisc until reboot or a link reset. BBR does not
+>   need `fq` (TCP-internal pacing since Linux 4.13).
+
 ## How to read this document — claim taxonomy
 
 Every claim below is tagged with exactly one of these four categories.
@@ -210,6 +232,29 @@ different implementation could avoid without a pre-existing historical
 record this project has never kept.
 
 ### G4. Hysteria2 had no bandwidth hint / Brutal congestion-control option — P1, FIXED (opt-in, default unchanged)
+
+> **2026-10-14 correction — the original rendering locked out every standard
+> client.** It rendered `ignore_client_bandwidth: true` next to
+> `up_mbps`/`down_mbps`. In sing-box/sing-quic that combination means "deny
+> clients that use BBR", i.e. every client that does not declare its own
+> bandwidth — which is every subscription this product renders. Lab-verified
+> with the pinned 1.14.1 binary: server log "BBR disabled by server", client
+> "authentication failed, status code: 404". `sing-box check` (the only test
+> below) cannot see this. The renderer now emits only the caps: Brutal is used
+> for clients that declare a bandwidth (capped at `up_mbps`), every other
+> client keeps BBR. `hysteria2_bandwidth_caps_keep_standard_clients_working`
+> runs the real binary to prove it.
+>
+> Second 2026-10-14 change: **without** caps (the default) the renderer now
+> emits `ignore_client_bandwidth: true`, which in that case tells every
+> client to use BBR. Before, a client that declared a bandwidth got an
+> uncapped Brutal sender: in the lab one client declaring 500 Mbit/s took
+> 88 of a shared 100 Mbit/s link and left two other users 0.1–16 Mbit/s;
+> with the flag it got a fair share (27–30 Mbit/s next to 28–37). Clients
+> that declare nothing follow the same server path as before.
+> `hysteria2_default_server_still_serves_clients_that_declare_bandwidth`
+> proves such a client still connects. The text below is the original
+> (incorrect) rationale, kept as history.
 
 **VERIFIED CONFIGURATION/CODE GAP:** `crates/compat-config/src/server.rs`'s
 `render_singbox_server_config` never set `up_mbps`, `down_mbps`, or
@@ -750,7 +795,11 @@ applies verbatim to the new server-process CPU/RSS numbers.
 
 ```
 vpn doctor --performance
+# Non-mutating: the protocol layer uses a disposable loopback instance.
 vpn-benchmark --runs 5 --target-host <a host on your users' real ISP path>
+# Only in a maintenance window: also tests the live listener through a
+# temporary user, which restarts sing-box and disconnects every user.
+# vpn-benchmark --production-listener --runs 1
 
 # Fast, low-bandwidth sanity check, machine-readable for later diffing:
 vpn-benchmark --quick --json --output before.json

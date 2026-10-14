@@ -1,0 +1,6 @@
+{"client_variant":"default","condition":"20 ms / 0 %, exit standard (BBR)","download_mbps":85,"same_connection_ping_p50_ms":524,"p95_ms":530.8,"n":25}
+{"client_variant":"aggressive","condition":"20 ms / 0 %, exit standard (BBR)","download_mbps":86,"same_connection_ping_p50_ms":524.5,"p95_ms":531.1,"n":24}
+{"client_variant":"conservative","condition":"20 ms / 0 %, exit standard (BBR)","download_mbps":86,"same_connection_ping_p50_ms":524,"p95_ms":533.4,"n":25}
+{"client_variant":"no-chrome-parrot","condition":"20 ms / 0 %, exit standard (BBR)","download_mbps":88,"same_connection_ping_p50_ms":701.9,"p95_ms":714.4,"n":18}
+{"client_variant":"default","client_build":"lab build, client BBR (unchanged)","condition":"20 ms / 0 %, exit standard (BBR)","download_mbps":85,"same_connection_ping_p50_ms":523.3,"p95_ms":531.1,"n":26}
+{"client_variant":"default","client_build":"lab build, client sends with fixed 1 Gbit/s controller","condition":"20 ms / 0 %, exit standard (BBR)","download_mbps":92,"same_connection_ping_p50_ms":45.4,"p95_ms":50,"n":116}

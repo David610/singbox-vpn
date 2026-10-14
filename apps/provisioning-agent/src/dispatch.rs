@@ -134,7 +134,10 @@ pub(crate) fn vpn_admin_command(cfg: &AgentConfig) -> Command {
 /// Spawns `command`, waits up to `timeout` for it to exit, and returns its
 /// captured output.
 ///
-/// This is the ONLY place a vpn-admin child is spawned. Every call site
+/// Every vpn-admin child that MUTATES node state must be spawned through
+/// this function (lease-pool sync, external authorizations and every job
+/// type; `vpn_admin_spawns_are_always_bounded_and_killed` below enforces
+/// it). Every call site
 /// used to do `tokio::time::timeout(dur, command.output()).await`, which
 /// on timeout just drops the `Output` future — the underlying
 /// `tokio::process::Child` was never given `kill_on_drop`, so on timeout
@@ -144,7 +147,7 @@ pub(crate) fn vpn_admin_command(cfg: &AgentConfig) -> Command {
 /// bug this function fixes: on timeout it terminates the whole process
 /// group and reaps it before returning, so a caller that sees an `Err`
 /// here has a proof, not just a hope, that nothing further will happen.
-async fn run_vpn_admin(
+pub(crate) async fn run_vpn_admin(
     mut command: Command,
     timeout: Duration,
     context: &str,
@@ -458,6 +461,39 @@ mod tests {
             !marker.exists(),
             "child must still be dead well after its original sleep duration \
              (proves termination, not merely an abandoned future)"
+        );
+    }
+
+    /// Every `vpn_admin_command(..)` built anywhere in this crate must be
+    /// handed to `run_vpn_admin`, never awaited via `.output()` under a bare
+    /// `tokio::time::timeout`: that pattern drops the future on timeout and
+    /// leaves the child running, blocked on the state lock, to apply a
+    /// lease-pool or authorization change after the agent gave up on it.
+    #[test]
+    fn vpn_admin_spawns_are_always_bounded_and_killed() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (at, _) in text.match_indices("vpn_admin_command(cfg)") {
+                checked += 1;
+                let statement = text[at..].split(';').next().unwrap_or_default();
+                assert!(
+                    !statement.contains(".output()"),
+                    "{}: vpn_admin_command(..).output() bypasses run_vpn_admin's kill-on-timeout",
+                    path.display()
+                );
+            }
+        }
+        // dispatch's own job helpers, lease-pool sync and external
+        // authorizations: a vacuous pass would mean the scan broke.
+        assert!(
+            checked >= 3,
+            "scanned only {checked} vpn_admin_command call sites"
         );
     }
 

@@ -1,0 +1,54 @@
+--- a/hysteria2/service.go	2026-10-14 10:22:10.556079573 +0000
++++ b/hysteria2/service.go	2026-10-14 11:43:08.145463928 +0000
+@@ -56,6 +56,8 @@
+ }
+ 
+ type Service[U comparable] struct {
++	connAccess            sync.Mutex
++	connections           map[*quic.Conn]struct{}
+ 	ctx                   context.Context
+ 	logger                logger.Logger
+ 	brutalDebug           bool
+@@ -211,6 +213,24 @@
+ }
+ 
+ func (s *Service[U]) Close() error {
++	// PROTOTYPE (lab only): tell established clients the server is going
++	// away, so they drop the connection now instead of waiting out the QUIC
++	// idle timeout against a restarted server that no longer knows them.
++	s.connAccess.Lock()
++	connections := make([]*quic.Conn, 0, len(s.connections))
++	for connection := range s.connections {
++		connections = append(connections, connection)
++	}
++	s.connAccess.Unlock()
++	var closeGroup sync.WaitGroup
++	for _, connection := range connections {
++		closeGroup.Add(1)
++		go func(connection *quic.Conn) {
++			defer closeGroup.Done()
++			_ = connection.CloseWithError(0, "")
++		}(connection)
++	}
++	closeGroup.Wait()
+ 	var realmErr error
+ 	if s.realmServer != nil {
+ 		realmErr = s.realmServer.Close()
+@@ -240,6 +260,17 @@
+ }
+ 
+ func (s *Service[U]) handleConnection(connection *quic.Conn) {
++	s.connAccess.Lock()
++	if s.connections == nil {
++		s.connections = make(map[*quic.Conn]struct{})
++	}
++	s.connections[connection] = struct{}{}
++	s.connAccess.Unlock()
++	defer func() {
++		s.connAccess.Lock()
++		delete(s.connections, connection)
++		s.connAccess.Unlock()
++	}()
+ 	session := &serverSession[U]{
+ 		Service:    s,
+ 		ctx:        s.ctx,

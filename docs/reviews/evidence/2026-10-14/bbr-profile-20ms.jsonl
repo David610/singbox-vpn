@@ -1,0 +1,6 @@
+{"case":"hy2-same","ping_p50_ms":0,"ping_p95_ms":0,"ping_p99_ms":0,"ping_n":0,"ping_failures":1,"download_mbps":null,"queue_backlog_packets":{"median":0,"max":0},"bbr_profile":"conservative"}
+{"case":"hy2-same","ping_p50_ms":0,"ping_p95_ms":0,"ping_p99_ms":0,"ping_n":0,"ping_failures":1,"download_mbps":0,"queue_backlog_packets":{"median":0,"max":0},"bbr_profile":"conservative"}
+{"case":"hy2-same","ping_p50_ms":529.799801,"ping_p95_ms":553.944856,"ping_p99_ms":580.244166,"ping_n":25,"ping_failures":0,"download_mbps":84.6,"queue_backlog_packets":{"median":154,"max":298},"bbr_profile":"standard"}
+{"case":"hy2-same","ping_p50_ms":474.317892,"ping_p95_ms":546.286898,"ping_p99_ms":585.543209,"ping_n":27,"ping_failures":0,"download_mbps":83,"queue_backlog_packets":{"median":125,"max":283},"bbr_profile":"standard"}
+{"case":"hy2-same","ping_p50_ms":530.284847,"ping_p95_ms":553.140615,"ping_p99_ms":584.506258,"ping_n":26,"ping_failures":0,"download_mbps":82.9,"queue_backlog_packets":{"median":46,"max":177},"bbr_profile":"conservative"}
+{"case":"hy2-same","ping_p50_ms":534.557345,"ping_p95_ms":552.282916,"ping_p99_ms":566.622894,"ping_n":24,"ping_failures":0,"download_mbps":84.3,"queue_backlog_packets":{"median":33,"max":136},"bbr_profile":"conservative"}

@@ -1,0 +1,8 @@
+{"server_idle_timeout":"default (30s)","client_to_exit_udp_packets_in_35s_idle":10}
+{"server_idle_timeout":"20s","client_to_exit_udp_packets_in_35s_idle":10}
+{"transport":"reality","round":1,"pre_idle_s":2,"idle_gap_s":3,"server_config":"exit-idle20.json","failed_requests":0,"seconds_from_restart_to_first_success":4.32}
+{"transport":"hy2","round":1,"pre_idle_s":2,"idle_gap_s":3,"server_config":"exit-idle20.json","failed_requests":7,"seconds_from_restart_to_first_success":24.58}
+{"transport":"reality","round":2,"pre_idle_s":2,"idle_gap_s":3,"server_config":"exit-idle20.json","failed_requests":0,"seconds_from_restart_to_first_success":4.31}
+{"transport":"hy2","round":2,"pre_idle_s":2,"idle_gap_s":3,"server_config":"exit-idle20.json","failed_requests":7,"seconds_from_restart_to_first_success":24.56}
+{"transport":"reality","round":3,"pre_idle_s":2,"idle_gap_s":3,"server_config":"exit-idle20.json","failed_requests":0,"seconds_from_restart_to_first_success":4.31}
+{"transport":"hy2","round":3,"pre_idle_s":2,"idle_gap_s":3,"server_config":"exit-idle20.json","failed_requests":7,"seconds_from_restart_to_first_success":24.58}

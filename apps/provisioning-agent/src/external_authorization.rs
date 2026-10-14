@@ -1,7 +1,7 @@
 //! Durable reconciliation for control-plane compatibility authorizations.
 
 use crate::config::AgentConfig;
-use crate::dispatch::{parse_json_output, vpn_admin_command};
+use crate::dispatch::{parse_json_output, run_vpn_admin, vpn_admin_command};
 use crate::worker_client::WorkerClient;
 use anyhow::{anyhow, bail, Context, Result};
 use compat_config::authorization::{Authorization, AuthorizationSet, CredentialClass};
@@ -347,15 +347,18 @@ impl ExternalReconciler {
         }
         let input = dir.path().join("authorizations.json");
         save(&input, &self.state.desired)?;
-        let output = tokio::time::timeout(
+        // Killed and reaped on timeout (see dispatch::run_vpn_admin), so an
+        // apply the agent reported as failed cannot land afterwards.
+        let mut command = vpn_admin_command(cfg);
+        command
+            .args(["external-authorizations", "--input"])
+            .arg(&input);
+        let output = run_vpn_admin(
+            command,
             VPN_ADMIN_TIMEOUT,
-            vpn_admin_command(cfg)
-                .args(["external-authorizations", "--input"])
-                .arg(&input)
-                .output(),
+            "vpn-admin external-authorizations",
         )
-        .await
-        .context("vpn-admin external-authorizations timed out")??;
+        .await?;
         let parsed = parse_json_output(&output, "external-authorizations")?;
         if parsed.get("live").and_then(Value::as_bool) != Some(true) {
             return Err(anyhow!("external authorization state was not proven live"));

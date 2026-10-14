@@ -1,0 +1,6 @@
+{"transport":"hy2","round":1,"idle_gap_s":0,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":1.31}
+{"transport":"reality","round":1,"idle_gap_s":0,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":1.31}
+{"transport":"reality","round":2,"idle_gap_s":0,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":1.32}
+{"transport":"hy2","round":2,"idle_gap_s":0,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":1.39}
+{"transport":"hy2","round":3,"idle_gap_s":0,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":1.31}
+{"transport":"reality","round":3,"idle_gap_s":0,"server_config":"rendered","failed_requests":0,"seconds_from_restart_to_first_success":1.32}

@@ -1,0 +1,6 @@
+{"transport":"hy2","same_connection":true,"download_rate_limit":"0","download_mbps":30,"ping_p50_ms":28.3,"ping_p95_ms":39.2,"ping_n":119,"ping_failures":0}
+{"transport":"reality","same_connection":false,"download_rate_limit":"0","download_mbps":89,"ping_p50_ms":59.9,"ping_p95_ms":102,"ping_n":93,"ping_failures":0}
+{"transport":"hy2","same_connection":true,"download_rate_limit":"50M","download_mbps":50,"ping_p50_ms":30.8,"ping_p95_ms":436.5,"ping_n":85,"ping_failures":0}
+{"transport":"reality","same_connection":false,"download_rate_limit":"50M","download_mbps":50,"ping_p50_ms":32.8,"ping_p95_ms":45.7,"ping_n":131,"ping_failures":0}
+{"transport":"hy2","same_connection":true,"download_rate_limit":"80M","download_mbps":80,"ping_p50_ms":553,"ping_p95_ms":589.1,"ping_n":25,"ping_failures":0}
+{"transport":"reality","same_connection":false,"download_rate_limit":"80M","download_mbps":80,"ping_p50_ms":28.8,"ping_p95_ms":47.9,"ping_n":135,"ping_failures":0}

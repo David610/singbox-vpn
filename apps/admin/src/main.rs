@@ -2301,11 +2301,19 @@ fn render_and_apply_singbox_config(
     // `render_config_noop_reconcile_does_not_restart_singbox` /
     // `render_config_repeated_timer_execution_is_idempotent`
     // (apps/admin/tests/cli.rs) hold as a regression.
+    // Hysteria2 clients are not told about the restart (no QUIC
+    // CONNECTION_CLOSE from the stopping process, no valid stateless reset
+    // from the new one), so one that sends nothing while the server is down
+    // stalls until its fixed 30 s QUIC idle timeout (lab-measured 2026-10-14,
+    // docs/ALMALINUX_DEPLOYMENT.md). REALITY clients reconnect at once. This
+    // is the pinned 1.14.1 server; a 1.14.3 server closes its QUIC
+    // connections on shutdown and the stall disappears — revisit this text
+    // when the pin moves.
     let active_now = users.iter().filter(|u| u.is_active(now)).count();
     eprintln!(
         "reloading sing-box ({active_now} active user(s) in the new config) — this is a full \
          restart (sing-box has no in-place reload), so all currently connected clients will be \
-         briefly disconnected."
+         briefly disconnected (Hysteria2 clients can stall for up to ~30 s)."
     );
     if let Err(reload_err) = mgr.reload_and_verify() {
         let backup = config_backup_path(&target);
@@ -2896,6 +2904,24 @@ fn build_new_operator_user(
     (user, token)
 }
 
+/// Longest display name `user create` accepts, in characters.
+const MAX_USER_DISPLAY_NAME_CHARS: usize = 128;
+
+/// Display names are echoed by `user list`, `user links` and diagnostics. A
+/// control character (newline, tab, ESC) would forge extra output lines or
+/// smuggle terminal escape sequences into the operator's terminal, and the
+/// name can come from the control plane via the agent's CREATE_USER job
+/// (2026-09-27 audit SVPN-F17). Existing records are not touched.
+fn validate_user_display_name(name: &str) -> Result<()> {
+    if name.chars().any(char::is_control) {
+        bail!("--name must not contain control characters (newline, tab, escape, ...)");
+    }
+    if name.chars().count() > MAX_USER_DISPLAY_NAME_CHARS {
+        bail!("--name must be at most {MAX_USER_DISPLAY_NAME_CHARS} characters");
+    }
+    Ok(())
+}
+
 fn cmd_user_create(
     cfg: &DeploymentConfig,
     name: &str,
@@ -2903,6 +2929,7 @@ fn cmd_user_create(
     qr: bool,
     json: bool,
 ) -> Result<()> {
+    validate_user_display_name(name)?;
     let machine_stdout = if json {
         Some(MachineStdout::divert_human_output_to_stderr()?)
     } else {
@@ -5373,6 +5400,14 @@ fn cmd_doctor(
         // is unconditionally required regardless of DNS records.
     }
 
+    if let Some((status, message)) = own_address_egress_rule_report(
+        cfg.role == compat_config::deployment::NodeRole::Exit,
+        &cfg.public_host,
+        cfg.public_ipv4.as_deref(),
+        cfg.public_ipv6.as_deref(),
+    ) {
+        report_check(status, "L2", message);
+    }
     check_expected_public_surface(cfg, &mut failures);
     check_firewall_zone_and_ownership();
     check_l4_subscription_coherence(cfg, &mut failures);
@@ -5386,9 +5421,12 @@ fn cmd_doctor(
         CheckStatus::Info,
         "L4",
         "Automatic transport selection (`auto` / urltest) tests generic HTTPS connectivity to \
-         Google, not Telegram-specific behavior. The subscription's default (`select`) is the \
-         REALITY endpoint, chosen deterministically, not by that race — see \
-         docs/TELEGRAM_RESILIENCE_PLAN.md and docs/TELEGRAM_TROUBLESHOOTING.md.",
+         Google, not Telegram-specific behavior. In the sing-box-native subscription the \
+         default (`select`) is the REALITY endpoint, chosen deterministically, not by that race. \
+         Hiddify ignores both: it rebuilds its own groups and, with more than one route, \
+         balances new connections across them (docs/YOUTUBE_FINAL_ROOT_CAUSE.md §13; \
+         `compat=hiddify-pinned` serves one route) — see docs/TELEGRAM_RESILIENCE_PLAN.md and \
+         docs/TELEGRAM_TROUBLESHOOTING.md.",
     );
 
     // L1-L4's outcome is captured as a snapshot BEFORE the L5-6 check
@@ -8080,6 +8118,60 @@ fn probe_ufw_state() -> FirewallProbe {
 /// failed or skipped deployment. This only inspects the HOST firewall;
 /// provider/cloud security groups are invisible to `doctor`, so external
 /// reachability is always reported as UNKNOWN here, never as proven.
+/// Audit 2026-10-14 W3. The C-16 own-address deny rule is rendered only from
+/// an IP-literal `public_host`, `public_ipv4` or `public_ipv6`
+/// (`compat_config::server`). An exit installed under a domain name records
+/// none of them unless the operator sets one, and then a tunnel user can
+/// reach services listening on this node's own public address, including
+/// ones the host firewall hides from the Internet. Relays never send tunnel
+/// traffic to the Internet (fail-closed allow-list), so this is exit-only.
+/// Reports field names, never the address itself.
+fn own_address_egress_rule_report(
+    is_exit: bool,
+    public_host: &str,
+    public_ipv4: Option<&str>,
+    public_ipv6: Option<&str>,
+) -> Option<(CheckStatus, String)> {
+    if !is_exit {
+        return None;
+    }
+    let parses = |v: &str| v.parse::<std::net::IpAddr>();
+    let mut sources: Vec<&str> = Vec::new();
+    let mut ipv4 = false;
+    let mut ipv6 = false;
+    for (field, value) in [
+        ("public_host", Some(public_host)),
+        ("public_ipv4", public_ipv4),
+        ("public_ipv6", public_ipv6),
+    ] {
+        if let Some(Ok(ip)) = value.map(parses) {
+            sources.push(field);
+            ipv4 |= ip.is_ipv4();
+            ipv6 |= ip.is_ipv6();
+        }
+    }
+    if sources.is_empty() {
+        return Some((
+            CheckStatus::Warn,
+            "C-16: no own-public-address deny rule — deployment.toml records no public IP \
+             (`public_ipv4`/`public_ipv6`, or an IP-literal `public_host`), so a tunnel user can \
+             reach services listening on this node's own public address. Set `public_ipv4` (and \
+             `public_ipv6` if this host has one) in deployment.toml, then run `vpn-admin \
+             render-config`."
+                .to_string(),
+        ));
+    }
+    let mut message = format!(
+        "C-16: tunnel traffic to this node's own public address is refused (from {})",
+        sources.join(", ")
+    );
+    if ipv4 && !ipv6 {
+        message
+            .push_str("; IPv4 only — set `public_ipv6` too if this host has a public IPv6 address");
+    }
+    Some((CheckStatus::Ok, message))
+}
+
 fn firewall_backend_report(
     recorded_backend: Option<&str>,
     firewalld: FirewallProbe,
@@ -8309,12 +8401,14 @@ fn check_l5_l6_protocol_selftest(
                      exactly that; if they passed, this is NOT your cause.\n\
                      \n\
                      (b) The configured handshake_server (\"{decoy}\") returns a TLS 1.3 flight \
-                     that sing-box's REALITY implementation refuses. It rejects ANY record larger \
-                     than its hard-coded 8192-byte budget (metacubex/utls reality.go: \
-                     `if handshakeLen > int(realitySize) {{ break f }}`), which an oversized \
-                     certificate chain easily exceeds. Authentication SUCCEEDS and the connection \
-                     is still dropped. This is edge- and CDN-dependent, so it can appear without \
-                     any change on your side. Try a different handshake_server and re-run this \
+                     that sing-box's REALITY implementation refuses. It drops the connection when \
+                     a record is larger than its 16384-byte buffer, or when more than 16384 bytes \
+                     of the decoy's reply are buffered before they can be parsed — which a large \
+                     certificate chain can cause intermittently, depending on how its bytes \
+                     arrive (metacubex/utls reality.go, `realitySize`; older sing-box pins had \
+                     an 8192-byte limit). Authentication SUCCEEDS and the connection is still \
+                     dropped. This is edge- and CDN-dependent, so it can appear without any \
+                     change on your side. Try a different handshake_server and re-run this \
                      check.",
                     decoy = reality.handshake_server
                 ),
@@ -8605,8 +8699,10 @@ fn server_journal_shows_local_processed_invalid_connection_after(cursor: Option<
 /// `HandshakeRejected` is a hard verdict that the handshake does not work,
 /// but deliberately NOT a verdict about *why*: sing-box emits the same
 /// "processed invalid connection" for a key/short_id mismatch and for a
-/// handshake_server whose TLS records exceed REALITY's 8192-byte budget
-/// (auth succeeds, connection still dropped). Conflating the two is what
+/// handshake_server whose TLS flight REALITY refuses — a record larger than
+/// its 16384-byte buffer, more than 16384 decoy bytes buffered before they
+/// can be parsed, or (on the old 1.13.x pin) a record over 8192 bytes (auth
+/// succeeds, connection still dropped). Conflating the two is what
 /// sent three separate investigations after the wrong cause. `Inconclusive`
 /// means exactly that
 /// — a timeout with no corroborating client-side rejection proves
@@ -10686,5 +10782,50 @@ mod user_selector_tests {
             resolve_user_selector(&users, "user_probe").unwrap().name,
             "arcana-probe"
         );
+    }
+}
+
+#[cfg(test)]
+mod own_address_egress_rule_tests {
+    use super::{own_address_egress_rule_report, CheckStatus};
+
+    #[test]
+    fn domain_only_exit_warns_without_printing_an_address() {
+        let (status, message) =
+            own_address_egress_rule_report(true, "vpn.example.com", None, Some("")).unwrap();
+        assert_eq!(status, CheckStatus::Warn);
+        assert!(message.contains("public_ipv4"), "{message}");
+        assert!(message.contains("render-config"), "{message}");
+    }
+
+    #[test]
+    fn recorded_addresses_are_reported_by_field_name_only() {
+        let (status, message) =
+            own_address_egress_rule_report(true, "vpn.example.com", Some("203.0.113.7"), None)
+                .unwrap();
+        assert_eq!(status, CheckStatus::Ok);
+        assert!(message.contains("public_ipv4"), "{message}");
+        assert!(message.contains("IPv4 only"), "{message}");
+        assert!(!message.contains("203.0.113.7"), "{message}");
+
+        let (status, message) = own_address_egress_rule_report(
+            true,
+            "203.0.113.7",
+            Some("203.0.113.7"),
+            Some("2001:db8::7"),
+        )
+        .unwrap();
+        assert_eq!(status, CheckStatus::Ok);
+        assert!(
+            message.contains("public_host, public_ipv4, public_ipv6"),
+            "{message}"
+        );
+        assert!(!message.contains("IPv4 only"), "{message}");
+        assert!(!message.contains("2001:db8::7"), "{message}");
+    }
+
+    #[test]
+    fn relays_are_not_checked() {
+        assert!(own_address_egress_rule_report(false, "relay.example.com", None, None).is_none());
     }
 }

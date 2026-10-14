@@ -1,0 +1,7 @@
+{"stage":"enabled","transport":"reality","fresh_client":true,"succeeded":true,"attempts":1}
+{"stage":"enabled","transport":"hy2","fresh_client":true,"succeeded":true,"attempts":1}
+{"stage":"disabled","user_in_rendered_config":false}
+{"stage":"disabled (40 s of retries, new client processes)","transport":"reality","fresh_client":true,"succeeded":false,"attempts":39}
+{"stage":"disabled (40 s of retries, new client processes)","transport":"hy2","fresh_client":true,"succeeded":false,"attempts":39}
+{"stage":"re-enabled","transport":"reality","fresh_client":true,"succeeded":true,"attempts":1}
+{"stage":"re-enabled","transport":"hy2","fresh_client":true,"succeeded":true,"attempts":1}

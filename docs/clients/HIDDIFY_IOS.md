@@ -57,15 +57,17 @@ entirely inside the Hiddify app and iOS's own permission system.
    **VPN mode** (sometimes labeled TUN mode), not **Proxy Only**. This
    is the single most common cause of "connected but nothing changes" —
    see the troubleshooting section.
-9. You are connected. By default the subscription starts you on
-   **REALITY** (deterministic, not a race) — REALITY is the
-   conservative recommended transport on restrictive networks. You can
-   manually switch to **Hysteria2** or to **auto** (sing-box's own
-   `urltest`, which picks whichever transport currently wins a fast
-   Google connectivity check — not a Telegram-specific test) from
-   Hiddify's proxy-group/server list. See
-   `docs/TELEGRAM_TROUBLESHOOTING.md` for testing each transport
-   independently.
+9. You are connected. The subscription *asks* for **REALITY** as the
+   default, but Hiddify rebuilds its own proxy groups and ignores that
+   choice: per the code analysis in `docs/YOUTUBE_FINAL_ROOT_CAUSE.md`
+   §13 (hiddify-core `db74dfc`), a profile with both REALITY and
+   Hysteria2 gets a `balance` entry that picks a transport **per
+   connection** (round-robin). To stay on one transport, tap
+   **REALITY** (recommended on restrictive networks) or **Hysteria2**
+   in Hiddify's server list, or import the single-route link
+   `?format=singbox&compat=hiddify-pinned` (see the balancer section
+   below). See `docs/TELEGRAM_TROUBLESHOOTING.md` for testing each
+   transport independently.
 10. Verify it actually worked: check your public IP (any "what is my
     IP" page, or `curl ifconfig.me` from a terminal app) before and
     after connecting. It must change to this server's public IP. Run

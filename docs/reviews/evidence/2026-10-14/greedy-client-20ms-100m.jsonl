@@ -1,0 +1,6 @@
+{"case":"exit as rendered today, no greedy user (reference)","reality_user_mbps":50.3,"hy2_default_user_mbps":42.9,"hy2_greedy_user_mbps":null}
+{"case":"exit as rendered today, greedy user declares down 500","reality_user_mbps":0.1,"hy2_default_user_mbps":2.2,"hy2_greedy_user_mbps":88.5}
+{"case":"exit as rendered today, greedy user declares down 500 (repeat)","reality_user_mbps":16,"hy2_default_user_mbps":0.7,"hy2_greedy_user_mbps":88.8}
+{"case":"exit + ignore_client_bandwidth (no caps), greedy user declares down 500","reality_user_mbps":37.2,"hy2_default_user_mbps":29.7,"hy2_greedy_user_mbps":27}
+{"case":"exit + ignore_client_bandwidth (no caps), greedy user declares down 500 (repeat)","reality_user_mbps":34.4,"hy2_default_user_mbps":28.3,"hy2_greedy_user_mbps":30.4}
+{"case":"exit + ignore_client_bandwidth (no caps), no greedy user (reference)","reality_user_mbps":52.1,"hy2_default_user_mbps":40.3,"hy2_greedy_user_mbps":null}

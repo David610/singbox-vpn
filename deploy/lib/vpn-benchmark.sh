@@ -15,15 +15,26 @@
 #   3. Raw VPS throughput: a plain HTTPS download FROM this host to a
 #      public CDN, no tunnel involved — isolates "this VPS's own
 #      uplink/provider" from "the tunnel software".
-#   4. VLESS+REALITY / Hysteria2 SERVER-SIDE PROTOCOL OVERHEAD: a REAL
-#      sing-box client, running on THIS SAME VPS, dials THIS SAME VPS's
-#      own public listener through a throwaway benchmark user created
-#      and deleted by this script, while sing-box's own CPU usage is
-#      sampled. This isolates "the tunnel protocol/crypto/QUIC stack's
-#      own overhead" from "the raw uplink" (layer 3) — it does NOT
-#      measure a real remote client's network path (see layer 2), because
-#      the traffic here never leaves this host's own uplink/routing. A
-#      real Russia-side measurement requires either layer 2 run from that
+#   4. VLESS+REALITY / Hysteria2 PROTOCOL OVERHEAD on this host's CPU.
+#      Default (4a, NON-MUTATING): a DISPOSABLE sing-box server is
+#      started on 127.0.0.1 with throwaway REALITY keys, a throwaway
+#      certificate and a throwaway credential, plus a sing-box client
+#      against it. The production sing-box.service, its config and the
+#      user store are neither read for secrets nor changed, so this
+#      cannot restart the data plane or disconnect anyone. Same binary,
+#      kernel and CPU as production; not the production process.
+#      Opt-in (4b, MUTATING, --production-listener): a REAL sing-box
+#      client dials THIS VPS's own public listener through a temporary
+#      benchmark user created and deleted by this script. Creating and
+#      deleting that user re-renders the config and RESTARTS sing-box,
+#      which cuts every active connection of every user (twice per
+#      transport). Use it only in a maintenance window or on a
+#      disposable host (the lifecycle acceptance harness uses it to prove
+#      the live Hysteria2 listener). The user carries a short expiry so
+#      an interrupted run cannot leave a permanent credential behind.
+#      Neither variant measures a real remote client's network path
+#      (see layer 2): the traffic never leaves this host. A real
+#      Russia-side measurement requires either layer 2 run from that
 #      vantage point, or a sing-box client run on a real remote host on
 #      that path against this VPS — this script cannot fake that from
 #      the server side alone.
@@ -58,6 +69,11 @@ DOWNLOAD_URL="https://speed.cloudflare.com/__down?bytes=25000000"
 VPN_BIN="$(command -v vpn || echo /usr/local/bin/vpn)"
 SINGBOX_BIN="$(command -v sing-box || echo /usr/local/bin/sing-box)"
 SKIP_TUNNEL=0
+PRODUCTION_LISTENER=0
+HANDSHAKE_OVERRIDE=""
+# How long the --production-listener benchmark user stays valid if this
+# script is killed before its cleanup runs (seconds).
+BENCH_USER_TTL=1800
 JSON_MODE=0
 OUTPUT=""
 QUICK=0
@@ -80,8 +96,18 @@ Usage: $(basename "$0") [options]
                          only characterizes this VPS's own uplink.
   --download-url URL    raw-throughput test file (default: Cloudflare's
                          speed-test endpoint)
-  --skip-tunnel          skip the VLESS/Hysteria2 layer (no throwaway
-                         user is created; useful on a non-production host)
+  --skip-tunnel          skip every VLESS/Hysteria2 protocol layer
+  --production-listener  ALSO benchmark the live production listener
+                         through a temporary user. MUTATING: creating
+                         and removing that user restarts sing-box and
+                         disconnects every active user (twice per
+                         transport). Default: off — the default protocol
+                         layer uses a disposable loopback instance and
+                         changes nothing.
+  --handshake-server HOST[:PORT]
+                         REALITY handshake (decoy) target for the
+                         disposable instance (default: [reality]
+                         handshake_server/handshake_port from --config)
   --quick                fast, bandwidth-light run: 1 sample per
                          measurement and a small (~2 MB) download unless
                          --runs/--download-url are also given explicitly
@@ -105,6 +131,8 @@ while [ $# -gt 0 ]; do
     --target-host) TARGET_HOST="$2"; shift 2 ;;
     --download-url) DOWNLOAD_URL="$2"; DOWNLOAD_URL_EXPLICIT=1; shift 2 ;;
     --skip-tunnel) SKIP_TUNNEL=1; shift ;;
+    --production-listener) PRODUCTION_LISTENER=1; shift ;;
+    --handshake-server) HANDSHAKE_OVERRIDE="$2"; shift 2 ;;
     --quick) QUICK=1; shift ;;
     --json) JSON_MODE=1; shift ;;
     --output) OUTPUT="$2"; shift 2 ;;
@@ -397,6 +425,228 @@ else
 fi
 
 # ---------------------------------------------------------------------
+# 4a. VLESS+REALITY / Hysteria2 PROTOCOL OVERHEAD, DISPOSABLE INSTANCE
+#     (default; changes nothing on this host)
+# ---------------------------------------------------------------------
+# Starts a throwaway sing-box server on 127.0.0.1 with throwaway REALITY
+# keys, a throwaway self-signed certificate and a throwaway credential,
+# and a sing-box client against it, then downloads $DOWNLOAD_URL through
+# it. The production sing-box.service, its rendered config and the user
+# store are not read for secrets and not changed: no restart, no
+# disconnect, nothing to clean up if the run is killed. What it shares
+# with production: the sing-box binary, the kernel, the CPU, the REALITY
+# handshake target (so each new REALITY connection still pays the real
+# decoy dial) and the Hysteria2 obfuscation/Brutal settings. What it does
+# NOT share: the production process and its load, the exit's route
+# policy beyond a resolve + private-address reject, the sing-box OS user
+# (so the uid-scoped nftables egress table does not apply), and any real
+# client network path. Read it as "protocol cost on this CPU".
+pick_free_port() { # $1 = tcp|udp
+  local port i
+  for i in 1 2 3 4 5 6 7 8; do
+    port=$(( 20000 + (RANDOM * 32768 + RANDOM) % 40000 ))
+    if have ss; then
+      if [ "$1" = udp ]; then
+        ss -Hlun "sport = :$port" 2>/dev/null | grep -q . && continue
+      else
+        ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && continue
+      fi
+    fi
+    echo "$port"
+    return 0
+  done
+  return 1
+}
+
+isolated_tunnel_benchmark() {
+  local transport="$1" label="$2"
+  section "$label protocol overhead, disposable loopback instance (same binary/kernel/CPU as production; NOT the production process; NOT a remote-client network-path measurement; changes nothing)"
+  if [ "$SKIP_TUNNEL" -eq 1 ]; then
+    kv "$label (isolated)" "SKIPPED: --skip-tunnel"
+    return
+  fi
+  if ! [ -x "$SINGBOX_BIN" ]; then
+    kv "$label (isolated)" "SKIPPED: sing-box binary not found at $SINGBOX_BIN"
+    return
+  fi
+  if ! have jq || ! have curl; then
+    kv "$label (isolated)" "SKIPPED: jq and curl are required"
+    return
+  fi
+
+  local hs_server="" hs_port=""
+  if [ -n "$HANDSHAKE_OVERRIDE" ]; then
+    hs_server="${HANDSHAKE_OVERRIDE%%:*}"
+    [ "$hs_server" != "$HANDSHAKE_OVERRIDE" ] && hs_port="${HANDSHAKE_OVERRIDE##*:}"
+  else
+    hs_server="$(vpn_benchmark_toml_value "$CONFIG" reality handshake_server)"
+    hs_port="$(vpn_benchmark_toml_value "$CONFIG" reality handshake_port)"
+  fi
+  [ -n "$hs_port" ] || hs_port=443
+  if [ -z "$hs_server" ]; then
+    kv "$label (isolated)" "SKIPPED: no REALITY handshake target (pass --handshake-server or a readable --config)"
+    return
+  fi
+  if ! [[ "$hs_port" =~ ^[0-9]+$ ]]; then
+    kv "$label (isolated)" "FAILED: handshake port '$hs_port' is not a number"
+    return
+  fi
+
+  local iso_dir="" iso_server_pid="" iso_client_pid=""
+  # Every step tolerates failure: under `set -e` a `wait` returning the
+  # killed child's status (143) would otherwise abort the whole report here.
+  iso_cleanup() {
+    trap - INT TERM HUP
+    local p
+    for p in "$iso_client_pid" "$iso_server_pid"; do
+      if [ -n "$p" ]; then
+        kill "$p" >/dev/null 2>&1 || true
+        wait "$p" 2>/dev/null || true
+      fi
+    done
+    iso_client_pid=""; iso_server_pid=""
+    if [ -n "$iso_dir" ]; then rm -rf "$iso_dir" || true; fi
+    iso_dir=""
+    return 0
+  }
+  trap iso_cleanup RETURN
+  trap 'iso_cleanup; exit 130' INT TERM HUP
+  iso_dir="$(mktemp -d)"
+  chmod 0700 "$iso_dir"
+
+  # Throwaway material, generated by the same binary. None of it is
+  # printed or kept after this function returns.
+  local keypair private_key public_key short_id uuid hy2_password obfs="" up="" down=""
+  keypair="$("$SINGBOX_BIN" generate reality-keypair 2>/dev/null)" || keypair=""
+  private_key="$(printf '%s\n' "$keypair" | awk '/^PrivateKey:/{print $2}')"
+  public_key="$(printf '%s\n' "$keypair" | awk '/^PublicKey:/{print $2}')"
+  short_id="$("$SINGBOX_BIN" generate rand --hex 8 2>/dev/null)" || short_id=""
+  uuid="$("$SINGBOX_BIN" generate uuid 2>/dev/null)" || uuid=""
+  hy2_password="$("$SINGBOX_BIN" generate rand --hex 16 2>/dev/null)" || hy2_password=""
+  if [ -z "$private_key" ] || [ -z "$public_key" ] || [ -z "$short_id" ] || [ -z "$uuid" ] || [ -z "$hy2_password" ]; then
+    kv "$label (isolated)" "FAILED: could not generate throwaway key material with $SINGBOX_BIN"
+    return
+  fi
+  # Mirror the live Hysteria2 obfuscation/Brutal choice (booleans and
+  # numbers only — the live password is never read into this script).
+  local live_cfg="/etc/vpn/compat/sing-box/config.json"
+  if [ -r "$live_cfg" ]; then
+    if jq -e '[.inbounds[]? | select(.type=="hysteria2") | has("obfs")] | any' "$live_cfg" >/dev/null 2>&1; then
+      obfs="$("$SINGBOX_BIN" generate rand --base64 16 2>/dev/null)" || obfs=""
+    fi
+    up="$(jq -r '[.inbounds[]? | select(.type=="hysteria2") | .up_mbps // empty][0] // empty' "$live_cfg" 2>/dev/null || true)"
+    down="$(jq -r '[.inbounds[]? | select(.type=="hysteria2") | .down_mbps // empty][0] // empty' "$live_cfg" 2>/dev/null || true)"
+  else
+    # Fresh installs enable Salamander; assume the default.
+    obfs="$("$SINGBOX_BIN" generate rand --base64 16 2>/dev/null)" || obfs=""
+  fi
+  local cert="$iso_dir/cert.pem" key="$iso_dir/key.pem" sni="benchmark.invalid"
+  if have openssl; then
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 1 -nodes \
+      -keyout "$key" -out "$cert" -subj "/CN=$sni" -addext "subjectAltName=DNS:$sni" >/dev/null 2>&1 || true
+  fi
+  if ! [ -s "$cert" ] || ! [ -s "$key" ]; then
+    local pair
+    pair="$("$SINGBOX_BIN" generate tls-keypair "$sni" --months 1 2>/dev/null)" || pair=""
+    printf '%s\n' "$pair" | awk '/BEGIN PRIVATE KEY/{p=1} p{print} /END PRIVATE KEY/{p=0}' >"$key"
+    printf '%s\n' "$pair" | awk '/BEGIN CERTIFICATE/{p=1} p{print} /END CERTIFICATE/{p=0}' >"$cert"
+  fi
+  if ! [ -s "$cert" ] || ! [ -s "$key" ]; then
+    kv "$label (isolated)" "FAILED: could not create a throwaway TLS certificate"
+    return
+  fi
+
+  local reality_port hy2_port socks_port
+  reality_port="$(pick_free_port tcp)" || reality_port=""
+  hy2_port="$(pick_free_port udp)" || hy2_port=""
+  socks_port="$(pick_free_port tcp)" || socks_port=""
+  if [ -z "$reality_port" ] || [ -z "$hy2_port" ] || [ -z "$socks_port" ]; then
+    kv "$label (isolated)" "FAILED: no free loopback port found"
+    return
+  fi
+  vpn_benchmark_isolated_server_config "$reality_port" "$hy2_port" "$private_key" "$short_id" \
+    "$uuid" "$hs_server" "$hs_port" "$hy2_password" "$cert" "$key" "$obfs" "$up" "$down" \
+    >"$iso_dir/server.json" 2>/dev/null
+  case "$transport" in
+    vless-reality)
+      vpn_benchmark_isolated_client_config vless-reality "$socks_port" "$reality_port" \
+        "$public_key" "$short_id" "$uuid" "$hs_server" >"$iso_dir/client.json" 2>/dev/null
+      ;;
+    hysteria2)
+      vpn_benchmark_isolated_client_config hysteria2 "$socks_port" "$hy2_port" \
+        "$hy2_password" "$cert" "$sni" "$obfs" >"$iso_dir/client.json" 2>/dev/null
+      ;;
+  esac
+  local doc
+  for doc in server client; do
+    if ! "$SINGBOX_BIN" check -c "$iso_dir/$doc.json" >"$iso_dir/check-$doc.log" 2>&1; then
+      kv "$label (isolated)" "FAILED: sing-box check rejected the disposable $doc config"
+      sed 's/^/    /' "$iso_dir/check-$doc.log" 2>/dev/null || true
+      return
+    fi
+  done
+  "$SINGBOX_BIN" run -c "$iso_dir/server.json" >"$iso_dir/server.log" 2>&1 &
+  iso_server_pid=$!
+  "$SINGBOX_BIN" run -c "$iso_dir/client.json" >"$iso_dir/client.log" 2>&1 &
+  iso_client_pid=$!
+  local waited=0
+  while ! (exec 3<>"/dev/tcp/127.0.0.1/$socks_port") 2>/dev/null; do
+    sleep 0.2
+    waited=$((waited + 1))
+    if [ "$waited" -gt 25 ] || ! kill -0 "$iso_server_pid" 2>/dev/null; then
+      kv "$label (isolated)" "FAILED: disposable sing-box server/client did not come up"
+      return
+    fi
+  done
+
+  local timings="$iso_dir/timings"
+  : >"$timings"
+  # --noproxy '': a host whose NO_PROXY/no_proxy covers the destination
+  # would otherwise make curl skip the SOCKS proxy and report a DIRECT
+  # download as tunnel throughput.
+  isolated_download_mbps() {
+    local out speed ttfb
+    out="$(curl -o /dev/null -s -w '%{speed_download} %{time_starttransfer}' --max-time 30 \
+      --noproxy '' --socks5-hostname "127.0.0.1:$socks_port" "$DOWNLOAD_URL" 2>/dev/null)" || return 1
+    speed="${out% *}"; ttfb="${out#* }"
+    awk -v t="$ttfb" 'BEGIN{printf "%.1f\n", t*1000}' >>"$timings"
+    awk -v b="$speed" 'BEGIN{printf "%.2f", b*8/1000000}'
+  }
+  local result
+  result="$(sample_min_median_max isolated_download_mbps "isolated_${transport}_mbps")"
+  kv "throughput (Mbps), $RUNS run(s)" "$result"
+  if [ -s "$timings" ]; then
+    local ttfb_line
+    ttfb_line="$(sort -n "$timings" | awk '{v[NR]=$1} END{printf "min=%s median=%s max=%s (n=%d)", v[1], v[int((NR+1)/2)], v[NR], NR}')"
+    kv "time to first byte (ms), new tunnel connection + destination TLS" "$ttfb_line"
+    json_add "isolated_${transport}_ttfb_ms_median" "$(sort -n "$timings" | awk '{v[NR]=$1} END{print v[int((NR+1)/2)]}')"
+  fi
+
+  local s1 s2 c1 c2
+  s1="$(awk '{print $14+$15}' "/proc/$iso_server_pid/stat" 2>/dev/null || true)"
+  c1="$(awk '{print $14+$15}' "/proc/$iso_client_pid/stat" 2>/dev/null || true)"
+  isolated_download_mbps >/dev/null 2>&1 || true
+  s2="$(awk '{print $14+$15}' "/proc/$iso_server_pid/stat" 2>/dev/null || true)"
+  c2="$(awk '{print $14+$15}' "/proc/$iso_client_pid/stat" 2>/dev/null || true)"
+  if [ -n "$s1" ] && [ -n "$s2" ]; then
+    kv "disposable SERVER CPU ticks during one transfer" "$((s2 - s1))" "isolated_${transport}_server_cpu_ticks"
+  fi
+  if [ -n "$c1" ] && [ -n "$c2" ]; then
+    kv "disposable client CPU ticks during one transfer" "$((c2 - c1))" "isolated_${transport}_client_cpu_ticks"
+  fi
+  if [ -r "/proc/$iso_server_pid/status" ]; then
+    kv "disposable SERVER RSS (kB)" "$(awk '/VmRSS/{print $2}' "/proc/$iso_server_pid/status")" "isolated_${transport}_server_rss_kb"
+  fi
+  if [ "$transport" = hysteria2 ] && have ss; then
+    # The effective socket buffers the server's UDP socket really got
+    # (sysctl ceilings are only ceilings; see docs/VPN_PERFORMANCE_BASELINE.md).
+    local skmem
+    skmem="$(ss -Huamn "sport = :$hy2_port" 2>/dev/null | grep -o 'rb[0-9]*,t[0-9]*,tb[0-9]*' | head -1 || true)"
+    [ -n "$skmem" ] && kv "disposable Hysteria2 server UDP socket buffers" "$skmem" "isolated_hysteria2_server_skmem"
+  fi
+}
+
+# ---------------------------------------------------------------------
 # 4. VLESS+REALITY / Hysteria2 SERVER-SIDE PROTOCOL OVERHEAD
 #    (NOT a Russia -> VPS network-path measurement — see label below)
 # ---------------------------------------------------------------------
@@ -417,9 +667,13 @@ fi
 # client on a real remote host on that path against this VPS.
 tunnel_benchmark() {
   local transport="$1" label="$2"
-  section "$label protocol/server-side overhead (sing-box client on THIS VPS -> THIS VPS's public IP; NOT a remote-client network-path measurement)"
+  section "$label protocol/server-side overhead (sing-box client on THIS VPS -> THIS VPS's public IP; NOT a remote-client network-path measurement; MUTATING: restarts sing-box)"
   if [ "$SKIP_TUNNEL" -eq 1 ]; then
     kv "$label" "SKIPPED: --skip-tunnel"
+    return
+  fi
+  if [ "${PRODUCTION_LISTENER:-0}" -ne 1 ]; then
+    kv "$label" "SKIPPED: live-listener test needs --production-listener (it restarts sing-box and disconnects every user)"
     return
   fi
   if ! [ -x "$SINGBOX_BIN" ]; then
@@ -440,19 +694,29 @@ tunnel_benchmark() {
   local tmpdir
   tmpdir="$(mktemp -d)"
   chmod 0700 "$tmpdir"
+  bench_user_id=""
   cleanup() {
-    if [ "$created" -eq 1 ]; then
+    trap - INT TERM HUP
+    if [ "$created" -eq 1 ] && [ -n "$bench_user_id" ]; then
       "$VPN_BIN" --config "$CONFIG" user remove "$bench_user_id" >/dev/null 2>&1 || true
     fi
+    created=0
     if [ -n "${SINGBOX_CLIENT_PID:-}" ]; then
       kill "$SINGBOX_CLIENT_PID" >/dev/null 2>&1 || true
+      SINGBOX_CLIENT_PID=""
     fi
     rm -rf "$tmpdir"
   }
   trap cleanup RETURN
+  # An interrupted run must not leave a live credential behind: remove the
+  # user on INT/TERM/HUP too. SIGKILL cannot be trapped, which is why the
+  # user is also created with a short expiry below.
+  trap 'cleanup; exit 130' INT TERM HUP
 
-  local create_json
-  if ! create_json="$("$VPN_BIN" --config "$CONFIG" user create --name "$bench_name" --json 2>/dev/null)"; then
+  note "  MUTATING: creating and removing a temporary user restarts sing-box; every active connection on this node is cut."
+  local create_json expires_at
+  expires_at=$(( $(date +%s) + BENCH_USER_TTL ))
+  if ! create_json="$("$VPN_BIN" --config "$CONFIG" user create --name "$bench_name" --expires-at "$expires_at" --json 2>/dev/null)"; then
     kv "$label" "SKIPPED: could not create a throwaway benchmark user (need root / valid deployment)"
     return
   fi
@@ -547,7 +811,7 @@ tunnel_benchmark() {
   tunnel_download_mbps() {
     local out
     out="$(curl -o /dev/null -s -w '%{speed_download}' --max-time 30 \
-      --socks5-hostname "127.0.0.1:$local_socks_port" "$DOWNLOAD_URL" 2>/dev/null)" || return 1
+      --noproxy '' --socks5-hostname "127.0.0.1:$local_socks_port" "$DOWNLOAD_URL" 2>/dev/null)" || return 1
     awk -v b="$out" 'BEGIN{printf "%.2f", b*8/1000000}'
   }
   local tunnel_dl_result
@@ -608,8 +872,15 @@ tunnel_benchmark() {
 UDP_RCVBUF_ERR_BEFORE="$(udp_snmp_field RcvbufErrors)"
 UDP_SNDBUF_ERR_BEFORE="$(udp_snmp_field SndbufErrors)"
 
-tunnel_benchmark "vless-reality" "VLESS+REALITY"
-tunnel_benchmark "hysteria2" "Hysteria2"
+isolated_tunnel_benchmark "vless-reality" "VLESS+REALITY"
+isolated_tunnel_benchmark "hysteria2" "Hysteria2"
+if [ "$PRODUCTION_LISTENER" -eq 1 ]; then
+  tunnel_benchmark "vless-reality" "VLESS+REALITY"
+  tunnel_benchmark "hysteria2" "Hysteria2"
+else
+  section "Live production listener (not tested)"
+  kv "live listener" "SKIPPED: not requested (--production-listener restarts sing-box and disconnects every user)" "production_listener_status"
+fi
 
 UDP_RCVBUF_ERR_AFTER="$(udp_snmp_field RcvbufErrors)"
 UDP_SNDBUF_ERR_AFTER="$(udp_snmp_field SndbufErrors)"
@@ -632,26 +903,31 @@ section "Assessment"
 cat <<'EOF'
 This script reports MEASUREMENTS only. It does not compute a verdict —
 compare the numbers above against docs/PERFORMANCE_OPTIMIZATION_PLAN.md's
-decision guide. IMPORTANT: layer 4 (VLESS+REALITY / Hysteria2) above is a
-same-host hairpin test (this VPS's own sing-box client dialing this same
-VPS) — it measures protocol/CPU overhead, NOT a real remote client's
+decision guide and docs/VPN_PERFORMANCE_BASELINE.md. IMPORTANT: layer 4
+(VLESS+REALITY / Hysteria2) above never leaves this host. By default it
+uses a disposable loopback instance (changes nothing); with
+--production-listener it also dials this VPS's own live listener (and
+restarts sing-box to add/remove its temporary user). Either way it
+measures protocol/CPU overhead on this CPU, NOT a real remote client's
 network path. Read it accordingly:
   - Raw VPS download (layer 3) far below your provider's advertised rate,
     with high CPU steal -> likely a noisy-neighbor/oversubscribed host,
     not something sysctl/sing-box tuning can fix.
-  - Raw VPS throughput fine, but the layer-4 hairpin throughput is much
+  - Raw VPS throughput fine, but the layer-4 throughput is much
     lower with low sing-box CPU during the transfer -> likely
     protocol/congestion-control overhead intrinsic to the tunnel at this
     RTT, not something this test can attribute to CPU or to the real
     network path (which it cannot see).
-  - Layer-4 hairpin throughput much lower AND sing-box CPU (client OR the
-    real SERVER process) pinned near 100% of one core -> likely CPU-bound
+  - Layer-4 throughput much lower AND sing-box CPU (client OR the
+    SERVER process) pinned near 100% of one core -> likely CPU-bound
     userspace crypto/QUIC processing -> consider more/better vCPUs (see
     docs/PERFORMANCE_OPTIMIZATION_PLAN.md).
   - Nonzero UDP RcvbufErrors/SndbufErrors delta during the Hysteria2 run
-    -> a lead (not proof) that a UDP socket hit a buffer limit; check the
-    effective net.core.rmem_max/wmem_max reported above and
-    `vpn doctor --performance`.
+    -> a lead (not proof) that a UDP socket hit a buffer limit. The
+    rmem_max/wmem_max ceilings above only matter to sockets that ASK for
+    more: with Salamander obfuscation the sing-box 1.14 Hysteria2 SERVER
+    socket keeps net.core.rmem_default (see the disposable instance's
+    "UDP socket buffers" line and `vpn doctor --performance`).
   - High packet loss or RTT/jitter in layer 2 (network path) to
     --target-host -> that IS a real network-path measurement (unlike
     layer 4) -> if --target-host is a real vantage point on your users'
