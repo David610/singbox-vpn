@@ -427,10 +427,33 @@ sing-box` always performs a full stop+start. This means **any** action
 that reloads sing-box — `user create/disable/enable/remove/rotate-*`,
 `render-config`, `init --rotate`, `restore` — briefly drops the listener
 entirely and forcibly disconnects every currently-connected client's live
-session, not only the user whose credentials actually changed. A client
-that hits this mid-session sees a hard connection error; reconnecting
-immediately afterward succeeds, because `vpn-admin` does not report the
-command as done until it has confirmed sing-box is active again.
+session, not only the user whose credentials actually changed. A REALITY
+client that hits this mid-session sees a hard connection error;
+reconnecting immediately afterward succeeds, because `vpn-admin` does not
+report the command as done until it has confirmed sing-box is active again.
+
+Hysteria2 clients usually get no error at all, and that is worse. The
+stopping sing-box sends no QUIC `CONNECTION_CLOSE`, and the new process
+cannot send a stateless reset the client would accept, so a Hysteria2
+client keeps sending into a QUIC connection the new server does not know
+until its idle timeout (fixed at 30 s in the client) expires. Measured in
+the 2026-10-14 lab (evidence class C, not yet confirmed on a real VPS or
+phone; `docs/reviews/2026-10-14-vpn-audit/VPN_OPTIMIZATION_RESULTS.md`):
+
+| Client state during the restart | REALITY | Hysteria2 |
+|---|---|---|
+| sending while the server was down, ICMP delivered | ~1 s | ~1 s |
+| sending while the server was down, ICMP filtered on the path | ~1 s | ~30 s |
+| idle while the server was down (the usual phone) | first request works | ~30 s from its first request after the restart |
+
+Salamander is not the cause (the same 30 s without it). On Hiddify,
+which balances new connections across both transports, it looks like
+the Hysteria2 share of new connections hanging for up to 30 s after
+every user change. This is the pinned sing-box **1.14.1** server: a
+**1.14.3** server closes its QUIC connections on shutdown, and in the
+same lab the stall disappeared (about 4 s, like REALITY) with unchanged
+clients. Until the pin moves, batch user changes instead of making them
+one by one during busy hours.
 
 The unattended `vpn-expiry-reconcile.timer` (checks every 10 minutes,
 `deploy/almalinux/systemd/vpn-expiry-reconcile.timer`) goes through this

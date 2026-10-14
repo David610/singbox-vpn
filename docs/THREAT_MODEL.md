@@ -5,9 +5,11 @@ server product**: a small self-hosted VPN using sing-box to serve VLESS+REALITY
 and Hysteria2, with `vpn-admin` as the control plane and `subscription` as the
 client-provisioning service.
 
-The repository also contains older/native experimental crates. They are not part
-of the default production build and must not be used to make security or
-availability claims about the supported server.
+The former native/adaptive prototype is not on `main` (it is archived on the
+`archive/native-adaptive-stack-2026` branch) and must not be used to make
+security or availability claims about the supported server. The provisioning
+agent (`apps/provisioning-agent`) belongs to the deferred managed-fleet path:
+a standalone install does not configure or run it.
 
 ## Assets to protect
 
@@ -41,6 +43,13 @@ Highest-value assets are:
 - censorship/DPI infrastructure;
 - unauthenticated connections to public VPN ports;
 - arbitrary requests to the subscription/provisioning service;
+- **authenticated VPN users, for everything except their own tunnel.** A valid
+  (or leaked) credential lets its holder send arbitrary traffic from inside the
+  exit. It must not reach node loopback services, cloud metadata, private or
+  special-purpose ranges, SMTP, or the node's own public addresses (C-16, see
+  "Egress isolation" below), and must not be able to take the node's whole
+  link by declaring a Hysteria2 bandwidth (without operator caps the exit tells
+  every client to use BBR);
 - malformed provisioning requests;
 - malformed or corrupted persisted state presented after an operational
   failure;
@@ -101,6 +110,33 @@ This is a circumvention/privacy VPN, not an anonymity network.
 - Secret-bearing files retain restrictive owner/group permissions after create,
   update, migration, backup and restore.
 - Diagnostics and normal logs do not print credential material.
+
+### Egress isolation (C-16)
+
+- Every exit config starts with `resolve` then rejects the C-16 IPv4/IPv6
+  ranges, TCP/25 and the node's own declared public addresses for every
+  inbound, ahead of `route.final = direct`; the reserved probe principal keeps
+  only its narrow allow-list. A relay forwards only to declared exits and ends
+  in `reject`.
+- A host nftables table (`inet arcana_egress_isolation`, uid-scoped to
+  `sing-box`) repeats the ranges as a second layer.
+- The own-address rule needs `public_ipv4`/`public_ipv6` in `deployment.toml`;
+  a domain-based install does not record them automatically.
+- Enforced by `relay_role_policy.rs`
+  (`exit_rendering_keeps_inbounds_outbounds_identical_and_adds_mandatory_c16_route`,
+  `relay_destinations_cannot_name_internal_or_metadata_addresses`) and
+  `c16_host_policy_contract.rs`.
+
+### Privacy boundaries the server cannot remove
+
+- The exit sees each user's source IP, opaque principal and destinations in
+  memory; it logs nothing per connection (`log.level = fatal`).
+- The exit resolves destinations through the host resolver; that resolver (the
+  provider's, by default) can see every destination domain.
+- With the Google/YouTube egress hairpin configured, that domain set leaves from
+  the paired node, which sees those destinations.
+- In two-hop mode the Direct and via-relay routes share one exit credential, so
+  a single Direct use links that user's relayed sessions to their IP.
 
 ### Fail-closed state handling
 

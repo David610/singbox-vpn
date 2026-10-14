@@ -582,7 +582,9 @@ This repo's side:
   "hysteria2_obfs_password": string|null}` — slot secrets are never printed.
 - **Agent lease store + sweeper** (`apps/provisioning-agent/src/lease_pool.rs`),
   run every poll iteration. Config (`provisioning-agent.toml`):
-  `lease_pool_size` (default 32, max 1024, `0` disables),
+  `lease_pool_size` (default `0` = disabled, so an unmanaged node never
+  synthesizes lease users or restarts sing-box to rotate them; fleet
+  bootstrap sets it explicitly; max 1024),
   `lease_slot_lifetime_secs` (default 1800, clamped to
   `max(900, 600 + batch + 60)..7200`),
   `rotation_batch_interval_secs` (default 600, clamped 60..3600),
