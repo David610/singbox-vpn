@@ -2896,6 +2896,24 @@ fn build_new_operator_user(
     (user, token)
 }
 
+/// Longest display name `user create` accepts, in characters.
+const MAX_USER_DISPLAY_NAME_CHARS: usize = 128;
+
+/// Display names are echoed by `user list`, `user links` and diagnostics. A
+/// control character (newline, tab, ESC) would forge extra output lines or
+/// smuggle terminal escape sequences into the operator's terminal, and the
+/// name can come from the control plane via the agent's CREATE_USER job
+/// (2026-09-27 audit SVPN-F17). Existing records are not touched.
+fn validate_user_display_name(name: &str) -> Result<()> {
+    if name.chars().any(char::is_control) {
+        bail!("--name must not contain control characters (newline, tab, escape, ...)");
+    }
+    if name.chars().count() > MAX_USER_DISPLAY_NAME_CHARS {
+        bail!("--name must be at most {MAX_USER_DISPLAY_NAME_CHARS} characters");
+    }
+    Ok(())
+}
+
 fn cmd_user_create(
     cfg: &DeploymentConfig,
     name: &str,
@@ -2903,6 +2921,7 @@ fn cmd_user_create(
     qr: bool,
     json: bool,
 ) -> Result<()> {
+    validate_user_display_name(name)?;
     let machine_stdout = if json {
         Some(MachineStdout::divert_human_output_to_stderr()?)
     } else {
