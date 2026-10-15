@@ -11,7 +11,7 @@ this file does not duplicate it; the table below is the summary. See
 IPv4/IPv6, full-tunnel, UDP/TCP, failover) that apply across every
 client, and see `docs/clients/` for per-platform walkthroughs.
 
-**Client tiers.** **Tamara** (<https://github.com/David610/tamara>) is the
+**Client tiers.** **Tamara Next** (<https://github.com/David610/tamara-next>) is the
 PRIMARY, first-party client and consumes the versioned provisioning contract
 (`docs/PROVISIONING_CONTRACT.md`). Hiddify and the other importers below are
 FALLBACK, third-party consumers of the legacy `/sub/` formats. The tier does not
