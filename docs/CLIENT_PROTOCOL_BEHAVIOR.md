@@ -23,7 +23,10 @@ Both tiers are rendered from the same endpoint model
 about a user's credentials. Tamara Next validates the versioned envelope and builds a supported Core
 configuration from structured endpoint/credential facts using its own
 `SingBoxConfigBuilder`. It does not apply the embedded `singbox_config`
-verbatim: client DNS, TUN, IPv6 and route rules remain client-owned.
+verbatim: client DNS, TUN, IPv6 and route rules remain client-owned. The one
+thing it does read from that document is a relay route's first-hop `detour`
+dialer, which it cross-checks against the published endpoints and rejects the
+whole import on any mismatch.
 Fallback clients keep consuming the legacy representations. Server metadata may
 describe selectable routes, but client-owned TUN/DNS/lifecycle policy
 remains outside this contract.

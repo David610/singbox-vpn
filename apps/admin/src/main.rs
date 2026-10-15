@@ -3014,7 +3014,7 @@ fn cmd_user_create(
     println!("  {}", subscription_url_singbox(cfg, &token));
     println!();
     println!(
-        "singbox-client (the first-party client) uses the versioned provisioning contract \
+        "Tamara Next (the first-party client) uses the versioned provisioning contract \
          instead — same credential, schema v{} (see docs/PROVISIONING_CONTRACT.md):",
         provisioning_contract::SCHEMA_VERSION
     );

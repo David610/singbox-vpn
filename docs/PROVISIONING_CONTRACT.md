@@ -36,7 +36,9 @@ independent `tamara-next` repository. It does **not** hand the embedded
 `singbox_config` to a Hiddify-derived Core verbatim. In particular, Tamara
 Next owns the device's DNS, TUN, IP-family and routing policy; the embedded
 server-rendered config is useful contract evidence but is not trusted device
-policy. See `tamara-next/docs/contracts/singbox-vpn-provisioning.md`.
+policy. The only value it takes from the embedded config is a relay route's
+first-hop `detour` dialer, which it cross-checks against the published
+endpoints (any mismatch fails the whole import). See `tamara-next/docs/contracts/singbox-vpn-provisioning.md`.
 Historical Hiddify-Core statements described the now-archived legacy Tamara.
 
 Both tiers are served from the same endpoint model, so they can never
