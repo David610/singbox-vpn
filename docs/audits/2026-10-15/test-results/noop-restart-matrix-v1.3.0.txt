@@ -1,0 +1,9 @@
+sing-box config updated at "/etc/vpn/compat/sing-box/config.json" (validated by `sing-box check`).
+reloading sing-box (5 active user(s) in the new config) — this is a full restart (sing-box has no in-place reload), so all currently connected clients will be briefly disconnected.
+sing-box reloaded and verified active (including a real REALITY handshake self-test that PASSED).
+renew-native #1 (mints fresh grant)                  restarted=YES
+renew-native #2 (renews existing grant)              restarted=no
+enable (already enabled = identical config)          restarted=no
+enable again                                         restarted=no
+vpn-admin render-config (no change)                  restarted=no
+remove user                                          restarted=no

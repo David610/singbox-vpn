@@ -191,6 +191,16 @@ impl CompatibilityServiceManager {
     }
 
     fn reload_or_restart(&self) -> Result<(), String> {
+        // sing-box has no in-place reload, so every authorization change is a
+        // deliberate restart. systemd counts those against the unit's
+        // StartLimitBurst, which exists to stop a crash loop, not an operator:
+        // once a burst of changes trips it the unit is parked `failed` and
+        // every further restart is refused until a watchdog runs minutes
+        // later. Clearing the counter first keeps administrative restarts out
+        // of the crash-loop budget; automatic `Restart=on-failure` restarts
+        // still count, so real crash loops stay bounded. Best effort: on a
+        // unit that is not failed this is a no-op.
+        let _ = self.run(&["reset-failed", &self.service_name]);
         let output = self
             .run(&["reload-or-restart", &self.service_name])
             .map_err(|e| format!("failed to invoke systemctl: {e}"))?;
@@ -325,6 +335,66 @@ exit 1
             .with_settle(Duration::from_millis(1));
         let err = mgr.reload_and_verify().unwrap_err();
         assert!(err.contains("did not remain active"));
+    }
+
+    /// A fake `systemctl` that models systemd's start-rate limiter
+    /// (`StartLimitBurst`): after `limit` starts without an intervening
+    /// `reset-failed`, `reload-or-restart` is refused ("start request repeated
+    /// too quickly") and the unit is parked failed. `reset-failed` clears it.
+    fn fake_systemctl_with_start_limit(dir: &std::path::Path, limit: u32) -> PathBuf {
+        let path = dir.join("systemctl");
+        let counter = dir.join("starts");
+        let script = format!(
+            r#"#!/usr/bin/env bash
+COUNTER="{counter}"
+[ -f "$COUNTER" ] || echo 0 > "$COUNTER"
+case "$1" in
+  --version) exit 0 ;;
+  show) echo "loaded"; exit 0 ;;
+  reset-failed) echo 0 > "$COUNTER"; exit 0 ;;
+  reload-or-restart)
+    n=$(cat "$COUNTER")
+    if [ "$n" -ge {limit} ]; then
+      echo "Failed to restart $2: Start request repeated too quickly." >&2
+      exit 1
+    fi
+    echo $((n + 1)) > "$COUNTER"
+    exit 0 ;;
+  is-active)
+    n=$(cat "$COUNTER")
+    [ "$n" -gt 0 ] && [ "$n" -le {limit} ] && exit 0
+    exit 3 ;;
+esac
+exit 1
+"#,
+            counter = counter.display(),
+        );
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(script.as_bytes()).unwrap();
+        drop(f);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// Every user mutation is a deliberate administrative restart. A burst of
+    /// them (an agent reconciling several leases, an operator rotating a few
+    /// credentials) must not be refused by the crash-loop limiter and leave
+    /// the whole data plane down until a watchdog notices: reproduced on a
+    /// real v1.3.0 host, where the 9th restart within 300 s parked sing-box
+    /// `failed (start-limit-hit)` for 3 min 35 s.
+    #[test]
+    fn a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = fake_systemctl_with_start_limit(dir.path(), 8);
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(systemctl)
+            .with_settle(Duration::from_millis(20));
+        for i in 1..=20 {
+            assert!(
+                mgr.reload_and_verify().is_ok(),
+                "reload {i} of a rapid burst was refused by the start-rate limiter"
+            );
+        }
     }
 
     /// `systemctl is-failed` exits 0 when the unit IS in `failed` state

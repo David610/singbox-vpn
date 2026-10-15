@@ -1,0 +1,6 @@
+wsl: Failed to start the systemd user session for 'test'. See journalctl for more details.
+test doctor_accepts_the_own_public_address_rule_it_tells_operators_to_enable ... FAILED
+thread 'doctor_accepts_the_own_public_address_rule_it_tells_operators_to_enable' (913) panicked at crates/compat-config/tests/relay_role_policy.rs:68:5:
+assertion failed: exit_egress_policy_matches(&cfg, &doc)
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 79 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p compat-config --test relay_role_policy`

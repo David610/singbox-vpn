@@ -239,6 +239,40 @@ Open the matching TCP port in your provider firewall too.
 A successful installation prints the first user's subscription URL and QR
 code. See the top-level `README.md` for the short Hiddify connection steps.
 
+## Importing the subscription into your app
+
+`vpn user create`, `vpn user rotate-token` and `vpn user create --json` print one
+link per app family. They all carry the **same token and the same credentials**:
+choosing a different link never creates a second credential or device seat.
+
+| App | Link to use | Evidence |
+|---|---|---|
+| Hiddify | `subscription_url` (`?format=hiddify`), or `subscription_url_hiddify_pinned` for a single pinned route | user reported on a real iPhone (earlier releases) |
+| Shadowrocket | `subscription_url_shadowrocket` (`?format=uri&encoding=base64`) | the plain-text body is known to be rejected; the Base64 body decodes to exactly the plain feed (server verified). **Import on a real iPhone: not yet tested** |
+| INCY | `subscription_url` (plain share links) or the Base64 link | INCY's documented format accepts both. A user report against INCY 2.4.5 says a VLESS-REALITY-only subscription imports as an empty provider. **Unverified on a device** |
+| sing-box / other sing-box clients | `?format=singbox` | server verified |
+
+Importing is not connecting: a successful import does not prove the app can
+start its core, resolve DNS or reach the internet. Verify each of those on the
+device (`docs/DEVICE_ACCEPTANCE_TESTS.md`).
+
+### Hiddify on iOS: "open .../Working/configs/<id>.json: no such file or directory"
+
+This error is raised by the app, not by the server. Hiddify keeps each profile's
+JSON in the app group's `Library/Caches/Working/configs/` directory (a cache
+iOS may purge) while the profile list itself is stored elsewhere, and it does
+not re-create a missing file before connecting. No server change can cause or
+cure it. Delete the profile in Hiddify and add the subscription again.
+
+### User changes restart the data plane
+
+sing-box has no in-place reload, so adding, disabling, enabling or removing a
+user and rotating a VLESS or Hysteria2 credential each restart sing-box and drop
+every connected client briefly (REALITY clients reconnect at once; a Hysteria2
+client can stall until its 30 s QUIC idle timeout). `rotate-token`, `set-expiry`
+and re-applying an unchanged configuration do not restart it. Batch changes
+where you can.
+
 ## YouTube Shorts and your exit's IP
 
 YouTube refuses Shorts video to some datacenter IPs (the player says "OK",

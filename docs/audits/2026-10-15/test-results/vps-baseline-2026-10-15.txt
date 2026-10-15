@@ -1,0 +1,186 @@
+### date
+Thu Oct 15 11:12:26 UTC 2026
+ 11:12:26 up 2 days,  1:56,  1 user,  load average: 0.00, 0.00, 0.00
+### os/kernel/arch
+Ubuntu 24.04.5 LTS
+Linux server-1870504981 6.8.0-45-generic #45-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug 30 12:02:04 UTC 2024 x86_64 x86_64 x86_64 GNU/Linux
+amd64
+### cpu/mem/disk
+2
+model name	: AMD EPYC 9654 96-Core Processor
+               total        used        free      shared  buff/cache   available
+Mem:           3.8Gi       504Mi       1.5Gi       1.0Mi       2.2Gi       3.3Gi
+Swap:             0B          0B          0B
+/dev/sda1        61G  2.5G   59G   4% /
+### addresses
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+eth0             UP             91.244.71.165/24 2a12:bec4:19a5:9aa::/64 fe80::be24:11ff:fe85:75a7/64 
+
+default via 91.244.71.1 dev eth0 proto static 
+91.244.71.0/24 dev eth0 proto kernel scope link src 91.244.71.165 
+2a07:cec0:7::/48 dev eth0 proto ra metric 1024 expires 2591994sec mtu 1500 hoplimit 64 pref medium
+2a07:cec0:4100::/48 dev eth0 proto ra metric 1024 expires 2591994sec mtu 1500 hoplimit 64 pref medium
+2a07:cec0:4500::/48 dev eth0 proto ra metric 1024 expires 2591994sec mtu 1500 hoplimit 64 pref medium
+2a12:bec4:19a0::/48 dev eth0 proto ra metric 1024 expires 2591994sec mtu 1500 hoplimit 64 pref medium
+2a12:bec4:19a5:9aa::/64 dev eth0 proto kernel metric 256 pref medium
+2a12:bec4:19a5::/48 dev eth0 proto ra metric 1024 expires 2591994sec mtu 1500 hoplimit 64 pref medium
+fe80::/64 dev eth0 proto kernel metric 256 pref medium
+default proto static metric 1024 pref medium
+	nexthop via 2a12:bec4:19a5::1 dev eth0 weight 1 onlink 
+	nexthop via fe80::e678:76ff:fef3:9433 dev eth0 weight 1 
+### dns
+Global
+         Protocols: -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+  resolv.conf mode: stub
+
+Link 2 (eth0)
+    Current Scopes: DNS
+         Protocols: +DefaultRoute -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+Current DNS Server: 1.1.1.1
+       DNS Servers: 1.1.1.1
+        DNS Domain: evolushost.com
+### firewall
+Status: inactive
+-P INPUT ACCEPT
+-P FORWARD ACCEPT
+-P OUTPUT ACCEPT
+### listening
+Netid State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                                                  
+udp   UNCONN 0      0         127.0.0.54:53        0.0.0.0:*    users:(("systemd-resolve",pid=11452,fd=16))             
+udp   UNCONN 0      0      127.0.0.53%lo:53        0.0.0.0:*    users:(("systemd-resolve",pid=11452,fd=14))             
+tcp   LISTEN 0      4096      127.0.0.54:53        0.0.0.0:*    users:(("systemd-resolve",pid=11452,fd=17))             
+tcp   LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*    users:(("sshd",pid=31318,fd=3),("systemd",pid=1,fd=163))
+tcp   LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*    users:(("systemd-resolve",pid=11452,fd=15))             
+tcp   LISTEN 0      4096            [::]:22           [::]:*    users:(("sshd",pid=31318,fd=4),("systemd",pid=1,fd=168))
+### enabled services
+apport-autoreport.path
+tpm-udev.path
+apparmor.service
+apport.service
+blk-availability.service
+cloud-config.service
+cloud-final.service
+cloud-init-local.service
+cloud-init.service
+console-setup.service
+cron.service
+dmesg.service
+e2scrub_reap.service
+finalrd.service
+getty@.service
+grub-common.service
+grub-initrd-fallback.service
+keyboard-setup.service
+lvm2-monitor.service
+ModemManager.service
+multipathd.service
+networkd-dispatcher.service
+open-iscsi.service
+open-vm-tools.service
+pollinate.service
+rsyslog.service
+secureboot-db.service
+setvtrgb.service
+snapd.apparmor.service
+snapd.autoimport.service
+snapd.core-fixup.service
+snapd.recovery-chooser-trigger.service
+snapd.seeded.service
+snapd.service
+snapd.system-shutdown.service
+sysstat.service
+systemd-networkd-wait-online.service
+systemd-networkd.service
+systemd-pstore.service
+systemd-resolved.service
+systemd-timesyncd.service
+ua-reboot-cmds.service
+ubuntu-advantage.service
+udisks2.service
+ufw.service
+unattended-upgrades.service
+vgauth.service
+apport-forward.socket
+cloud-init-hotplugd.socket
+dm-event.socket
+iscsid.socket
+lvm2-lvmpolld.socket
+lxd-installer.socket
+multipathd.socket
+snapd.socket
+ssh.socket
+systemd-networkd.socket
+uuidd.socket
+remote-fs.target
+apport-autoreport.timer
+apt-daily-upgrade.timer
+apt-daily.timer
+dpkg-db-backup.timer
+e2scrub_all.timer
+fstrim.timer
+fwupd-refresh.timer
+logrotate.timer
+man-db.timer
+mdcheck_continue.timer
+mdcheck_start.timer
+mdmonitor-oneshot.timer
+motd-news.timer
+snapd.snap-repair.timer
+sysstat-collect.timer
+sysstat-summary.timer
+ua-timer.timer
+update-notifier-download.timer
+update-notifier-motd.timer
+### sshd effective
+port 22
+permitrootlogin yes
+pubkeyauthentication yes
+passwordauthentication yes
+### users w/ login
+root:/bin/bash
+sync:/bin/sync
+### packages of interest
+bind9-dnsutils 1:9.18.39-0ubuntu0.24.04.7
+ca-certificates 20260601~24.04.1
+curl 8.5.0-2ubuntu10.15
+fonts-ubuntu-console 0.869+git20240321-0ubuntu1
+git 1:2.43.0-1ubuntu7.3
+git-man 1:2.43.0-1ubuntu7.3
+jq 1.7.1-3ubuntu0.24.04.2
+libcurl3t64-gnutls:amd64 8.5.0-2ubuntu10.15
+libcurl4t64:amd64 8.5.0-2ubuntu10.15
+libjq1:amd64 1.7.1-3ubuntu0.24.04.2
+libnftables1:amd64 1.0.9-1ubuntu0.1
+librtmp1:amd64 2.4+20151223.gitfa8646d.1-2build7
+libtiff6:amd64 4.5.1+git230720-4ubuntu2.5
+libxmlsec1t64-openssl:amd64 1.2.39-5build2
+lshw 02.19.git.2021.06.19.996aaad9c7-2ubuntu0.24.04.1
+nftables 1.0.9-1ubuntu0.1
+openssl 3.0.13-0ubuntu3.16
+python3-openssl 23.2.0-1ubuntu0.1
+tcpdump 4.99.4-3ubuntu4.24.04.1
+ufw 0.36.2-6
+### sing-box / singbox-vpn present?
+ls: cannot access '/etc/singbox-vpn': No such file or directory
+/opt:
+total 8
+drwxr-xr-x  2 root root 4096 Oct  4  2024 .
+drwxr-xr-x 22 root root 4096 Oct 13 09:15 ..
+
+/usr/local/bin:
+total 8
+drwxr-xr-x  2 root root 4096 Oct  4  2024 .
+drwxr-xr-x 10 root root 4096 Oct  4  2024 ..
+### ipv6 reachability
+--- 2606:4700:4700::1111 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1000ms
+rtt min/avg/max/mdev = 0.995/0.995/0.996/0.000 ms
+### ipv4 reachability
+--- 1.1.1.1 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1001ms
+rtt min/avg/max/mdev = 1.230/1.249/1.268/0.019 ms
+### public ips
+91.244.71.165
+2a12:bec4:19a5:9aa::
+### reverse DNS
+91.244.71.165   customer.evolus-ix.com

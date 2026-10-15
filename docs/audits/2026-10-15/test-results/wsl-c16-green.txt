@@ -1,0 +1,70 @@
+FMT_OK
+    Checking compat-config v1.3.1 (/mnt/d/David610/.worktrees/m2026-10-15/singbox-main/crates/compat-config)
+    Checking admin v1.3.1 (/mnt/d/David610/.worktrees/m2026-10-15/singbox-main/apps/admin)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 37.33s
+      1 test core_start_failure_stays_visible_with_production_logging ... FAILED
+      1 test doctor_accepts_the_own_public_address_rule_it_tells_operators_to_enable ... FAILED
+      1 test harness_readiness_is_owned_by_the_started_process ... FAILED
+      1 test real_core_literal_family_and_proxy_recovery_boundaries ... FAILED
+      1 test rejected_and_revoked_credentials_never_reach_relay_or_exit_logs ... FAILED
+      1 test relay_and_exit_logs_carry_no_credentials_and_no_rejected_destinations ... FAILED
+      1 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.92s
+      1 test result: FAILED. 1 passed; 21 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.51s
+      1 test result: FAILED. 79 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+      1 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.66s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 183 filtered out; finished in 4.20s
+      1 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+      1 test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+      1 test result: ok. 184 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.87s
+      2 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+      1 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.73s
+      1 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.90s
+      2 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+      1 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.62s
+      1 test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+      1 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
+      1 test s01_direct_route_client_exit_target ... FAILED
+      1 test s02_relay_route_client_relay_exit_target ... FAILED
+      1 test s03_relay_is_not_an_internet_exit ... FAILED
+      1 test s04_wrong_relay_credential_fails ... FAILED
+      1 test s05_wrong_exit_credential_fails_after_reaching_the_relay ... FAILED
+      1 test s06_exit_unavailable_fails_without_direct_fallback ... FAILED
+      1 test s07_relay_unavailable_fails_while_direct_remains_usable ... FAILED
+      1 test s08_disabled_user_cannot_reconnect ... FAILED
+      1 test s09_expired_user_loses_authorization_after_reconciliation ... FAILED
+      1 test s10_credential_rotation_old_fails_new_works_scopes_independent ... FAILED
+      1 test s11_malformed_or_dangling_declarations_fail_closed_and_apply_nothing ... FAILED
+      1 test s12_unpaired_relay_cannot_reach_anything_as_an_exit ... FAILED
+      1 test s13_relay_reaches_only_the_declared_exit_target ... FAILED
+      1 test s14_reload_and_repair_preserve_role_and_restrictions ... FAILED
+      1 test s15_crash_restart_never_passes_through_an_unrestricted_state ... FAILED
+      1 test s16_privacy_plus_client_never_connects_to_the_exit_directly ... FAILED
+      1 test s17_relay_down_privacy_plus_fails_closed_while_direct_stays_explicit ... FAILED
+      1 thread 'core_start_failure_stays_visible_with_production_logging' (3777) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 'doctor_accepts_the_own_public_address_rule_it_tells_operators_to_enable' (3688) panicked at crates/compat-config/tests/relay_role_policy.rs:83:5:
+      1 thread 'harness_readiness_is_owned_by_the_started_process' (3779) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 'real_core_literal_family_and_proxy_recovery_boundaries' (3168) panicked at crates/compat-config/tests/egress_family_interop.rs:69:5:
+      1 thread 'rejected_and_revoked_credentials_never_reach_relay_or_exit_logs' (3780) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 'relay_and_exit_logs_carry_no_credentials_and_no_rejected_destinations' (3789) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's01_direct_route_client_exit_target' (3793) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's02_relay_route_client_relay_exit_target' (3802) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's03_relay_is_not_an_internet_exit' (3812) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's04_wrong_relay_credential_fails' (3823) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's05_wrong_exit_credential_fails_after_reaching_the_relay' (3834) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's06_exit_unavailable_fails_without_direct_fallback' (3843) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's07_relay_unavailable_fails_while_direct_remains_usable' (3854) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's08_disabled_user_cannot_reconnect' (3864) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's09_expired_user_loses_authorization_after_reconciliation' (3874) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's10_credential_rotation_old_fails_new_works_scopes_independent' (3884) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's11_malformed_or_dangling_declarations_fail_closed_and_apply_nothing' (3894) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's12_unpaired_relay_cannot_reach_anything_as_an_exit' (3903) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's13_relay_reaches_only_the_declared_exit_target' (3914) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's14_reload_and_repair_preserve_role_and_restrictions' (3923) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's15_crash_restart_never_passes_through_an_unrestricted_state' (3934) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's16_privacy_plus_client_never_connects_to_the_exit_directly' (3943) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:
+      1 thread 's17_relay_down_privacy_plus_fails_closed_while_direct_stays_explicit' (3954) panicked at crates/compat-config/tests/two_hop_system.rs:201:9:

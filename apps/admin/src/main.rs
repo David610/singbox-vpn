@@ -2630,6 +2630,18 @@ fn subscription_url(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
+/// The Base64 share-link subscription URL for importers that reject the
+/// plain-text body `?format=hiddify` serves (Shadowrocket is confirmed to; see
+/// `services/subscription`'s `encoding` query documentation). Same token, same
+/// credentials and same share links — only the body encoding differs — so it
+/// never creates a second credential or device seat.
+fn subscription_url_shadowrocket(cfg: &DeploymentConfig, token: &str) -> String {
+    format!(
+        "https://{}:{}/sub/{}?format=uri&encoding=base64",
+        cfg.subscription_host, cfg.subscription.public_port, token
+    )
+}
+
 /// The native sing-box JSON subscription URL (no `format` parameter maps
 /// to this — see services/subscription/src/lib.rs), for sing-box-core
 /// clients that are NOT Hiddify (e.g. sing-box itself, or another
@@ -2956,6 +2968,10 @@ fn cmd_user_create(
             "name": name,
             "enabled": true,
             "subscription_url": url,
+            // Same credential as `subscription_url`, Base64-encoded body for
+            // Shadowrocket-style importers. Additive; see
+            // subscription_url_shadowrocket.
+            "subscription_url_shadowrocket": subscription_url_shadowrocket(cfg, &token),
             // The first-party client's provisioning URL. Additive;
             // every key above is unchanged — see provisioning_url.
             "provisioning_url": provisioning_url(cfg, &token),
@@ -3007,6 +3023,11 @@ fn cmd_user_create(
         "This URL is shown once and cannot be recovered later — use \
          `vpn-admin user rotate-token {id}` to mint a new one if lost."
     );
+    println!();
+    println!(
+        "Shadowrocket (iOS) and other importers that reject a plain-text subscription — same          credential, Base64-encoded body (use THIS one, not the Hiddify URL, in Shadowrocket):"
+    );
+    println!("  {}", subscription_url_shadowrocket(cfg, &token));
     println!();
     println!(
         "Native sing-box clients (not Hiddify) should use the ?format=singbox variant instead:"

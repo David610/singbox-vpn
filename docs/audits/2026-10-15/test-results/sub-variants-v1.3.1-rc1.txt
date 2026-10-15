@@ -1,0 +1,55 @@
+=== GET /sub/<TOKEN>
+status=200 bytes=1526 headers={'content-type': 'application/json', 'cache-control': 'no-store', 'profile-title': 'Arcana VPN'}
+JSON keys=['outbounds', 'route'] outbounds=[('vless', 'Reality'), ('hysteria2', 'Hysteria2'), ('urltest', 'auto'), ('selector', 'select'), ('direct', 'direct')]
+
+=== GET /sub/<TOKEN>?format=singbox
+status=200 bytes=1526 headers={'content-type': 'application/json', 'cache-control': 'no-store', 'profile-title': 'Arcana VPN'}
+JSON keys=['outbounds', 'route'] outbounds=[('vless', 'Reality'), ('hysteria2', 'Hysteria2'), ('urltest', 'auto'), ('selector', 'select'), ('direct', 'direct')]
+
+=== GET /sub/<TOKEN>?format=hiddify
+status=200 bytes=464 headers={'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'profile-title': 'Arcana VPN'}
+PLAINTEXT 2 line(s)
+   vless://<UUID>@vpn.xn----8sba1cvaif4e.com:443?encryption=none&security=reality&sni=www.cloudflare.com&fp=chrome&pbk=<PBK>&sid=<SID>&type=tcp&flow=xtls-rprx-vision#Reality
+   hysteria2://<AUTH>@vpn.xn----8sba1cvaif4e.com:443?sni=vpn.xn----8sba1cvaif4e.com&insecure=0&obfs=salamander&obfs-password=<OBFS>#Hysteria2
+
+=== GET /sub/<TOKEN>?format=uri
+status=200 bytes=464 headers={'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'profile-title': 'Arcana VPN'}
+PLAINTEXT 2 line(s)
+   vless://<UUID>@vpn.xn----8sba1cvaif4e.com:443?encryption=none&security=reality&sni=www.cloudflare.com&fp=chrome&pbk=<PBK>&sid=<SID>&type=tcp&flow=xtls-rprx-vision#Reality
+   hysteria2://<AUTH>@vpn.xn----8sba1cvaif4e.com:443?sni=vpn.xn----8sba1cvaif4e.com&insecure=0&obfs=salamander&obfs-password=<OBFS>#Hysteria2
+
+=== GET /sub/<TOKEN>?format=uri&encoding=base64
+status=200 bytes=620 headers={'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'profile-title': 'Arcana VPN'}
+BASE64 -> 2 line(s)
+   vless://<UUID>@vpn.xn----8sba1cvaif4e.com:443?encryption=none&security=reality&sni=www.cloudflare.com&fp=chrome&pbk=<PBK>&sid=<SID>&type=tcp&flow=xtls-rprx-vision#Reality
+   hysteria2://<AUTH>@vpn.xn----8sba1cvaif4e.com:443?sni=vpn.xn----8sba1cvaif4e.com&insecure=0&obfs=salamander&obfs-password=<OBFS>#Hysteria2
+
+=== GET /sub/<TOKEN>?format=hiddify&encoding=base64
+status=200 bytes=620 headers={'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'profile-title': 'Arcana VPN'}
+BASE64 -> 2 line(s)
+   vless://<UUID>@vpn.xn----8sba1cvaif4e.com:443?encryption=none&security=reality&sni=www.cloudflare.com&fp=chrome&pbk=<PBK>&sid=<SID>&type=tcp&flow=xtls-rprx-vision#Reality
+   hysteria2://<AUTH>@vpn.xn----8sba1cvaif4e.com:443?sni=vpn.xn----8sba1cvaif4e.com&insecure=0&obfs=salamander&obfs-password=<OBFS>#Hysteria2
+
+=== GET /sub/<TOKEN>?format=singbox&encoding=base64
+status=400 bytes=139 headers={'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store'}
+PLAINTEXT 1 line(s)
+   encoding=base64 is only supported with format=uri/hiddify — format=singbox already returns JSON, which no importer expects base64-wrapped
+
+=== GET /sub/<TOKEN>?format=singbox&compat=hiddify-pinned
+status=200 bytes=1023 headers={'content-type': 'application/json', 'cache-control': 'no-store', 'profile-title': 'Arcana VPN'}
+JSON keys=['outbounds', 'route'] outbounds=[('vless', 'Reality'), ('urltest', 'auto'), ('selector', 'select'), ('direct', 'direct')]
+
+=== GET /sub/<TOKEN>?format=links
+status=400 bytes=14 headers={'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store'}
+PLAINTEXT 1 line(s)
+   unknown format
+
+=== GET /sub/<TOKEN>?format=base64
+status=400 bytes=14 headers={'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store'}
+PLAINTEXT 1 line(s)
+   unknown format
+
+=== GET /sub/<TOKEN>?format=clash
+status=400 bytes=14 headers={'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store'}
+PLAINTEXT 1 line(s)
+   unknown format

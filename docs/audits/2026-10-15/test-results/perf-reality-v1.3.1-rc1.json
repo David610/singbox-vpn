@@ -1,0 +1,66 @@
+{
+ "label": "v1.3.1-rc.1 REALITY",
+ "when": "2026-10-15T14:55:04",
+ "results": {
+  "direct": {
+   "requests_ok": 20,
+   "tcp_connect_s": {
+    "n": 20,
+    "median": 0.029,
+    "p90": 0.035,
+    "min": 0.027,
+    "max": 0.042
+   },
+   "tls_handshake_done_s": {
+    "n": 20,
+    "median": 0.085,
+    "p90": 0.095,
+    "min": 0.077,
+    "max": 0.331
+   },
+   "time_to_first_byte_s": {
+    "n": 20,
+    "median": 0.104,
+    "p90": 0.115,
+    "min": 0.096,
+    "max": 0.351
+   },
+   "download_25MB_mbit_s": [
+    8.7,
+    12.1,
+    9.4
+   ],
+   "download_median_mbit_s": 9.4
+  },
+  "reality_tunnel": {
+   "requests_ok": 20,
+   "tcp_connect_s": {
+    "n": 20,
+    "median": 0.002,
+    "p90": 0.002,
+    "min": 0.001,
+    "max": 0.003
+   },
+   "tls_handshake_done_s": {
+    "n": 20,
+    "median": 0.123,
+    "p90": 0.138,
+    "min": 0.11,
+    "max": 0.145
+   },
+   "time_to_first_byte_s": {
+    "n": 20,
+    "median": 0.151,
+    "p90": 0.167,
+    "min": 0.135,
+    "max": 1.975
+   },
+   "download_25MB_mbit_s": [
+    10.5,
+    11.1,
+    13.1
+   ],
+   "download_median_mbit_s": 11.1
+  }
+ }
+}

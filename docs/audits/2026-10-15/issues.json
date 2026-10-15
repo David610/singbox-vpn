@@ -1,0 +1,305 @@
+{
+ "generated": "2026-10-15",
+ "issues": [
+  {
+   "id": "I-01",
+   "repo": "vpn-web",
+   "severity": "high",
+   "title": "Hysteria2 links from vpn-web use the REALITY decoy as sni",
+   "evidence": "server+code",
+   "status": "fixed-on-branch",
+   "fix": "vpn-web cb3b608",
+   "note": "R1: x509 name mismatch on a real node; fixed by node hostname SNI"
+  },
+  {
+   "id": "I-02",
+   "repo": "vpn-web",
+   "severity": "high",
+   "title": "Hysteria2 links from vpn-web omit the node's Salamander obfuscation",
+   "evidence": "server+code",
+   "status": "fixed-on-branch",
+   "fix": "vpn-web cb3b608",
+   "note": "R1: timeout without obfs; endpoint now reads node_transport_secrets"
+  },
+  {
+   "id": "I-03",
+   "repo": "vpn-web",
+   "severity": "medium",
+   "title": "/sub/[token] had no tests",
+   "evidence": "code",
+   "status": "fixed-on-branch",
+   "fix": "vpn-web cb3b608, 4970a82",
+   "note": "10 endpoint tests, mutation-checked"
+  },
+  {
+   "id": "I-04",
+   "repo": "vpn-web",
+   "severity": "medium",
+   "title": "`xray` format is not an Xray config ({version,remarks,servers}); INCY's JSON option expects full Xray configs",
+   "evidence": "code+docs",
+   "status": "open",
+   "fix": "",
+   "note": "not exposed in the portal picker; needs a real Xray renderer validated with `xray run -test`"
+  },
+  {
+   "id": "I-05",
+   "repo": "vpn-web/singbox-vpn",
+   "severity": "high",
+   "title": "INCY is declared VLESS-REALITY-only; a third-party report says INCY 2.4.5 imports VLESS-REALITY-only subscriptions as an empty provider while Hysteria2-only works",
+   "evidence": "user-reported(third party)",
+   "status": "open",
+   "fix": "",
+   "note": "UNVERIFIED on a device; needs iPhone test with INCY"
+  },
+  {
+   "id": "I-06",
+   "repo": "singbox-vpn",
+   "severity": "high",
+   "title": "No user-facing Shadowrocket (Base64) link although plain body is known to be rejected",
+   "evidence": "code+server",
+   "status": "fixed-on-branch",
+   "fix": "singbox-vpn a54a2e9",
+   "note": "live body decodes to the plain feed; device import untested"
+  },
+  {
+   "id": "I-07",
+   "repo": "vpn-web",
+   "severity": "medium",
+   "title": "PR #83 UI: throwing helper called in render; clipboard-blocked message replaced by a misleading one",
+   "evidence": "code",
+   "status": "fixed-on-branch",
+   "fix": "vpn-web 7416429",
+   "note": ""
+  },
+  {
+   "id": "I-08",
+   "repo": "hiddify-app",
+   "severity": "high",
+   "title": "iOS: profile JSON in purgeable Library/Caches/Working/configs while profile DB is persistent; connect() does not check the file exists -> 'open ...configs/<id>.json: no such file'",
+   "evidence": "code",
+   "status": "open",
+   "fix": "",
+   "note": "client-side; server cannot cause or fix; trigger not observed on a device; workaround: delete and re-add the profile"
+  },
+  {
+   "id": "I-09",
+   "repo": "hiddify",
+   "severity": "high",
+   "title": "Issue B: 'failed to start core / CoreAlert.startService' on Hiddify 4.0.0 dev",
+   "evidence": "hypothesis",
+   "status": "open",
+   "fix": "",
+   "note": "not reproduced: current core accepts and runs every server representation; see 03 for the v4.0.0 core result"
+  },
+  {
+   "id": "I-10",
+   "repo": "singbox-vpn",
+   "severity": "high",
+   "title": "7 of 10 user operations restart sing-box and drop every client's connections",
+   "evidence": "server",
+   "status": "open",
+   "fix": "docs 40d2f4d",
+   "note": "architecture constraint (sing-box has no in-place reload); documented; batching/coalescing not implemented"
+  },
+  {
+   "id": "I-11",
+   "repo": "singbox-vpn",
+   "severity": "critical",
+   "title": "Burst of 8 restarts in 300 s parks sing-box in start-limit-hit: full outage until the watchdog (3 min 35 s measured), operations fail",
+   "evidence": "server",
+   "status": "fixed-on-branch",
+   "fix": "singbox-vpn c1c0a7f",
+   "note": "live: 12 restarts, 0 failures"
+  },
+  {
+   "id": "I-12",
+   "repo": "singbox-vpn",
+   "severity": "high",
+   "title": "Hysteria2 caps render ignore_client_bandwidth=true and lock out every standard client (v1.3.0)",
+   "evidence": "server",
+   "status": "fixed-on-main",
+   "fix": "main 9a07503",
+   "note": "not in v1.3.0 or v1.3.1-rc.1; needs a release"
+  },
+  {
+   "id": "I-13",
+   "repo": "singbox-vpn",
+   "severity": "high",
+   "title": "Stable v1.3.0 lacks fixes already on main: rustls bump (RUSTSEC-2026-0346..0349), vpn-benchmark restarting production by default, agent run bounds",
+   "evidence": "code(git log)",
+   "status": "open",
+   "fix": "",
+   "note": "a corrected stable release is required; advisories not independently re-audited"
+  },
+  {
+   "id": "I-14",
+   "repo": "singbox-vpn",
+   "severity": "medium",
+   "title": "doctor FAILs a correct config once public_ipv4/public_ipv6 are set (contradicts its own warning)",
+   "evidence": "server+code",
+   "status": "fixed-on-branch",
+   "fix": "singbox-vpn 63ad42c",
+   "note": ""
+  },
+  {
+   "id": "I-15",
+   "repo": "singbox-vpn",
+   "severity": "high",
+   "title": "Installer leaves the C-16 own-address reject off when public_host is a DNS name: tunnel users reach the node's own services",
+   "evidence": "server",
+   "status": "open",
+   "fix": "",
+   "note": "manual mitigation verified (set public_ipv4/ipv6); installer should record the node's public addresses"
+  },
+  {
+   "id": "I-16",
+   "repo": "singbox-vpn",
+   "severity": "medium",
+   "title": "Dev-channel installer over an existing install reuses the old source tree and records version 'main'",
+   "evidence": "server",
+   "status": "open",
+   "fix": "",
+   "note": "a clean install is required to deploy a branch"
+  },
+  {
+   "id": "I-17",
+   "repo": "singbox-vpn",
+   "severity": "low",
+   "title": "doctor release-identity WARN on source builds because vpn and vpn-admin are separate compiles with different hashes",
+   "evidence": "server",
+   "status": "open",
+   "fix": "",
+   "note": ""
+  },
+  {
+   "id": "I-18",
+   "repo": "singbox-vpn",
+   "severity": "medium",
+   "title": "doctor --protocol and installer self-test cover REALITY only; Hysteria2 breakage passes health checks",
+   "evidence": "server",
+   "status": "open",
+   "fix": "",
+   "note": "the caps lockout passed every built-in check"
+  },
+  {
+   "id": "I-19",
+   "repo": "singbox-vpn",
+   "severity": "medium",
+   "title": "Existing deployments keep exit ipv6_literal=allow after update; dual-stack destinations are reached over IPv6",
+   "evidence": "server",
+   "status": "open",
+   "fix": "",
+   "note": "fresh installs from v1.3.1-rc.1 default to reject_google"
+  },
+  {
+   "id": "I-20",
+   "repo": "singbox-vpn",
+   "severity": "medium",
+   "title": "Exit IPv4 91.244.71.165 is refused by YouTube for Shorts (0/6 default and IPv4-only; control 6/6)",
+   "evidence": "browser",
+   "status": "blocked",
+   "fix": "",
+   "note": "needs the owner's second-node hairpin credentials; WARP forbidden; not a protocol defect"
+  },
+  {
+   "id": "I-21",
+   "repo": "environment",
+   "severity": "medium",
+   "title": "UDP/443 from the test PC is filtered; Hysteria2/QUIC real-client tests and the real reconnect-stall measurement are impossible from it",
+   "evidence": "server",
+   "status": "blocked",
+   "fix": "",
+   "note": "need another network (phone hotspot, other host)"
+  },
+  {
+   "id": "I-22",
+   "repo": "singbox-vpn",
+   "severity": "medium",
+   "title": "Hysteria2 client stalls up to ~30 s after a server restart (1.14.1 sends no QUIC CONNECTION_CLOSE; 1.14.3 does)",
+   "evidence": "code(doc)",
+   "status": "blocked",
+   "fix": "",
+   "note": "documented upstream; not measured on a real path; pin bump not tested"
+  },
+  {
+   "id": "I-23",
+   "repo": "singbox-vpn",
+   "severity": "low",
+   "title": "PR #156 left user-visible and doc references to archived Tamara/singbox-client; over-stated 'does not use embedded config'",
+   "evidence": "code",
+   "status": "fixed-on-branch",
+   "fix": "singbox-vpn e9e1d05",
+   "note": ""
+  },
+  {
+   "id": "I-24",
+   "repo": "singbox-vpn",
+   "severity": "low",
+   "title": "README/INSTALLATION listed only Hiddify; no per-app guidance or evidence status",
+   "evidence": "docs",
+   "status": "fixed-on-branch",
+   "fix": "singbox-vpn 40d2f4d",
+   "note": ""
+  },
+  {
+   "id": "I-25",
+   "repo": "singbox-vpn",
+   "severity": "informational",
+   "title": "`vpn user list` hides the reserved probe user that `vpn status` and doctor count (2 vs 1)",
+   "evidence": "server",
+   "status": "informational",
+   "fix": "",
+   "note": "by design"
+  },
+  {
+   "id": "I-26",
+   "repo": "singbox-vpn",
+   "severity": "low",
+   "title": "Install prints the first user's token and QR (and so does any install log)",
+   "evidence": "server",
+   "status": "informational",
+   "fix": "",
+   "note": "by design, 'shown once'; do not retain install logs"
+  },
+  {
+   "id": "I-27",
+   "repo": "dev-env",
+   "severity": "low",
+   "title": "Windows checkouts get CRLF shell scripts (core.autocrlf=true) that fail under bash; one test uses a Windows openssl with a missing config",
+   "evidence": "server",
+   "status": "environmental",
+   "fix": "",
+   "note": "CI on Linux is unaffected"
+  },
+  {
+   "id": "I-28",
+   "repo": "tamara-next",
+   "severity": "medium",
+   "title": "Not qualified: no physical-device evidence examined; PR #47 (iOS PacketTunnel) open",
+   "evidence": "code",
+   "status": "blocked",
+   "fix": "",
+   "note": "out of scope for this pass; server changes are additive and do not touch the provisioning contract"
+  },
+  {
+   "id": "I-29",
+   "repo": "vpn-web",
+   "severity": "low",
+   "title": "10 pre-existing eslint warnings",
+   "evidence": "code",
+   "status": "informational",
+   "fix": "",
+   "note": ""
+  },
+  {
+   "id": "I-30",
+   "repo": "singbox-vpn",
+   "severity": "medium",
+   "title": "Interrupted-deployment recovery, disk/memory pressure, DNS-leak, IPv6-leak, kill-switch, token-entropy, secret-logging audits not performed",
+   "evidence": "-",
+   "status": "open",
+   "fix": "",
+   "note": "listed so the gap is explicit"
+  }
+ ]
+}

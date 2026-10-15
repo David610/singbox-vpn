@@ -43,6 +43,49 @@ fn exit_policy_values_and_relay_role_are_validated() {
     );
 }
 
+/// `vpn doctor` warns that an exit without `public_ipv4`/`public_ipv6` lets a
+/// tunnel user reach the node's own public services and tells the operator to
+/// set them. The renderer then adds an own-address reject rule, and the
+/// doctor's exact-shape check must accept exactly that document. Reproduced on
+/// a real host: setting the fields made the doctor report
+/// "exit egress policy mismatch" (FAIL) for a correct configuration.
+#[test]
+fn doctor_accepts_the_own_public_address_rule_it_tells_operators_to_enable() {
+    use compat_config::server::exit_egress_policy_matches;
+    let text = base("exit").replacen(
+        "public_host",
+        "public_ipv4 = \"203.0.113.7\"\npublic_ipv6 = \"2001:db8::7\"\npublic_host",
+        1,
+    ) + "
+[egress]
+ipv6_literal = \"reject_google\"
+";
+    let cfg = load(&text).unwrap();
+    let doc =
+        render_server_config_for_deployment(&cfg, &[user()], &reality(), &hysteria(), 1).unwrap();
+    let rules = doc["route"]["rules"].as_array().unwrap();
+    let own = rules
+        .iter()
+        .position(|r| r["ip_cidr"] == serde_json::json!(["203.0.113.7/32", "2001:db8::7/128"]))
+        .expect("the renderer must add the own-address reject rule");
+    assert!(exit_egress_policy_matches(&cfg, &doc));
+
+    // The rule is load-bearing: dropping or weakening it must still fail the check.
+    let mut missing = doc.clone();
+    missing["route"]["rules"]
+        .as_array_mut()
+        .unwrap()
+        .remove(own);
+    assert!(!exit_egress_policy_matches(&cfg, &missing));
+    let mut weakened = doc.clone();
+    weakened["route"]["rules"][own]["ip_cidr"] = serde_json::json!(["203.0.113.7/32"]);
+    assert!(!exit_egress_policy_matches(&cfg, &weakened));
+    let mut moved = doc.clone();
+    let rule = moved["route"]["rules"].as_array_mut().unwrap().remove(own);
+    moved["route"]["rules"].as_array_mut().unwrap().push(rule);
+    assert!(!exit_egress_policy_matches(&cfg, &moved));
+}
+
 #[test]
 fn exit_ipv6_policy_defaults_roundtrip_and_doctor_tamper_detection() {
     use compat_config::server::exit_egress_policy_matches;

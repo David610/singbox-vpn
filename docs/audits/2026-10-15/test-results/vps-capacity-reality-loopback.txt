@@ -1,0 +1,1 @@
+{"loopback_REALITY_25MB_downloads": [{"parallel_streams": 1, "ok": 1, "wall_s": 0.2, "aggregate_mbit_s": 1089.5}, {"parallel_streams": 4, "ok": 3, "wall_s": 1.7, "aggregate_mbit_s": 2492.8}, {"parallel_streams": 8, "ok": 0, "wall_s": 0.16, "aggregate_mbit_s": 0}], "host_cpu_pct_samples": [10.2, 24.2, 0.5, 1.0, 11.1, 6.5], "host_cpu_pct_max": 24.2}

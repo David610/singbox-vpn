@@ -1,0 +1,15 @@
+uninstall exit=0
+[uninstall] removing /etc/vpn (singbox-vpn created this directory; contains the REALITY private key, Hysteria2 material, all user credentials, deployment.toml)...
+[uninstall] removing singbox-vpn state under /var/lib/singbox-vpn...
+[uninstall] removing /opt/singbox-vpn (persistent singbox-vpn source tree)...
+[uninstall] UNINSTALL COMPLETE — singbox-vpn and everything it created have been removed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ singbox-vpn uninstall: manual checklist
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+This script cannot see or modify your CLOUD PROVIDER's network-level
+firewall (AWS/EC2 Security Groups, GCP firewall rules, Azure NSGs,
+etc.) — only this host's own firewall (firewalld/ufw), which it already
+restored above. If you opened inbound rules there specifically for
+singbox-vpn (443/tcp, 443/udp, the subscription port), remove them in that
+provider's console/CLI yourself.

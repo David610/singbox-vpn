@@ -1,0 +1,62 @@
+[
+ {
+  "label": "control: direct from this PC",
+  "exit": 0,
+  "seconds": 72,
+  "tail": [
+   "Evidence: browser emulation, TCP only; NOT native iPhone acceptance or automatic IPv4 fallback",
+   "short #1  /shorts/sAcElROnYIE      t=6.13 ready=4 playing=True unavailable=False",
+   "short #2  /shorts/JlVRJRSlD1o      t=5.55 ready=4 playing=True unavailable=False",
+   "short #3  /shorts/9vvUFM9RxQ4      t=6.44 ready=4 playing=True unavailable=False",
+   "short #4  /shorts/EeyYfdDwutQ      t=6.36 ready=4 playing=True unavailable=False",
+   "short #5  /shorts/tsUJ8RMTv1o      t=6.38 ready=4 playing=True unavailable=False",
+   "short #6  /shorts/h0N8E2GDIoc      t=6.4 ready=4 playing=True unavailable=False",
+   "RESULT: 6/6 Shorts actually playing"
+  ]
+ },
+ {
+  "label": "via REALITY tunnel (default family)",
+  "exit": 1,
+  "seconds": 54,
+  "tail": [
+   "Evidence: browser emulation, TCP only; NOT native iPhone acceptance or automatic IPv4 fallback",
+   "short #1  /shorts/sAcElROnYIE      t=0 ready=0 playing=False unavailable=True",
+   "short #2  /shorts/ohZqpW1zDaE      t=0 ready=0 playing=False unavailable=True",
+   "short #3  /shorts/bOFiUy_80x4      t=0 ready=0 playing=False unavailable=True",
+   "short #4  /shorts/hbrX4Q7qqq0      t=0 ready=0 playing=False unavailable=True",
+   "short #5  /shorts/LNMcprZ8GVo      t=0 ready=0 playing=False unavailable=True",
+   "short #6  /shorts/P_GuUOdFG8w      t=0 ready=0 playing=False unavailable=True",
+   "RESULT: 0/6 Shorts actually playing"
+  ]
+ },
+ {
+  "label": "via REALITY tunnel, IPv4 literals only",
+  "exit": 1,
+  "seconds": 0,
+  "tail": [
+   "Evidence: browser emulation, TCP only; NOT native iPhone acceptance or automatic IPv4 fallback",
+   "Traceback (most recent call last):",
+   "  File \"D:\\David610\\.worktrees\\m2026-10-15\\singbox-main\\deploy\\lib\\youtube_shorts_probe.py\", line 114, in <module>",
+   "    sys.exit(main())",
+   "             ^^^^^^",
+   "  File \"D:\\David610\\.worktrees\\m2026-10-15\\singbox-main\\deploy\\lib\\youtube_shorts_probe.py\", line 103, in main",
+   "    from literal_ip_socks_front import literal_front",
+   "ModuleNotFoundError: No module named 'literal_ip_socks_front'"
+  ]
+ },
+ {
+  "label": "via REALITY tunnel, IPv6 literals only",
+  "exit": 1,
+  "seconds": 0,
+  "tail": [
+   "Evidence: browser emulation, TCP only; NOT native iPhone acceptance or automatic IPv4 fallback",
+   "Traceback (most recent call last):",
+   "  File \"D:\\David610\\.worktrees\\m2026-10-15\\singbox-main\\deploy\\lib\\youtube_shorts_probe.py\", line 114, in <module>",
+   "    sys.exit(main())",
+   "             ^^^^^^",
+   "  File \"D:\\David610\\.worktrees\\m2026-10-15\\singbox-main\\deploy\\lib\\youtube_shorts_probe.py\", line 103, in main",
+   "    from literal_ip_socks_front import literal_front",
+   "ModuleNotFoundError: No module named 'literal_ip_socks_front'"
+  ]
+ }
+]

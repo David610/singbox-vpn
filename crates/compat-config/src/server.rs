@@ -340,6 +340,24 @@ fn apply_c16_egress_policy(
     // `public_host` check above (which still fires on its own, e.g. for a
     // deployment.toml predating this field); a CIDR appearing in both
     // sources just produces a harmless duplicate deny rule.
+    new_rules.extend(own_address_deny_rule(
+        &all_inbounds,
+        own_public_host,
+        own_public_ipv4,
+        own_public_ipv6,
+    ));
+    insert_after_identity_scoped_rules(config, new_rules);
+}
+
+/// The own-public-address reject rule, if any of the node's own addresses is
+/// known. Shared by the renderer and by `exit_egress_policy_matches` so the
+/// doctor accepts exactly the document the renderer produces.
+fn own_address_deny_rule(
+    all_inbounds: &[String],
+    own_public_host: Option<&str>,
+    own_public_ipv4: Option<&str>,
+    own_public_ipv6: Option<&str>,
+) -> Option<serde_json::Value> {
     let mut own_ip_cidrs: Vec<std::net::IpAddr> = own_public_host
         .filter(|h| !h.is_empty())
         .and_then(|h| h.parse::<std::net::IpAddr>().ok())
@@ -355,22 +373,22 @@ fn apply_c16_egress_policy(
             .filter(|v| !v.is_empty())
             .and_then(|v| v.parse::<std::net::IpAddr>().ok()),
     );
-    if !own_ip_cidrs.is_empty() {
-        let cidrs: Vec<String> = own_ip_cidrs
-            .into_iter()
-            .map(|ip| match ip {
-                std::net::IpAddr::V4(v4) => format!("{v4}/32"),
-                std::net::IpAddr::V6(v6) => format!("{v6}/128"),
-            })
-            .collect();
-        new_rules.push(json!({
-            "inbound": all_inbounds.clone(),
-            "ip_cidr": cidrs,
-            "action": "reject",
-            "method": "default",
-        }));
+    if own_ip_cidrs.is_empty() {
+        return None;
     }
-    insert_after_identity_scoped_rules(config, new_rules);
+    let cidrs: Vec<String> = own_ip_cidrs
+        .into_iter()
+        .map(|ip| match ip {
+            std::net::IpAddr::V4(v4) => format!("{v4}/32"),
+            std::net::IpAddr::V6(v6) => format!("{v6}/128"),
+        })
+        .collect();
+    Some(json!({
+        "inbound": all_inbounds.to_vec(),
+        "ip_cidr": cidrs,
+        "action": "reject",
+        "method": "default",
+    }))
 }
 
 /// Builds the C-16 egress-deny rule set: a `resolve` action for every
@@ -721,19 +739,21 @@ pub fn exit_egress_policy_matches(deployment: &DeploymentConfig, doc: &serde_jso
     let Some(tail) = all.get(prefix..) else {
         return false;
     };
-    let c16 = c16_egress_deny_rules(
-        &doc["inbounds"]
-            .as_array()
-            .map(|ibs| {
-                ibs.iter()
-                    .filter_map(|ib| ib["tag"].as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default(),
-        None,
-        None,
-        None,
-    );
+    let inbound_tags = doc["inbounds"]
+        .as_array()
+        .map(|ibs| {
+            ibs.iter()
+                .filter_map(|ib| ib["tag"].as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut c16 = c16_egress_deny_rules(&inbound_tags, None, None, None);
+    c16.extend(own_address_deny_rule(
+        &inbound_tags,
+        Some(deployment.public_host.as_str()),
+        deployment.public_ipv4.as_deref(),
+        deployment.public_ipv6.as_deref(),
+    ));
     if !tail.starts_with(&c16) {
         return false;
     }
