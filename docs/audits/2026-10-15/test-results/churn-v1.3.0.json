@@ -1,0 +1,155 @@
+{
+ "label": "v1.3.0",
+ "ops": [
+  {
+   "op": "create user (other customer)",
+   "rc": 0,
+   "cmd_seconds": 1.72,
+   "t_start": 12.1,
+   "inflight_transfers_survived": [
+    false,
+    false
+   ],
+   "pid_before": "78618",
+   "pid_after": "78784",
+   "restarted": true,
+   "note": ""
+  },
+  {
+   "op": "rotate-token other user",
+   "rc": 0,
+   "cmd_seconds": 0.38,
+   "t_start": 17.7,
+   "inflight_transfers_survived": [
+    true,
+    true
+   ],
+   "pid_before": "78784",
+   "pid_after": "78784",
+   "restarted": false,
+   "note": ""
+  },
+  {
+   "op": "disable other user",
+   "rc": 0,
+   "cmd_seconds": 1.71,
+   "t_start": 42.6,
+   "inflight_transfers_survived": [
+    false,
+    false
+   ],
+   "pid_before": "78784",
+   "pid_after": "79164",
+   "restarted": true,
+   "note": ""
+  },
+  {
+   "op": "enable other user",
+   "rc": 0,
+   "cmd_seconds": 1.76,
+   "t_start": 49.3,
+   "inflight_transfers_survived": [
+    false,
+    false
+   ],
+   "pid_before": "79164",
+   "pid_after": "79361",
+   "restarted": true,
+   "note": ""
+  },
+  {
+   "op": "set-expiry other user",
+   "rc": 0,
+   "cmd_seconds": 0.4,
+   "t_start": 57.2,
+   "inflight_transfers_survived": [
+    true,
+    true
+   ],
+   "pid_before": "79361",
+   "pid_after": "79361",
+   "restarted": false,
+   "note": ""
+  },
+  {
+   "op": "rotate-vless other user",
+   "rc": 0,
+   "cmd_seconds": 2.11,
+   "t_start": 80.1,
+   "inflight_transfers_survived": [
+    false,
+    false
+   ],
+   "pid_before": "79361",
+   "pid_after": "79754",
+   "restarted": true,
+   "note": ""
+  },
+  {
+   "op": "rotate-hysteria other user",
+   "rc": 0,
+   "cmd_seconds": 1.73,
+   "t_start": 86.1,
+   "inflight_transfers_survived": [
+    false,
+    false
+   ],
+   "pid_before": "79754",
+   "pid_after": "79949",
+   "restarted": true,
+   "note": ""
+  },
+  {
+   "op": "renew-native other user",
+   "rc": 0,
+   "cmd_seconds": 2.14,
+   "t_start": 93.7,
+   "inflight_transfers_survived": [
+    false,
+    false
+   ],
+   "pid_before": "79949",
+   "pid_after": "80145",
+   "restarted": true,
+   "note": ""
+  },
+  {
+   "op": "doctor --protocol (creates a throwaway user)",
+   "rc": 0,
+   "cmd_seconds": 0.97,
+   "t_start": 99.8,
+   "inflight_transfers_survived": [
+    true,
+    true
+   ],
+   "pid_before": "80145",
+   "pid_after": "80145",
+   "restarted": false,
+   "note": ""
+  },
+  {
+   "op": "remove other user",
+   "rc": 0,
+   "cmd_seconds": 1.82,
+   "t_start": 125.7,
+   "inflight_transfers_survived": [
+    false,
+    false
+   ],
+   "pid_before": "80145",
+   "pid_after": "80584",
+   "restarted": true,
+   "note": ""
+  }
+ ],
+ "transfers": [],
+ "probe_total": 147,
+ "probe_failures": [
+  {
+   "t": 94.7,
+   "ok": false,
+   "s": 3.28
+  }
+ ],
+ "probe_max_latency_s": 3.703
+}

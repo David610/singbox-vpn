@@ -1,0 +1,49 @@
+[
+ {
+  "label": "via REALITY tunnel (default family)",
+  "exit": 1,
+  "seconds": 65,
+  "tail": [
+   "Evidence: browser emulation, TCP only; NOT native iPhone acceptance or automatic IPv4 fallback",
+   "short #1  /shorts/sAcElROnYIE      t=0 ready=0 playing=False unavailable=True",
+   "short #2  /shorts/JlVRJRSlD1o      t=0 ready=0 playing=False unavailable=True",
+   "short #3  /shorts/OiljEQPhYZI      t=0 ready=0 playing=False unavailable=True",
+   "short #4  /shorts/FoHTEHJ71EA      t=0 ready=0 playing=False unavailable=True",
+   "short #5  /shorts/MVdHDmusPZw      t=0 ready=0 playing=False unavailable=True",
+   "short #6  /shorts/ohZqpW1zDaE      t=0 ready=0 playing=False unavailable=True",
+   "RESULT: 0/6 Shorts actually playing"
+  ]
+ },
+ {
+  "label": "via REALITY tunnel, IPv4 literals only",
+  "exit": 1,
+  "seconds": 50,
+  "tail": [
+   "Evidence: browser emulation, TCP only; NOT native iPhone acceptance or automatic IPv4 fallback",
+   "Destination form: literal IPv4; DNS runs on probe machine",
+   "short #1  /shorts/sAcElROnYIE      t=0 ready=0 playing=False unavailable=True",
+   "short #2  /shorts/54dWpYEpeQM      t=0 ready=0 playing=False unavailable=True",
+   "short #3  /shorts/p15XRToaC2o      t=0 ready=0 playing=False unavailable=True",
+   "short #4  /shorts/iMWpWyDIXHo      t=0 ready=0 playing=False unavailable=True",
+   "short #5  /shorts/NteQY7wZFpQ      t=0 ready=0 playing=False unavailable=True",
+   "short #6  /shorts/X8F6DqTX-1w      t=0 ready=0 playing=False unavailable=True",
+   "RESULT: 0/6 Shorts actually playing"
+  ]
+ },
+ {
+  "label": "via REALITY tunnel, IPv6 literals only",
+  "exit": 1,
+  "seconds": 3,
+  "tail": [
+   "    await self._channel.send(",
+   "  File \"D:\\anaconda3\\Lib\\site-packages\\playwright\\_impl\\_connection.py\", line 69, in send",
+   "    return await self._connection.wrap_api_call(",
+   "           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+   "  File \"D:\\anaconda3\\Lib\\site-packages\\playwright\\_impl\\_connection.py\", line 559, in wrap_api_call",
+   "    raise rewrite_error(error, f\"{parsed_st['apiName']}: {error}\") from None",
+   "playwright._impl._errors.Error: Page.goto: net::ERR_SOCKS_CONNECTION_FAILED at https://m.youtube.com/shorts/sAcElROnYIE",
+   "Call log:",
+   "  - navigating to \"https://m.youtube.com/shorts/sAcElROnYIE\", waiting until \"domcontentloaded\""
+  ]
+ }
+]

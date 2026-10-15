@@ -1,0 +1,8 @@
+test service::tests::restart_count_parses_nrestarts ... ok
+test service::tests::unit_tests_never_default_to_the_host_systemctl ... ok
+test service::tests::timer_next_elapse_returns_systemds_own_formatted_timestamp ... ok
+test service::tests::reload_and_verify_succeeds_when_service_comes_up_healthy ... ok
+test service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 3.92s
+

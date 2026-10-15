@@ -1,0 +1,2 @@
+  client_declares_no_bandwidth(BBR)      http=000  : authentication failed, status code: 404
+  client_declares_50mbit(Brutal)         http=204  

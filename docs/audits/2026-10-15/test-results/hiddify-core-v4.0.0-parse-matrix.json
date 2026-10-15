@@ -1,0 +1,83 @@
+[
+ {
+  "case": "A hiddify plain share links (vless+hy2)",
+  "exit": 0,
+  "summary": "top-level keys=['outbounds'] outbounds=2 protocols=['hysteria2', 'vless'] has_inbounds=False",
+  "message": [
+   "result successfully written to  <local-path>"
+  ]
+ },
+ {
+  "case": "B hiddify base64 body",
+  "exit": 0,
+  "summary": "top-level keys=['outbounds'] outbounds=2 protocols=['hysteria2', 'vless'] has_inbounds=False",
+  "message": [
+   "result successfully written to  <local-path>"
+  ]
+ },
+ {
+  "case": "C shadowrocket base64 (format=uri)",
+  "exit": 0,
+  "summary": "top-level keys=['outbounds'] outbounds=2 protocols=['hysteria2', 'vless'] has_inbounds=False",
+  "message": [
+   "result successfully written to  <local-path>"
+  ]
+ },
+ {
+  "case": "D bare /sub (default sing-box JSON, outbounds+route only)",
+  "exit": 0,
+  "summary": "top-level keys=['outbounds'] outbounds=5 protocols=['hysteria2', 'vless'] has_inbounds=False",
+  "message": [
+   "result successfully written to  <local-path>"
+  ]
+ },
+ {
+  "case": "E hiddify-pinned JSON (REALITY only)",
+  "exit": 0,
+  "summary": "top-level keys=['outbounds'] outbounds=4 protocols=['vless'] has_inbounds=False",
+  "message": [
+   "result successfully written to  <local-path>"
+  ]
+ },
+ {
+  "case": "F single REALITY link",
+  "exit": 0,
+  "summary": "top-level keys=['outbounds'] outbounds=1 protocols=['vless'] has_inbounds=False",
+  "message": [
+   "result successfully written to  <local-path>"
+  ]
+ },
+ {
+  "case": "G single Hysteria2 link",
+  "exit": 0,
+  "summary": "top-level keys=['outbounds'] outbounds=1 protocols=['hysteria2'] has_inbounds=False",
+  "message": [
+   "result successfully written to  <local-path>"
+  ]
+ },
+ {
+  "case": "H old vpn-web-shaped Hysteria2 link (decoy sni, no obfs)",
+  "exit": 0,
+  "summary": "top-level keys=['outbounds'] outbounds=1 protocols=['hysteria2'] has_inbounds=False",
+  "message": [
+   "result successfully written to  <local-path>"
+  ]
+ },
+ {
+  "case": "I malformed body",
+  "exit": 1,
+  "summary": "",
+  "message": [
+   "Error in this is not a subscription ",
+   "FATAL[0000] unable to determine config format"
+  ]
+ },
+ {
+  "case": "J empty body",
+  "exit": 1,
+  "summary": "",
+  "message": [
+   "FATAL[0000] unable to determine config format"
+  ]
+ }
+]

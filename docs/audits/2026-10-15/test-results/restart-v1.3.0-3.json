@@ -1,0 +1,13 @@
+{
+ "label": "v1.3.0",
+ "restart_cmd": "systemctl restart sing-box",
+ "restart_rc": 0,
+ "restart_cmd_seconds": 1.18,
+ "new_connection_ok_after_s": 2.47,
+ "inflight_download": {
+  "rc": 18,
+  "out": "200 12",
+  "err": "curl: (18) end of response with 38 bytes missing",
+  "completed": false
+ }
+}

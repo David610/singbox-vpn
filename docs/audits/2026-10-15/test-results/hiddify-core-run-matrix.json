@@ -1,0 +1,34 @@
+[
+ {
+  "case": "A",
+  "core_exited": false,
+  "first_204_after_s": 1.0,
+  "egress_ip": "91.244.71.165",
+  "wikipedia": "200 ttfb=0.263317",
+  "log_tail": "ok"
+ },
+ {
+  "case": "D",
+  "core_exited": false,
+  "first_204_after_s": 0.7,
+  "egress_ip": "curl: (35) schannel: failed to receive handshake, SSL/TLS connection failed",
+  "wikipedia": "200 ttfb=0.176994",
+  "log_tail": "ok"
+ },
+ {
+  "case": "E",
+  "core_exited": false,
+  "first_204_after_s": 0.7,
+  "egress_ip": "91.244.71.165",
+  "wikipedia": "200 ttfb=0.348743",
+  "log_tail": "ok"
+ },
+ {
+  "case": "F",
+  "core_exited": false,
+  "first_204_after_s": 0.8,
+  "egress_ip": "91.244.71.165",
+  "wikipedia": "200 ttfb=0.500750",
+  "log_tail": "ok"
+ }
+]

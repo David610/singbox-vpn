@@ -1,0 +1,51 @@
+[bootstrap] singbox-vpn bootstrap installer starting (repo=David610/singbox-vpn)
+[bootstrap] resolving latest stable release tag for David610/singbox-vpn...
+[bootstrap] resolved stable release: v1.3.0 — source and binaries will both come from this exact tag.
+[bootstrap] downloading singbox-vpn v1.3.0 release source archive + checksum manifest...
+singbox-vpn-src.tar.gz: OK
+[bootstrap] source archive checksum verified against release SHA256SUMS.
+[bootstrap] downloading pinned cosign v3.1.3 (amd64) to verify release attestations...
+Verified OK
+[bootstrap] artifact attestation verified for repository David610/singbox-vpn.
+[bootstrap] extracting...
+
+[bootstrap] handing off to deploy/almalinux/install.sh (repo checked out at /tmp/singbox-vpn-install.H6joRmZ9/singbox-vpn-src)
+
+singbox-vpn install --dry-run: checking this host only. No changes will be made.
+
+Environment
+  root/sudo                  PASS  
+  OS                         WARN  Ubuntu 24.04.5 LTS is outside the supported target (AlmaLinux 9 x86_64); implementation_coverage=tested
+  architecture               PASS  amd64
+  systemd                    PASS  
+  required commands          PASS  
+  disk space                 PASS  59766MiB free on /
+  memory                     PASS  3915MiB total
+  outbound HTTPS             PASS  
+  DNS (github.com)           PASS  
+
+Networking
+  SSH port                   PASS  detected 22
+  TCP/443                    PASS  
+  UDP/443                    PASS  
+  subscription port          PASS  8443
+  TCP/80 (ACME)              PASS  
+
+Firewall
+  ufw (host)                 WARN  not currently active — install.sh will install/enable it
+    NOTE: this only covers the HOST firewall. Your cloud/VPS provider's
+    network firewall (security group / cloud firewall) is a SEPARATE
+    control plane this installer cannot see or configure. Confirm these
+    are allowed inbound there too: SSH (22), TCP/80 (ACME),
+    TCP/443 (REALITY), UDP/443 (Hysteria2), and TCP/8443 (subscription) if
+    the subscription endpoint needs to be reachable from outside this host.
+
+ACME prerequisites
+  certbot                    WARN  not yet installed — install.sh installs it
+  DNS for --domain           PASS  vpn.xn----8sba1cvaif4e.com resolves to this host
+
+REALITY handshake server
+  REALITY decoy              PASS  www.cloudflare.com answered with TLS 1.3 on 443/tcp
+
+READY TO INSTALL (3 warning(s)).
+No changes made.

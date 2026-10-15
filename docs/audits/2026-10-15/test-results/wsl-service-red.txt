@@ -1,0 +1,31 @@
+wsl: Failed to start the systemd user session for 'test'. See journalctl for more details.
+test service::tests::is_unit_installed_still_appends_service_for_a_bare_name ... ok
+test service::tests::is_unit_installed_true_when_systemctl_reports_loaded ... ok
+test service::tests::is_unit_installed_uses_a_dotted_unit_name_verbatim_for_a_timer ... ok
+test service::tests::last_result_is_none_when_the_value_is_empty ... ok
+test service::tests::last_result_returns_the_raw_systemd_result_keyword ... ok
+test service::tests::reload_and_verify_fails_when_reload_command_fails ... ok
+test service::tests::reload_and_verify_fails_when_service_not_active_after_reload ... ok
+test service::tests::restart_count_is_none_when_systemctl_is_unavailable ... ok
+test service::tests::restart_count_parses_nrestarts ... ok
+test service::tests::timer_next_elapse_returns_systemds_own_formatted_timestamp ... ok
+test service::tests::unit_tests_never_default_to_the_host_systemctl ... ok
+test service::tests::override_names_the_exact_service_manager_and_never_falls_back_to_path ... ok
+test service::tests::reload_and_verify_succeeds_when_service_comes_up_healthy ... ok
+test service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit ... FAILED
+
+failures:
+
+---- service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit stdout ----
+
+thread 'service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit' (2916) panicked at apps/admin/src/service.rs:383:13:
+reload 9 of a rapid burst was refused by the start-rate limiter
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit
+
+test result: FAILED. 17 passed; 1 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.85s
+
+error: test failed, to rerun pass `-p admin --bin vpn-admin`
