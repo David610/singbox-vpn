@@ -1426,6 +1426,46 @@ fn user_create_rejects_control_characters_and_overlong_names() {
         .success();
 }
 
+/// Shadowrocket (and other importers that expect the conventional V2Ray
+/// subscription encoding) fails to import the plain-text body that
+/// `?format=hiddify` serves. A Base64 link for the SAME credential must be
+/// offered additively, so a customer never has to hand-edit a URL.
+#[test]
+fn user_create_offers_a_base64_link_for_shadowrocket_without_a_second_credential() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_deployment_toml(dir.path());
+    let output = admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "ios-user", "--json"])
+        .assert()
+        .success();
+    let parsed: serde_json::Value = serde_json::from_slice(&output.get_output().stdout)
+        .expect("stdout of --json is exactly one JSON document");
+
+    let normal = parsed["subscription_url"].as_str().unwrap();
+    assert!(
+        normal.ends_with("?format=hiddify"),
+        "the existing key must not change"
+    );
+    let shadowrocket = parsed["subscription_url_shadowrocket"].as_str().unwrap();
+    assert!(
+        shadowrocket.ends_with("?format=uri&encoding=base64"),
+        "got {shadowrocket}"
+    );
+    assert_eq!(
+        normal.split('?').next().unwrap(),
+        shadowrocket.split('?').next().unwrap(),
+        "same origin, path and token: only the representation differs"
+    );
+
+    let human = admin(dir.path(), &cfg_path)
+        .args(["user", "create", "--name", "ios-user-2"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(human.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("Shadowrocket"));
+    assert!(stdout.contains("?format=uri&encoding=base64"));
+}
+
 /// The EXPERIMENTAL Vision-off link is emitted additively — every
 /// pre-existing key keeps its previous value, and the new link points at
 /// the same token with `compat=vision-off` (see
