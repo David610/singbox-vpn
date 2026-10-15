@@ -57,7 +57,7 @@ output is generated from it.
 
 | Tier | Client | Gets |
 |---|---|---|
-| **Primary** | [Tamara](https://github.com/David610/tamara) — first-party, separate repo | `GET /v1/provision/{token}` — endpoint metadata plus the embedded Core-consumable config |
+| **Primary** | [Tamara Next](https://github.com/David610/tamara-next) — first-party, separate repo | `GET /v1/provision/{token}` — versioned endpoint/credential data plus a server-rendered Core config for reference |
 | **Fallback** | Hiddify and other sing-box-compatible importers | `GET /sub/{token}` — share links or native sing-box JSON, unchanged |
 
 Both are rendered from the same endpoint model, so they cannot disagree
@@ -100,7 +100,7 @@ are an implemented provisioning extension; they are not a fleet manager.
 - Open in the provider firewall: TCP 22 (SSH), TCP 80 (certificate issuance
   and renewal), TCP 443 (REALITY), **UDP 443** (Hysteria2, a separate rule)
   and TCP 8443 (subscription).
-- [Tamara](https://github.com/David610/tamara) for the first-party provisioning path, or a documented fallback client such as [Hiddify](https://hiddify.com).
+- [Tamara Next](https://github.com/David610/tamara-next) for the first-party provisioning path, or a documented fallback client such as [Hiddify](https://hiddify.com).
 
 **Bootstrap prerequisites** (must already be on the VPS *before* the
 one-command install below can run at all — the installer sets up
@@ -167,8 +167,10 @@ in **[docs/INSTALLATION.md](docs/INSTALLATION.md)** and
 ### Tamara (primary)
 
 Import the printed `/v1/provision/{token}` URL in Tamara. A recognized
-provisioning profile consumes the endpoint catalog and embedded config; current
-Tamara can keep an Automatic route or pin one concrete endpoint manually.
+provisioning profile validates the endpoint catalog and credentials; Tamara Next
+constructs its own Core configuration (including DNS/TUN/routing policy), rather
+than applying the embedded server-rendered config verbatim. Real-device readiness
+remains subject to Tamara Next's independent acceptance gates.
 
 ### Fallback clients
 
