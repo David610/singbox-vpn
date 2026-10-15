@@ -1,6 +1,6 @@
 //! The versioned, first-party provisioning contract between this server
-//! (`singbox-vpn`) and its primary client, Tamara
-//! (<https://github.com/David610/tamara>).
+//! (`singbox-vpn`) and its primary client, Tamara Next
+//! (<https://github.com/David610/tamara-next>).
 //!
 //! This crate is the SINGLE canonical model of "what a client needs in
 //! order to dial this deployment". Every client-facing artifact the

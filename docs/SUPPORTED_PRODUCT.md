@@ -22,8 +22,8 @@ scope, this file wins for v1.0 decisions.
 - Primary transport: **VLESS + REALITY over TCP/443**.
 - Secondary transport: **Hysteria2 over UDP/443**, optional.
 - Clients, in two explicit tiers:
-  - **PRIMARY, first-party: Tamara**
-    (<https://github.com/David610/tamara>), a separate repository. It consumes
+  - **PRIMARY, first-party: Tamara Next**
+    (<https://github.com/David610/tamara-next>), a separate repository. It consumes
     the versioned provisioning contract at `GET /v1/provision/{token}`,
     including the endpoint metadata and embedded Core-consumable config — see
     `docs/PROVISIONING_CONTRACT.md`.

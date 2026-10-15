@@ -2,7 +2,7 @@
 
 The versioned, first-party contract between this server (`singbox-vpn`)
 and its primary client, **Tamara**
-(<https://github.com/David610/tamara>).
+(<https://github.com/David610/tamara-next>), the active independent client.
 
 Authoritative definition: the Rust model in
 `crates/provisioning-contract/src/lib.rs`. This document explains it;
@@ -27,16 +27,19 @@ explicit and gives them one owner.
 
 | Tier | Client | What it consumes |
 |---|---|---|
-| **PRIMARY, first-party** | **Tamara** | `GET /v1/provision/{token}` — the contract described here, including the embedded `singbox_config`. |
+| **PRIMARY, first-party** | **Tamara Next** | `GET /v1/provision/{token}` — the contract described here, including the embedded `singbox_config`. |
 | **FALLBACK, third-party** | Hiddify, v2rayNG, NekoBox, raw sing-box | The legacy `GET /sub/{token}` routes: `?format=hiddify`/`?format=uri` share links, or `?format=singbox` native sing-box JSON. |
 
-Tamara consumes this contract by parsing the **envelope only** — endpoint
-ids, tags, hosts, ports, failure domains and operator labels — and
-handing the embedded `singbox_config` to its pinned Hiddify Core
-verbatim. It deliberately does not reimplement VLESS/REALITY/Hysteria2
-parsing in Dart; the pinned Core/ray2sing remains authoritative for
-protocol syntax. That constraint is why the config is embedded rather
-than described field by field.
+Tamara Next validates the versioned endpoint/credential envelope and builds
+its own supported Core configuration using `SingBoxConfigBuilder` in the
+independent `tamara-next` repository. It does **not** hand the embedded
+`singbox_config` to a Hiddify-derived Core verbatim. In particular, Tamara
+Next owns the device's DNS, TUN, IP-family and routing policy; the embedded
+server-rendered config is useful contract evidence but is not trusted device
+policy. The only value it takes from the embedded config is a relay route's
+first-hop `detour` dialer, which it cross-checks against the published
+endpoints (any mismatch fails the whole import). See `tamara-next/docs/contracts/singbox-vpn-provisioning.md`.
+Historical Hiddify-Core statements described the now-archived legacy Tamara.
 
 Both tiers are served from the same endpoint model, so they can never
 disagree about a user's credentials. What differs is representation, and

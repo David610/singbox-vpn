@@ -2641,8 +2641,8 @@ fn subscription_url_singbox(cfg: &DeploymentConfig, token: &str) -> String {
     )
 }
 
-/// The FIRST-PARTY provisioning URL for `singbox-client`
-/// (<https://github.com/David610/singbox-client>): the versioned
+/// The FIRST-PARTY provisioning URL for independent Tamara Next
+/// (<https://github.com/David610/tamara-next>): the versioned
 /// contract of `crates/provisioning-contract`, served by
 /// `services/subscription`'s `/v1/provision/{token}` route. The schema
 /// version is in the path, so this URL identifies the contract version a
@@ -3014,7 +3014,7 @@ fn cmd_user_create(
     println!("  {}", subscription_url_singbox(cfg, &token));
     println!();
     println!(
-        "singbox-client (the first-party client) uses the versioned provisioning contract \
+        "Tamara Next (the first-party client) uses the versioned provisioning contract \
          instead — same credential, schema v{} (see docs/PROVISIONING_CONTRACT.md):",
         provisioning_contract::SCHEMA_VERSION
     );

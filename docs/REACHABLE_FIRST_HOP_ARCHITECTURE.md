@@ -2,7 +2,7 @@
 
 **Status:** Server-side relay role (fail-closed forwarding) and Core `detour` provisioning implemented; CODE-VERIFIED/CI-VERIFIED including loopback system tests (`docs/TWO_HOP_SYSTEM_TESTS.md`). Real-network reachability, provider separation and device behaviour remain UNVERIFIED (§15).
 **Date:** 2026-09-10  
-**Primary client:** [Tamara](https://github.com/David610/tamara)  
+**Primary client:** [Tamara Next](https://github.com/David610/tamara-next)  
 **Evidence boundary:** local/source feasibility only. No real second VPS, Russian ISP, destination allowlist, SNI filter, UDP restriction, or relay-provider outage has been tested.
 
 ## 1. Problem and threat model
