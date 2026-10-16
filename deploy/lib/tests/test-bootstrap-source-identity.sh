@@ -30,6 +30,9 @@ printf 'commit=%s ref=%s\n' "${SINGBOX_VPN_SOURCE_COMMIT:-}" "${SINGBOX_VPN_SOUR
 INSTALLER
 chmod 0755 "$SRC/deploy/almalinux/install.sh"
 printf '[workspace.package]\nversion = "0.1.3"\n' >"$SRC/Cargo.toml"
+# Real archives are megabytes: the commit id must still be read when gzip is
+# killed by SIGPIPE after the header has been consumed (pipefail regression).
+head -c 3145728 /dev/urandom >"$SRC/padding.bin"
 git -C "$SRC" init -q
 git -C "$SRC" -c user.email=t@example.test -c user.name=t add -A
 git -C "$SRC" -c user.email=t@example.test -c user.name=t commit -q -m fixture

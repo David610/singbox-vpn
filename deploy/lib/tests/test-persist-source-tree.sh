@@ -9,10 +9,11 @@ SRC="$TMP/source"
 mkdir -p "$SRC/deploy/almalinux" "$SRC/nested"
 chmod 0775 "$SRC" "$SRC/nested"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SRC/deploy/almalinux/uninstall.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SRC/deploy/almalinux/install.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SRC/nested/executable.sh"
 printf 'ordinary\n' > "$SRC/nested/file.txt"
 chmod 0775 "$SRC/deploy" "$SRC/deploy/almalinux"
-chmod 0775 "$SRC/deploy/almalinux/uninstall.sh" "$SRC/nested/executable.sh"
+chmod 0775 "$SRC/deploy/almalinux/uninstall.sh" "$SRC/deploy/almalinux/install.sh" "$SRC/nested/executable.sh"
 chmod 0664 "$SRC/nested/file.txt"
 
 # Source production functions without executing main, then redirect the
@@ -98,7 +99,7 @@ THIRD="$TMP/third-source"
 cp -a "$SRC" "$THIRD"
 printf 'third-revision\n' > "$THIRD/nested/file.txt"
 mv() {
-  if [ "${FAIL_SWITCH:-0}" = 1 ] && [ "${2:-}" = "$PERSIST_DIR" ]; then return 1; fi
+  if [ "${FAIL_SWITCH:-0}" = 1 ] && [ "${2:-}" = "$PERSIST_DIR" ] && [ "${1:-}" != "$PERSIST_PREV_DIR" ]; then return 1; fi
   command mv "$@"
 }
 FAIL_SWITCH=1

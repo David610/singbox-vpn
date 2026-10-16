@@ -371,14 +371,17 @@ download_source() {
     else
       url="https://codeload.github.com/$SINGBOX_VPN_REPO/tar.gz/refs/heads/$ref"
     fi
-    log "downloading UNVERIFIED singbox-vpn source (ref=$ref, SINGBOX_VPN_CHANNEL=dev — no checksum verification, development/testing only)..."
+    log "downloading UNVERIFIED singbox-vpn branch source (ref=$ref, SINGBOX_VPN_CHANNEL=dev — no checksum verification, development/testing only)..."
     curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$url" \
       || die "could not download source from $url. Check network connectivity and that $SINGBOX_VPN_REPO/$ref exists."
   fi
   # GitHub (and `git archive`) embed the exact commit in the archive's pax
   # header. Read it so the installed build can be traced to a commit, and so a
   # pinned-SHA request is proven to have delivered that commit.
-  SOURCE_COMMIT="$(gzip -dc "$tarball" 2>/dev/null | head -c 4096 | grep -a -o 'comment=[0-9a-f]\{40\}' | head -n 1 | cut -d= -f2)" || SOURCE_COMMIT=""
+  # `head` closes the pipe while gzip is still writing, so gzip dies of SIGPIPE
+  # and pipefail reports failure even though the id was found: the group's
+  # status is deliberately ignored and only its output is used.
+  SOURCE_COMMIT="$({ gzip -dc "$tarball" 2>/dev/null | head -c 4096 | grep -a -o 'comment=[0-9a-f]\{40\}' | head -n 1 | cut -d= -f2; } || true)"
   if [ -z "$SINGBOX_VPN_VERSION" ] && [[ "$ref" =~ ^[0-9a-f]{40}$ ]] && [ "$SOURCE_COMMIT" != "$ref" ]; then
     die "requested commit $ref but the downloaded archive identifies itself as '${SOURCE_COMMIT:-<no commit recorded>}' — refusing to build a different revision than requested."
   fi
