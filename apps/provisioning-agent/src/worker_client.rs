@@ -368,7 +368,7 @@ impl WorkerClient {
         }
     }
 
-    /// Conditional form of [`Self::fetch_authorizations`]: with the ETag of
+    /// Conditional form of the plain authorizations fetch: with the ETag of
     /// the snapshot already held, an unchanged state costs one tiny 304 and
     /// no server-side decryption.
     pub async fn fetch_authorizations_conditional(
