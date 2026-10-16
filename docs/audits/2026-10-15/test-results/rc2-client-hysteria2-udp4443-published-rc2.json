@@ -1,0 +1,30 @@
+[
+ {
+  "tag": "Hysteria2",
+  "check_rc": 0,
+  "check_out": "",
+  "first_success_s": 1.39,
+  "generate_204": true,
+  "egress_ipv4_probe": {
+   "rc": 0,
+   "out": "91.244.71.165",
+   "s": 1.821
+  },
+  "egress_api64": {
+   "rc": 0,
+   "out": "2a12:bec4:19a5:9aa::",
+   "s": 0.959
+  },
+  "https_wikipedia": {
+   "rc": 0,
+   "out": "200 ttfb=0.102092 total=0.137351",
+   "s": 0.179
+  },
+  "dns_via_proxy_hostname_fetch": {
+   "rc": 0,
+   "out": "200",
+   "s": 0.146
+  },
+  "client_log_tail": "ok (suppressed)"
+ }
+]

@@ -1,0 +1,21 @@
+# Remedy for hosts upgraded by update.sh: re-run the PUBLISHED rc.2 install.sh (checksum-verified, pinned) = in-place repair that backfills the missing address keys
+# command: SINGBOX_VPN_VERSION=v1.3.1-rc.2 bash install.sh --non-interactive --domain <host> --reality-handshake-server <sni>   (cosign pre-staged on PATH)
+
+[install] existing singbox-vpn installation detected at /etc/vpn/deployment.toml — this run will UPGRADE/REPAIR in place, preserving users and keys.
+[install] own public address: IPv4=91.244.71.165 IPv6=2a12:bec4:19a5:9aa::
+[install] recorded this node's own public address in /etc/vpn/deployment.toml (IPv4=91.244.71.165 IPv6=2a12:bec4:19a5:9aa::)
+
+deployment.toml after:
+19:public_host = "91-244-71-165.sslip.io"
+23:public_ipv4 = "91.244.71.165"
+24:public_ipv6 = "2a12:bec4:19a5:9aa::"
+
+doctor --protocol after repair: exit 0, 41 OK / 0 FAIL / 0 WARN (was 40 OK / 0 FAIL / 1 WARN: C-16 no own-address rule)
+tunnel reach BEFORE repair (update only):
+tunnel -> node's own public nginx https://91.244.71.165:8443/ : 000 (curl rc 28)
+tunnel -> node's own public sshd   tcp 91.244.71.165:22 : banner='SSH-2.0-Ope' (curl rc 0)
+tunnel -> sanity, public internet  https://www.gstatic.com/generate_204 : 204 (curl rc 0)
+tunnel reach AFTER repair:
+tunnel -> node's own public nginx https://91.244.71.165:8443/ : 000 (curl rc 35)
+tunnel -> node's own public sshd   tcp 91.244.71.165:22 : banner='' (curl rc 52)
+tunnel -> sanity, public internet  https://www.gstatic.com/generate_204 : 204 (curl rc 0)

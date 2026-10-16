@@ -1,0 +1,37 @@
+# Official update v1.3.1-rc.1 -> v1.3.1-rc.2 (published artifacts, checksum + attestation verified by update.sh), host 91.244.71.165
+# command: /opt/singbox-vpn/deploy/almalinux/update.sh --version v1.3.1-rc.2   (installed updater = rc.1's; cosign pre-staged on PATH, sha256 = the installer's pin)
+
+## updater verdict
+[update] source archive checksum verified against release SHA256SUMS.
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] STAGE complete: v1.3.1-rc.2 verified and ready (source + binaries).
+[update] SWITCHING to v1.3.1-rc.2...
+[update] UPDATE COMPLETE: v1.3.1-rc.1 -> v1.3.1-rc.2. sing-box: 1.14.1. User credentials and REALITY/Hysteria2 material were preserved.
+
+## installed binaries == published release artifacts
+published tarball : vpn-admin 2aa891d520e552c8...  subscription 19b9678c6ba14ca8...
+2aa891d520e552c8  /usr/local/bin/vpn-admin
+2aa891d520e552c8  /usr/local/bin/vpn
+19b9678c6ba14ca8  /usr/local/bin/vpn-subscription-svc
+
+## preserved across the upgrade (hash prefixes, before == after)
+263c6a811f7b reality/private.key
+7420b6755dee reality/public.key
+e5121a4ee53e hysteria/cert.pem
+7a2b6a0c1ada hysteria/key.pem
+users after: default yes; up-a yes; up-b yes (expires_at preserved); up-c no (still disabled); reserved probe user present
+subscription URLs unchanged: up-a 200, up-b 200, up-c 404 (disabled)
+real client, profiles created on rc.1: up-a CONNECTED, up-b CONNECTED; refetched profile credentials identical to pre-upgrade
+
+## doctor --protocol after the update (rc.2)
+40
+[WARN] [L2  ] C-16: no own-public-address deny rule — deployment.toml records no public IP (`public_ipv4`/`public_ipv6`, or an IP-literal `public_host`), so a tunnel user can reach services listening on this node's own public address. Set `public_ipv4` (and 
+[OK]   [L1  ] release identity: recorded release candidate v1.3.1-rc.2; 3 installed executables and the running vpn-admin match the hashes the installer recorded (not independent proof of published-artifact provenance; unit files and helper scripts are not has
+[OK]   [L5-6] protocol self-test: a throwaway sing-box client using the CURRENT REALITY public_key/short_id and an active VLESS user completed a full handshake through 127.0.0.1:443 and returned application bytes end-to-end
+[OK]   [L5-6] Hysteria2 self-test: a throwaway sing-box client completed the QUIC handshake with Salamander obfuscation and password authentication on 127.0.0.1:443 and returned application bytes end-to-end (loopback: proves the listener, credentials and certi
+
+## FINDING: an update does NOT backfill public_ipv4/public_ipv6 (the I-15 fix lives in install.sh). Tunnel user vs the node's own services after the update:
+tunnel -> node's own public nginx https://91.244.71.165:8443/ : 000 (curl rc 28)
+tunnel -> node's own public sshd   tcp 91.244.71.165:22 : banner='SSH-2.0-Ope' (curl rc 0)
+tunnel -> sanity, public internet  https://www.gstatic.com/generate_204 : 204 (curl rc 0)

@@ -119,7 +119,19 @@ workspace and the prerelease only in the tag.
   tree.
 - The production updater (`update.sh --version`) refuses a dev-channel install by design, so an
   injected-failure update with rollback against a published release (`update.sh` with
-  `SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch`) can only be run once an rc.2 is published and
-  an rc.1 install exists. It was **not** run. The dev-rebuild path does not call that hook.
+  `SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch`) could not be run in this round. It was run
+  afterwards against the published v1.3.1-rc.2 (see "Round 3" in `08_RELEASE_ACCEPTANCE.md`). The
+  dev-rebuild path does not call that hook.
+
+## Round 3 summary (published v1.3.1-rc.2, tag on d64ea56)
+
+- No code change after the merge. Release artifacts, checksums, attestations and the source archive were verified
+  independently; the installed binaries equal the published ones.
+- Findings: **I-31** (a plain `update.sh` does not record the node's own addresses; upgraded hosts stay exposed
+  until `install.sh` is re-run), **I-32** (rc.1's updater rollback fails when `sing-box` restarts were close
+  together; rc.2 does not), I-33 (cosign downloaded twice with a 300 s cap), I-34 (subscription keeps advertising
+  the old Hysteria2 port), I-35 (intermittent single-probe misses in my client), I-36 (Let's Encrypt 5/168 h).
+- The first injected-failure rollback attempt on rc.1 -> rc.2 **failed** and is kept in the evidence next to the
+  clean re-run.
 - Test environment: on a Windows checkout with `core.autocrlf=true` shell tests fail on CRLF
   (I-27). Under WSL with line endings normalised, all 71 `deploy/lib/tests` pass (3 of them need root).
