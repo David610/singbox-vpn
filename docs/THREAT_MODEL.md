@@ -120,8 +120,15 @@ This is a circumvention/privacy VPN, not an anonymity network.
   in `reject`.
 - A host nftables table (`inet arcana_egress_isolation`, uid-scoped to
   `sing-box`) repeats the ranges as a second layer.
-- The own-address rule needs `public_ipv4`/`public_ipv6` in `deployment.toml`;
-  a domain-based install does not record them automatically.
+- The own-address rule needs `public_ipv4`/`public_ipv6` in `deployment.toml`.
+  The installer records them on a fresh install, including for a domain-based
+  `public_host`, from `PUBLIC_IPV4`/`PUBLIC_IPV6`, the host's interface
+  addresses, or (NAT/floating IPs) an address two independent services agree
+  on; DNS only breaks ties between addresses already proven local. A fresh
+  install that cannot establish an address fails with an actionable message
+  (`SINGBOX_VPN_ALLOW_UNKNOWN_OWN_ADDRESS=1` opts out). A repair backfills
+  missing keys and never overwrites configured ones. `vpn doctor` warns when
+  the rule is absent.
 - Enforced by `relay_role_policy.rs`
   (`exit_rendering_keeps_inbounds_outbounds_identical_and_adds_mandatory_c16_route`,
   `relay_destinations_cannot_name_internal_or_metadata_addresses`) and

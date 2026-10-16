@@ -1,0 +1,52 @@
+[OK]   [L2  ] sing-box binary present at "/usr/local/bin/sing-box"
+[OK]   [L2  ] sing-box config ownership/mode is root:sing-box 0640
+[OK]   [L2  ] sing-box config valid
+[OK]   [L2  ] REALITY private key ownership/mode is root:sing-box 0640
+[OK]   [L2  ] REALITY public key ownership/mode is root:vpn-subscription 0640
+[OK]   [L2  ] REALITY short_id ownership/mode is root:vpn-subscription 0640
+[OK]   [L2  ] REALITY public.key cryptographically corresponds to private.key (X25519 derivation)
+[OK]   [L2  ] user store ownership/mode is root:vpn-subscription 0640
+[OK]   [L2  ] user store parses (2 user(s))
+[OK]   [L2  ] Hysteria2 certificate ownership/mode is root:sing-box 0640
+[OK]   [L2  ] Hysteria2 private key ownership/mode is root:sing-box 0640
+[OK]   [L2  ] Hysteria2 TLS certificate valid, expires in 89 day(s)
+[OK]   [L2  ] Hysteria2 obfuscation password ownership/mode is root:vpn-subscription 0640
+[OK]   [L2  ] Hysteria2 salamander obfuscation enabled
+[OK]   [L2  ] nginx subscription TLS certificate valid, expires in 89 day(s)
+[OK]   [L1  ] sing-box.service active
+[OK]   [L1  ] vpn-subscription.service active
+[OK]   [L1  ] vpn-expiry-reconcile.service has no recorded failure
+[OK]   [L1  ] vpn-expiry-reconcile.timer is armed and waiting
+[OK]   [L1  ] vpn-service-watchdog.timer is armed and waiting
+[OK]   [L3  ] ufw is active (the recorded firewall backend); provider/cloud firewalls are not visible to doctor, so external reachability of the VPN ports is UNKNOWN from this host
+[OK]   [L3  ] VLESS+REALITY TCP listener present on port 443
+[OK]   [L3  ] Hysteria2 UDP listener present on port 443
+[OK]   [L3  ] UDP egress (IPv4) appears functional (DNS via UDP to public resolvers succeeded)
+[OK]   [L2  ] C-16: tunnel traffic to this node's own public address is refused (from public_ipv4, public_ipv6)
+[OK]   [L3  ] SSH listener present on 0.0.0.0:22/tcp (expected, publicly reachable by design)
+[OK]   [L3  ] nginx subscription HTTPS listener present on 0.0.0.0:8443/tcp (owned by nginx) (expected)
+[OK]   [L3  ] vpn-subscription backend 127.0.0.1:9100/tcp is loopback-only, as expected
+[OK]   [L3  ] SSH listener present on :::22/tcp (expected, publicly reachable by design)
+[OK]   [L3  ] nginx subscription HTTPS listener present on :::8443/tcp (owned by nginx) (expected)
+[OK]   [L3  ] VLESS+REALITY listener present on *:443/tcp (owned by sing-box) (expected)
+[OK]   [L3  ] Hysteria2 listener present on *:443/udp (owned by sing-box) (expected)
+[INFO] [L3  ] could not determine the active firewalld zone (firewall-cmd unavailable, or a non-firewalld backend such as ufw is in use)
+[INFO] [L3  ] firewall backend: ufw; singbox-vpn-owned public rules: 443/tcp, 443/udp, 8443/tcp (subscription)
+[INFO] [L2  ] exit ipv6_literal=reject_google: rejection is a proxy close, not proof of native IPv4 retry
+[OK]   [L4  ] subscription render coherence: the client subscription's public_key/short_id match what the current server config accepts
+[OK]   [L4  ] on-disk sing-box config.json exactly matches the complete authorization/key/cert document current state would render (not stale)
+[OK]   [L4  ] the ALREADY-RUNNING vpn-subscription process's live in-memory state matches current REALITY key files/deployment config (verified via its own /internal/state-fingerprint endpoint, not just a fresh disk read that a stale process would also pass)
+[OK]   [L2  ] public hostname "vpn.xn----8sba1cvaif4e.com" resolves (1 A/IPv4, 0 AAAA/IPv6 address(es))
+[INFO] [L2  ] public hostname has no AAAA/IPv6 record — IPv6-capable clients will connect over IPv4 only, which avoids IPv6-leak risk but means an IPv6-only client network cannot reach this deployment at all
+[OK]   [L3  ] conntrack: 154 / 65,536 entries (0.2%)
+[INFO] [L3  ] nf_conntrack_udp_timeout: 30s (a long-lived Hysteria2/QUIC stream idle for longer than this can have its conntrack entry evicted and its return path treated as untracked)
+[INFO] [L3  ] nf_conntrack_udp_timeout_stream: 120s (a long-lived Hysteria2/QUIC stream idle for longer than this can have its conntrack entry evicted and its return path treated as untracked)
+[OK]   [L3  ] UDP memory: 0 / 120,882 pages in use (0.0% of the pressure threshold, ceiling 181,320 pages) — normal
+[INFO] [L3  ] UDP error counters (cumulative since boot, compare two runs rather than the absolute value): receive errors=0, receive buffer errors=0, send buffer errors=0
+[OK]   [L1  ] release identity: recorded development channel (not a published release) main @ f07060139e86 (source tree 03a82a273152); 3 installed executables and the running vpn-admin match the hashes the installer recorded (not independent proof of published-artifact provenance; unit files and helper scripts are not hashed)
+[INFO] [L4  ] Automatic transport selection (`auto` / urltest) tests generic HTTPS connectivity to Google, not Telegram-specific behavior. In the sing-box-native subscription the default (`select`) is the REALITY endpoint, chosen deterministically, not by that race. Hiddify ignores both: it rebuilds its own groups and, with more than one route, balances new connections across them (docs/YOUTUBE_FINAL_ROOT_CAUSE.md §13; `compat=hiddify-pinned` serves one route) — see docs/TELEGRAM_RESILIENCE_PLAN.md and docs/TELEGRAM_TROUBLESHOOTING.md.
+[OK]   [L5-6] protocol self-test: a throwaway sing-box client using the CURRENT REALITY public_key/short_id and an active VLESS user completed a full handshake through 127.0.0.1:443 and returned application bytes end-to-end
+[OK]   [L5-6] Hysteria2 self-test: a throwaway sing-box client completed the QUIC handshake with Salamander obfuscation and password authentication on 127.0.0.1:443 and returned application bytes end-to-end (loopback: proves the listener, credentials and certificate, NOT external UDP reachability)
+
+SERVER-SIDE CHECKS PASSED
+REAL CLIENT / RUSSIAN NETWORK TEST STILL REQUIRED

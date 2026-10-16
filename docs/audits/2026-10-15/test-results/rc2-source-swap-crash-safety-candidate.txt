@@ -1,0 +1,21 @@
+# Source-swap crash safety on the real box (fresh candidate f070601, 91.244.71.165)
+## S-A: crash between the two renames (state staged: /opt/singbox-vpn absent, /opt/singbox-vpn.prev-install present)
+[install] recovering the previous source tree: an earlier source replacement was interrupted before it completed.
+[install] the persistent source tree at /opt/singbox-vpn is identical to the requested source; reusing it.
+result: tree digest identical to before (fc042a3c...), binaries unchanged, doctor exit 0, timers re-armed
+
+## S-B: install of a DIFFERENT commit (10ad1b0) with SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox, then clean re-run of f070601
+[install] the requested source differs from the installed copy at /opt/singbox-vpn; replacing it so the requested revision is the one built.
+[install] ERROR: SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=install_singbox — deliberately aborting for lifecycle-gate testing.
+[install] this was a REPAIR of an existing installation, not a fresh install — NOT auto-rolling-back (that would risk destroying a previously-working deployment's users/keys/certificates over what m
+after the failed install: dirs /opt/singbox-vpn + /opt/singbox-vpn.prev-install; services active; doctor exit 0
+after the re-run:
+[install] removing /opt/singbox-vpn.prev-install left behind by an earlier source replacement (/opt/singbox-vpn is complete).
+[install] the requested source differs from the installed copy at /opt/singbox-vpn; replacing it so the requested revision is the one built.
+REALITY key already present at "/etc/vpn/compat/reality/private.key"; refusing to overwrite (pass --rotate to replace it deliberately — this breaks every existing client's connection until they re-i
+[install] 2 existing user(s) found on a not-yet-accepted (pending) deployment — reusing the first one; minting a fresh subscription token for onboarding (rotate-token changes only the subscription t
+## before S-B vs after convergence (manifest differs only by install time)
+IDENTICAL: binaries, tree, deployment.toml, sing-box config, units, services, leftovers
+manifest source_commit: f07060139e86ca093421fab2aba75f0be6fb4d8c
+/opt/singbox-vpn 
+doctor exit=0

@@ -75,6 +75,49 @@ Remaining: installer vs doctor on own-address isolation; Hysteria2 absent from h
 **I. Remaining risks.** See `issues.json` (open and blocked entries). Missing evidence: any physical-device
 run, a network with working UDP/443, the second node for the YouTube hairpin.
 
+## Round 2: server hardening candidate for v1.3.1-rc.2
+
+**Decision: the four server defects are fixed and verified on a real VPS on the branch; this is NOT a
+release acceptance.** It is not merged, not tagged, and has no physical-device evidence. The
+production-updater rollback proof and the Hysteria2 path over a real network are still open (below).
+
+| Item | Value |
+|---|---|
+| Branch | `fix/server-hardening-rc2` on `main` 0b038a0; tested at **f070601** (earlier: 10ad1b0) |
+| Fixes | I-15 9ca903e, I-18 0c7118a, I-16 a4e8f16 + 10ad1b0, I-17 f070601 |
+| Version | `Cargo.toml` stays `1.3.1`; `v1.3.1-rc.2` would be a tag only |
+| Host | 91.244.71.165, Ubuntu 24.04.5, **disposable** (owner confirmed 2026-10-16); sing-box 1.14.1 pinned |
+| How deployed | public bootstrap, dev channel, **pinned to the commit SHA**; source built on the host. Checksum-**unverified** branch source, not a release artifact |
+| Baseline | unmodified `main` 0b038a0, fresh install on the same host, same domain |
+| Client | real sing-box 1.14.1 for Windows (SHA-256 checked against GitHub's published digest), from a PC on the public internet |
+
+| Gate | Baseline `main` | Candidate | Evidence (`test-results/`) |
+|---|---|---|---|
+| I-15 own addresses recorded on a domain install | not recorded; doctor WARN | `public_ipv4`/`public_ipv6` recorded, doctor OK | `rc2-doctor-baseline-origin-main.txt`, `rc2-doctor-candidate-f070601-fresh.txt` |
+| I-15 tunnel user reaches the node's sshd/nginx | **reachable** (`SSH-2.0-Ope...`, nginx 404) | **refused** (rc 52 / rc 35); internet still 204 | `rc2-tunnel-reach-own-address-{baseline,candidate}.txt` |
+| I-16 request for older `main` over a newer tree | built the **newer** tree, reported complete, manifest `main` | n/a: fixed installers swap the tree; manifest records commit and tree digest | `rc2-i16-baseline-reproduction.txt`, `rc2-doctor-candidate-f070601-fresh.txt` |
+| I-16 pinned SHA delivers that commit | not possible (SHA treated as a branch name) | archive commit read and compared; refusal path tested | `deploy/lib/tests/test-bootstrap-source-identity.sh` (WSL) |
+| I-16 crash between the swap's two renames | n/a | recovered; tree digest identical to before | `rc2-source-swap-crash-safety-candidate.txt` |
+| I-16 failed install after a swap | n/a | state as designed, services active; clean re-run converges to a byte-identical tree/binaries/config | same |
+| I-17 healthy source build | WARN "release identity INCONSISTENT" | OK, 3 executables match, also after reboot | doctor files above, `rc2-doctor-candidate-after-reboot.txt` |
+| I-18 wrong-hostname Hysteria2 certificate | doctor exit **0**, FAIL=0 | exit **1**, `Hysteria2 self-test FAILED: ... not accepted for <host>`; REALITY still OK | `rc2-doctor-{baseline,candidate}-wrong-hysteria2-cert.txt` |
+| Broken config detected | not run | drifted on-disk config: L4 FAIL; truncated file: L2 FAIL; both exit 1; restored | `rc2-broken-config-detection-candidate.txt` |
+| REALITY, real client, public internet | n/a | PASS: first byte 0.7 s, egress 91.244.71.165, Wikipedia 200, TTFB 0.24 s | `rc2-client-proto-candidate-upgrade.json` |
+| Subscription and revocation | n/a | PASS: rotate-vless kills the old profile and not the new; disable, expire and remove each refuse the client and 404 the subscription; enable/clear-expiry restore it | `rc2-revocation-lifecycle-candidate.txt` |
+| Reboot | n/a | PASS: services, ufw (8 rules) and egress table (9 lines) identical; doctor 41 OK / 0 FAIL / 0 WARN; the same pre-reboot profile still connects; own-address isolation holds | `rc2-reboot-candidate.txt` |
+| Hysteria2 with a real client over a network | n/a | **BLOCKED**: 0 UDP/443 packets from the test PC reached the server (tcpdump); the same filtering as I-21. Proven only on loopback (doctor) | `rc2-udp443-capture-during-hy2-attempt.txt` |
+| Production updater, injected failure, rollback against a published release | n/a | **NOT RUN**: `update.sh --version` refuses a dev-channel install by design; needs a published rc.2 and an rc.1 install | see `07` |
+| Lifecycle gate (`lifecycle-acceptance.sh`) | n/a | **NOT RUN**: AlmaLinux 9 only; this host is Ubuntu | |
+| Shell test suite | n/a | 71/71 pass under WSL (3 need root); Windows checkout fails on CRLF (I-27) | |
+| Rust: `release_identity` tests, clippy on `admin` | n/a | 19 tests pass; clippy `-D warnings` clean | |
+| Device (iPhone) evidence | NOT_TESTED | NOT_TESTED | |
+
+Honest limits: the candidate was installed through the dev channel from a source tree, so a release
+build's `vpn` and `vpn-admin` (one copied file) is covered by unit tests and by the fallback, not by a
+VPS run. The second host (AlmaLinux) and the owner's production exit were not touched. Two fresh
+installs were done (baseline, candidate) on a host with no Let's Encrypt issuance for this name in the
+previous 7 days (crt.sh); both completed.
+
 ## iPhone test procedure (needs you)
 
 Use a throwaway user: `vpn user create --name iphone-test --json` on the node. Photograph or screenshot each

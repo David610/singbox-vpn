@@ -1,0 +1,13 @@
+# I-16 reproduction on unmodified origin/main installer logic (0b038a0). Box held the candidate tree (vpn-admin 5934a0ab) from an earlier step.
+# Request: bootstrap --ref main (older tree, old installer).
+pre: vpn-admin 5934a0abc252a075 (candidate build)
+[bootstrap] downloading UNVERIFIED singbox-vpn branch source (ref=main, SINGBOX_VPN_CHANNEL=dev — no checksum verification, development/testing only)...
+[bootstrap] extracting...
+[bootstrap] handing off to deploy/almalinux/install.sh (repo checked out at /tmp/singbox-vpn-install.rQ8e6cvU/singbox-vpn-main)
+[install] reusing the existing root-controlled persistent source tree at /opt/singbox-vpn.
+REALITY key already present at "/etc/vpn/compat/reality/private.key"; refusing to overwrite (pass --rotate to replace it deliberately — this breaks every existing client's connection until they re-import).
+## post-state (REQUESTED: main = 0b038a0, an older tree)
+vpn-admin 5934a0abc252a075  [baseline main build was ee61eb04, candidate build was 5934a0ab]
+persistent tree contains CANDIDATE-only code: 3 refs
+manifest records: {'singbox_vpn_version': 'main', 'source_commit': None}
+installer said: 1 x installation complete

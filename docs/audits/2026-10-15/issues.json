@@ -147,9 +147,9 @@
    "severity": "high",
    "title": "Installer leaves the C-16 own-address reject off when public_host is a DNS name: tunnel users reach the node's own services",
    "evidence": "server",
-   "status": "open",
-   "fix": "",
-   "note": "manual mitigation verified (set public_ipv4/ipv6); installer should record the node's public addresses"
+   "status": "fixed-on-branch",
+   "fix": "singbox-vpn 9ca903e (fix/server-hardening-rc2)",
+   "note": "rc2 R2: baseline origin/main fresh install records no public_ipv4/6 and a tunnel user reads the node's sshd banner and nginx; candidate fresh install records both, doctor C-16 OK, same tunnel test refused (rc 35 / rc 52), internet still 204; survives reboot. Evidence: test-results/rc2-tunnel-reach-own-address-*.txt"
   },
   {
    "id": "I-16",
@@ -157,9 +157,9 @@
    "severity": "medium",
    "title": "Dev-channel installer over an existing install reuses the old source tree and records version 'main'",
    "evidence": "server",
-   "status": "open",
-   "fix": "",
-   "note": "a clean install is required to deploy a branch"
+   "status": "fixed-on-branch",
+   "fix": "singbox-vpn a4e8f16, 10ad1b0 (fix/server-hardening-rc2)",
+   "note": "rc2 R2: reproduced on origin/main logic (requested main over a candidate tree: 'reusing the existing root-controlled persistent source tree', candidate binaries kept, success reported, manifest 'main'). Fix: persistent tree reused only if its content digest equals the request, else staged, verified and swapped by two renames with crash recovery; bootstrap accepts a full commit SHA and refuses an archive whose commit differs; manifest records source_ref/source_commit/source_tree_sha256. Verified on the box: crash between renames recovered, failed install after a swap converges on re-run. Caveat: the fix protects installs of refs that contain it; an older ref's installer still reuses the tree"
   },
   {
    "id": "I-17",
@@ -167,9 +167,9 @@
    "severity": "low",
    "title": "doctor release-identity WARN on source builds because vpn and vpn-admin are separate compiles with different hashes",
    "evidence": "server",
-   "status": "open",
-   "fix": "",
-   "note": ""
+   "status": "fixed-on-branch",
+   "fix": "singbox-vpn f070601 (fix/server-hardening-rc2)",
+   "note": "rc2 R2: baseline fresh install warned 'release identity INCONSISTENT'; installer/updater now record vpn_sha256 and doctor compares vpn against it (fallback to the admin hash for older manifests), running binary may match either. Candidate: 0 WARN, 3 executables match, also after reboot. Unit tests incl. a hand-replaced vpn still detected"
   },
   {
    "id": "I-18",
@@ -177,9 +177,9 @@
    "severity": "medium",
    "title": "doctor --protocol and installer self-test cover REALITY only; Hysteria2 breakage passes health checks",
    "evidence": "server",
-   "status": "open",
-   "fix": "",
-   "note": "the caps lockout passed every built-in check"
+   "status": "fixed-on-branch",
+   "fix": "singbox-vpn 0c7118a (fix/server-hardening-rc2)",
+   "note": "rc2 R2: with a valid certificate for the wrong hostname every Hysteria2 client breaks, baseline doctor --protocol exits 0 FAIL=0 (REALITY-only); candidate exits 1 with 'Hysteria2 self-test FAILED: the TLS certificate ... is not accepted for <host>'. Loopback handshake only: does not prove external UDP reachability (I-21)"
   },
   {
    "id": "I-19",
