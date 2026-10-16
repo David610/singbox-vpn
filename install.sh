@@ -468,10 +468,11 @@ echo
 
 # Propagate the caller's environment (PUBLIC_HOST, SINGBOX_VPN_VERSION, etc.)
 # and the exact exit code of the real installer — never mask a failure.
+source_ref="${SINGBOX_VPN_VERSION:-$SINGBOX_VPN_REF}"
 set +e
 SINGBOX_VPN_RELEASE_REPO="$SINGBOX_VPN_REPO" SINGBOX_VPN_VERSION="$SINGBOX_VPN_VERSION" \
   SINGBOX_VPN_SOURCE_COMMIT="$SOURCE_COMMIT" \
-  SINGBOX_VPN_SOURCE_REF="${SINGBOX_VPN_VERSION:-$SINGBOX_VPN_REF}" \
+  SINGBOX_VPN_SOURCE_REF="$source_ref" \
   bash "$SRC_DIR/deploy/almalinux/install.sh" "${PASSTHROUGH_ARGS[@]}"
 rc=$?
 set -e

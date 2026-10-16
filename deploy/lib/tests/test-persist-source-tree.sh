@@ -73,13 +73,15 @@ persist_source_tree
 echo "ok: a different requested source replaces the persistent copy"
 
 # (3) once the run is accepted the previous tree is dropped.
+# shellcheck disable=SC2034  # read by finalize_source_swap, sourced from install.sh
 SOURCE_SWAP_PENDING=1
 finalize_source_swap
 [ ! -e "$PERSIST_PREV_DIR" ]
 echo "ok: the replaced tree is removed after acceptance"
 
 # (4) a swap killed between the two renames is undone on the next run.
-mv "$PERSIST_DIR" "$PERSIST_PREV_DIR"
+# shellcheck disable=SC2218  # the real mv: the failing mv() mock is only defined for step (6)
+command mv "$PERSIST_DIR" "$PERSIST_PREV_DIR"
 [ ! -e "$PERSIST_DIR" ]
 recover_interrupted_source_swap
 [ -d "$PERSIST_DIR" ] && [ ! -e "$PERSIST_PREV_DIR" ]
