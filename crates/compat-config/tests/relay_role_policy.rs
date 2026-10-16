@@ -924,9 +924,11 @@ public_ipv6 = \"2001:db8::9\"",
         serde_json::json!(["203.0.113.9/32", "2001:db8::9/128"])
     );
 
-    let appended = format!("{template}
+    let appended = format!(
+        "{template}
 public_ipv4 = \"203.0.113.9\"
-");
+"
+    );
     let cfg = load(&appended).unwrap();
     assert!(
         cfg.public_ipv4.is_none(),

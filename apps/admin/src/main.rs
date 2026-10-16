@@ -101,9 +101,12 @@ enum Commands {
     Doctor {
         /// Also run the best-effort L5/L6 protocol self-test: spin up
         /// the real `sing-box` binary as a throwaway client against this
-        /// server's own VLESS+REALITY listener on loopback, using the
-        /// live REALITY public key/short_id, to prove (not just infer)
-        /// that a real client can complete a handshake. Off by default
+        /// server's own VLESS+REALITY listener AND its Hysteria2 (QUIC)
+        /// listener on loopback, using the live credentials (REALITY
+        /// public key/short_id; Hysteria2 password and Salamander), to
+        /// prove (not just infer) that a real client can complete each
+        /// handshake. A pass on one transport is no evidence about the
+        /// other; loopback does not prove external UDP reachability. Off by default
         /// because it spawns a subprocess and does real network I/O;
         /// the always-on L1-L4 checks are pure file/struct comparisons.
         /// Unavailable or inconclusive checks are warnings unless
@@ -111,8 +114,9 @@ enum Commands {
         #[arg(long)]
         protocol: bool,
         /// Make an unavailable or inconclusive protocol self-test a hard
-        /// failure. The installer uses this after creating the first user so
-        /// it cannot bless an untested REALITY decoy.
+        /// failure, for either transport. The installer uses this after
+        /// creating the first user so it cannot bless an untested REALITY
+        /// decoy or a Hysteria2 listener that refuses real clients.
         #[arg(long, requires = "protocol")]
         require_protocol: bool,
         /// Run the standard checks, then print an additional
@@ -4738,6 +4742,10 @@ enum ProtocolCheckResult {
     /// pass or fail (e.g. no HTTP success response through the tunnel).
     /// This is NOT the same as `Passed` and NOT the same as `Failed`.
     Inconclusive,
+    /// One transport passed and the other could not be tested (not run,
+    /// unreachable or inconclusive). Never reported as `Passed`: a verified
+    /// REALITY handshake says nothing about Hysteria2, or the reverse.
+    Partial,
 }
 
 impl ProtocolCheckResult {
@@ -4747,6 +4755,7 @@ impl ProtocolCheckResult {
             ProtocolCheckResult::Passed => "PASSED",
             ProtocolCheckResult::Failed => "FAILED",
             ProtocolCheckResult::Inconclusive => "INCONCLUSIVE",
+            ProtocolCheckResult::Partial => "PARTIAL",
         }
     }
 }
@@ -5493,6 +5502,7 @@ fn cmd_doctor(
             ProtocolCheckResult::Passed => "passed",
             ProtocolCheckResult::Failed => "failed",
             ProtocolCheckResult::Inconclusive => "inconclusive",
+            ProtocolCheckResult::Partial => "partial",
         };
         let output = json!({
             "healthy": failures == 0,
@@ -5795,6 +5805,15 @@ fn build_doctor_coverage_report(
             "L1-4 check(s) FAILED, and the real-handshake check (L5-6) DIALED but got an \
              INCONCLUSIVE result — server-side health is NOT established on either axis. Fix \
              the L1-4 failures first, then re-run the protocol self-test."
+        }
+        (true, ProtocolCheckResult::Partial) => {
+            "L1-4 passed and one transport's real handshake passed, but the other transport \
+             (REALITY or Hysteria2) could not be tested - see the L5-6 lines above. The node is \
+             NOT proven healthy: a pass on one transport is no evidence about the other."
+        }
+        (false, ProtocolCheckResult::Partial) => {
+            "L1-4 check(s) FAILED, and only one transport's real handshake could be tested - \
+             server-side health is NOT established on either axis. Fix the L1-4 failures first."
         }
         (false, ProtocolCheckResult::Failed) => {
             "L1-4 check(s) FAILED, and the real-handshake check (L5-6) also FAILED — server-side \
@@ -8326,7 +8345,7 @@ fn check_firewall_zone_and_ownership() {
 /// exactly what the coverage line can honestly say about L5-6,
 /// regardless of whether `--protocol` was merely passed on the command
 /// line and regardless of the unrelated L1-4 failure count.
-fn check_l5_l6_protocol_selftest(
+fn check_l5_l6_reality_selftest(
     cfg: &DeploymentConfig,
     failures: &mut u32,
     require_protocol: bool,
@@ -8459,8 +8478,337 @@ fn check_l5_l6_protocol_selftest(
     }
 }
 
+/// L5-6 for every transport this node serves: the REALITY handshake and the
+/// Hysteria2 (QUIC) handshake are separate listeners with separate failure
+/// modes, so each is dialed by its own throwaway client and a pass on one is
+/// never evidence about the other. `--require-protocol` turns an unavailable
+/// or inconclusive result of EITHER transport into a hard failure.
+fn check_l5_l6_protocol_selftest(
+    cfg: &DeploymentConfig,
+    failures: &mut u32,
+    require_protocol: bool,
+) -> ProtocolCheckResult {
+    let reality = check_l5_l6_reality_selftest(cfg, failures, require_protocol);
+    let hysteria2 = check_l5_l6_hysteria2_selftest(cfg, failures, require_protocol);
+    combine_protocol_results(reality, hysteria2)
+}
+
+/// `Passed` only when BOTH transports passed. A definitive failure of either
+/// wins; otherwise any transport that did not produce a verdict keeps the
+/// whole result below `Passed` (`Partial` when the other one did pass).
+fn combine_protocol_results(
+    reality: ProtocolCheckResult,
+    hysteria2: ProtocolCheckResult,
+) -> ProtocolCheckResult {
+    use ProtocolCheckResult::*;
+    match (reality, hysteria2) {
+        (Failed, _) | (_, Failed) => Failed,
+        (Passed, Passed) => Passed,
+        (Passed, _) | (_, Passed) => Partial,
+        (Inconclusive, _) | (_, Inconclusive) => Inconclusive,
+        (NotRun, NotRun) => NotRun,
+        (Partial, _) | (_, Partial) => Partial,
+    }
+}
+
+fn pick_selftest_user(users: &[CompatUser], now: i64) -> Option<&CompatUser> {
+    users
+        .iter()
+        .find(|user| user.is_active(now) && user.is_reserved_probe)
+        .or_else(|| users.iter().find(|user| user.is_active(now)))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hysteria2Rejection {
+    Authentication,
+    Certificate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hysteria2SelfTestOutcome {
+    Pass,
+    /// The server answered the QUIC handshake and refused it.
+    Rejected(Hysteria2Rejection),
+    /// No QUIC answer at all within the bound.
+    Unreachable,
+    /// The client failed in a way that says nothing definite.
+    Inconclusive,
+}
+
+/// Verdict from the throwaway client's outcome and stderr. Only patterns that
+/// are static sing-box/sing-quic error strings are matched (the client runs at
+/// `error` level, which never prints credentials).
+fn classify_hysteria2_selftest(relay_ok: bool, client_stderr: &str) -> Hysteria2SelfTestOutcome {
+    if relay_ok {
+        return Hysteria2SelfTestOutcome::Pass;
+    }
+    let text = client_stderr.to_ascii_lowercase();
+    if text.contains("authentication failed") {
+        return Hysteria2SelfTestOutcome::Rejected(Hysteria2Rejection::Authentication);
+    }
+    if text.contains("x509:") || text.contains("tls: failed to verify") {
+        return Hysteria2SelfTestOutcome::Rejected(Hysteria2Rejection::Certificate);
+    }
+    if text.contains("no recent network activity")
+        || text.contains("connection refused")
+        || text.contains("network is unreachable")
+        || text.contains("timeout")
+        || text.contains("deadline exceeded")
+    {
+        return Hysteria2SelfTestOutcome::Unreachable;
+    }
+    Hysteria2SelfTestOutcome::Inconclusive
+}
+
+/// The throwaway client's config: a real Hysteria2 outbound exactly as a
+/// subscription would render it (system trust store, the node's hostname as
+/// SNI, Salamander when the server has it), pointed at the loopback listener.
+fn hysteria2_selftest_client_config(
+    port: u16,
+    sni: &str,
+    password: &str,
+    obfs_password: Option<&str>,
+    local_port: u16,
+) -> serde_json::Value {
+    let mut outbound = json!({
+        "type": "hysteria2",
+        "tag": "hysteria2-selftest",
+        "server": "127.0.0.1",
+        "server_port": port,
+        "password": password,
+        "tls": { "enabled": true, "server_name": sni, "insecure": false }
+    });
+    if let Some(obfs) = obfs_password {
+        outbound["obfs"] = json!({ "type": "salamander", "password": obfs });
+    }
+    json!({
+        "log": { "level": "error" },
+        "inbounds": [
+            { "type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": local_port }
+        ],
+        "outbounds": [outbound, { "type": "direct", "tag": "direct" }],
+        "route": { "final": "hysteria2-selftest" }
+    })
+}
+
+/// A throwaway sing-box Hysteria2 client against this node's own listener
+/// (QUIC handshake, password authentication, Salamander when enabled), then
+/// an HTTP request through the tunnel to the node's `/healthz`. Loopback
+/// proves the listener, credentials, obfuscation and certificate; it does not
+/// prove UDP reachability from the internet.
+fn check_l5_l6_hysteria2_selftest(
+    cfg: &DeploymentConfig,
+    failures: &mut u32,
+    require_protocol: bool,
+) -> ProtocolCheckResult {
+    let port = cfg.hysteria2.listen_port;
+    if !cfg.singbox_binary.exists() {
+        report_protocol_unavailable(
+            require_protocol,
+            failures,
+            format!(
+                "Hysteria2 self-test UNSUPPORTED: sing-box binary not found at {:?}",
+                cfg.singbox_binary
+            ),
+        );
+        return ProtocolCheckResult::NotRun;
+    }
+    let users = match store::load_users(&cfg.users_file()) {
+        Ok(users) => users,
+        Err(e) => {
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                format!("Hysteria2 self-test NOT RUN: failed to load users: {e}"),
+            );
+            return ProtocolCheckResult::NotRun;
+        }
+    };
+    let now = UnixSeconds::now().0 as i64;
+    let Some(test_user) = pick_selftest_user(&users, now) else {
+        report_protocol_unavailable(
+            require_protocol,
+            failures,
+            "Hysteria2 self-test NOT RUN: there is no enabled, unexpired user",
+        );
+        return ProtocolCheckResult::NotRun;
+    };
+    let params = load_hysteria_params(cfg);
+    let obfs = if params.obfs_password.is_some() {
+        "with Salamander obfuscation"
+    } else {
+        "without obfuscation"
+    };
+    match run_hysteria2_client_selftest(cfg, test_user, params.obfs_password.as_ref(), port) {
+        Ok(Hysteria2SelfTestOutcome::Pass) => {
+            report_check(
+                CheckStatus::Ok,
+                "L5-6",
+                format!(
+                    "Hysteria2 self-test: a throwaway sing-box client completed the QUIC handshake \
+                     {obfs} and password authentication on 127.0.0.1:{port} and returned \
+                     application bytes end-to-end (loopback: proves the listener, credentials and \
+                     certificate, NOT external UDP reachability)"
+                ),
+            );
+            ProtocolCheckResult::Passed
+        }
+        Ok(Hysteria2SelfTestOutcome::Rejected(Hysteria2Rejection::Authentication)) => {
+            report_check(
+                CheckStatus::Fail,
+                "L5-6",
+                format!(
+                    "Hysteria2 self-test FAILED: the server on 127.0.0.1:{port} answered the QUIC \
+                     handshake {obfs} but refused authentication for a valid, active user. A real \
+                     Hysteria2 client would be refused identically. Known cause: bandwidth caps \
+                     (up_mbps/down_mbps) rendered together with ignore_client_bandwidth make \
+                     sing-box refuse every client that does not declare a rate (\"BBR disabled by \
+                     server\"); re-render with `vpn-admin render-config` on a release that does \
+                     not do that."
+                ),
+            );
+            *failures += 1;
+            ProtocolCheckResult::Failed
+        }
+        Ok(Hysteria2SelfTestOutcome::Rejected(Hysteria2Rejection::Certificate)) => {
+            report_check(
+                CheckStatus::Fail,
+                "L5-6",
+                format!(
+                    "Hysteria2 self-test FAILED: the TLS certificate served on 127.0.0.1:{port} \
+                     is not accepted for {host:?} by the system trust store (expired, wrong name, \
+                     missing intermediate or self-signed). Real clients verify it the same way and \
+                     will refuse the connection.",
+                    host = cfg.public_host
+                ),
+            );
+            *failures += 1;
+            ProtocolCheckResult::Failed
+        }
+        Ok(Hysteria2SelfTestOutcome::Unreachable) => {
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                format!(
+                    "Hysteria2 self-test UNREACHABLE: no QUIC answer from 127.0.0.1:{port} within \
+                     the time limit. The listener is down or not on UDP/{port}, or the Salamander \
+                     obfuscation password does not match the one the server runs with ({obfs})."
+                ),
+            );
+            ProtocolCheckResult::Inconclusive
+        }
+        Ok(Hysteria2SelfTestOutcome::Inconclusive) => {
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                "Hysteria2 self-test INCONCLUSIVE: the client did not return an HTTP success \
+                 response through the tunnel and gave no definite reason. Inspect the sing-box \
+                 journal.",
+            );
+            ProtocolCheckResult::Inconclusive
+        }
+        Err(e) => {
+            report_protocol_unavailable(
+                require_protocol,
+                failures,
+                format!("Hysteria2 self-test UNSUPPORTED/NOT RUN: {e}"),
+            );
+            ProtocolCheckResult::NotRun
+        }
+    }
+}
+
+fn run_hysteria2_client_selftest(
+    cfg: &DeploymentConfig,
+    test_user: &CompatUser,
+    obfs_password: Option<&SecretString>,
+    hysteria2_port: u16,
+) -> Result<Hysteria2SelfTestOutcome> {
+    let local_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .context("reserving a local port for the throwaway client")?;
+        listener.local_addr()?.port()
+    };
+    let client_config = hysteria2_selftest_client_config(
+        hysteria2_port,
+        &cfg.public_host,
+        test_user.hysteria2_password.expose(),
+        obfs_password.map(|p| p.expose()),
+        local_port,
+    );
+    let tmp = tempfile::NamedTempFile::new().context("creating throwaway client config file")?;
+    std::fs::write(tmp.path(), serde_json::to_vec_pretty(&client_config)?)
+        .context("writing throwaway client config")?;
+
+    let mut child = std::process::Command::new(&cfg.singbox_binary)
+        .arg("run")
+        .arg("-c")
+        .arg(tmp.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("spawning throwaway sing-box client")?;
+    let stderr_pipe = child.stderr.take().expect("stderr was piped");
+    let stderr_capture = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        let mut pipe = stderr_pipe;
+        let _ = pipe.read_to_string(&mut buf);
+        buf
+    });
+    struct KillOnDrop(std::process::Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut guard = KillOnDrop(child);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut client_bound = true;
+    while !tcp_port_reachable(
+        "127.0.0.1",
+        local_port,
+        std::time::Duration::from_millis(100),
+    ) {
+        if matches!(guard.0.try_wait(), Ok(Some(_))) || std::time::Instant::now() >= deadline {
+            client_bound = false;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    let exited_early = matches!(guard.0.try_wait(), Ok(Some(_)));
+    let relay_ok = client_bound
+        && socks5_http_get_succeeds(
+            local_port,
+            "127.0.0.1",
+            cfg.subscription.listen_port,
+            "/healthz",
+            std::time::Duration::from_secs(8),
+        );
+    let _ = guard.0.kill();
+    let _ = guard.0.wait();
+    let captured_stderr = stderr_capture.join().unwrap_or_default();
+
+    if !client_bound && exited_early {
+        let lower = captured_stderr.to_ascii_lowercase();
+        if lower.contains("unknown outbound type")
+            || lower.contains("with_quic")
+            || lower.contains("not included in this build")
+        {
+            anyhow::bail!("this sing-box build does not include the Hysteria2 outbound");
+        }
+        anyhow::bail!(
+            "the throwaway Hysteria2 client exited before listening (config rejected by this sing-box build)"
+        );
+    }
+    Ok(classify_hysteria2_selftest(relay_ok, &captured_stderr))
+}
+
 /// Runs the actual throwaway client + SOCKS probe for
-/// `check_l5_l6_protocol_selftest`. `Ok(RealitySelfTestOutcome)` is a
+/// `check_l5_l6_reality_selftest`. `Ok(RealitySelfTestOutcome)` is a
 /// verdict about the relay/server; `Err` means the self-test harness
 /// itself failed to set up (never a verdict about the server).
 fn run_reality_client_selftest(
@@ -10187,15 +10535,139 @@ mod doctor_coverage_tests {
             ProtocolCheckResult::Passed,
             ProtocolCheckResult::Failed,
             ProtocolCheckResult::Inconclusive,
+            ProtocolCheckResult::Partial,
         ] {
             let label = match result {
                 ProtocolCheckResult::NotRun => "NOT RUN",
                 ProtocolCheckResult::Passed => "PASSED",
                 ProtocolCheckResult::Failed => "FAILED",
                 ProtocolCheckResult::Inconclusive => "INCONCLUSIVE",
+                ProtocolCheckResult::Partial => "PARTIAL",
             };
             assert_eq!(result.label(), label);
         }
+    }
+
+    #[test]
+    fn a_partial_result_is_never_described_as_a_full_pass() {
+        for l1_l4_failures in [0, 2] {
+            let report = build_doctor_coverage_report(l1_l4_failures, ProtocolCheckResult::Partial);
+            assert!(report.contains("PARTIAL"), "{report}");
+            assert!(
+                !report.contains("including the real protocol handshake, passed"),
+                "{report}"
+            );
+            assert!(report.contains("NOT"), "{report}");
+        }
+    }
+}
+
+/// I-18: the L5-6 verdict covers BOTH transports. A REALITY pass says nothing
+/// about Hysteria2 (the v1.3.0 bandwidth-cap lockout passed doctor), and the
+/// Hysteria2 verdict is derived only from what the throwaway client reports.
+#[cfg(test)]
+mod hysteria2_selftest_tests {
+    use super::*;
+    use ProtocolCheckResult::*;
+
+    #[test]
+    fn a_reality_pass_alone_is_never_a_full_pass() {
+        for other in [NotRun, Inconclusive, Partial] {
+            assert_eq!(combine_protocol_results(Passed, other), Partial);
+            assert_eq!(combine_protocol_results(other, Passed), Partial);
+        }
+        assert_eq!(combine_protocol_results(Passed, Passed), Passed);
+    }
+
+    #[test]
+    fn a_definitive_failure_of_either_transport_wins() {
+        for other in [NotRun, Passed, Inconclusive, Partial, Failed] {
+            assert_eq!(combine_protocol_results(Failed, other), Failed);
+            assert_eq!(combine_protocol_results(other, Failed), Failed);
+        }
+    }
+
+    #[test]
+    fn untested_transports_stay_below_passed() {
+        assert_eq!(combine_protocol_results(NotRun, NotRun), NotRun);
+        assert_eq!(combine_protocol_results(NotRun, Inconclusive), Inconclusive);
+        assert_eq!(
+            combine_protocol_results(Inconclusive, Inconclusive),
+            Inconclusive
+        );
+    }
+
+    #[test]
+    fn classifier_separates_pass_rejection_unreachable_and_inconclusive() {
+        use Hysteria2Rejection::*;
+        use Hysteria2SelfTestOutcome::*;
+        assert_eq!(classify_hysteria2_selftest(true, ""), Pass);
+        assert_eq!(
+            classify_hysteria2_selftest(
+                false,
+                "ERROR [1] outbound/hysteria2[x]: authentication failed, status code: 404"
+            ),
+            Rejected(Authentication)
+        );
+        assert_eq!(
+            classify_hysteria2_selftest(
+                false,
+                "tls: failed to verify certificate: x509: certificate has expired"
+            ),
+            Rejected(Certificate)
+        );
+        for text in [
+            "timeout: no recent network activity",
+            "dial udp 127.0.0.1:443: connect: connection refused",
+            "context deadline exceeded",
+        ] {
+            assert_eq!(
+                classify_hysteria2_selftest(false, text),
+                Unreachable,
+                "{text}"
+            );
+        }
+        assert_eq!(classify_hysteria2_selftest(false, ""), Inconclusive);
+        assert_eq!(
+            classify_hysteria2_selftest(false, "something unrelated happened"),
+            Inconclusive
+        );
+        assert_eq!(
+            classify_hysteria2_selftest(true, "authentication failed"),
+            Pass,
+            "a completed request through the tunnel is a pass whatever the log says"
+        );
+    }
+
+    #[test]
+    fn client_config_matches_what_a_subscription_hands_a_real_client() {
+        let with_obfs = hysteria2_selftest_client_config(
+            443,
+            "vpn.example.test",
+            "pw-secret",
+            Some("obfs-secret"),
+            40000,
+        );
+        let out = &with_obfs["outbounds"][0];
+        assert_eq!(out["type"], "hysteria2");
+        assert_eq!(out["server"], "127.0.0.1");
+        assert_eq!(out["server_port"], 443);
+        assert_eq!(out["tls"]["server_name"], "vpn.example.test");
+        assert_eq!(
+            out["tls"]["insecure"], false,
+            "a real client verifies the certificate"
+        );
+        assert_eq!(out["obfs"]["type"], "salamander");
+        assert_eq!(out["obfs"]["password"], "obfs-secret");
+        assert_eq!(
+            with_obfs["log"]["level"], "error",
+            "never a level that prints credentials"
+        );
+        assert_eq!(with_obfs["route"]["final"], "hysteria2-selftest");
+
+        let plain =
+            hysteria2_selftest_client_config(443, "vpn.example.test", "pw-secret", None, 40000);
+        assert!(plain["outbounds"][0].get("obfs").is_none());
     }
 }
 
