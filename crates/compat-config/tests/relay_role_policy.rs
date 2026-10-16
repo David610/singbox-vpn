@@ -892,6 +892,49 @@ fn exit_with_public_ipv4_and_public_ipv6_both_set_combines_into_one_rule() {
 }
 
 #[test]
+fn installer_template_with_recorded_own_address_renders_the_deny_rule() {
+    // I-15 regression: the installer must write public_ipv4/public_ipv6 as
+    // TOP-LEVEL keys of the real template. Appended after the template's last
+    // `[subscription]` table (the old behaviour) TOML reads them as
+    // `subscription.public_ipv4`, serde ignores them and no rule is rendered.
+    let template = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/almalinux/templates/deployment.toml.template"),
+    )
+    .unwrap()
+    .replace("{{PUBLIC_HOST}}", "vpn.example.test")
+    .replace("{{SUBSCRIPTION_HOST}}", "vpn.example.test")
+    .replace("{{SUBSCRIPTION_PORT}}", "8443")
+    .replace("{{REALITY_HANDSHAKE_SERVER}}", "www.example.com")
+    .replace("{{NODE_ID}}", "de1")
+    .replace("{{NODE_ROLE}}", "exit");
+
+    let top_level = template.replace(
+        "subscription_host = \"vpn.example.test\"",
+        "subscription_host = \"vpn.example.test\"
+public_ipv4 = \"203.0.113.9\"
+public_ipv6 = \"2001:db8::9\"",
+    );
+    let cfg = load(&top_level).unwrap();
+    let doc = render(&cfg, &[user()]);
+    let rules = rules(&doc);
+    assert_eq!(rules.len(), 5);
+    assert_eq!(
+        rules[4]["ip_cidr"],
+        serde_json::json!(["203.0.113.9/32", "2001:db8::9/128"])
+    );
+
+    let appended = format!("{template}
+public_ipv4 = \"203.0.113.9\"
+");
+    let cfg = load(&appended).unwrap();
+    assert!(
+        cfg.public_ipv4.is_none(),
+        "a key appended after [subscription] belongs to that table, not the deployment"
+    );
+}
+
+#[test]
 fn deployment_toml_without_public_ipv4_ipv6_fields_still_loads_and_validates() {
     // Backward compatibility: every existing deployment.toml predates
     // these fields. Confirm the absence of `public_ipv4`/`public_ipv6`

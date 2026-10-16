@@ -275,6 +275,100 @@ EOF
   return 1
 }
 
+# Own-address detection (I-15). The renderer can only deny a tunnel user
+# access to the node's own public address if deployment.toml records it
+# (public_ipv4/public_ipv6); these helpers establish that address from
+# evidence the node itself controls. DNS is deliberately NOT one of them:
+# a record proves what the domain's owner configured, not which addresses
+# belong to this machine.
+
+# 0 when $1 is a syntactically valid global-unicast address that no private,
+# loopback, link-local, CGNAT, multicast or reserved range covers (IPv6:
+# 2000::/3 only, which excludes ULA fc00::/7 and link-local fe80::/10).
+preflight_is_public_ip() {
+  local ip="${1:-}" a b first
+  if [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+    local c d
+    a=$((10#${BASH_REMATCH[1]})) b=$((10#${BASH_REMATCH[2]}))
+    c=$((10#${BASH_REMATCH[3]})) d=$((10#${BASH_REMATCH[4]}))
+    (( a <= 255 && b <= 255 && c <= 255 && d <= 255 )) || return 1
+    (( a == 0 || a == 10 || a == 127 || a >= 224 )) && return 1
+    (( a == 100 && b >= 64 && b <= 127 )) && return 1
+    (( a == 169 && b == 254 )) && return 1
+    (( a == 172 && b >= 16 && b <= 31 )) && return 1
+    (( a == 192 && b == 168 )) && return 1
+    (( a == 198 && (b == 18 || b == 19) )) && return 1
+    return 0
+  fi
+  if [[ "$ip" =~ ^[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}$ ]] && [[ "$ip" != *:::* ]]; then
+    [ "$(printf '%s' "$ip" | grep -o '::' | wc -l)" -le 1 ] || return 1
+    first="${ip%%:*}"
+    [ -n "$first" ] || return 1
+    a=$((16#$first))
+    (( a >= 0x2000 && a <= 0x3fff )) && return 0
+  fi
+  return 1
+}
+
+# Prints 4 or 6 for an address literal, nothing (and returns 1) otherwise.
+preflight_ip_family() {
+  case "${1:-}" in
+    *[!0-9a-fA-F:.]*|"") return 1 ;;
+    *:*) echo 6 ;;
+    *.*) echo 4 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Public global-scope addresses currently configured on this host's
+# interfaces, one per line, for family $1 (4|6). Skips temporary/deprecated/
+# tentative IPv6 privacy addresses. Empty output (return 0) when there are none.
+preflight_local_public_addrs() {
+  local fam="${1:?family}" line addr
+  command -v ip >/dev/null 2>&1 || return 0
+  ip -o "-$fam" addr show scope global 2>/dev/null | while IFS= read -r line; do
+    case " $line " in *" temporary "*|*" deprecated "*|*" tentative "*|*" dadfailed "*) continue ;; esac
+    addr="$(printf '%s\n' "$line" | awk '{for(i=1;i<=NF;i++) if($i=="inet"||$i=="inet6"){print $(i+1); exit}}')"
+    addr="${addr%%/*}"
+    if preflight_is_public_ip "$addr"; then echo "$addr"; fi
+  done | sort -u || true
+  return 0
+}
+
+# The address the internet sees this host as, for family $1, accepted only
+# when two independent services return the same public address (one service
+# alone could be wrong or hostile). Used for hosts whose public address is not
+# configured on an interface (NAT / floating IP).
+preflight_detect_egress_ip_confirmed() {
+  local fam="${1:?family}" url ip first=""
+  echo "[install] confirming this server's public IPv$fam address with two of api.ipify.org / ifconfig.me / icanhazip.com (set PUBLIC_IPV$fam to skip this)..." >&2
+  for url in "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip.com"; do
+    ip="$(curl -fsS "-$fam" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null | tr -d '[:space:]')" || ip=""
+    [ -n "$ip" ] || continue
+    [ "$(preflight_ip_family "$ip" 2>/dev/null)" = "$fam" ] || continue
+    preflight_is_public_ip "$ip" || continue
+    if [ -z "$first" ]; then
+      first="$ip"
+    elif [ "$first" = "$ip" ]; then
+      echo "$ip"
+      return 0
+    else
+      first="$ip"
+    fi
+  done
+  return 1
+}
+
+# Addresses $1 resolves to (A and AAAA), one per line. Only ever used to pick
+# between addresses already proven to be this host's own.
+preflight_resolve_host_addrs() {
+  local host="${1:?host}"
+  if command -v getent >/dev/null 2>&1; then
+    getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u
+  fi
+  return 0
+}
+
 preflight_detect_public_ip() {
   # Disclosed, not silent: with no PUBLIC_HOST/--domain given, this asks
   # one of these three third-party services "what IP did this request
