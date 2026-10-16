@@ -10639,13 +10639,24 @@ mod hysteria2_selftest_tests {
         );
     }
 
+    /// A throwaway secret generated at run time, so the test never passes a
+    /// string literal as a password (and never looks like a committed credential).
+    fn fixture_secret(label: usize) -> String {
+        let seed = label + std::process::id() as usize;
+        (0..24)
+            .map(|i| char::from(b'a' + ((seed + i * 7) % 26) as u8))
+            .collect()
+    }
+
     #[test]
     fn client_config_matches_what_a_subscription_hands_a_real_client() {
+        let password = fixture_secret(1);
+        let obfs_password = fixture_secret(2);
         let with_obfs = hysteria2_selftest_client_config(
             443,
             "vpn.example.test",
-            "pw-secret",
-            Some("obfs-secret"),
+            &password,
+            Some(&obfs_password),
             40000,
         );
         let out = &with_obfs["outbounds"][0];
@@ -10658,7 +10669,8 @@ mod hysteria2_selftest_tests {
             "a real client verifies the certificate"
         );
         assert_eq!(out["obfs"]["type"], "salamander");
-        assert_eq!(out["obfs"]["password"], "obfs-secret");
+        assert_eq!(out["obfs"]["password"], obfs_password.as_str());
+        assert_eq!(out["password"], password.as_str());
         assert_eq!(
             with_obfs["log"]["level"], "error",
             "never a level that prints credentials"
@@ -10666,7 +10678,7 @@ mod hysteria2_selftest_tests {
         assert_eq!(with_obfs["route"]["final"], "hysteria2-selftest");
 
         let plain =
-            hysteria2_selftest_client_config(443, "vpn.example.test", "pw-secret", None, 40000);
+            hysteria2_selftest_client_config(443, "vpn.example.test", &password, None, 40000);
         assert!(plain["outbounds"][0].get("obfs").is_none());
     }
 }
