@@ -106,7 +106,7 @@ fn source_identity(manifest: &Value, tag: &str) -> String {
 /// (executable name in the bin dir, manifest key holding its recorded SHA-256)
 const RECORDED: [(&str, &str); 3] = [
     ("vpn-admin", "vpn_admin_sha256"),
-    ("vpn", "vpn_admin_sha256"),
+    ("vpn", "vpn_sha256"),
     ("vpn-subscription-svc", "subscription_sha256"),
 ];
 
@@ -186,10 +186,18 @@ pub fn evaluate(
     let recorded_admin = manifest["vpn_admin_sha256"]
         .as_str()
         .filter(|h| !h.is_empty());
+    // A source build links `vpn` and `vpn-admin` separately, so they have
+    // different hashes; manifests from before `vpn_sha256` was recorded (and
+    // release installs, which copy one file to both names) imply the admin hash.
+    let recorded_vpn = manifest["vpn_sha256"]
+        .as_str()
+        .filter(|h| !h.is_empty())
+        .or(recorded_admin);
     // The process running this very check must be the recorded build, not just
-    // the files next to it.
+    // the files next to it. It is run as either `vpn` or `vpn-admin`.
     if let (Some(recorded), Some(running_sha)) = (recorded_admin, running.sha256.as_deref()) {
-        if !recorded.eq_ignore_ascii_case(running_sha) {
+        let is_vpn = recorded_vpn.is_some_and(|h| h.eq_ignore_ascii_case(running_sha));
+        if !recorded.eq_ignore_ascii_case(running_sha) && !is_vpn {
             problems.push(
                 "the vpn-admin executable running this check is NOT the recorded build (a \
                  development or manually started binary, not the installed release)"
@@ -201,7 +209,10 @@ pub fn evaluate(
     let mut unrecorded: Vec<&str> = Vec::new();
     let mut matched = 0usize;
     for (file, key) in RECORDED {
-        let recorded = manifest[key].as_str().filter(|h| !h.is_empty());
+        let recorded = manifest[key]
+            .as_str()
+            .filter(|h| !h.is_empty())
+            .or(if file == "vpn" { recorded_vpn } else { None });
         let actual = hash_of(file);
         match (recorded, actual) {
             (_, None) => problems.push(format!("{file} is missing or unreadable")),
@@ -492,6 +503,69 @@ mod tests {
             !msg.contains("0123456789abcdef0123"),
             "only a short commit is shown: {msg}"
         );
+    }
+
+    fn split_manifest() -> Value {
+        let mut m: Value =
+            serde_json::from_str(&manifest("main", Some(H_ADMIN), Some(H_SUB))).unwrap();
+        m["vpn_sha256"] = "cc".into();
+        m
+    }
+
+    fn installed_split(vpn: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |file| match file {
+            "vpn-admin" => Some(H_ADMIN.to_string()),
+            "vpn" => Some(vpn.to_string()),
+            "vpn-subscription-svc" => Some(H_SUB.to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_source_build_with_separately_linked_vpn_and_vpn_admin_is_consistent() {
+        let m = split_manifest().to_string();
+        for running_as in [H_ADMIN, "cc"] {
+            let (v, msg) = evaluate(
+                Some(&m),
+                "1.3.1",
+                installed_split("cc"),
+                &running(running_as),
+                false,
+            );
+            assert_eq!(v, Verdict::Ok, "running as {running_as}: {msg}");
+            assert!(msg.contains("3 installed executables"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn a_hand_replaced_vpn_is_still_detected_when_it_has_its_own_hash() {
+        let m = split_manifest().to_string();
+        let (v, msg) = evaluate(
+            Some(&m),
+            "1.3.1",
+            installed_split("tampered"),
+            &running(H_ADMIN),
+            false,
+        );
+        assert_eq!(v, Verdict::Warn);
+        assert!(
+            msg.contains("vpn differs from the build the installer recorded"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn a_running_binary_matching_neither_recorded_hash_is_reported() {
+        let m = split_manifest().to_string();
+        let (v, msg) = evaluate(
+            Some(&m),
+            "1.3.1",
+            installed_split("cc"),
+            &running("somethingelse"),
+            false,
+        );
+        assert_eq!(v, Verdict::Warn);
+        assert!(msg.contains("NOT the recorded build"), "{msg}");
     }
 
     #[test]

@@ -3191,9 +3191,14 @@ write_install_state_manifest() {
   # `vpn-admin doctor` can tell the recorded release from a development
   # build or a hand-copied binary (both report the same Cargo version).
   # Empty before the binaries exist (the early "installing" write).
-  local vpn_admin_sha256="" subscription_sha256=""
+  # `vpn` is its own executable in a source build (a second [[bin]] target),
+  # so it is recorded separately; a release install copies one file to both.
+  local vpn_admin_sha256="" vpn_sha256="" subscription_sha256=""
   if [ -f "$BIN_DIR/vpn-admin" ]; then
     vpn_admin_sha256="$(sha256sum "$BIN_DIR/vpn-admin" | awk '{print $1}')"
+  fi
+  if [ -f "$BIN_DIR/vpn" ]; then
+    vpn_sha256="$(sha256sum "$BIN_DIR/vpn" | awk '{print $1}')"
   fi
   if [ -f "$BIN_DIR/vpn-subscription-svc" ]; then
     subscription_sha256="$(sha256sum "$BIN_DIR/vpn-subscription-svc" | awk '{print $1}')"
@@ -3208,6 +3213,7 @@ write_install_state_manifest() {
   "singbox_vpn_version": "$singbox_vpn_version",
   "singbox_vpn_repo": "$SINGBOX_VPN_RELEASE_REPO",
   "vpn_admin_sha256": "$vpn_admin_sha256",
+  "vpn_sha256": "$vpn_sha256",
   "subscription_sha256": "$subscription_sha256",
   "sing_box_version": "$singbox_version",
   "sing_box_version_pinned": "$SINGBOX_VERSION",
