@@ -4,6 +4,7 @@ mod external_authorization;
 mod health_probe;
 mod lease_pool;
 mod op_dedup;
+mod pacing;
 mod protocol_probe;
 mod report_queue;
 mod ssrf_guard;
@@ -353,6 +354,7 @@ mod op_dedup_integration_tests {
             rotation_batch_interval_secs: 60,
             heartbeat_interval_secs: 60,
             protocol_probe: None,
+            control_plane: Default::default(),
         }
     }
 
