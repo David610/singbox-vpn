@@ -40,7 +40,8 @@ pub fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
     if let Ok(seconds) = raw.parse::<u64>() {
         return Some(Duration::from_secs(seconds).min(MAX_RETRY_AFTER));
     }
-    let when = time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc2822).ok()?;
+    let when =
+        time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc2822).ok()?;
     let delta = when - time::OffsetDateTime::now_utc();
     if delta.is_negative() {
         return None;
@@ -60,9 +61,14 @@ pub struct Backoff {
 
 impl Backoff {
     pub fn new(base: Duration, cap: Duration) -> Self {
-        Self { base, cap, failures: 0 }
+        Self {
+            base,
+            cap,
+            failures: 0,
+        }
     }
 
+    #[cfg(test)]
     pub fn failures(&self) -> u32 {
         self.failures
     }
@@ -103,7 +109,11 @@ impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ApiError::Gated { remaining } => {
-                write!(f, "control plane paused by backoff for another {}s", remaining.as_secs())
+                write!(
+                    f,
+                    "control plane paused by backoff for another {}s",
+                    remaining.as_secs()
+                )
             }
             ApiError::Status { what, status, .. } => write!(f, "{what} returned {status}"),
         }
@@ -149,7 +159,9 @@ impl ControlPlaneGate {
     pub fn check_at(&self, now: Instant) -> Result<(), ApiError> {
         let state = self.state.lock().expect("gate mutex poisoned");
         match state.blocked_until {
-            Some(until) if until > now => Err(ApiError::Gated { remaining: until - now }),
+            Some(until) if until > now => Err(ApiError::Gated {
+                remaining: until - now,
+            }),
             _ => Ok(()),
         }
     }
@@ -173,12 +185,20 @@ impl ControlPlaneGate {
         let delay = retry_after.map_or(own, |server| server.max(own));
         let until = now + delay;
         // Never shorten a wait that is already running.
-        state.blocked_until = Some(state.blocked_until.map_or(until, |current| current.max(until)));
+        state.blocked_until = Some(
+            state
+                .blocked_until
+                .map_or(until, |current| current.max(until)),
+        );
         state.consecutive_failures = state.consecutive_failures.saturating_add(1);
     }
 
+    #[cfg(test)]
     pub fn consecutive_failures(&self) -> u32 {
-        self.state.lock().expect("gate mutex poisoned").consecutive_failures
+        self.state
+            .lock()
+            .expect("gate mutex poisoned")
+            .consecutive_failures
     }
 }
 
@@ -211,11 +231,15 @@ mod tests {
     #[test]
     fn retry_after_http_date_future_and_past() {
         let future = time::OffsetDateTime::now_utc() + time::Duration::seconds(120);
-        let text = future.format(&time::format_description::well_known::Rfc2822).unwrap();
+        let text = future
+            .format(&time::format_description::well_known::Rfc2822)
+            .unwrap();
         let parsed = parse_retry_after(&headers(&text)).expect("future date parses");
         assert!(parsed > S(100) && parsed <= S(120), "{parsed:?}");
         let past = time::OffsetDateTime::now_utc() - time::Duration::seconds(120);
-        let text = past.format(&time::format_description::well_known::Rfc2822).unwrap();
+        let text = past
+            .format(&time::format_description::well_known::Rfc2822)
+            .unwrap();
         assert_eq!(parse_retry_after(&headers(&text)), None);
     }
 
@@ -233,7 +257,10 @@ mod tests {
             let high = b.next_delay(0.999_999);
             assert!(high <= S(60), "{high:?}");
         }
-        assert!(b.next_delay(0.0) >= S(30), "stays at the cap, not near zero");
+        assert!(
+            b.next_delay(0.0) >= S(30),
+            "stays at the cap, not near zero"
+        );
     }
 
     #[test]
@@ -263,7 +290,10 @@ mod tests {
         gate.record_failure_at(t0, None, 0.0);
         let clone = gate.clone();
         assert!(matches!(clone.check_at(t0), Err(ApiError::Gated { .. })));
-        assert!(gate.check_at(t0 + S(1) + Duration::from_millis(1)).is_ok(), "1 s step at jitter 0");
+        assert!(
+            gate.check_at(t0 + S(1) + Duration::from_millis(1)).is_ok(),
+            "1 s step at jitter 0"
+        );
     }
 
     #[test]
@@ -290,7 +320,10 @@ mod tests {
         for _ in 0..8 {
             gate.record_failure_at(t0, None, 0.0);
         }
-        assert!(gate.check_at(t0 + S(29)).is_err(), "capped step of 30 s at jitter 0");
+        assert!(
+            gate.check_at(t0 + S(29)).is_err(),
+            "capped step of 30 s at jitter 0"
+        );
         assert!(gate.check_at(t0 + S(31)).is_ok());
         assert_eq!(gate.consecutive_failures(), 8);
         gate.record_failure_at(t0, Some(S(1)), 0.0);
@@ -308,7 +341,10 @@ mod tests {
         assert!(gate.check_at(t0).is_ok());
         assert_eq!(gate.consecutive_failures(), 0);
         gate.record_failure_at(t0, None, 0.0);
-        assert!(gate.check_at(t0 + Duration::from_millis(501)).is_ok(), "ladder restarted at the first step");
+        assert!(
+            gate.check_at(t0 + Duration::from_millis(501)).is_ok(),
+            "ladder restarted at the first step"
+        );
     }
 
     #[test]
@@ -329,14 +365,22 @@ mod tests {
             t += 3;
         }
         assert!(attempts <= 140, "attempts in an hour of outage: {attempts}");
-        assert!(attempts >= 40, "still probes regularly enough to notice recovery: {attempts}");
+        assert!(
+            attempts >= 40,
+            "still probes regularly enough to notice recovery: {attempts}"
+        );
     }
 
     #[test]
     fn gated_errors_are_recognisable_and_status_errors_keep_the_old_message() {
         let gated: anyhow::Error = ApiError::Gated { remaining: S(5) }.into();
         assert!(is_gated(&gated));
-        let status: anyhow::Error = ApiError::Status { what: "POST /api/agent/claim", status: 429, retry_after: None }.into();
+        let status: anyhow::Error = ApiError::Status {
+            what: "POST /api/agent/claim",
+            status: 429,
+            retry_after: None,
+        }
+        .into();
         assert!(!is_gated(&status));
         assert_eq!(status.to_string(), "POST /api/agent/claim returned 429");
     }

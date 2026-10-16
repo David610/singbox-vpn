@@ -67,7 +67,10 @@ struct ClaimResponse {
 pub enum AuthorizationsFetch {
     /// The server confirmed the caller's ETag is still current (304).
     NotModified,
-    Fresh { body: Value, etag: Option<String> },
+    Fresh {
+        body: Value,
+        etag: Option<String>,
+    },
 }
 
 /// Result of one `GET /api/agent/events` long poll.
@@ -124,6 +127,7 @@ impl WorkerClient {
         }
     }
 
+    #[cfg(test)]
     /// The shared circuit breaker, for the event task and for tests.
     pub fn gate(&self) -> &ControlPlaneGate {
         &self.gate
@@ -352,6 +356,7 @@ impl WorkerClient {
             .context("parsing /api/agent/leases/sync response body")
     }
 
+    #[cfg(test)]
     /// Fetch this node's control-plane-owned external compatibility state.
     /// The response is never logged because it contains protocol secrets.
     pub async fn fetch_authorizations(&self) -> Result<Value> {
@@ -398,11 +403,7 @@ impl WorkerClient {
 
     /// One long poll of the authenticated event channel. The response is a
     /// hint about WHICH state moved, never the state itself.
-    pub async fn wait_events(
-        &self,
-        cursor: Option<&str>,
-        wait_secs: u64,
-    ) -> Result<EventsOutcome> {
+    pub async fn wait_events(&self, cursor: Option<&str>, wait_secs: u64) -> Result<EventsOutcome> {
         self.gate.check()?;
         let mut request = self
             .http
@@ -417,9 +418,7 @@ impl WorkerClient {
             Ok(res) => res,
             Err(err) => {
                 self.gate.record_failure(None);
-                return Err(
-                    anyhow::Error::new(err).context("GET /api/agent/events request failed")
-                );
+                return Err(anyhow::Error::new(err).context("GET /api/agent/events request failed"));
             }
         };
         let status = res.status();
@@ -800,7 +799,10 @@ mod pacing_tests {
         let client = client(&server.uri());
         assert!(client.heartbeat(&serde_json::json!({})).await.is_err());
         assert!(crate::pacing::is_gated(
-            &client.sync_leases(&serde_json::json!({})).await.unwrap_err()
+            &client
+                .sync_leases(&serde_json::json!({}))
+                .await
+                .unwrap_err()
         ));
     }
 

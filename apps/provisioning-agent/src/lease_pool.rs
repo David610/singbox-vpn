@@ -522,7 +522,17 @@ impl LeasePool {
         })
     }
 
-    pub async fn tick(&mut self, cfg: &AgentConfig, client: &WorkerClient) -> Result<()> {
+    /// Local work (expiry, rotation, applying) runs on every call. The
+    /// network sync runs when `sync_due` (event or reconcile timer) or when
+    /// this call itself changed local state that the control plane must learn
+    /// about at once (a new generation only becomes leasable once reported).
+    pub async fn tick(
+        &mut self,
+        cfg: &AgentConfig,
+        client: &WorkerClient,
+        sync_due: bool,
+    ) -> Result<()> {
+        let mut dirty = false;
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let grid = clamp_batch_interval(cfg.rotation_batch_interval_secs);
         let lifetime = clamp_lifetime(cfg.lease_slot_lifetime_secs, grid);
@@ -541,14 +551,19 @@ impl LeasePool {
             // Persist BEFORE applying: a crash mid-apply re-applies this
             // exact state on restart instead of forgetting a live secret.
             save_state(&self.path, &self.state)?;
+            dirty = true;
             if !rotate.is_empty() {
                 tracing::info!(rotated = rotate.len(), "lease pool: rotating slots");
             }
         }
         if !self.state.applied || !self.applied_this_process {
             self.apply(cfg).await?;
+            dirty = true;
         }
         if cfg.lease_pool_size == 0 && self.state.slots.is_empty() {
+            return Ok(());
+        }
+        if !(sync_due || dirty) {
             return Ok(());
         }
         let obfs = (!self.obfs_reported)

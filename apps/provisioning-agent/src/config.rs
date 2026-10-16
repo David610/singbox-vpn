@@ -502,7 +502,11 @@ backoff_max_secs = 100000
         .unwrap();
         let cp = AgentConfig::load(&path).unwrap().control_plane;
         assert!(!cp.events_enabled);
-        assert_eq!(cp.reconcile_interval().as_secs(), 15, "floor protects the control plane");
+        assert_eq!(
+            cp.reconcile_interval().as_secs(),
+            15,
+            "floor protects the control plane"
+        );
         assert_eq!(cp.events_wait_secs(), 30);
         assert_eq!(cp.backoff_base().as_secs(), 1);
         assert_eq!(cp.backoff_max().as_secs(), 900);
