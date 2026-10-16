@@ -109,7 +109,7 @@
    "evidence": "server",
    "status": "fixed-on-branch",
    "fix": "singbox-vpn c1c0a7f",
-   "note": "live: 12 restarts, 0 failures"
+   "note": "live: 12 restarts, 0 failures. rc.2 (published, 2026-10-16): 12 back-to-back user creations = 12 sing-box starts, 0 start-limit events; rc.1 parks the service at 8 starts per 5 min and its updater rollback then fails (see I-32)."
   },
   {
    "id": "I-12",
@@ -129,7 +129,7 @@
    "evidence": "code(git log)",
    "status": "open",
    "fix": "",
-   "note": "a corrected stable release is required; advisories not independently re-audited"
+   "note": "a corrected stable release is required; advisories not independently re-audited. v1.3.1-rc.2 contains these fixes (prerelease only; stable not published)."
   },
   {
    "id": "I-14",
@@ -147,9 +147,9 @@
    "severity": "high",
    "title": "Installer leaves the C-16 own-address reject off when public_host is a DNS name: tunnel users reach the node's own services",
    "evidence": "server",
-   "status": "fixed-on-branch",
-   "fix": "singbox-vpn 9ca903e (fix/server-hardening-rc2)",
-   "note": "rc2 R2: baseline origin/main fresh install records no public_ipv4/6 and a tunnel user reads the node's sshd banner and nginx; candidate fresh install records both, doctor C-16 OK, same tunnel test refused (rc 35 / rc 52), internet still 204; survives reboot. Evidence: test-results/rc2-tunnel-reach-own-address-*.txt"
+   "status": "fixed-on-main",
+   "fix": "singbox-vpn 9ca903e; merged in PR #158 (d64ea56)",
+   "note": "rc2 R2: baseline origin/main fresh install records no public_ipv4/6 and a tunnel user reads the node's sshd banner and nginx; candidate fresh install records both, doctor C-16 OK, same tunnel test refused (rc 35 / rc 52), internet still 204; survives reboot. Evidence: test-results/rc2-tunnel-reach-own-address-*.txt Released in v1.3.1-rc.2 (prerelease, tag on merge commit d64ea56). CAVEAT: only fresh installs and install.sh repairs record the addresses; a plain update.sh does not (see I-31)."
   },
   {
    "id": "I-16",
@@ -157,9 +157,9 @@
    "severity": "medium",
    "title": "Dev-channel installer over an existing install reuses the old source tree and records version 'main'",
    "evidence": "server",
-   "status": "fixed-on-branch",
-   "fix": "singbox-vpn a4e8f16, 10ad1b0 (fix/server-hardening-rc2)",
-   "note": "rc2 R2: reproduced on origin/main logic (requested main over a candidate tree: 'reusing the existing root-controlled persistent source tree', candidate binaries kept, success reported, manifest 'main'). Fix: persistent tree reused only if its content digest equals the request, else staged, verified and swapped by two renames with crash recovery; bootstrap accepts a full commit SHA and refuses an archive whose commit differs; manifest records source_ref/source_commit/source_tree_sha256. Verified on the box: crash between renames recovered, failed install after a swap converges on re-run. Caveat: the fix protects installs of refs that contain it; an older ref's installer still reuses the tree"
+   "status": "fixed-on-main",
+   "fix": "singbox-vpn a4e8f16, 10ad1b0; merged in PR #158 (d64ea56)",
+   "note": "rc2 R2: reproduced on origin/main logic (requested main over a candidate tree: 'reusing the existing root-controlled persistent source tree', candidate binaries kept, success reported, manifest 'main'). Fix: persistent tree reused only if its content digest equals the request, else staged, verified and swapped by two renames with crash recovery; bootstrap accepts a full commit SHA and refuses an archive whose commit differs; manifest records source_ref/source_commit/source_tree_sha256. Verified on the box: crash between renames recovered, failed install after a swap converges on re-run. Caveat: the fix protects installs of refs that contain it; an older ref's installer still reuses the tree Released in v1.3.1-rc.2 (prerelease, tag on merge commit d64ea56)."
   },
   {
    "id": "I-17",
@@ -167,9 +167,9 @@
    "severity": "low",
    "title": "doctor release-identity WARN on source builds because vpn and vpn-admin are separate compiles with different hashes",
    "evidence": "server",
-   "status": "fixed-on-branch",
-   "fix": "singbox-vpn f070601 (fix/server-hardening-rc2)",
-   "note": "rc2 R2: baseline fresh install warned 'release identity INCONSISTENT'; installer/updater now record vpn_sha256 and doctor compares vpn against it (fallback to the admin hash for older manifests), running binary may match either. Candidate: 0 WARN, 3 executables match, also after reboot. Unit tests incl. a hand-replaced vpn still detected"
+   "status": "fixed-on-main",
+   "fix": "singbox-vpn f070601; merged in PR #158 (d64ea56)",
+   "note": "rc2 R2: baseline fresh install warned 'release identity INCONSISTENT'; installer/updater now record vpn_sha256 and doctor compares vpn against it (fallback to the admin hash for older manifests), running binary may match either. Candidate: 0 WARN, 3 executables match, also after reboot. Unit tests incl. a hand-replaced vpn still detected Released in v1.3.1-rc.2 (prerelease, tag on merge commit d64ea56)."
   },
   {
    "id": "I-18",
@@ -177,9 +177,9 @@
    "severity": "medium",
    "title": "doctor --protocol and installer self-test cover REALITY only; Hysteria2 breakage passes health checks",
    "evidence": "server",
-   "status": "fixed-on-branch",
-   "fix": "singbox-vpn 0c7118a (fix/server-hardening-rc2)",
-   "note": "rc2 R2: with a valid certificate for the wrong hostname every Hysteria2 client breaks, baseline doctor --protocol exits 0 FAIL=0 (REALITY-only); candidate exits 1 with 'Hysteria2 self-test FAILED: the TLS certificate ... is not accepted for <host>'. Loopback handshake only: does not prove external UDP reachability (I-21)"
+   "status": "fixed-on-main",
+   "fix": "singbox-vpn 0c7118a; merged in PR #158 (d64ea56)",
+   "note": "rc2 R2: with a valid certificate for the wrong hostname every Hysteria2 client breaks, baseline doctor --protocol exits 0 FAIL=0 (REALITY-only); candidate exits 1 with 'Hysteria2 self-test FAILED: the TLS certificate ... is not accepted for <host>'. Loopback handshake only: does not prove external UDP reachability (I-21) Released in v1.3.1-rc.2 (prerelease, tag on merge commit d64ea56)."
   },
   {
    "id": "I-19",
@@ -209,7 +209,7 @@
    "evidence": "server",
    "status": "blocked",
    "fix": "",
-   "note": "need another network (phone hotspot, other host)"
+   "note": "need another network (phone hotspot, other host). 2026-10-16: UDP/443 from the test PC never reaches the VPS (unfiltered capture), UDP/4443 does; Hysteria2 verified end to end on UDP/4443 with a real client. UDP/443 itself remains untested on a real network."
   },
   {
    "id": "I-22",
@@ -300,6 +300,66 @@
    "status": "open",
    "fix": "",
    "note": "listed so the gap is explicit"
+  },
+  {
+   "id": "I-31",
+   "repo": "singbox-vpn",
+   "severity": "high",
+   "title": "update.sh does not backfill public_ipv4/public_ipv6: a host updated from rc.1 to rc.2 keeps the tunnel-to-own-services exposure (I-15) until install.sh is re-run",
+   "evidence": "server",
+   "status": "open",
+   "fix": "",
+   "note": "rc2 R3, published artifacts: after update.sh --version v1.3.1-rc.2 deployment.toml still had no public_ipv4/6, doctor warned 'C-16: no own-public-address deny rule', and a tunnel user read the node's SSH banner. Re-running the release's install.sh (in-place repair) backfilled both keys, doctor went to 0 WARN and the probe was refused. Suggested: have update.sh run the same backfill, or document the repair step in the upgrade notes."
+  },
+  {
+   "id": "I-32",
+   "repo": "singbox-vpn",
+   "severity": "medium",
+   "title": "v1.3.1-rc.1's updater rollback fails ('UPDATE FAILED - ROLLBACK ALSO FAILED') when sing-box restarts are close together: the rollback restart hits StartLimitBurst",
+   "evidence": "server",
+   "status": "fixed-on-main",
+   "fix": "",
+   "note": "rc2 R3: rc.1 -> rc.2 with an injected failure right after 5 user operations: files restored byte-identically but sing-box left in start-limit-hit and vpn-expiry-reconcile failed; recovered by reset-failed. Same update on a clear restart budget: restored and verified. rc.2's own updater, after 34 starts in 3 minutes: restored and verified, no start-limit event. Root cause is I-11, fixed in rc.2; hosts still on rc.1 keep the rc.1 updater for the rc.1 -> rc.2 step, so avoid user changes in the minutes before it."
+  },
+  {
+   "id": "I-33",
+   "repo": "singbox-vpn",
+   "severity": "low",
+   "title": "The installer downloads its pinned cosign (141 MB) twice, once in the bootstrap and once in install.sh, each with a 300 s cap and no resume; on a slow link the second download fails the install",
+   "evidence": "server",
+   "status": "open",
+   "fix": "",
+   "note": "rc2 R3: bootstrap verified the source attestation, then install.sh stage 4 timed out at 65 MB of 141 MB and the install aborted (exit 143 after my interruption). Workaround used: pre-fetch cosign with resume, check its SHA-256 against the installer's own pin, and put it on PATH (install.sh then uses it)."
+  },
+  {
+   "id": "I-34",
+   "repo": "singbox-vpn",
+   "severity": "low",
+   "title": "After changing [hysteria2] listen_port and running vpn render-config, vpn-subscription keeps advertising the old port until restarted",
+   "evidence": "server",
+   "status": "open",
+   "fix": "",
+   "note": "rc2 R3: sing-box listened on 4443 but the served profile still said 443. The test used a local copy of the profile. Changing the Hysteria2 port may not be a supported operation; if it is, the subscription service needs a restart or re-read."
+  },
+  {
+   "id": "I-35",
+   "repo": "singbox-vpn",
+   "severity": "informational",
+   "title": "Intermittent single-probe misses (about 1 in 10 to 1 in 24) with the real REALITY client after the reboot, for both users",
+   "evidence": "server",
+   "status": "informational",
+   "fix": "",
+   "note": "rc2 R3: up-a 9/10 and 23/24, up-b 9/10; failing attempts' client logs show the tunnel carrying traffic and the server journal has no error/warn/reject lines for the window. Cause not isolated (test path or probe timing); no credential or server error found."
+  },
+  {
+   "id": "I-36",
+   "repo": "singbox-vpn",
+   "severity": "informational",
+   "title": "Let's Encrypt allows 5 certificates per exact hostname per 168 h; repeated fresh installs on one name exhaust it",
+   "evidence": "server",
+   "status": "informational",
+   "fix": "",
+   "note": "rc2 R3: the fifth fresh install failed with 'too many certificates (5) already issued ... retry after 15:27 UTC'; the installer reported it clearly. crt.sh listed none for that week, so it is not a reliable pre-check. Used 91-244-71-165.sslip.io as a separate identifier."
   }
  ]
 }

@@ -1,0 +1,31 @@
+# rc.2's own updater: injected failure after a restart burst (the condition that made rc.1's updater fail to roll back, see rc2-upgrade-attempt1-*)
+# setup: 3 x (vpn user create + vpn user remove) immediately before; 34 sing-box starts in the preceding 3 minutes (rc.1 parks the service at 8 per 5 min)
+# command: SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch /opt/singbox-vpn/deploy/almalinux/update.sh --repair   (published v1.3.1-rc.2 updater; cosign pre-staged on PATH)
+
+[update] source archive checksum verified against release SHA256SUMS.
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] STAGE complete: v1.3.1-rc.2 verified and ready (source + binaries).
+[update] ERROR: SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch — deliberately aborting for lifecycle-gate testing.
+[update] WARNING: update to v1.3.1-rc.2 did not commit; restoring previous release (v1.3.1-rc.2) from /etc/vpn/backups/20261016-124927-5608
+[update] UPDATE FAILED — PREVIOUS RELEASE RESTORED AND VERIFIED (v1.3.1-rc.2).
+
+fingerprint BEFORE:
+manifest  c70aba828ab5ba2c
+binaries  2aa891d520e5 2aa891d520e5 19b9678c6ba1 9334a1c1fe97 
+tree      45b22ecc1ca01556
+deploycfg 02f5ae68ad51f148
+singboxcfg a8b5a26d1041b049
+units     4b7531e5b73e0f20
+services  active active active 
+leftovers 0
+fingerprint AFTER :
+manifest  c70aba828ab5ba2c
+binaries  2aa891d520e5 2aa891d520e5 19b9678c6ba1 9334a1c1fe97 
+tree      45b22ecc1ca01556
+deploycfg 02f5ae68ad51f148
+singboxcfg a8b5a26d1041b049
+units     4b7531e5b73e0f20
+services  active active active 
+leftovers 0
+diff: IDENTICAL; sing-box active; start-limit events 0; no manual recovery; doctor --protocol exit 0

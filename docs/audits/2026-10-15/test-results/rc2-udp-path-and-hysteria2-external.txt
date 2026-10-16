@@ -1,0 +1,20 @@
+# UDP path from the test PC to 91.244.71.165 and what it means for Hysteria2 (supersedes the earlier rc2-udp443-capture file, which filtered on the wrong source address)
+
+1) The PC's UDP leaves through a different NAT address than its TCP connections (api.ipify reports one address; the VPS sees UDP from another). A capture filtered on the TCP-observed address saw nothing and was misleading.
+
+2) Unfiltered capture on the VPS, udp/4443, 8 test datagrams from the PC:
+   8 packets captured, all from one source in 143.x.x.x
+
+3) Unfiltered capture on the VPS, udp/443, during a full 60+ s real Hysteria2 client run to port 443:
+   0 datagrams arrived at all (not even internet scanner noise in the window); client: no connection
+   => UDP/443 from this PC's network is filtered upstream of the VPS; UDP/4443 from the same PC arrives normally. Hysteria2 on 443 is therefore NOT testable from this network.
+
+4) Hysteria2 moved to UDP/4443 for the test (deployment.toml [hysteria2] listen_port, ufw 4443/udp, vpn render-config), real sing-box 1.14.1 client, published rc.2:
+   connected: first success 1.39 s; egress IPv4 91.244.71.165; dual-stack probe returned the host's IPv6; Wikipedia 200 ttfb 0.10 s; DNS-through-proxy 200
+   sustained 3 x 25 MB: 13.7 / 14.9 / 24.1 Mbit/s (REALITY same day: ~36; this PC's direct rate varied 5.4-38.8 Mbit/s)
+   capture on the VPS during the run: datagrams from the PC to udp/4443 (hundreds of 35-127 byte QUIC packets)
+   host reverted afterwards: deployment.toml restored, ufw rule removed, only udp/443 listening, state fingerprint identical to the post-reboot snapshot, doctor 41 OK / 0 FAIL / 0 WARN
+
+5) Note: after the port change vpn-subscription kept advertising 443 (it caches the port at startup); the test edited its local copy of the profile only. Credentials were untouched.
+
+DISTINCTION: doctor's Hysteria2 self-test = loopback (127.0.0.1:443). UDP/4443 test = external path, real client, NOT port 443. UDP/443 from a real network = NOT verified (filtered on the only network available).

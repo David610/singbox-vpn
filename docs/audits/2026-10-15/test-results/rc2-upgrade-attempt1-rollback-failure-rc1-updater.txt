@@ -1,0 +1,49 @@
+# rc.1 -> rc.2 official update, injected failure (SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch) - ATTEMPT 1: ROLLBACK DID NOT COMPLETE
+# Host 91.244.71.165 Ubuntu 24.04.5, published v1.3.1-rc.1 installed by the official checksum+attestation-verified bootstrap (hostname 91-244-71-165.sslip.io: the project hostname hit the Let's Encrypt 5/168h limit).
+# Installed updater = rc.1's. cosign v3.1.3 (sha256 4629c757...f7f71, the installer's own pin) was pre-staged on PATH because the in-installer download (141 MB, 300 s cap) timed out.
+# Immediately before the update I had created/edited 4 users in quick succession (5 sing-box restarts in 16 s).
+
+## fingerprint BEFORE (rc.1)
+manifest  712911f449a13686
+binaries  51471764e3c5 51471764e3c5 0f77b5f94724 9334a1c1fe97 
+tree      f2df1d39a7c8310d
+deploycfg 02832c57245a301b
+singboxcfg 5ad90b33ecb4b1f2
+units     4b7531e5b73e0f20
+services  active active active 
+leftovers 0
+
+## updater log (verification + switch + abort + rollback verdict)
+[update] current release: v1.3.1-rc.1 (David610/singbox-vpn) -> target release: v1.3.1-rc.2 (David610/singbox-vpn)
+[update] downloading singbox-vpn v1.3.1-rc.2 release source archive + checksum manifest...
+[update] source archive checksum verified against release SHA256SUMS.
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] checking for prebuilt release binaries (singbox-vpn-x86_64-unknown-linux-gnu.tar.gz)...
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] staged prebuilt singbox-vpn v1.3.1-rc.2 binaries (x86_64-unknown-linux-gnu) — no Rust compiler needed.
+[update] target release pins the same sing-box version (1.14.1) already installed — no sing-box change needed.
+[update] STAGE complete: v1.3.1-rc.2 verified and ready (source + binaries).
+[update] pre-switch schema compatibility check: v1.3.1-rc.2's vpn-admin can read the current persistent state (status 0).
+[update] deployment identity before update: node_id=91-244-71-165 role=exit
+[update] SWITCHING to v1.3.1-rc.2...
+[update] reloading systemd unit definitions...
+[update] install mode: UPDATE v1.3.1-rc.1 -> v1.3.1-rc.2 — checking persistent state schema before rendering...
+[update] persistent state schema: current, no migration needed.
+[update] ERROR: SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch — deliberately aborting for lifecycle-gate testing.
+[update] WARNING: update to v1.3.1-rc.2 did not commit; restoring previous release (v1.3.1-rc.1) from /etc/vpn/backups/20261016-121417-27226
+Job for sing-box.service failed.
+[update] UPDATE FAILED — ROLLBACK ALSO FAILED
+[update] MANUAL INTERVENTION REQUIRED. Backups: /etc/vpn/backups/20261016-121417-27226 ; transaction marker left at /var/lib/singbox-vpn/update-transaction.json for forensics.
+
+## systemd journal for sing-box at the moment of the rollback restart
+Stopping sing-box.service - sing-box compatibility data plane (VLESS+REALITY, Hysteria2)...
+sing-box.service: Deactivated successfully.
+Stopped sing-box.service - sing-box compatibility data plane (VLESS+REALITY, Hysteria2).
+sing-box.service: Start request repeated too quickly.
+sing-box.service: Failed with result 'start-limit-hit'.
+Failed to start sing-box.service - sing-box compatibility data plane (VLESS+REALITY, Hysteria2).
+
+## after manual 'systemctl reset-failed sing-box && systemctl start sing-box' + reset-failed of vpn-expiry-reconcile (its timer fired while sing-box was parked)
+fingerprint vs BEFORE: IDENTICAL; doctor --protocol exit 0, 39 OK / 0 FAIL / 0 WARN; pre-update profiles up-a and up-b CONNECT with the real client
+
+## reading: the rollback restored every file correctly; only the final sing-box start was refused (StartLimitBurst, finding I-11, fixed in rc.2 but not in rc.1). Cause amplified by my own burst of user operations before the update.

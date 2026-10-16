@@ -1,0 +1,32 @@
+# Reboot of the upgraded host (published v1.3.1-rc.2 after rc.1 -> rc.2 update + install repair), 91.244.71.165
+reboot issued 12:31:30Z (host clock); ssh back with new boot time 12:31:36; boot before: 11:04:16
+
+## state fingerprint BEFORE reboot
+manifest  c70aba828ab5ba2c
+binaries  2aa891d520e5 2aa891d520e5 19b9678c6ba1 9334a1c1fe97 
+tree      45b22ecc1ca01556
+deploycfg 02f5ae68ad51f148
+singboxcfg a8b5a26d1041b049
+units     4b7531e5b73e0f20
+services  active active active 
+leftovers 0
+
+## AFTER reboot
+manifest  c70aba828ab5ba2c
+binaries  2aa891d520e5 2aa891d520e5 19b9678c6ba1 9334a1c1fe97 
+tree      45b22ecc1ca01556
+deploycfg 02f5ae68ad51f148
+singboxcfg a8b5a26d1041b049
+units     4b7531e5b73e0f20
+services  active active active 
+leftovers 0
+diff (excluding service states): IDENTICAL; manifest hash identical; services all active (6/6 incl. egress isolation and both timers)
+installed binaries == published artifacts: vpn-admin 2aa891d5..., subscription 19b9678c...
+REALITY private/public key and Hysteria2 certificate/key hashes identical to pre-upgrade: 263c6a811f7b 7420b6755dee e5121a4ee53e 7a2b6a0c1ada
+doctor --protocol after reboot: exit 0, 41 OK / 0 FAIL / 0 WARN
+
+## real client after the reboot with profiles created on rc.1 (REALITY, public internet)
+first pass: up-a CONNECTED, up-b REFUSED once; up-c (disabled) subscription 404
+up-b retests 3/3 CONNECTED; 10 alternating attempts each: up-a 9/10, up-b 9/10; 24 further up-a attempts: 23/24
+failing attempt's client log shows the tunnel passing traffic (outbound connection to one.one.one.one:443 in 238 ms); server journal for the window: no error/warn/fail/reject/deny lines.
+reading: intermittent single-probe misses on the test path (~4-10%), same for both users, not a credential or server error; root cause not isolated.

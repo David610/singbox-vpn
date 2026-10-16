@@ -1,0 +1,18 @@
+# Provisioning and revocation on the PUBLISHED v1.3.1-rc.2 (after rc.1 -> rc.2 update + install repair), real sing-box 1.14.1 client over the internet
+P1 create user -> subscription http 200; client CONNECTED
+   links: Out-of-band connection URIs for user_<id> (subscription service NOT required):
+   links: 
+   links: Reality:
+R1 rotate-vless: OLD profile REFUSED | refetched http 200 -> CONNECTED
+R2 rotate-hysteria: applied (Hysteria2 password changes; REALITY profile unaffected)
+R3 disable: client REFUSED | subscription http 404
+R4 re-enable: client CONNECTED | subscription http 200
+R5 expired: client REFUSED | subscription http 404
+R6 expiry cleared: client CONNECTED | subscription http 200
+R7 rotate-token: OLD subscription URL http 404 (must be 404); the connection profile itself is unchanged: client CONNECTED
+R8 remove: client REFUSED
+
+## Restart burst (finding I-11; rc.1 parks sing-box at 8 starts per 5 min and its updater rollback then fails, see rc2-upgrade-attempt1-*)
+12 rapid 'vpn user create' back to back: failures 0; sing-box starts during the burst 12; start-limit-hit events 0; sing-box active; doctor exit 0; an existing user's profile still CONNECTED
+the preceding 9 lifecycle operations (R1-R8 above) were also issued within about two minutes: no start-limit event
+burst users removed afterwards; doctor --protocol exit 0

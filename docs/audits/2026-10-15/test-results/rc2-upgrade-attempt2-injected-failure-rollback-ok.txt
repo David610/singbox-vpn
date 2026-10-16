@@ -1,0 +1,34 @@
+# rc.1 -> rc.2 official update, injected failure after the switch - ATTEMPT 2 (clean restart budget): ROLLBACK COMPLETE
+# Same host and installed rc.1 updater as attempt 1; no user operations beforehand; >330 s with no sing-box start (StartLimitBurst=8 per 5 min).
+
+## fingerprint BEFORE
+manifest  712911f449a13686
+binaries  51471764e3c5 51471764e3c5 0f77b5f94724 9334a1c1fe97 
+tree      f2df1d39a7c8310d
+deploycfg 02832c57245a301b
+singboxcfg 5ad90b33ecb4b1f2
+units     4b7531e5b73e0f20
+services  active active active 
+leftovers 0
+
+## updater verdict
+[update] source archive checksum verified against release SHA256SUMS.
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] STAGE complete: v1.3.1-rc.2 verified and ready (source + binaries).
+[update] ERROR: SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch — deliberately aborting for lifecycle-gate testing.
+[update] WARNING: update to v1.3.1-rc.2 did not commit; restoring previous release (v1.3.1-rc.1) from /etc/vpn/backups/20261016-122143-30151
+[update] UPDATE FAILED — PREVIOUS RELEASE RESTORED AND VERIFIED (v1.3.1-rc.1).
+
+## fingerprint AFTER (no manual recovery)
+manifest  712911f449a13686
+binaries  51471764e3c5 51471764e3c5 0f77b5f94724 9334a1c1fe97 
+tree      f2df1d39a7c8310d
+deploycfg 02832c57245a301b
+singboxcfg 5ad90b33ecb4b1f2
+units     4b7531e5b73e0f20
+services  active active active 
+leftovers 0
+diff before/after: IDENTICAL
+doctor --protocol after: exit 0, 39 OK / 0 FAIL
+real client with the pre-update profiles of up-a and up-b: CONNECTED
