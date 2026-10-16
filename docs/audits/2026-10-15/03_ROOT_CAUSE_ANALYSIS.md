@@ -94,12 +94,14 @@ vpn-web's `xray` format is not a valid Xray config. **Unverified on a device**; 
 
 | | Defect | Root cause | Fix | Why tests missed it |
 |---|---|---|---|---|
-| D1 | tunnel can reach the node's own services (S-1) | installer records no own address when `public_host` is a DNS name; renderer only adds the deny rule for IP literals or when `public_ipv4/6` are set | manual config verified; **installer change not made** | unit tests set the fields explicitly |
+| D1 | tunnel can reach the node's own services (S-1) | installer records no own address when `public_host` is a DNS name; renderer only adds the deny rule for IP literals or when `public_ipv4/6` are set | installer now records the node's own addresses (9ca903e, fix/server-hardening-rc2); verified on a real VPS | unit tests set the fields explicitly; no test ran the installer with a DNS `public_host` and then probed the tunnel |
 | D2 | start-limit outage (I-11) | every authorization change is a restart; unit has `StartLimitBurst=8`; `reload-or-restart` is counted | `systemctl reset-failed` before administrative restarts (c1c0a7f) | tests used a fake `systemctl` with no rate limiter |
 | D3 | user operations drop all connections (I-10) | sing-box has no in-place reload; SIGHUP also rebuilds the instance (upstream SagerNet/sing-box#3731) | not removable; documented; fingerprint short-circuit already avoids no-op restarts | n/a (architecture) |
 | D4 | Hysteria2 caps lockout (I-12) | `ignore_client_bandwidth: true` emitted together with caps (sing-quic: deny BBR clients) | on `main` (9a07503), not in a release | `sing-box check` passes; self-test is REALITY-only |
 | D5 | doctor false FAIL (I-14) | expectation rebuilt the C-16 block without the own-address rule | 63ad42c | no test combined `public_ipv4` with the exact-shape check |
-| D6 | dev installer reuses old source (I-16) | repair path "reuses the existing persistent source tree" even in dev channel | not fixed | no test of dev-channel-over-existing |
+| D6 | dev installer reuses old source (I-16) | repair path "reuses the existing persistent source tree" even in dev channel | a4e8f16 + 10ad1b0 (fix/server-hardening-rc2): reuse only on an identical content digest, otherwise a staged, verified two-rename swap with crash recovery | no test of dev-channel-over-existing |
+| D7 | the fix for D6 initially refused every real pinned-SHA install | `gzip -dc \| head -c 4096 \| grep` under `pipefail`: head closes the pipe, gzip dies of SIGPIPE, and the `\|\| SOURCE_COMMIT=""` fallback discarded the id grep had found | 10ad1b0 | the fixture archive was a few hundred bytes, so gzip had always finished before head exited; found by the first real-VPS deploy, fixed, and the fixture now pads the archive with 3 MiB |
+| D8 | doctor reports `release identity INCONSISTENT` on every healthy source build (I-17) | a source build links `vpn` and `vpn-admin` as separate executables, but one hash was recorded and both were compared to it | f070601: `vpn_sha256` recorded and compared separately, with a fallback for older manifests | unit tests used one hash for both names |
 
 ## E. Hysteria2 reconnection delay (7.3)
 

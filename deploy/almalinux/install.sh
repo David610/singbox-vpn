@@ -568,37 +568,41 @@ check_ports_free() {
   log "required ports (443/tcp, 443/udp, ${SUBSCRIPTION_PORT}/tcp) are free."
 }
 
-# When invoked via the curl|bash bootstrap, $REPO_ROOT points at a
-# temporary extraction directory that the bootstrap deletes on exit —
-# any path we print for later use (update.sh, uninstall.sh, a manual
-# re-run) must survive past this process. Install a persistent copy of
-# the source tree once, and repoint $REPO_ROOT at it for the rest of
-# this run. A no-op when already running from that persistent copy
-# (e.g. someone `cd /opt/singbox-vpn && ./deploy/almalinux/install.sh`).
 PERSIST_DIR="/opt/singbox-vpn"
+PERSIST_PREV_DIR="/opt/singbox-vpn.prev-install"
 OPT_SINGBOX_VPN_PRE_EXISTED=0
 [ -e "$PERSIST_DIR" ] && OPT_SINGBOX_VPN_PRE_EXISTED=1
-persist_source_tree() {
-  if [ "$REPO_ROOT" = "$PERSIST_DIR" ]; then
-    return
-  fi
-  # A bootstrap repair may be running from a newly downloaded temporary
-  # tree while a valid persistent installer already exists.  Do not move a
-  # known-good installation aside merely to refresh this convenience copy:
-  # a SIGKILL between two directory renames cannot be rolled back by shell.
-  # Release-to-release source replacement belongs to update.sh's transaction.
-  if [ -d "$PERSIST_DIR" ]; then
-    local existing_bad
-    existing_bad="$(find "$PERSIST_DIR" \( ! -user root -o -perm /022 \) -print -quit)"
-    if [ -z "$existing_bad" ] && [ -x "$PERSIST_DIR/deploy/almalinux/uninstall.sh" ]; then
-      log "reusing the existing root-controlled persistent source tree at $PERSIST_DIR."
-      REPO_ROOT="$PERSIST_DIR"
-      return 0
+
+# Content identity of a source tree: sha256 over the sorted per-file sha256
+# list, ignoring exactly what persist_source_tree never copies (build output
+# and VCS metadata). Equal digests mean the two trees build the same code.
+source_tree_digest() {
+  local dir="${1:?source dir}"
+  ( cd "$dir" && find . \( -name target -o -name .git \) -prune -o -type f -print0 \
+      | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}' )
+}
+
+# An earlier run that was killed between the two renames of a source swap
+# leaves $PERSIST_PREV_DIR (the previous, complete tree) and possibly no
+# $PERSIST_DIR. Put the world back before looking at anything else.
+recover_interrupted_source_swap() {
+  if [ -d "$PERSIST_PREV_DIR" ]; then
+    if [ ! -e "$PERSIST_DIR" ]; then
+      log "recovering the previous source tree: an earlier source replacement was interrupted before it completed."
+      mv "$PERSIST_PREV_DIR" "$PERSIST_DIR" || return 1
+    else
+      log "removing $PERSIST_PREV_DIR left behind by an earlier source replacement ($PERSIST_DIR is complete)."
+      rm -rf "$PERSIST_PREV_DIR"
     fi
-    echo "[install] ERROR: existing $PERSIST_DIR is not a trusted complete source tree; refusing to replace ambiguous data during repair." >&2
-    return 1
   fi
-  log "installing a persistent copy of the singbox-vpn source to $PERSIST_DIR (for future updates/uninstall)..."
+  rm -rf "$(dirname "$PERSIST_DIR")"/.singbox-vpn-source.* 2>/dev/null || true
+  return 0
+}
+
+# Copies $REPO_ROOT into a fresh, root-owned staging directory next to
+# $PERSIST_DIR and prints its path. The copy is normalised and trust-checked
+# before anything is switched.
+stage_source_tree() {
   local parent stage bad
   parent="$(dirname "$PERSIST_DIR")"
   install -d -o root -g root -m 0755 "$parent"
@@ -617,11 +621,73 @@ persist_source_tree() {
     rm -rf "$stage"
     return 1
   fi
+  [ -x "$stage/deploy/almalinux/uninstall.sh" ] && [ -x "$stage/deploy/almalinux/install.sh" ] || {
+    echo "[install] ERROR: the source tree to install is missing its installer scripts." >&2
+    rm -rf "$stage"
+    return 1
+  }
+  printf '%s\n' "$stage"
+}
+
+# When invoked via the curl|bash bootstrap, $REPO_ROOT points at a
+# temporary extraction directory that the bootstrap deletes on exit —
+# any path we print for later use (update.sh, uninstall.sh, a manual
+# re-run) must survive past this process. Install a persistent copy of
+# the source tree, and repoint $REPO_ROOT at it for the rest of this run.
+#
+# The tree that gets built is ALWAYS the requested one (I-16). An existing
+# persistent copy is reused only when it has the same content; otherwise it
+# is replaced, in a way a SIGKILL cannot leave half-done: the new tree is
+# staged and verified first, then swapped in with two renames, and
+# recover_interrupted_source_swap() undoes a swap that died between them.
+# Credentials, certificates and configuration live outside this tree.
+persist_source_tree() {
+  recover_interrupted_source_swap || return 1
+  if [ "$REPO_ROOT" = "$PERSIST_DIR" ]; then
+    return
+  fi
+  local stage existing_bad
+  if [ -d "$PERSIST_DIR" ]; then
+    existing_bad="$(find "$PERSIST_DIR" \( ! -user root -o -perm /022 \) -print -quit)"
+    if [ -n "$existing_bad" ] || [ ! -x "$PERSIST_DIR/deploy/almalinux/uninstall.sh" ]; then
+      echo "[install] ERROR: existing $PERSIST_DIR is not a trusted complete source tree; refusing to replace ambiguous data during repair." >&2
+      return 1
+    fi
+    if [ "$(source_tree_digest "$REPO_ROOT")" = "$(source_tree_digest "$PERSIST_DIR")" ]; then
+      log "the persistent source tree at $PERSIST_DIR is identical to the requested source; reusing it."
+      REPO_ROOT="$PERSIST_DIR"
+      return 0
+    fi
+    log "the requested source differs from the installed copy at $PERSIST_DIR; replacing it so the requested revision is the one built."
+    stage="$(stage_source_tree)" || return 1
+    if ! mv "$PERSIST_DIR" "$PERSIST_PREV_DIR"; then
+      rm -rf "$stage"
+      return 1
+    fi
+    if ! mv "$stage" "$PERSIST_DIR"; then
+      mv "$PERSIST_PREV_DIR" "$PERSIST_DIR" || true
+      rm -rf "$stage"
+      return 1
+    fi
+    SOURCE_SWAP_PENDING=1
+    REPO_ROOT="$PERSIST_DIR"
+    return 0
+  fi
+  log "installing a persistent copy of the singbox-vpn source to $PERSIST_DIR (for future updates/uninstall)..."
+  stage="$(stage_source_tree)" || return 1
   if ! mv "$stage" "$PERSIST_DIR"; then
     rm -rf "$stage"
     return 1
   fi
   REPO_ROOT="$PERSIST_DIR"
+}
+
+# The replaced tree is only the safety net for an interrupted swap; once the
+# whole run has been accepted it has no further use.
+finalize_source_swap() {
+  [ "${SOURCE_SWAP_PENDING:-0}" = 1 ] || return 0
+  rm -rf "$PERSIST_PREV_DIR"
+  SOURCE_SWAP_PENDING=0
 }
 
 acquire_installer_lock() {
@@ -764,6 +830,7 @@ preflight_stage() {
   install_idn_support
   resolve_host_config
   resolve_node_identity
+  resolve_own_public_addresses
   resolve_reality_handshake_server
   # Write the install-state manifest NOW (acceptance="installing"), not
   # only at the very end — a fatal failure at ANY later stage still
@@ -2267,9 +2334,112 @@ certificates_stage() {
 # ---------------------------------------------------------------------
 # [10] REALITY keys
 # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# Own public address (I-15). Records the node's actual public IPv4/IPv6 in
+# deployment.toml so the renderer emits the own-address reject rule (a tunnel
+# user must not reach the node's own services through its public address)
+# whatever form PUBLIC_HOST takes. Evidence order: operator-supplied
+# PUBLIC_IPV4/PUBLIC_IPV6, then addresses configured on this host's
+# interfaces, then (only when no interface carries one, or several do) an
+# address two independent services agree on. DNS is only a tie-break between
+# addresses already proven local; it is never evidence of ownership.
+# ---------------------------------------------------------------------
+resolve_own_public_addresses() {
+  OWN_PUBLIC_IPV4=""
+  OWN_PUBLIC_IPV6=""
+  local fam var supplied local_addrs egress dns pick extra candidate count
+  for fam in 4 6; do
+    var="PUBLIC_IPV$fam"
+    supplied="${!var:-}"
+    pick=""
+    if [ -n "$supplied" ]; then
+      [ "$(preflight_ip_family "$supplied" 2>/dev/null)" = "$fam" ] \
+        || die "$var='$supplied' is not a valid IPv$fam address literal."
+      preflight_is_public_ip "$supplied" \
+        || warn "$var=$supplied is not a public address: the own-address reject rule will not protect a public service with it."
+      pick="$supplied"
+    else
+      local_addrs="$(preflight_local_public_addrs "$fam")"
+      count=0
+      [ -z "$local_addrs" ] || count="$(printf '%s\n' "$local_addrs" | wc -l)"
+      egress=""
+      if [ "$fam" = 4 ] && [ "$count" -ne 1 ]; then
+        egress="$(preflight_detect_egress_ip_confirmed 4 2>/dev/null)" || egress=""
+        if [ -z "$egress" ] && [ -n "${PUBLIC_IP:-}" ] && preflight_is_public_ip "$PUBLIC_IP"; then
+          egress="$PUBLIC_IP"
+        fi
+      fi
+      candidate="$(printf '%s\n%s\n' "$local_addrs" "$egress" | sed '/^$/d' | sort -u)"
+      if [ -n "$candidate" ]; then
+        dns="$(preflight_resolve_host_addrs "$PUBLIC_HOST" 2>/dev/null || true)"
+        pick="$(printf '%s\n' "$candidate" | grep -Fxf <(printf '%s\n' "$dns") 2>/dev/null | head -n 1 || true)"
+        [ -n "$pick" ] || pick="${egress:-$(printf '%s\n' "$candidate" | head -n 1)}"
+        extra="$(printf '%s\n' "$candidate" | grep -Fxv "$pick" | tr '\n' ' ' || true)"
+        [ -z "$extra" ] || warn "this host has more public IPv$fam addresses than deployment.toml can record: ${extra}- the own-address reject rule covers only $pick."
+      fi
+    fi
+    if [ "$fam" = 4 ]; then OWN_PUBLIC_IPV4="$pick"; else OWN_PUBLIC_IPV6="$pick"; fi
+  done
+  export OWN_PUBLIC_IPV4 OWN_PUBLIC_IPV6
+  if [ -z "$OWN_PUBLIC_IPV4" ] && [ -z "$OWN_PUBLIC_IPV6" ]; then
+    if [ -f "$DEPLOYMENT_TOML" ] || [ "${SINGBOX_VPN_ALLOW_UNKNOWN_OWN_ADDRESS:-0}" = 1 ]; then
+      warn "could not establish this node's own public address: tunnel users will be able to reach services bound to it until public_ipv4/public_ipv6 are set in $DEPLOYMENT_TOML (then run: vpn-admin render-config)."
+    else
+      die "could not establish this node's own public IPv4/IPv6 address, so the own-address protection (tunnel users must not reach this node's own services) cannot be enabled. Re-run with PUBLIC_IPV4=<this server's public address> (and PUBLIC_IPV6=... if it has one), or set SINGBOX_VPN_ALLOW_UNKNOWN_OWN_ADDRESS=1 to install WITHOUT that protection."
+    fi
+  else
+    log "own public address: IPv4=${OWN_PUBLIC_IPV4:-none} IPv6=${OWN_PUBLIC_IPV6:-none}"
+  fi
+}
+
+# Writes public_ipv4/public_ipv6 as top-level keys of the rendered file $1,
+# after subscription_host (or ahead of the first table). Nothing is written
+# when both values are empty.
+insert_own_address_keys() {
+  local file="$1" v4="${2:-}" v6="${3:-}" tmp
+  [ -n "$v4$v6" ] || return 0
+  tmp="$file.addr.$$"
+  awk -v v4="$v4" -v v6="$v6" '
+    function emit() {
+      if (done) return
+      print "# This node'"'"'s own public address(es), recorded by install.sh: the tunnel-user"
+      print "# reject rule for the node itself is rendered from them. Update on IP change."
+      if (v4 != "") print "public_ipv4 = \"" v4 "\""
+      if (v6 != "") print "public_ipv6 = \"" v6 "\""
+      done = 1
+    }
+    { if (!done && $0 ~ /^[[:space:]]*\[/) emit(); print }
+    !done && $0 ~ /^subscription_host[[:space:]]*=/ { emit() }
+    END { emit() }
+  ' "$file" >"$tmp" && cat "$tmp" >"$file" && rm -f "$tmp"
+}
+
+# Repair/update of an existing deployment: add the keys only when neither is
+# present. A configured value (even one the operator set on purpose) is never
+# replaced, and a failed detection never aborts a repair.
+backfill_own_public_addresses() {
+  [ -f "$DEPLOYMENT_TOML" ] || return 0
+  if grep -Eq '^[[:space:]]*public_ipv[46][[:space:]]*=' "$DEPLOYMENT_TOML"; then
+    return 0
+  fi
+  if [ -z "${OWN_PUBLIC_IPV4:-}${OWN_PUBLIC_IPV6:-}" ]; then
+    resolve_own_public_addresses
+  fi
+  if [ -z "${OWN_PUBLIC_IPV4:-}${OWN_PUBLIC_IPV6:-}" ]; then
+    warn "$DEPLOYMENT_TOML has no public_ipv4/public_ipv6 and none could be detected."
+    return 0
+  fi
+  local tmp="$DEPLOYMENT_TOML.addr.$$"
+  cp -p "$DEPLOYMENT_TOML" "$tmp"
+  insert_own_address_keys "$tmp" "${OWN_PUBLIC_IPV4:-}" "${OWN_PUBLIC_IPV6:-}"
+  cat "$tmp" >"$DEPLOYMENT_TOML" && rm -f "$tmp"
+  log "recorded this node's own public address in $DEPLOYMENT_TOML (IPv4=${OWN_PUBLIC_IPV4:-none} IPv6=${OWN_PUBLIC_IPV6:-none})"
+}
+
 render_deployment_toml() {
   if [ -f "$DEPLOYMENT_TOML" ]; then
     log "$DEPLOYMENT_TOML already exists, leaving it untouched."
+    backfill_own_public_addresses
     return
   fi
   : "${PUBLIC_HOST:?Set PUBLIC_HOST=vpn.example.com before running install.sh}"
@@ -2295,23 +2465,10 @@ render_deployment_toml() {
     # and the renderer turns an unpaired relay into reject-all.
     cat "$REPO_ROOT/deploy/almalinux/templates/relay-ingress.toml.template" >>"$rendered"
   fi
-  # Area 6 (own-public-IP customer-tunnel egress deny, see
-  # crates/compat-config's DeploymentConfig::public_ipv4/public_ipv6):
-  # only known for free here when PUBLIC_IP was already resolved by
-  # resolve_host_config's auto-detect path (no operator-supplied
-  # PUBLIC_HOST/--domain, so a sslip.io hostname was derived FROM this
-  # same IP already fetched via preflight_detect_public_ip — no new
-  # network call). When the operator supplies their own domain (the
-  # common/recommended case), this installer deliberately does not add
-  # a new "call an IP-detection service" step just to populate this
-  # field: the value stays unset until the operator sets it explicitly
-  # (PUBLIC_IPV4=... before install, or editing deployment.toml) or the
-  # control plane supplies it via a later APPLY_NODE_REVISION.
-  if [ -n "${PUBLIC_IP:-}" ]; then
-    printf 'public_ipv4 = "%s"\n' "$PUBLIC_IP" >>"$rendered"
-  elif [ -n "${PUBLIC_IPV4:-}" ]; then
-    printf 'public_ipv4 = "%s"\n' "$PUBLIC_IPV4" >>"$rendered"
-  fi
+  # Own-address protection (I-15): public_ipv4/public_ipv6 must be TOP-LEVEL
+  # keys, so they are inserted ahead of the first table, never appended after
+  # the template's last [section]. Values come from resolve_own_public_addresses.
+  insert_own_address_keys "$rendered" "${OWN_PUBLIC_IPV4:-}" "${OWN_PUBLIC_IPV6:-}"
   if [ "$NODE_ROLE" = "exit" ]; then
     local ipv6_policy="${IPV6_LITERAL_POLICY:-reject_google}"
     if [ "$ipv6_policy" != "allow" ]; then
@@ -3027,13 +3184,21 @@ write_install_state_manifest() {
   local singbox_version
   singbox_version="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
   local singbox_vpn_version="${SINGBOX_VPN_VERSION:-main}"
+  local source_ref="${SINGBOX_VPN_SOURCE_REF:-${SINGBOX_VPN_VERSION:-}}"
+  local source_commit="${SINGBOX_VPN_SOURCE_COMMIT:-}" source_tree_sha256=""
+  [ -d "$REPO_ROOT" ] && source_tree_sha256="$(source_tree_digest "$REPO_ROOT" 2>/dev/null || true)"
   # Identity of the executables this installer placed in $BIN_DIR, so
   # `vpn-admin doctor` can tell the recorded release from a development
   # build or a hand-copied binary (both report the same Cargo version).
   # Empty before the binaries exist (the early "installing" write).
-  local vpn_admin_sha256="" subscription_sha256=""
+  # `vpn` is its own executable in a source build (a second [[bin]] target),
+  # so it is recorded separately; a release install copies one file to both.
+  local vpn_admin_sha256="" vpn_sha256="" subscription_sha256=""
   if [ -f "$BIN_DIR/vpn-admin" ]; then
     vpn_admin_sha256="$(sha256sum "$BIN_DIR/vpn-admin" | awk '{print $1}')"
+  fi
+  if [ -f "$BIN_DIR/vpn" ]; then
+    vpn_sha256="$(sha256sum "$BIN_DIR/vpn" | awk '{print $1}')"
   fi
   if [ -f "$BIN_DIR/vpn-subscription-svc" ]; then
     subscription_sha256="$(sha256sum "$BIN_DIR/vpn-subscription-svc" | awk '{print $1}')"
@@ -3048,6 +3213,7 @@ write_install_state_manifest() {
   "singbox_vpn_version": "$singbox_vpn_version",
   "singbox_vpn_repo": "$SINGBOX_VPN_RELEASE_REPO",
   "vpn_admin_sha256": "$vpn_admin_sha256",
+  "vpn_sha256": "$vpn_sha256",
   "subscription_sha256": "$subscription_sha256",
   "sing_box_version": "$singbox_version",
   "sing_box_version_pinned": "$SINGBOX_VERSION",
@@ -3061,6 +3227,9 @@ write_install_state_manifest() {
   "firewall_backend": "$FIREWALL_BACKEND",
   "os_family": "$OS_FAMILY",
   "repo_root": "$REPO_ROOT",
+  "source_ref": "$source_ref",
+  "source_commit": "$source_commit",
+  "source_tree_sha256": "$source_tree_sha256",
   "acceptance": "$acceptance"
 }
 EOF
@@ -3092,6 +3261,7 @@ print_status() {
   # does the manifest become "accepted" (checkpoint-4 requirement: never
   # write "accepted" before the acceptance gate).
   write_install_state_manifest "accepted"
+  finalize_source_swap
 
   cat <<BANNER
 

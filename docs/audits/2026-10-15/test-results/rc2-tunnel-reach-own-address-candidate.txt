@@ -1,0 +1,3 @@
+tunnel -> node's own public nginx https://91.244.71.165:8443/ : 000 (curl rc 35)
+tunnel -> node's own public sshd   tcp 91.244.71.165:22 : banner='' (curl rc 52)
+tunnel -> sanity, public internet  https://www.gstatic.com/generate_204 : 204 (curl rc 0)

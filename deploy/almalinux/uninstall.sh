@@ -782,6 +782,7 @@ if [ -d /opt/singbox-vpn ]; then
   else
     log "removing /opt/singbox-vpn (persistent singbox-vpn source tree)..."
     rm -rf /opt/singbox-vpn
+    rm -rf /opt/singbox-vpn.prev-install
     note_removed
   fi
 fi

@@ -1224,6 +1224,7 @@ log "writing install-state manifest for $TARGET_VERSION..."
 singbox_version_reported="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
 # Identity of the executables now installed (see install.sh's manifest writer).
 vpn_admin_sha256="$(sha256sum "$BIN_DIR/vpn-admin" | awk '{print $1}')"
+vpn_sha256="$(sha256sum "$BIN_DIR/vpn" | awk '{print $1}')"
 subscription_sha256="$(sha256sum "$BIN_DIR/vpn-subscription-svc" | awk '{print $1}')"
 pinned_singbox_sha256=""
 case "$ARCH" in
@@ -1240,6 +1241,7 @@ cat > "$INSTALL_STATE_MANIFEST.tmp" <<EOF
   "singbox_vpn_version": "$TARGET_VERSION",
   "singbox_vpn_repo": "$SINGBOX_VPN_REPO",
   "vpn_admin_sha256": "$vpn_admin_sha256",
+  "vpn_sha256": "$vpn_sha256",
   "subscription_sha256": "$subscription_sha256",
   "sing_box_version": "$singbox_version_reported",
   "sing_box_version_pinned": "$TARGET_SINGBOX_VERSION",

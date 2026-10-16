@@ -1,0 +1,7 @@
+# Reboot test, fresh candidate f070601 on 91.244.71.165. User rc2-b + its profile created BEFORE the reboot; the same profile used AFTER.
+pre-reboot : boot 2026-10-16 00:11:55; REALITY client CONNECTED; ufw ALLOW rules 8; egress table lines 9
+reboot     : issued 11:04:09Z, ssh back ~28 s, new boot 11:04:16
+post-reboot: services (sing-box vpn-subscription vpn-egress-isolation nginx watchdog.timer expiry-reconcile.timer) all active; egress table lines 9; ufw ALLOW rules 8
+post-reboot: doctor --protocol exit=0 OK=41 FAIL=0 WARN=0 (REALITY and Hysteria2 handshake self-tests OK)
+post-reboot: SAME pre-reboot profile, real sing-box client over the internet: CONNECTED, egress 91.244.71.165
+post-reboot: tunnel -> node's own nginx rc 35 (refused), sshd banner empty rc 52 (refused)

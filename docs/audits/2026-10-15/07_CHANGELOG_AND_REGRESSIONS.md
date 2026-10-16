@@ -59,3 +59,67 @@ and a sing-box binary; CI runs them).
   still do.
 - The doctor now FAILs if the own-address rule is missing when `public_ipv4`/`public_ipv6`
   are set (previously the reverse).
+
+# Round 2: server hardening (branch `fix/server-hardening-rc2`, for v1.3.1-rc.2)
+
+Commits on top of `main` 0b038a0: 9ca903e (I-15), 0c7118a (I-18), a4e8f16 and 10ad1b0 (I-16),
+f070601 (I-17). No `Cargo.toml` version change: this repository keeps the SemVer core (`1.3.1`) in the
+workspace and the prerelease only in the tag.
+
+## What changed
+
+- **Installer records the node's own public addresses (I-15).** `resolve_own_public_addresses`
+  takes `PUBLIC_IPV4`/`PUBLIC_IPV6`, then interface addresses, then (NAT or floating IPs) an address
+  two independent services agree on; DNS only breaks ties between addresses already proven local.
+  The keys are written as top-level keys: the old sslip.io path appended `public_ipv4` after the last
+  `[subscription]` table, where TOML reads it as `subscription.public_ipv4` and serde ignores it. A
+  fresh install that cannot establish an address fails with an actionable message
+  (`SINGBOX_VPN_ALLOW_UNKNOWN_OWN_ADDRESS=1` opts out loudly); a repair backfills missing keys only.
+- **`doctor --protocol` handshakes Hysteria2 as well as REALITY (I-18).** The throwaway client uses
+  Salamander obfuscation and the real hostname, and verifies the certificate against the system trust
+  store like a real client. The overall L5-6 result passes only if both transports do.
+- **The requested source is the one that is built (I-16).** The persistent tree
+  (`/opt/singbox-vpn`) is reused only when its content digest equals the requested source. Otherwise
+  the request is staged, verified and swapped in with two renames; `recover_interrupted_source_swap`
+  undoes a swap killed between them and discards stale leftovers; a failed switch restores the previous
+  tree. The bootstrap accepts a full 40-character commit SHA as `--ref`, refuses an archive whose
+  embedded commit differs, validates `--ref` characters, and passes `SINGBOX_VPN_SOURCE_COMMIT`/`_REF`
+  to the installer. The install-state manifest records `source_ref`, `source_commit` and
+  `source_tree_sha256`, and doctor's release line shows them (`main @ f07060139e86 (source tree ...)`).
+- **Source builds no longer warn that they are inconsistent (I-17).** The manifest also records
+  `vpn_sha256`; doctor compares `vpn` against it and falls back to the admin hash for manifests that
+  predate it and for release installs (which copy one file to both names). The running binary may match
+  either recorded hash.
+
+## Regressions found and fixed during the round
+
+- 10ad1b0: the first version of the I-16 bootstrap check refused every real pinned-SHA install (see D7
+  in `03`). It failed closed, so nothing was installed.
+- The I-16 fixture for `test-persist-source-tree.sh` lacked `deploy/almalinux/install.sh`, which the new
+  completeness check requires, and its failed-switch mock also failed the rollback move.
+- A reworded log line ("UNVERIFIED singbox-vpn branch source") is pinned by
+  `test-release-reproducibility.sh`; the original wording was restored.
+
+## Behaviour changes to know about
+
+- `install.sh --ref <40-hex>` now means "this exact commit"; any other `--ref` is still a branch name.
+- An install whose archive does not carry the requested commit is refused before anything is changed.
+- Manifests gain `source_ref`, `source_commit`, `source_tree_sha256` and `vpn_sha256`. Older manifests
+  keep working; the doctor treats a missing `vpn_sha256` as "same as `vpn-admin`".
+- A fresh install on a host whose own public address cannot be established now fails instead of
+  silently leaving the own-address rule off.
+- After an install that aborts mid-repair, the deployment stays "not yet accepted", and the next run
+  mints a fresh subscription token for the first user (existing installer behaviour, seen during the
+  crash-safety test).
+
+## Known limits of this round
+
+- A ref whose own installer predates a4e8f16 still reuses the persistent tree: the check lives in the
+  installer of the ref being installed. Reproduced on the real VPS by requesting `main` over a candidate
+  tree.
+- The production updater (`update.sh --version`) refuses a dev-channel install by design, so an
+  injected-failure update with rollback against a published release (`update.sh` with
+  `SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch`) can only be run once an rc.2 is published and
+  an rc.1 install exists. It was **not** run. The dev-rebuild path does not call that hook.
+- Test environment: on a Windows checkout with `core.autocrlf=true` shell tests fail on CRLF
+  (I-27). Under WSL with line endings normalised, all 71 `deploy/lib/tests` pass (3 of them need root).

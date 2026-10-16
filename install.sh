@@ -140,7 +140,7 @@ with NO verification; see this file's own header comment for why):
 Bootstrap options:
   --version, -s -- --version v1.2.3   pin to a specific tagged release
   --repo owner/repo                   install from a fork
-  --ref branch-name                   source branch when no tag/version is given (default: main)
+  --ref branch-or-sha                 source branch (or full 40-char commit SHA) when no tag/version is given (default: main)
 
 Installer options (passed through to deploy/almalinux/install.sh):
   --domain HOST                    use your own domain (accepts Unicode/IDN,
@@ -358,16 +358,34 @@ download_verified_source_release() {
 # tarballs work for any public branch without needing git installed.
 # ---------------------------------------------------------------------
 DOWNLOADED_SOURCE_DIR=""
+SOURCE_COMMIT=""
 download_source() {
   local ref="$SINGBOX_VPN_REF" url tarball="$TMPDIR/singbox-vpn-src.tar.gz"
   if [ -n "$SINGBOX_VPN_VERSION" ]; then
     download_verified_source_release "$SINGBOX_VPN_VERSION" "$tarball"
   else
-    url="https://codeload.github.com/$SINGBOX_VPN_REPO/tar.gz/refs/heads/$ref"
+    [[ "$ref" =~ ^[A-Za-z0-9._/-]+$ && "$ref" != *..* ]] \
+      || die "invalid --ref '$ref' (expected a branch name or a full 40-character commit SHA)."
+    if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+      url="https://codeload.github.com/$SINGBOX_VPN_REPO/tar.gz/$ref"
+    else
+      url="https://codeload.github.com/$SINGBOX_VPN_REPO/tar.gz/refs/heads/$ref"
+    fi
     log "downloading UNVERIFIED singbox-vpn branch source (ref=$ref, SINGBOX_VPN_CHANNEL=dev — no checksum verification, development/testing only)..."
     curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$url" \
       || die "could not download source from $url. Check network connectivity and that $SINGBOX_VPN_REPO/$ref exists."
   fi
+  # GitHub (and `git archive`) embed the exact commit in the archive's pax
+  # header. Read it so the installed build can be traced to a commit, and so a
+  # pinned-SHA request is proven to have delivered that commit.
+  # `head` closes the pipe while gzip is still writing, so gzip dies of SIGPIPE
+  # and pipefail reports failure even though the id was found: the group's
+  # status is deliberately ignored and only its output is used.
+  SOURCE_COMMIT="$({ gzip -dc "$tarball" 2>/dev/null | head -c 4096 | grep -a -o 'comment=[0-9a-f]\{40\}' | head -n 1 | cut -d= -f2; } || true)"
+  if [ -z "$SINGBOX_VPN_VERSION" ] && [[ "$ref" =~ ^[0-9a-f]{40}$ ]] && [ "$SOURCE_COMMIT" != "$ref" ]; then
+    die "requested commit $ref but the downloaded archive identifies itself as '${SOURCE_COMMIT:-<no commit recorded>}' — refusing to build a different revision than requested."
+  fi
+  [ -z "$SOURCE_COMMIT" ] || log "source archive commit: $SOURCE_COMMIT"
   log "extracting..."
   tar -xzf "$tarball" -C "$TMPDIR" || die "failed to extract downloaded source archive."
   # Both archive shapes (codeload's "<repo>-<ref>", and release.yml's
@@ -450,8 +468,11 @@ echo
 
 # Propagate the caller's environment (PUBLIC_HOST, SINGBOX_VPN_VERSION, etc.)
 # and the exact exit code of the real installer — never mask a failure.
+source_ref="${SINGBOX_VPN_VERSION:-$SINGBOX_VPN_REF}"
 set +e
 SINGBOX_VPN_RELEASE_REPO="$SINGBOX_VPN_REPO" SINGBOX_VPN_VERSION="$SINGBOX_VPN_VERSION" \
+  SINGBOX_VPN_SOURCE_COMMIT="$SOURCE_COMMIT" \
+  SINGBOX_VPN_SOURCE_REF="$source_ref" \
   bash "$SRC_DIR/deploy/almalinux/install.sh" "${PASSTHROUGH_ARGS[@]}"
 rc=$?
 set -e

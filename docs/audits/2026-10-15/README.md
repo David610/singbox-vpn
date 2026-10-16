@@ -11,7 +11,7 @@ Written for the maintainers of `singbox-vpn`, `vpn-web` and `tamara-next`.
 | `05_NETWORK_AND_PERFORMANCE.md` | measurements, IPv6, YouTube, recovery |
 | `06_SECURITY_PRIVACY.md` | verified properties, defects, what was not tested |
 | `07_CHANGELOG_AND_REGRESSIONS.md` | commits, tests, verification |
-| `08_RELEASE_ACCEPTANCE.md` | candidate identity, decision, iPhone procedure |
+| `08_RELEASE_ACCEPTANCE.md` | candidate identity, decision, round 2 (rc.2 server hardening) results, iPhone procedure |
 | `issues.json` | machine-readable registry |
 | `test-results/` | sanitized raw outputs (no tokens, keys, personal IPs or paths) |
 | `harness/` | the scripts that produced the measurements (Windows paths, need a local sing-box 1.14.1) |

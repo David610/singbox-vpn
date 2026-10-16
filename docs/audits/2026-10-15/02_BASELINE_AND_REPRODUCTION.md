@@ -120,3 +120,20 @@ network; it was verified over the VPS loopback only.
 | clean dev-channel install of the candidate | success; doctor protocol self-test PASS |
 
 Not done: interrupted-deployment recovery and disk/memory/CPU pressure injection.
+
+## Round 2 reproductions on unmodified `main` (0b038a0), 2026-10-16
+
+Same disposable host, fresh install of `main` through its own bootstrap. Full results and the fixed-candidate
+comparison are in `08_RELEASE_ACCEPTANCE.md`; raw outputs are in `test-results/rc2-*`.
+
+- **R5 / I-15:** `deployment.toml` had `public_host` only. Doctor warned "no own-public-address deny rule".
+  Through the tunnel, `https://<node>:8443/` returned 404 (nginx) and `http://<node>:22/` returned the
+  `SSH-2.0-OpenSSH` banner.
+- **I-17:** doctor warned `release identity INCONSISTENT` on that fresh, healthy install.
+- **I-18:** a valid certificate for another hostname was swapped in for Hysteria2 and sing-box restarted.
+  Every Hysteria2 client would fail; `vpn doctor --protocol` exited 0 with no FAIL.
+- **R6 / I-16:** the old bootstrap cannot pin a commit (a SHA is treated as a branch name and 404s). Requesting
+  `--ref main` over a host that held the candidate tree: "reusing the existing root-controlled persistent source
+  tree", the candidate binaries stayed, "installation complete" was printed, the manifest said `main` with no commit.
+  Note the bug lives in the installer of the ref being installed: requesting the fixed branch with the old
+  bootstrap already used the fixed installer and replaced the tree.

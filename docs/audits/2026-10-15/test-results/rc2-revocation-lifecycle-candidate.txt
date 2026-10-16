@@ -1,0 +1,14 @@
+# Revocation / subscription lifecycle with the real sing-box 1.14.1 client, fresh candidate f070601 on 91.244.71.165 (REALITY, over the public internet)
+# T0-T4 from the first pass; T5-T7 redone after correcting my own CLI syntax (set-expiry takes --expires-at <ts> <id>; remove has no --yes).
+T0 active user, original profile:               CONNECTED
+T1 after rotate-vless, OLD profile:             REFUSED/FAILED (no 204)   (old UUID must stop working)
+T2 sub fetch http 200
+T3 disabled user, refetched profile:            REFUSED/FAILED (no 204)
+
+T5 set-expiry: This expiry is already in the past: once reloaded live, this user is dropped from the rendered sing-box authorization config, same as `user disable`.
+T5 expired (60 s in the past), profile:      REFUSED/FAILED (no 204)   | subscription fetch http 404
+T6 clear-expiry: user_06b01bac-9bd9-4805-a260-77c3e9e9cffe: expires_at=none
+T6 expiry cleared, profile:                  CONNECTED   | subscription fetch http 200
+T7 remove: Same blast radius as `user disable`: REALITY and Hysteria2 credentials are both rejected immediately, and the subscription URL 404s. Unlike disable, this is not reversible with `user enable` — the account must be recreated from scratch.
+T7 removed user, profile:                    REFUSED/FAILED (no 204)   | subscription fetch http 404
+users left: default 

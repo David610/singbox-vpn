@@ -1,0 +1,8 @@
+# Broken-config detection on the fresh candidate (91.244.71.165); original config restored after each fault
+### A. valid-but-drifted on-disk config (Hysteria2 port 443 -> 4443; sing-box still running the old one)
+doctor exit=1  FAIL=1
+[FAIL] [L4  ] on-disk sing-box config.json does NOT exactly match current users/expiry/REALITY/Hysteria state — sing-box (as of its last reload) may be enforcing stale authorization or key material. Run `vpn-admin render-config` to resync, then confirm with `systemctl status sing-box`.
+### B. syntactically broken config file (truncated)
+doctor exit=1  FAIL=1
+[FAIL] [L2  ] sing-box config invalid: config validation failed: [31mFATAL[0m[0000] decode config at /etc/vpn/compat/sing-box/config.json: unexpected end of JSON input: row 27, column 5
+restored original config; sing-box active
