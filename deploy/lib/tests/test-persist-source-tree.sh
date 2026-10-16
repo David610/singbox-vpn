@@ -22,6 +22,7 @@ REPO_ROOT="$SRC"
 . "$REPO_ROOT_ACTUAL/deploy/almalinux/install.sh"
 REPO_ROOT="$SRC"
 PERSIST_DIR="$TMP/opt/singbox-vpn"
+PERSIST_PREV_DIR="$TMP/opt/singbox-vpn.prev-install"
 persist_source_tree
 
 [ -x "$PERSIST_DIR/nested/executable.sh" ]
@@ -41,15 +42,80 @@ for path in "$PERSIST_DIR" "$PERSIST_DIR/deploy/almalinux/uninstall.sh"; do
   [ $((other_digit & 2)) -eq 0 ]
 done
 
-# A repair launched from a different temporary checkout must reuse, not
-# replace, an already trusted persistent tree. This closes the SIGKILL gap
-# that exists in any two-rename "backup then replace" sequence.
-printf 'previous-install\n' > "$PERSIST_DIR/sentinel"
+# I-16: the tree that is built is always the REQUESTED one.
+# (1) identical content is reused, nothing is swapped.
+IDENTICAL="$TMP/identical-source"
+cp -a "$SRC" "$IDENTICAL"
+REPO_ROOT="$IDENTICAL"
+persist_source_tree
+[ "$REPO_ROOT" = "$PERSIST_DIR" ]
+[ ! -e "$PERSIST_PREV_DIR" ]
+echo "ok: identical source is reused without a swap"
+
+# Credentials and configuration live outside the source tree and must survive.
+mkdir -p "$TMP/etc/vpn"
+printf 'secret-state\n' > "$TMP/etc/vpn/users.json"
+
+# (2) different content REPLACES the persistent copy (the old behaviour built
+# the stale tree and reported success for the requested ref).
 SECOND="$TMP/second-source"
-mkdir -p "$SECOND"
-printf 'replacement\n' > "$SECOND/sentinel"
+cp -a "$SRC" "$SECOND"
+printf 'new-revision\n' > "$SECOND/nested/file.txt"
 REPO_ROOT="$SECOND"
 persist_source_tree
-[ "$(cat "$PERSIST_DIR/sentinel")" = "previous-install" ]
 [ "$REPO_ROOT" = "$PERSIST_DIR" ]
+[ "$(cat "$PERSIST_DIR/nested/file.txt")" = "new-revision" ]
+[ "$(cat "$PERSIST_PREV_DIR/nested/file.txt")" = "ordinary" ]
+[ "$(source_tree_digest "$PERSIST_DIR")" = "$(source_tree_digest "$SECOND")" ]
+[ -z "$(find "$PERSIST_DIR" -perm /022 -print -quit)" ]
+[ "$(cat "$TMP/etc/vpn/users.json")" = "secret-state" ]
+echo "ok: a different requested source replaces the persistent copy"
+
+# (3) once the run is accepted the previous tree is dropped.
+SOURCE_SWAP_PENDING=1
+finalize_source_swap
+[ ! -e "$PERSIST_PREV_DIR" ]
+echo "ok: the replaced tree is removed after acceptance"
+
+# (4) a swap killed between the two renames is undone on the next run.
+mv "$PERSIST_DIR" "$PERSIST_PREV_DIR"
+[ ! -e "$PERSIST_DIR" ]
+recover_interrupted_source_swap
+[ -d "$PERSIST_DIR" ] && [ ! -e "$PERSIST_PREV_DIR" ]
+[ "$(cat "$PERSIST_DIR/nested/file.txt")" = "new-revision" ]
+echo "ok: an interrupted swap is recovered"
+
+# (5) a stale previous tree next to a complete current one is discarded.
+cp -a "$PERSIST_DIR" "$PERSIST_PREV_DIR"
+printf 'stale\n' > "$PERSIST_PREV_DIR/nested/file.txt"
+recover_interrupted_source_swap
+[ ! -e "$PERSIST_PREV_DIR" ]
+[ "$(cat "$PERSIST_DIR/nested/file.txt")" = "new-revision" ]
+echo "ok: a stale previous tree is discarded, the complete current one kept"
+
+# (6) a failure while switching the staged tree in leaves the old tree intact.
+THIRD="$TMP/third-source"
+cp -a "$SRC" "$THIRD"
+printf 'third-revision\n' > "$THIRD/nested/file.txt"
+mv() {
+  if [ "${FAIL_SWITCH:-0}" = 1 ] && [ "${2:-}" = "$PERSIST_DIR" ]; then return 1; fi
+  command mv "$@"
+}
+FAIL_SWITCH=1
+REPO_ROOT="$THIRD"
+if persist_source_tree; then echo "FAIL: a failed switch must fail the install"; exit 1; fi
+unset FAIL_SWITCH
+unset -f mv
+[ "$(cat "$PERSIST_DIR/nested/file.txt")" = "new-revision" ]
+[ ! -e "$PERSIST_PREV_DIR" ]
+[ -z "$(find "$(dirname "$PERSIST_DIR")" -maxdepth 1 -name '.singbox-vpn-source.*' -print -quit)" ]
+echo "ok: a failed switch restores the previous tree and leaves no staging debris"
+
+# (7) an untrusted (group-writable) existing tree is still refused, never replaced.
+chmod 0775 "$PERSIST_DIR"
+REPO_ROOT="$THIRD"
+if persist_source_tree 2>/dev/null; then echo "FAIL: untrusted tree was accepted"; exit 1; fi
+[ "$(cat "$PERSIST_DIR/nested/file.txt")" = "new-revision" ]
+chmod 0755 "$PERSIST_DIR"
+echo "ok: an ambiguous existing tree is refused, not replaced"
 echo "persist-source-tree regression passed"

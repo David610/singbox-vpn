@@ -568,37 +568,41 @@ check_ports_free() {
   log "required ports (443/tcp, 443/udp, ${SUBSCRIPTION_PORT}/tcp) are free."
 }
 
-# When invoked via the curl|bash bootstrap, $REPO_ROOT points at a
-# temporary extraction directory that the bootstrap deletes on exit —
-# any path we print for later use (update.sh, uninstall.sh, a manual
-# re-run) must survive past this process. Install a persistent copy of
-# the source tree once, and repoint $REPO_ROOT at it for the rest of
-# this run. A no-op when already running from that persistent copy
-# (e.g. someone `cd /opt/singbox-vpn && ./deploy/almalinux/install.sh`).
 PERSIST_DIR="/opt/singbox-vpn"
+PERSIST_PREV_DIR="/opt/singbox-vpn.prev-install"
 OPT_SINGBOX_VPN_PRE_EXISTED=0
 [ -e "$PERSIST_DIR" ] && OPT_SINGBOX_VPN_PRE_EXISTED=1
-persist_source_tree() {
-  if [ "$REPO_ROOT" = "$PERSIST_DIR" ]; then
-    return
-  fi
-  # A bootstrap repair may be running from a newly downloaded temporary
-  # tree while a valid persistent installer already exists.  Do not move a
-  # known-good installation aside merely to refresh this convenience copy:
-  # a SIGKILL between two directory renames cannot be rolled back by shell.
-  # Release-to-release source replacement belongs to update.sh's transaction.
-  if [ -d "$PERSIST_DIR" ]; then
-    local existing_bad
-    existing_bad="$(find "$PERSIST_DIR" \( ! -user root -o -perm /022 \) -print -quit)"
-    if [ -z "$existing_bad" ] && [ -x "$PERSIST_DIR/deploy/almalinux/uninstall.sh" ]; then
-      log "reusing the existing root-controlled persistent source tree at $PERSIST_DIR."
-      REPO_ROOT="$PERSIST_DIR"
-      return 0
+
+# Content identity of a source tree: sha256 over the sorted per-file sha256
+# list, ignoring exactly what persist_source_tree never copies (build output
+# and VCS metadata). Equal digests mean the two trees build the same code.
+source_tree_digest() {
+  local dir="${1:?source dir}"
+  ( cd "$dir" && find . \( -name target -o -name .git \) -prune -o -type f -print0 \
+      | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}' )
+}
+
+# An earlier run that was killed between the two renames of a source swap
+# leaves $PERSIST_PREV_DIR (the previous, complete tree) and possibly no
+# $PERSIST_DIR. Put the world back before looking at anything else.
+recover_interrupted_source_swap() {
+  if [ -d "$PERSIST_PREV_DIR" ]; then
+    if [ ! -e "$PERSIST_DIR" ]; then
+      log "recovering the previous source tree: an earlier source replacement was interrupted before it completed."
+      mv "$PERSIST_PREV_DIR" "$PERSIST_DIR" || return 1
+    else
+      log "removing $PERSIST_PREV_DIR left behind by an earlier source replacement ($PERSIST_DIR is complete)."
+      rm -rf "$PERSIST_PREV_DIR"
     fi
-    echo "[install] ERROR: existing $PERSIST_DIR is not a trusted complete source tree; refusing to replace ambiguous data during repair." >&2
-    return 1
   fi
-  log "installing a persistent copy of the singbox-vpn source to $PERSIST_DIR (for future updates/uninstall)..."
+  rm -rf "$(dirname "$PERSIST_DIR")"/.singbox-vpn-source.* 2>/dev/null || true
+  return 0
+}
+
+# Copies $REPO_ROOT into a fresh, root-owned staging directory next to
+# $PERSIST_DIR and prints its path. The copy is normalised and trust-checked
+# before anything is switched.
+stage_source_tree() {
   local parent stage bad
   parent="$(dirname "$PERSIST_DIR")"
   install -d -o root -g root -m 0755 "$parent"
@@ -617,11 +621,73 @@ persist_source_tree() {
     rm -rf "$stage"
     return 1
   fi
+  [ -x "$stage/deploy/almalinux/uninstall.sh" ] && [ -x "$stage/deploy/almalinux/install.sh" ] || {
+    echo "[install] ERROR: the source tree to install is missing its installer scripts." >&2
+    rm -rf "$stage"
+    return 1
+  }
+  printf '%s\n' "$stage"
+}
+
+# When invoked via the curl|bash bootstrap, $REPO_ROOT points at a
+# temporary extraction directory that the bootstrap deletes on exit —
+# any path we print for later use (update.sh, uninstall.sh, a manual
+# re-run) must survive past this process. Install a persistent copy of
+# the source tree, and repoint $REPO_ROOT at it for the rest of this run.
+#
+# The tree that gets built is ALWAYS the requested one (I-16). An existing
+# persistent copy is reused only when it has the same content; otherwise it
+# is replaced, in a way a SIGKILL cannot leave half-done: the new tree is
+# staged and verified first, then swapped in with two renames, and
+# recover_interrupted_source_swap() undoes a swap that died between them.
+# Credentials, certificates and configuration live outside this tree.
+persist_source_tree() {
+  recover_interrupted_source_swap || return 1
+  if [ "$REPO_ROOT" = "$PERSIST_DIR" ]; then
+    return
+  fi
+  local stage existing_bad
+  if [ -d "$PERSIST_DIR" ]; then
+    existing_bad="$(find "$PERSIST_DIR" \( ! -user root -o -perm /022 \) -print -quit)"
+    if [ -n "$existing_bad" ] || [ ! -x "$PERSIST_DIR/deploy/almalinux/uninstall.sh" ]; then
+      echo "[install] ERROR: existing $PERSIST_DIR is not a trusted complete source tree; refusing to replace ambiguous data during repair." >&2
+      return 1
+    fi
+    if [ "$(source_tree_digest "$REPO_ROOT")" = "$(source_tree_digest "$PERSIST_DIR")" ]; then
+      log "the persistent source tree at $PERSIST_DIR is identical to the requested source; reusing it."
+      REPO_ROOT="$PERSIST_DIR"
+      return 0
+    fi
+    log "the requested source differs from the installed copy at $PERSIST_DIR; replacing it so the requested revision is the one built."
+    stage="$(stage_source_tree)" || return 1
+    if ! mv "$PERSIST_DIR" "$PERSIST_PREV_DIR"; then
+      rm -rf "$stage"
+      return 1
+    fi
+    if ! mv "$stage" "$PERSIST_DIR"; then
+      mv "$PERSIST_PREV_DIR" "$PERSIST_DIR" || true
+      rm -rf "$stage"
+      return 1
+    fi
+    SOURCE_SWAP_PENDING=1
+    REPO_ROOT="$PERSIST_DIR"
+    return 0
+  fi
+  log "installing a persistent copy of the singbox-vpn source to $PERSIST_DIR (for future updates/uninstall)..."
+  stage="$(stage_source_tree)" || return 1
   if ! mv "$stage" "$PERSIST_DIR"; then
     rm -rf "$stage"
     return 1
   fi
   REPO_ROOT="$PERSIST_DIR"
+}
+
+# The replaced tree is only the safety net for an interrupted swap; once the
+# whole run has been accepted it has no further use.
+finalize_source_swap() {
+  [ "${SOURCE_SWAP_PENDING:-0}" = 1 ] || return 0
+  rm -rf "$PERSIST_PREV_DIR"
+  SOURCE_SWAP_PENDING=0
 }
 
 acquire_installer_lock() {
@@ -3118,6 +3184,9 @@ write_install_state_manifest() {
   local singbox_version
   singbox_version="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
   local singbox_vpn_version="${SINGBOX_VPN_VERSION:-main}"
+  local source_ref="${SINGBOX_VPN_SOURCE_REF:-${SINGBOX_VPN_VERSION:-}}"
+  local source_commit="${SINGBOX_VPN_SOURCE_COMMIT:-}" source_tree_sha256=""
+  [ -d "$REPO_ROOT" ] && source_tree_sha256="$(source_tree_digest "$REPO_ROOT" 2>/dev/null || true)"
   # Identity of the executables this installer placed in $BIN_DIR, so
   # `vpn-admin doctor` can tell the recorded release from a development
   # build or a hand-copied binary (both report the same Cargo version).
@@ -3152,6 +3221,9 @@ write_install_state_manifest() {
   "firewall_backend": "$FIREWALL_BACKEND",
   "os_family": "$OS_FAMILY",
   "repo_root": "$REPO_ROOT",
+  "source_ref": "$source_ref",
+  "source_commit": "$source_commit",
+  "source_tree_sha256": "$source_tree_sha256",
   "acceptance": "$acceptance"
 }
 EOF
@@ -3183,6 +3255,7 @@ print_status() {
   # does the manifest become "accepted" (checkpoint-4 requirement: never
   # write "accepted" before the acceptance gate).
   write_install_state_manifest "accepted"
+  finalize_source_swap
 
   cat <<BANNER
 

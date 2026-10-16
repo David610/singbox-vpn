@@ -80,6 +80,29 @@ pub fn release_core(tag: &str) -> Option<&str> {
     (parts.len() == 3 && parts.iter().all(numeric)).then_some(core)
 }
 
+/// The recorded release tag plus, when the installer recorded it, the exact
+/// source the build came from: `main @ 0123456789ab (tree 89abcdef0123)`. A
+/// development install otherwise only says "main", which names a moving target.
+fn source_identity(manifest: &Value, tag: &str) -> String {
+    let base = if tag.is_empty() {
+        "<none recorded>"
+    } else {
+        tag
+    };
+    let short = |key: &str, len: usize| {
+        manifest[key]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .map(|v| v.chars().take(len).collect::<String>())
+    };
+    match (short("source_commit", 12), short("source_tree_sha256", 12)) {
+        (Some(commit), Some(tree)) => format!("{base} @ {commit} (source tree {tree})"),
+        (Some(commit), None) => format!("{base} @ {commit}"),
+        (None, Some(tree)) => format!("{base} (source tree {tree})"),
+        (None, None) => base.to_string(),
+    }
+}
+
 /// (executable name in the bin dir, manifest key holding its recorded SHA-256)
 const RECORDED: [(&str, &str); 3] = [
     ("vpn-admin", "vpn_admin_sha256"),
@@ -136,11 +159,8 @@ pub fn evaluate(
     };
     let tag = manifest["singbox_vpn_version"].as_str().unwrap_or("");
     let class = classify(tag);
-    let shown = if tag.is_empty() {
-        "<none recorded>"
-    } else {
-        tag
-    };
+    let shown = source_identity(&manifest, tag);
+    let shown = shown.as_str();
     if update_in_progress {
         return (
             Verdict::Info,
@@ -448,6 +468,46 @@ mod tests {
             false,
         );
         assert_eq!(v, Verdict::Warn);
+    }
+
+    #[test]
+    fn a_development_install_reports_the_exact_source_it_was_built_from() {
+        let mut m: Value =
+            serde_json::from_str(&manifest("main", Some(H_ADMIN), Some(H_SUB))).unwrap();
+        m["source_commit"] = "0123456789abcdef0123456789abcdef01234567".into();
+        m["source_tree_sha256"] = "fedcba9876543210ffff".into();
+        let (v, msg) = evaluate(
+            Some(&m.to_string()),
+            "1.3.1",
+            installed(H_ADMIN, H_SUB),
+            &running(H_ADMIN),
+            false,
+        );
+        assert_eq!(v, Verdict::Ok);
+        assert!(
+            msg.contains("main @ 0123456789ab (source tree fedcba987654)"),
+            "{msg}"
+        );
+        assert!(
+            !msg.contains("0123456789abcdef0123"),
+            "only a short commit is shown: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_install_without_recorded_source_keeps_the_plain_label() {
+        let m = manifest("main", Some(H_ADMIN), Some(H_SUB));
+        let (_, msg) = evaluate(
+            Some(&m),
+            "1.3.1",
+            installed(H_ADMIN, H_SUB),
+            &running(H_ADMIN),
+            false,
+        );
+        assert!(
+            msg.contains("development channel (not a published release) main;"),
+            "{msg}"
+        );
     }
 
     #[test]
