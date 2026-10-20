@@ -276,6 +276,19 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-58",
+   "severity": "medium",
+   "component": "configuration contract / drift",
+   "state": "FIXED_IN_BRANCH",
+   "title": "no version-controlled production contract or drift check; routing/ssh/host/port drift was only found by hand",
+   "fix": "deploy/contracts/fin1-staging.contract.json + deploy/lib/check_deployment_contract.py (read-only; PASS/FAIL/UNDECIDED/UNOBSERVABLE; routing fingerprint)",
+   "regression_test": "deploy/lib/tests/test_deployment_contract.py (12 tests)",
+   "device_required": "no",
+   "remaining_risk": "contract still has UNDECIDED fields awaiting owner approval; not yet wired as a deployment gate",
+   "evidence": "live run on staging: 11 PASS, 2 FAIL (SSH), 7 UNDECIDED",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-51",
    "severity": "high",
    "component": "Hiddify iOS (client)",
