@@ -5441,6 +5441,7 @@ fn cmd_doctor(
     }
     check_expected_public_surface(cfg, &mut failures);
     check_host_ipv6_egress();
+    check_host_egress_isolation_table(&mut failures);
     check_firewall_zone_and_ownership();
     check_l4_subscription_coherence(cfg, &mut failures);
     check_l4_live_subscription_process_state(cfg, &mut failures);
@@ -8223,6 +8224,52 @@ fn host_ipv6_observations() -> (bool, Option<String>, Option<String>) {
         _ => None,
     };
     (has_global, gw, state)
+}
+
+/// Host egress-isolation table shape (I-54). Pure: the `nft list table` text is passed in.
+fn classify_egress_isolation_table(listing: Option<&str>) -> (CheckStatus, String) {
+    let Some(text) = listing else {
+        return (
+            CheckStatus::Info,
+            "no host egress-isolation nftables table is loaded".into(),
+        );
+    };
+    if text.contains("skuid !=") {
+        return (
+            CheckStatus::Fail,
+            "the host egress-isolation table uses a NEGATED uid match (`meta skuid != UID accept`): kernel IPv6 neighbour \
+             discovery has no socket owner, falls into the reject rules and breaks IPv6 for the whole host (I-54, present in \
+             every release up to v1.3.1-rc.2). Update to a release that scopes the rejects with a positive uid match, then \
+             re-run vpn-egress-isolation.service"
+                .into(),
+        );
+    }
+    if text.contains("meta skuid") {
+        (
+            CheckStatus::Ok,
+            "host egress-isolation table scopes its rejects to the sing-box uid with a positive match".into(),
+        )
+    } else {
+        (
+            CheckStatus::Warn,
+            "host egress-isolation table is loaded but its uid scoping could not be recognised"
+                .into(),
+        )
+    }
+}
+
+fn check_host_egress_isolation_table(failures: &mut u32) {
+    let listing = std::process::Command::new("nft")
+        .args(["list", "table", "inet", "arcana_egress_isolation"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let (status, msg) = classify_egress_isolation_table(listing.as_deref());
+    if status == CheckStatus::Fail {
+        *failures += 1;
+    }
+    report_check(status, "L3", msg);
 }
 
 fn check_host_ipv6_egress() {
@@ -11177,6 +11224,34 @@ mod public_surface_tests {
             declared(&[(false, 443), (true, 443), (false, 8388), (true, 8388)])
         );
         assert!(read_declared_inbounds(std::path::Path::new("/nonexistent/x.json")).is_none());
+    }
+
+    #[test]
+    fn egress_isolation_table_with_a_negated_uid_match_is_a_failure() {
+        // I-54: `meta skuid != UID accept` lets socketless kernel packets (IPv6 neighbour discovery)
+        // fall into the rejects and kills host IPv6. Published releases <= rc.2 install this form.
+        let broken = "table inet arcana_egress_isolation {\n chain output {\n  meta skuid != 995 accept\n  ip6 daddr { fe80::/10 } reject\n }\n}";
+        let (st, msg) = classify_egress_isolation_table(Some(broken));
+        assert_eq!(st, CheckStatus::Fail, "{msg}");
+        assert!(msg.contains("I-54"));
+    }
+
+    #[test]
+    fn egress_isolation_table_with_positive_uid_scoping_is_ok() {
+        let good = "table inet arcana_egress_isolation {\n chain output {\n  meta skuid 995 ip6 daddr { fe80::/10 } counter packets 0 bytes 0 reject\n }\n}";
+        assert_eq!(
+            classify_egress_isolation_table(Some(good)).0,
+            CheckStatus::Ok
+        );
+    }
+
+    #[test]
+    fn missing_or_unrecognised_egress_isolation_table_is_not_ok() {
+        assert_eq!(classify_egress_isolation_table(None).0, CheckStatus::Info);
+        assert_eq!(
+            classify_egress_isolation_table(Some("table inet arcana_egress_isolation { }")).0,
+            CheckStatus::Warn
+        );
     }
 
     #[test]

@@ -233,7 +233,7 @@
    "regression_test": "deploy/lib/tests/test-egress-isolation-ipv6-nd.sh (two-netns behavioural; red before, also proves uid scoping)",
    "device_required": "no",
    "remaining_risk": "published v1.3.1-rc.2 and every earlier release carry the defect, and their update.sh --repair/--version REINSTALLS the broken script (observed on staging: the live fix was reverted by a later repair and IPv6 died again until re-applied) so only a corrected release fixes nodes durably",
-   "evidence": "staging: IPv6 dead with the table, restored at once without it; after the fix a flushed-cache ND succeeds, v6 egress and YouTube/v6 HTTP 200",
+   "evidence": "staging: IPv6 dead with the table, restored at once without it; after the fix a flushed-cache ND succeeds, v6 egress and YouTube/v6 HTTP 200. Detection: doctor now FAILS on the negated-uid table form itself (classify_egress_isolation_table) and reboot_check.py asserts uid scoping",
    "supersedes_audit_entry": false
   },
   {

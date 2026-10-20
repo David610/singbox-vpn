@@ -97,7 +97,7 @@ NEW = [
       "positive uid-scoped rejects with counters in deploy/almalinux/nftables-egress-isolation.sh",
       "deploy/lib/tests/test-egress-isolation-ipv6-nd.sh (two-netns behavioural; red before, also proves uid scoping)", "no",
       "published v1.3.1-rc.2 and every earlier release carry the defect, and their update.sh --repair/--version REINSTALLS the broken script (observed on staging: the live fix was reverted by a later repair and IPv6 died again until re-applied) so only a corrected release fixes nodes durably",
-      "staging: IPv6 dead with the table, restored at once without it; after the fix a flushed-cache ND succeeds, v6 egress and YouTube/v6 HTTP 200"),
+      "staging: IPv6 dead with the table, restored at once without it; after the fix a flushed-cache ND succeeds, v6 egress and YouTube/v6 HTTP 200. Detection: doctor now FAILS on the negated-uid table form itself (classify_egress_isolation_table) and reboot_check.py asserts uid scoping"),
     n("I-55", "high", "admin/doctor", "FIXED_IN_BRANCH",
       "doctor had no IPv6 health check: it passed (rc 0) while the host's IPv6 was completely broken by I-54",
       "WARN when a global IPv6 address exists and the default gateway's neighbour entry is FAILED (classify_host_ipv6)",
