@@ -1,0 +1,3 @@
+[update] no interrupted-update marker at /var/lib/singbox-vpn/update-transaction.json.
+[update] removed 1 stale update-staging directory left by a killed updater.
+[update] nothing else to recover.

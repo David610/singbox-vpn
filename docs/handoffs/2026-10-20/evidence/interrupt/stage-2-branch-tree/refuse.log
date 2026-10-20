@@ -1,0 +1,10 @@
+[update] ERROR: an update transaction did not finish cleanly and left /var/lib/singbox-vpn/update-transaction.json in place — refusing to start a new update on top of unknown state.
+{
+  "from_version": "v1.3.0",
+  "to_version": "v1.3.1-rc.2",
+  "backup_dir": "/etc/vpn/backups/20261020-165510-1020598",
+  "prev_opt_dir": "/opt/.singbox-vpn-prev-1020598",
+  "staged_src_dir": "/opt/.singbox-vpn-update-staging.GZ22JA/singbox-vpn-src",
+  "started_at_unix": 1792515316
+}
+Run: sudo /root/singbox-vpn/deploy/almalinux/update.sh --recover (validates the marker, then clears it or restores the previous release from the transaction backup). Manual recovery, only if that refuses: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/singbox-vpn after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove /var/lib/singbox-vpn/update-transaction.json and retry the update.

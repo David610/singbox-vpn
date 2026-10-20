@@ -1,0 +1,6 @@
+I-61/I-62 live CLI check (2026-10-20), argument parsing only (config path deliberately nonexistent):
+branch-built vpn-admin, --relay-reality-public-key "-ABC…"  -> "Error: loading deployment config" (argument ACCEPTED)
+branch-built vpn-admin, --relay-reality-public-key "AbC…"   -> "Error: loading deployment config" (argument accepted)
+installed v1.3.1-rc.2 vpn-admin, key "-ABC…"                 -> "error: unexpected argument '-A' found" (REJECTED: the defect)
+Unit test: apps/admin public_surface_tests::hairpin_set_accepts_a_reality_public_key_that_starts_with_a_hyphen
+Workaround on every published release: --relay-reality-public-key=<key>
