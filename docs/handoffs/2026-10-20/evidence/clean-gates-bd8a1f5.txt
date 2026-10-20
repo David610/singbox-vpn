@@ -1,9 +1,0 @@
-HEAD bd8a1f579293f30c1e6b64d569fafe1f4b8f52d0
-fmt rc=0
-test rc=0
-shellcheck rc=0
-clippy rc=0
-shell rc=0
-rust workspace: 1080 passed, 0 failed (YOUTUBE_TEST_PYTHON=venv with aioquic)
-shell rc=0
-evidence class: unit/integration + hermetic shell on staging host; NOT external or device evidence

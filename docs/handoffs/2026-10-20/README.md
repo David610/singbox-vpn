@@ -60,12 +60,14 @@ node whose IP YouTube accepts. **That needs owner authorization of a paired node
 (historically Selectel; not contacted, status unknown).** Until then the
 standalone staging install cannot be accepted for Shorts.
 
-## Fixed this session (branch, CI-verifiable)
-- I-37 (new) `vpn doctor` reported sing-box outbound UDP flow sockets
-  (`ss -ulnp`, ephemeral ports) as FAIL "internal process on unexpected public
-  port". Now INFO; non-ephemeral UDP and any TCP stay FAIL. Regression tests
-  `public_surface_tests::own_process_*` (red before, green after).
-  State: FIXED_IN_BRANCH, device requirement none.
+## Fixed this session (branch `staging/2026-10-20-remediation`, not pushed)
+See `issue-registry.md` / `issue-registry.json` (single registry). Highlights, each
+with a regression test that was red before the fix: I-54 egress isolation broke host
+IPv6 (critical), I-31 update left nodes without the own-address deny rule, I-41
+installer abort on a leaked group, I-43 misleading acceptance verdict, I-44 missing
+HSTS, I-52 updater test phase impossible on ufw hosts, I-37 config-backed doctor
+UDP classifier, I-55 doctor IPv6 gateway check, I-46 machine-readable release gate,
+I-47 genuine-Shorts counting. Gate evidence: `evidence/clean-gates-439f26b.txt`.
 
 ## Security findings (server verified)
 - sshd: `PermitRootLogin yes`, `PasswordAuthentication yes`.
