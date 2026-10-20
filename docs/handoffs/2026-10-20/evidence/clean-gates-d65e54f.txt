@@ -1,5 +1,0 @@
-HEAD d65e54fc750b33d3bc981498fbbaa1790c26e348
-fmt rc=0
-test rc=0
-clippy rc=0
-workspace tests: 1074 passed, 0 failed
