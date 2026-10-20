@@ -386,6 +386,18 @@ done
 [ -f "$DEPLOYMENT_TOML" ] || die "no existing singbox-vpn deployment found ($DEPLOYMENT_TOML missing) — update.sh only operates on an existing installation. Use install.sh for a fresh install."
 
 # ---------------------------------------------------------------------
+# Liveness lock (I-56). Held for the whole life of this run (update, repair, dev-rebuild AND --recover)
+# on fd 202. A kernel flock is released the instant the holder dies (SIGKILL, power loss), so it never
+# goes stale; and because child processes inherit the descriptor, an ORPHAN of a killed updater (e.g. a
+# `timeout curl` in its own process group) keeps it held until the orphan exits. That makes "is any updater
+# state still active?" an exact question, unlike matching command lines with pgrep (which also matches
+# unrelated shells and misses an updater started by a different path).
+# ---------------------------------------------------------------------
+UPDATE_LOCK=/run/lock/singbox-vpn-update.lock
+exec 202>"$UPDATE_LOCK"
+flock -n 202 || die "another update.sh run — or an orphaned child process of a killed one — holds $UPDATE_LOCK. Wait for it to finish (list holders with: fuser -v $UPDATE_LOCK), then retry. Nothing was changed."
+
+# ---------------------------------------------------------------------
 # Interrupted-transaction detection (checkpoint-3 requirement): a
 # subsequent invocation must detect an incomplete prior update rather
 # than blindly starting another one on top of half-swapped state. The
@@ -394,16 +406,11 @@ done
 # ---------------------------------------------------------------------
 # A killed updater leaves /opt/.singbox-vpn-update-staging.* behind (the marker is only written in
 # PREPARE, so there may be NO marker). They never hold the last known-good tree, so --recover removes
-# them — but only when no other updater is running. -prev-* directories may hold the last known-good
+# them — safe because this run holds the update lock (no live updater or orphan). -prev-* directories may hold the last known-good
 # source tree: they are reported, never deleted here.
 clear_stale_staging_dirs() {
-  local p other="" d n=0
-  for p in $(pgrep -f 'almalinux/update\.sh' 2>/dev/null || true); do
-    [ "$p" = "$$" ] && continue
-    [ "$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')" = "$$" ] && continue
-    other="$other $p"
-  done
-  [ -z "$other" ] || die "another update.sh is running (pid(s):$other); refusing to touch staging directories."
+  local d n=0
+  # safe to delete: this run holds the update lock, so no updater (or orphan of one) is alive
   shopt -s nullglob
   for d in /opt/.singbox-vpn-update-staging.*; do
     [ -L "$d" ] && { warn "skipping symlink $d"; continue; }
@@ -544,7 +551,8 @@ ensure_cosign() {
     *) die "unsupported architecture '$ARCH' — cannot verify release attestations." ;;
   esac
   local tmp asset dest
-  tmp="$(mktemp -d)"
+  # under the staging root (removed on commit, rollback and --recover); a bare mktemp -d here leaked ~135 MB per run
+  tmp="$(mktemp -d "${STAGING_ROOT:-/tmp}/cosign.XXXXXX")"
   asset="cosign-linux-${ARCH}"
   dest="$tmp/$asset"
   log "downloading pinned cosign v${COSIGN_VERSION} (${ARCH}) to verify release attestations..."
@@ -990,7 +998,8 @@ download_verified_source_release() {
 
 download_verified_source_release "$TARGET_VERSION" "$STAGING_ROOT/singbox-vpn-src.tar.gz"
 tar -xzf "$STAGING_ROOT/singbox-vpn-src.tar.gz" -C "$STAGING_ROOT" || die "failed to extract downloaded source archive. Nothing live has been changed."
-STAGED_SRC_DIR="$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '*.tar.gz' | head -n1 || true)"
+# cosign.* is this run's own verification-tool scratch dir (see ensure_cosign), never the source tree
+STAGED_SRC_DIR="$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '*.tar.gz' ! -name 'cosign.*' | head -n1 || true)"
 [ -n "$STAGED_SRC_DIR" ] && [ -x "$STAGED_SRC_DIR/deploy/almalinux/install.sh" ] \
   || die "downloaded release source for $TARGET_VERSION does not look like a valid singbox-vpn source tree. Nothing live has been changed."
 [ -f "$STAGED_SRC_DIR/deploy/lib/versions.env" ] \
