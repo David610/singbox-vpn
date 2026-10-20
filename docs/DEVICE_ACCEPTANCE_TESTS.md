@@ -688,3 +688,15 @@ matrix.
 - **Device (USER-REPORTED, maintainer-accepted):** the maintainer tested the subscription, the REALITY link and the Hysteria2 link on an iPhone against that host and reported on 2026-10-13 that they work and that random YouTube Shorts play (a specific Short could not be repeated), and approved the release on that basis, explicitly waiving the unrecorded matrix (maintainer exception; the missing results stay UNVERIFIED / NOT RECORDED and do not imply TikTok, leak or native IPv4-recovery verification). **Not recorded:** iPhone model/iOS, Hiddify and embedded-core versions, YouTube/TikTok versions, which transport ran on Wi-Fi versus cellular, per-cell results of the matrix above, ≥10-Short and 15-minute runs, TikTok app and web, handover, idle, leak checks, and phone behaviour after the server reboot.
 - **Observation, not a defect:** a Hysteria2 client on the maintainer's workstation timed out at the QUIC handshake against the exit while a client on another network passed; a server-side capture saw no UDP/443 from the workstation but did see test datagrams from the other network. That path was not investigated further; the phone result above is the relevant one.
 - **Known limitations accepted with this release:** hosts updated from v1.2.0 keep the distribution's default nginx site listening on TCP/80 (doctor WARN; blocked by the default host firewalls, renewal verified; fresh installs disable it); the lifecycle harness supports AlmaLinux only; an egress IP that YouTube refuses (proven per IP) cannot play Shorts without a hairpin to an accepted IP.
+
+## Recording a native-device result so it counts for a release (2026-10-20)
+
+A device result feeds the release gate only as a cell of `device_matrix` in
+`docs/release-acceptance/<tag>.evidence.json` (validated by `deploy/lib/release_evidence.py`). One cell per
+**transport (`reality`, `hysteria2`) x network (`wifi`, `cellular`)**, each `PASS` only with all of:
+`iphone_model`, `ios_version`, `hiddify_version`, `transport`, `network`, `date`, `release_tag`, `git_commit`
+(the exact candidate), `evidence_ref` (a file in this repository: screenshots/notes/log excerpt, no tokens),
+`shorts_consecutive_played >= 10`, and `known_failing_short_played: true`. A cell with anything missing, for a
+different commit, or `WAIVED`, does not count and caps the release below `DEVICE_VERIFIED`. A waiver is a
+documented limited-risk decision (scope, reason, approver, date, risk) and can never raise a level.
+Server-side or browser probes, `playabilityStatus: OK` and "it connected" are never device evidence.

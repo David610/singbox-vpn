@@ -251,15 +251,15 @@
   },
   {
    "id": "I-56",
-   "severity": "medium",
+   "severity": "high",
    "component": "update.sh interrupted-transaction recovery",
-   "state": "SERVER_VERIFIED",
-   "title": "after update.sh is SIGKILLed mid-switch the host stays healthy and byte-identical, but the next run refuses (correct) and recovery was hand-editing: remove the marker AND the stale /opt/.singbox-vpn-prev-*/update-staging.* dirs",
-   "fix": "deploy/lib/recover-interrupted-update.sh (health-gated, pattern-checked, dry-run default, archives the marker); update.sh error text points to it",
-   "regression_test": "deploy/lib/tests/test-recover-interrupted-update.sh (refusal paths mutation-checked)",
+   "state": "IN_PROGRESS",
+   "title": "SIGKILL of a real v1.3.0 -> v1.3.1-rc.2 update left the node with rc.2 binaries and v1.3.0-shaped state (doctor FAIL), every tool refusing (updater: marker; recovery helper: unhealthy host), recovery = hand-restore from backup_dir; a kill during the download left a staging directory with NO marker that blocked every later update",
+   "fix": "update.sh --recover: strict marker validation, no-snapshot => clear only, healthy+untouched => clear only, else restore from the transaction backup via the shared perform_rollback_from_backup, clear stale staging (never -prev- dirs); recover-interrupted-update.sh kept as a conservative helper",
+   "regression_test": "deploy/lib/tests/test-update-recover-mode.sh, test-recover-interrupted-update.sh (adversarial: symlinks, .., newline names, wrong owner, malformed markers, all-or-nothing); dynamic: evidence/interrupt/ (SIGKILL at each of 10 stages)",
    "device_required": "no",
-   "remaining_risk": "the helper never restores binaries/config: an unhealthy host still needs the backup_dir restore",
-   "evidence": "staging: kill -9 after SWITCHING -> fingerprint identical, doctor clean; manual procedure then repair succeeded, credentials preserved",
+   "remaining_risk": "the dynamic matrix result is in the report; published releases do not contain --recover (a corrected release is required)",
+   "evidence": "see evidence/interrupt/stages.jsonl",
    "supersedes_audit_entry": false
   },
   {
