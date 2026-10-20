@@ -187,7 +187,10 @@ fi
 
 echo
 echo "--- static: rollback restores the previous /opt/singbox-vpn source tree, not only binaries ---"
-rollback_body="$(sed -n '/^rollback_update() {/,/^}/p' "$UPDATE_SH")"
+# The restoration steps live in perform_rollback_from_backup (shared with --recover); the in-process
+# rollback is rollback_update (which delegates to it). Assert over both, so a step moved out of one
+# cannot silently disappear from the rollback.
+rollback_body="$(sed -n '/^rollback_update() {/,/^}/p;/^perform_rollback_from_backup() {/,/^}/p' "$UPDATE_SH")"
 if grep -q 'PREV_OPT_DIR' <<<"$rollback_body" && grep -q 'mv -f "\$PREV_OPT_DIR" /opt/singbox-vpn' <<<"$rollback_body"; then
   ok "rollback_update() restores the previous /opt/singbox-vpn source tree from PREV_OPT_DIR"
 else

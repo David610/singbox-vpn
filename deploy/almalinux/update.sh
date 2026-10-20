@@ -205,6 +205,89 @@ restore_deployment_toml_snapshot() {
       && mv -f "$DEPLOYMENT_TOML.rollback" "$DEPLOYMENT_TOML"
   fi
 }
+# Restores everything an update transaction may have changed from $BACKUP_DIR
+# (binaries, units, helper scripts, sing-box, the /opt source tree, the egress
+# table, deployment.toml, config) and verifies health. Shared by rollback_update
+# (in-process failure) and --recover (the updater was killed). Needs BACKUP_DIR,
+# PREV_OPT_DIR, TARGET_VERSION, CURRENT_VERSION. Returns nonzero if any step failed.
+perform_rollback_from_backup() {
+  local failed=0
+  # Stop the newly introduced unit while the verified new helper still exists.
+  # An older source tree restored below may contain neither unit nor helper.
+  quiesce_new_egress_unit_for_rollback
+
+  for f in vpn-admin vpn vpn-subscription-svc; do
+    install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
+    mv -f "$BIN_DIR/$f.rollback" "$BIN_DIR/$f" || failed=1
+  done
+  for u in "${SYSTEMD_UNITS[@]}"; do
+    if [ -f "$BACKUP_DIR/systemd/$u" ]; then
+      install -m 0644 "$BACKUP_DIR/systemd/$u" "$SYSTEMD_DIR/$u.rollback" || failed=1
+      mv -f "$SYSTEMD_DIR/$u.rollback" "$SYSTEMD_DIR/$u" || failed=1
+    else
+      rm -f "$SYSTEMD_DIR/$u" || failed=1
+    fi
+    rm -f "$SYSTEMD_DIR/$u.update-new"
+  done
+  for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
+    if [ -f "$BACKUP_DIR/$f" ]; then
+      install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
+      mv -f "$BIN_DIR/$f.rollback" "$BIN_DIR/$f" || failed=1
+    else
+      rm -f "$BIN_DIR/$f"
+    fi
+    rm -f "$BIN_DIR/$f.update-new"
+  done
+  if [ -f "$BACKUP_DIR/sing-box" ]; then
+    install -m 0755 "$BACKUP_DIR/sing-box" "$SINGBOX_BIN.rollback" || failed=1
+    mv -f "$SINGBOX_BIN.rollback" "$SINGBOX_BIN" || failed=1
+    [ -f "$BACKUP_DIR/sing-box.LICENSE" ] && cp -a "$BACKUP_DIR/sing-box.LICENSE" "$BIN_DIR/sing-box.LICENSE"
+  fi
+
+  # Restore the previous /opt/singbox-vpn source tree if the SWITCH phase ever
+  # renamed it away — the source of truth for templates/units/scripts
+  # must go back to matching the restored binaries exactly.
+  if [ -d "$PREV_OPT_DIR" ]; then
+    rm -rf /opt/singbox-vpn.rollback-failed 2>/dev/null || true
+    if [ -d /opt/singbox-vpn ]; then mv -f /opt/singbox-vpn /opt/singbox-vpn.rollback-failed || failed=1; fi
+    mv -f "$PREV_OPT_DIR" /opt/singbox-vpn || failed=1
+    rm -rf /opt/singbox-vpn.rollback-failed 2>/dev/null || true
+  fi
+
+  systemctl daemon-reload || failed=1
+  restore_arcana_egress_table || failed=1
+  restore_egress_unit_runtime_baseline || failed=1
+
+  # deployment.toml IS rewound when this transaction migrated it: the
+  # restored (older) binaries may not understand the migrated schema, and
+  # a node's role/identity must come back exactly as it was.
+  restore_deployment_toml_snapshot || failed=1
+
+  # Never rewind users.json or REALITY material — authoritative, may
+  # have changed while staging/download ran. Render with the restored
+  # (old) tooling instead.
+  if ! SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/rollback-inner.lock" \
+      "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config; then
+    warn "rollback render failed; restoring the config snapshot taken while the state lock was held"
+    if [ -f "$BACKUP_DIR/config.json" ]; then
+      cp -a "$BACKUP_DIR/config.json" /etc/vpn/compat/sing-box/config.json || failed=1
+    else
+      failed=1
+    fi
+  fi
+  systemctl restart vpn-subscription || failed=1
+  systemctl reload-or-restart sing-box || failed=1
+  /usr/local/bin/vpn-health-check || failed=1
+
+  # install-state.json is never rewritten until COMMIT, so nothing to
+  # restore there under normal operation — but a corrupted/short write
+  # is defended against anyway (belt and suspenders).
+  if [ -f "$BACKUP_DIR/install-state.json.bak" ] && ! cmp -s "$BACKUP_DIR/install-state.json.bak" "$INSTALL_STATE_MANIFEST" 2>/dev/null; then
+    cp -a "$BACKUP_DIR/install-state.json.bak" "$INSTALL_STATE_MANIFEST" || failed=1
+  fi
+  return "$failed"
+}
+
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/binary-version-check.sh"
 
@@ -249,6 +332,7 @@ RESOLVE_LATEST=0
 REPAIR=0
 DEV_REBUILD=0
 ALLOW_DOWNGRADE=0
+RECOVER=0
 [ "${SINGBOX_VPN_CHANNEL:-}" = "dev" ] && DEV_REBUILD=1
 
 print_update_help() {
@@ -258,6 +342,7 @@ singbox-vpn production updater (deploy/almalinux/update.sh).
   sudo /opt/singbox-vpn/deploy/almalinux/update.sh --version v1.1.0
   sudo /opt/singbox-vpn/deploy/almalinux/update.sh --latest
   sudo /opt/singbox-vpn/deploy/almalinux/update.sh --repair
+  sudo /opt/singbox-vpn/deploy/almalinux/update.sh --recover   # after an update was killed mid-transaction
 
 Flags:
   --version vX.Y.Z   update to this exact tagged release (production;
@@ -290,6 +375,7 @@ while [ $# -gt 0 ]; do
     --repair) REPAIR=1; shift ;;
     --dev-rebuild) DEV_REBUILD=1; shift ;;
     --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
+    --recover) RECOVER=1; shift ;;
     --repo) SINGBOX_VPN_REPO_OVERRIDE="$2"; shift 2 ;;
     --repo=*) SINGBOX_VPN_REPO_OVERRIDE="${1#*=}"; shift ;;
     -h|--help) print_update_help; exit 0 ;;
@@ -306,10 +392,104 @@ done
 # marker is written in PREPARE, before the first live mutation, and
 # removed only on a successful COMMIT or a successful rollback.
 # ---------------------------------------------------------------------
+# --recover: finish or undo a transaction whose updater process was killed (SIGKILL,
+# power loss). Validates the marker strictly, then either just clears it (no live
+# mutation can have happened) or restores the previous release from the backup the
+# transaction made — the same restoration code a failed in-process update uses.
+recover_interrupted_update() {
+  [ -e "$TRANSACTION_MARKER" ] || { log "no interrupted-update marker at $TRANSACTION_MARKER: nothing to recover."; exit 0; }
+  [ -L "$TRANSACTION_MARKER" ] && die "the transaction marker is a symlink; refusing."
+  exec 201>/run/lock/singbox-vpn.lock
+  flock -x 201
+  local fields
+  fields="$(python3 -I - "$TRANSACTION_MARKER" "$BACKUP_ROOT" <<'PY'
+import json, os, re, stat, sys
+marker, backup_root = sys.argv[1], os.path.realpath(sys.argv[2])
+def fail(m):
+    print(f"refusing: {m}", file=sys.stderr); sys.exit(3)
+try:
+    d = json.load(open(marker))
+except (OSError, ValueError) as e:
+    fail(f"marker unreadable ({e})")
+if not isinstance(d, dict): fail("marker is not an object")
+def s(k):
+    v = d.get(k)
+    if not isinstance(v, str) or any(ord(c) < 0x20 or ord(c) == 0x7F for c in v): fail(f"{k} is not a clean string")
+    return v
+def child(path, parent, pattern, what):
+    if not os.path.isabs(path) or os.path.normpath(path) != path: fail(f"{what} is not a normalized absolute path")
+    if os.path.dirname(path) != parent: fail(f"{what} is not a direct child of {parent}")
+    if not re.match(pattern, os.path.basename(path)): fail(f"{what} has an unexpected name")
+    try: st = os.lstat(path)
+    except FileNotFoundError: return False
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != 0: fail(f"{what} is a symlink, not a directory, or not root-owned")
+    if os.path.realpath(path) != path: fail(f"{what} resolves elsewhere")
+    return True
+backup = s("backup_dir"); prev = s("prev_opt_dir"); staged = d.get("staged_src_dir") or ""
+if not isinstance(staged, str) or any(ord(c) < 0x20 for c in staged): fail("staged_src_dir is not a clean string")
+if not child(backup, backup_root, r"^[0-9]{8}-[0-9]{6}-[0-9]+$", "backup_dir"): fail("backup_dir does not exist")
+child(prev, "/opt", r"^\.singbox-vpn-prev-[0-9]+$", "prev_opt_dir")
+staging = os.path.dirname(staged) if staged else ""
+if staging: child(staging, "/opt", r"^\.singbox-vpn-update-staging\.[A-Za-z0-9]+$", "staging dir")
+ver = lambda k: (s(k) if re.match(r"^[A-Za-z0-9._-]{1,64}$", s(k)) else fail(f"{k} is not a version string"))
+print("\n".join([backup, prev, staging, ver("from_version"), ver("to_version")]))
+PY
+)" || die "the transaction marker failed validation; nothing was changed. Inspect $TRANSACTION_MARKER by hand."
+  mapfile -t _rec <<<"$fields"
+  BACKUP_DIR="${_rec[0]}"; PREV_OPT_DIR="${_rec[1]}"; STAGING_ROOT="${_rec[2]}"
+  CURRENT_VERSION="${_rec[3]}"; TARGET_VERSION="${_rec[4]}"
+  local prev_exists=0
+  [ -d "$PREV_OPT_DIR" ] && prev_exists=1
+  clear_transaction() {
+    rm -f "$TRANSACTION_MARKER"
+    [ -n "$STAGING_ROOT" ] && rm -rf --one-file-system -- "$STAGING_ROOT"
+  }
+  # deployment.toml is the LAST snapshot PREPARE takes: without it the transaction never reached SWITCH
+  if [ ! -f "$BACKUP_DIR/deployment.toml" ]; then
+    [ "$prev_exists" -eq 0 ] || die "inconsistent transaction: the source tree was moved aside but the backup is incomplete. Manual recovery needed (see $BACKUP_DIR)."
+    log "PREPARE had not finished: no live state was changed. Clearing the interrupted transaction."
+    clear_transaction
+    exit 0
+  fi
+  local same=1 f
+  for f in vpn-admin vpn vpn-subscription-svc; do cmp -s "$BACKUP_DIR/$f" "$BIN_DIR/$f" || same=0; done
+  if [ "$prev_exists" -eq 0 ] && [ "$same" -eq 1 ] \
+      && systemctl is-active --quiet sing-box && systemctl is-active --quiet vpn-subscription; then
+    log "the switch had not started (previous release still installed and active): clearing the interrupted transaction."
+    clear_transaction
+    exit 0
+  fi
+  for f in vpn-admin vpn vpn-subscription-svc; do
+    [ -f "$BACKUP_DIR/$f" ] || die "the transaction backup is incomplete ($f missing in $BACKUP_DIR); refusing an automatic restore. Manual recovery needed."
+  done
+  local u
+  for u in "${SYSTEMD_UNITS[@]}"; do
+    [ -f "$BACKUP_DIR/systemd/$u" ] || [ "$u" = "vpn-egress-isolation.service" ] || die "the transaction backup is incomplete (unit $u missing); refusing an automatic restore."
+  done
+  log "RECOVERING an interrupted update ${CURRENT_VERSION} -> ${TARGET_VERSION}: restoring the previous release from $BACKUP_DIR"
+  trap - ERR INT TERM EXIT
+  set +e
+  local failed=0
+  perform_rollback_from_backup || failed=1
+  clear_transaction
+  if [ "$failed" -eq 0 ]; then
+    echo "[update] RECOVERY COMPLETE — PREVIOUS RELEASE (${CURRENT_VERSION}) RESTORED AND VERIFIED. Re-run the update when ready." >&2
+    exit 0
+  fi
+  echo "[update] RECOVERY FAILED — MANUAL INTERVENTION REQUIRED. Backups: $BACKUP_DIR" >&2
+  exit 2
+}
+
+if [ -e "$TRANSACTION_MARKER" ] && [ "$RECOVER" -eq 1 ]; then
+  recover_interrupted_update
+elif [ "$RECOVER" -eq 1 ]; then
+  log "no interrupted-update marker at $TRANSACTION_MARKER: nothing to recover."
+  exit 0
+fi
 if [ -e "$TRANSACTION_MARKER" ]; then
   die "an update transaction did not finish cleanly and left $TRANSACTION_MARKER in place — refusing to start a new update on top of unknown state.
 $(cat "$TRANSACTION_MARKER" 2>/dev/null)
-If the host is healthy, run: $REPO_ROOT/deploy/lib/recover-interrupted-update.sh (dry run; add --yes to apply). Otherwise, manual recovery: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/singbox-vpn after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove $TRANSACTION_MARKER and retry the update."
+Run: sudo $REPO_ROOT/deploy/almalinux/update.sh --recover (validates the marker, then clears it or restores the previous release from the transaction backup). Manual recovery, only if that refuses: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/singbox-vpn after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove $TRANSACTION_MARKER and retry the update."
 fi
 
 # See install.sh's verify_release_attestation() for the full rationale
@@ -1020,79 +1200,7 @@ rollback_update() {
   set +e
   local failed=0
   warn "update to $TARGET_VERSION did not commit; restoring previous release (${CURRENT_VERSION:-unknown}) from $BACKUP_DIR"
-  # Stop the newly introduced unit while the verified new helper still exists.
-  # An older source tree restored below may contain neither unit nor helper.
-  quiesce_new_egress_unit_for_rollback
-
-  for f in vpn-admin vpn vpn-subscription-svc; do
-    install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
-    mv -f "$BIN_DIR/$f.rollback" "$BIN_DIR/$f" || failed=1
-  done
-  for u in "${SYSTEMD_UNITS[@]}"; do
-    if [ -f "$BACKUP_DIR/systemd/$u" ]; then
-      install -m 0644 "$BACKUP_DIR/systemd/$u" "$SYSTEMD_DIR/$u.rollback" || failed=1
-      mv -f "$SYSTEMD_DIR/$u.rollback" "$SYSTEMD_DIR/$u" || failed=1
-    else
-      rm -f "$SYSTEMD_DIR/$u" || failed=1
-    fi
-    rm -f "$SYSTEMD_DIR/$u.update-new"
-  done
-  for f in vpn-health-check vpn-benchmark vpn-benchmark-lib.sh vpn-service-watchdog; do
-    if [ -f "$BACKUP_DIR/$f" ]; then
-      install -m 0755 "$BACKUP_DIR/$f" "$BIN_DIR/$f.rollback" || failed=1
-      mv -f "$BIN_DIR/$f.rollback" "$BIN_DIR/$f" || failed=1
-    else
-      rm -f "$BIN_DIR/$f"
-    fi
-    rm -f "$BIN_DIR/$f.update-new"
-  done
-  if [ -f "$BACKUP_DIR/sing-box" ]; then
-    install -m 0755 "$BACKUP_DIR/sing-box" "$SINGBOX_BIN.rollback" || failed=1
-    mv -f "$SINGBOX_BIN.rollback" "$SINGBOX_BIN" || failed=1
-    [ -f "$BACKUP_DIR/sing-box.LICENSE" ] && cp -a "$BACKUP_DIR/sing-box.LICENSE" "$BIN_DIR/sing-box.LICENSE"
-  fi
-
-  # Restore the previous /opt/singbox-vpn source tree if the SWITCH phase ever
-  # renamed it away — the source of truth for templates/units/scripts
-  # must go back to matching the restored binaries exactly.
-  if [ -d "$PREV_OPT_DIR" ]; then
-    rm -rf /opt/singbox-vpn.rollback-failed 2>/dev/null || true
-    if [ -d /opt/singbox-vpn ]; then mv -f /opt/singbox-vpn /opt/singbox-vpn.rollback-failed || failed=1; fi
-    mv -f "$PREV_OPT_DIR" /opt/singbox-vpn || failed=1
-    rm -rf /opt/singbox-vpn.rollback-failed 2>/dev/null || true
-  fi
-
-  systemctl daemon-reload || failed=1
-  restore_arcana_egress_table || failed=1
-  restore_egress_unit_runtime_baseline || failed=1
-
-  # deployment.toml IS rewound when this transaction migrated it: the
-  # restored (older) binaries may not understand the migrated schema, and
-  # a node's role/identity must come back exactly as it was.
-  restore_deployment_toml_snapshot || failed=1
-
-  # Never rewind users.json or REALITY material — authoritative, may
-  # have changed while staging/download ran. Render with the restored
-  # (old) tooling instead.
-  if ! SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/rollback-inner.lock" \
-      "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config; then
-    warn "rollback render failed; restoring the config snapshot taken while the state lock was held"
-    if [ -f "$BACKUP_DIR/config.json" ]; then
-      cp -a "$BACKUP_DIR/config.json" /etc/vpn/compat/sing-box/config.json || failed=1
-    else
-      failed=1
-    fi
-  fi
-  systemctl restart vpn-subscription || failed=1
-  systemctl reload-or-restart sing-box || failed=1
-  /usr/local/bin/vpn-health-check || failed=1
-
-  # install-state.json is never rewritten until COMMIT, so nothing to
-  # restore there under normal operation — but a corrupted/short write
-  # is defended against anyway (belt and suspenders).
-  if [ -f "$BACKUP_DIR/install-state.json.bak" ] && ! cmp -s "$BACKUP_DIR/install-state.json.bak" "$INSTALL_STATE_MANIFEST" 2>/dev/null; then
-    cp -a "$BACKUP_DIR/install-state.json.bak" "$INSTALL_STATE_MANIFEST" || failed=1
-  fi
+  perform_rollback_from_backup || failed=1
 
   rm -f "$TRANSACTION_MARKER"
   rm -rf "$STAGING_ROOT"
