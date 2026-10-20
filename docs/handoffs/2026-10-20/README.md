@@ -114,3 +114,35 @@ Logs: `evidence/lifecycle/`. Hashes are 16-hex prefixes; no secrets are stored.
 | Branch updater refreshes the nginx vhost on a published-rc.2 node | HSTS 1 -> 3, `nginx -t` ok, subscription acceptance 42/42 (I-45) |
 | Deployment contract check on staging | 11 PASS, 2 FAIL (SSH password/root login, I-39), 7 UNDECIDED, 0 UNOBSERVABLE |
 | Client matrix | only the pinned sing-box core is SERVER_VERIFIED; all native clients UNVERIFIED (`client-matrix.json`) |
+
+---
+# Session 2 (recovery of an interrupted session) — what changed and why
+
+**Takeover state (verified read-only before any change).** Branch `staging/2026-10-20-remediation` at `66f14f7`,
+nothing uncommitted, no worktrees; node on the authentic **v1.3.0** baseline, all services active, no update marker, no
+stale directories; credential fingerprint equal to the baseline; the previous session's ten-stage run had *finished* but
+was INVALID (the `/tmp` tmpfs was full). Backups made before editing: `/root/backups/singbox-vpn-66f14f7.bundle`
+(verified with `git bundle verify`) and a worktree tarball; evidence archived under `/root/forensics/`. A secret scan
+of every line added since `de8f7d5` found only two reviewed fixtures.
+
+**New defects found this session (each with a regression test, red before the fix):**
+* the updater's cosign download leaked ~135 MB of `/tmp` on **every** run (it exhausted the tmpfs and invalidated the
+  earlier matrix); scratch now lives under the cleaned staging root;
+* `pgrep`-based "is an updater running" was wrong in both directions; replaced by a kernel liveness lock
+  (released on SIGKILL, inherited by orphans);
+* SIGKILL of the updater's process *group* leaves descendants alive (proved by the harness self-test), so the harness
+  kills the whole tree;
+* update/rollback/recovery restarts tripped systemd's start-rate limiter (`vpn-subscription: Start request repeated too
+  quickly`), failing the rollback's own verification; every explicit restart now resets the limiter first;
+* a kill in the commit window (after the manifest rename, before the marker is removed) left a marker naming a deleted
+  backup: recovery now rolls **forward** with strict commit evidence;
+* the harness itself had bugs (cleanliness judged before restoring; main-only kill killed a wrapper, so the real updater
+  finished the update): fixed and covered by unit tests; INVALID verdicts exist for such cases.
+
+**Interruption matrix (STAGING; real v1.3.0 -> v1.3.1-rc.2 update killed at each stage; `evidence/interrupt/`).**
+Final run, corrected updater, whole-process-tree kill: **12/12 PASS** (the ten defined stages + two commit-boundary
+kill points). Superseded runs are kept (run A: 4 PASS/6 FAIL from the start-limit defect; run B: stage 10 exposed the
+commit-boundary gap; run C: all INVALID, dirty start). Variants: see the acceptance report.
+
+**Evidence classes.** Matrix, perf, hairpin simulation, isolation, Hiddify-core and subscription results are *server
+verified / loopback / simulated*. Nothing in this handoff is native-device or external-network evidence.
