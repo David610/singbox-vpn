@@ -78,7 +78,7 @@ render() {
 
 echo "--- address classification ---"
 classify() { run_fixture "" "type preflight_is_public_ip >/dev/null 2>&1 || { echo MISSING; exit 0; }; if preflight_is_public_ip '$1'; then echo public; else echo private; fi"; }
-for a in 10.0.0.5 172.16.0.1 172.31.255.1 192.168.1.1 127.0.0.1 169.254.1.1 100.64.0.1 0.0.0.0 224.0.0.1 255.255.255.255 fe80::1 fc00::1 fd12::1 ::1 ::; do
+for a in 10.0.0.5 172.16.0.1 172.31.255.1 192.168.1.1 192.88.99.2 192.88.99.255 127.0.0.1 169.254.1.1 100.64.0.1 0.0.0.0 224.0.0.1 255.255.255.255 fe80::1 fc00::1 fd12::1 ::1 ::; do
   [ "$(classify "$a")" = private ] && ok "$a is not a public address" || fail "$a was classified public"
 done
 for a in 91.244.71.165 8.8.8.8 172.32.0.1 2a01:4f8::1 2606:4700::1111; do

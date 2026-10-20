@@ -297,6 +297,9 @@ preflight_is_public_ip() {
     (( a == 169 && b == 254 )) && return 1
     (( a == 172 && b >= 16 && b <= 31 )) && return 1
     (( a == 192 && b == 168 )) && return 1
+    # 192.88.99.0/24: deprecated 6to4 relay anycast (RFC 7526); also used by this
+    # product's own arcana-2hop0 interface, never a host's public address (I-57).
+    (( a == 192 && b == 88 && c == 99 )) && return 1
     (( a == 198 && (b == 18 || b == 19) )) && return 1
     return 0
   fi

@@ -289,7 +289,7 @@ done
 if [ -e "$TRANSACTION_MARKER" ]; then
   die "an update transaction did not finish cleanly and left $TRANSACTION_MARKER in place — refusing to start a new update on top of unknown state.
 $(cat "$TRANSACTION_MARKER" 2>/dev/null)
-Manual recovery: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/singbox-vpn after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove $TRANSACTION_MARKER and retry the update."
+If the host is healthy, run: $REPO_ROOT/deploy/lib/recover-interrupted-update.sh (dry run; add --yes to apply). Otherwise, manual recovery: inspect the backup_dir/prev_opt_dir named above. If prev_opt_dir still exists, the source tree was never switched back — 'mv' it to /opt/singbox-vpn after removing whatever is there, restore binaries/units from backup_dir the same way rollback_update() does below, then 'systemctl daemon-reload'. Once the host is confirmed healthy, remove $TRANSACTION_MARKER and retry the update."
 fi
 
 # See install.sh's verify_release_attestation() for the full rationale
