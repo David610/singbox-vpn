@@ -36,7 +36,7 @@ Source address verified per family (`ifconfig.me` through the forced-family prox
 | Direct IPv4, domain destination | Shorts 1/4, normal videos 0/2 |
 | Direct IPv6, domain destination | Shorts 1/4, normal videos 0/2 |
 | Direct IPv4, repeat (2 trials) | Shorts 2/8, normal videos 0/4 |
-| Direct IPv4, literal-IPv4 destination | Shorts 0/4 |
+| Direct IPv4, literal-IPv4 destination | Shorts 0/4 (stdout of `youtube_shorts_probe.py`, not saved as JSON) |
 | Direct IPv6, literal-IPv6 destination | Shorts 0/4 |
 
 Signature: `playabilityStatus: OK` with media requested but the clock stuck at
