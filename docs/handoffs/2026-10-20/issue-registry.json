@@ -12,7 +12,8 @@
    "regression_test": "apps/admin public_surface_tests::* (red before/green after)",
    "device_required": "no",
    "remaining_risk": "relies on the on-disk config matching the running process (doctor already checks drift)",
-   "evidence": "unit tests; full-suite run"
+   "evidence": "unit tests; full-suite run",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-38",
@@ -24,7 +25,8 @@
    "regression_test": "youtube_evidence_probe.py (live acceptance, not CI)",
    "device_required": "yes",
    "remaining_risk": "no same-run known-good control on this host",
-   "evidence": "docs/handoffs/2026-10-20/evidence/direct-*.json"
+   "evidence": "docs/handoffs/2026-10-20/evidence/direct-*.json",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-39",
@@ -36,7 +38,8 @@
    "regression_test": "deploy/lib/tests/test-ssh-harden.sh (mutation-checked)",
    "device_required": "no",
    "remaining_risk": "passwords still enabled until a key is supplied and proven",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-40",
@@ -48,7 +51,8 @@
    "regression_test": "acceptance-test.sh ufw checks",
    "device_required": "no",
    "remaining_risk": "provider/cloud firewall UNVERIFIED; IPv6 inbound untested",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-41",
@@ -60,7 +64,8 @@
    "regression_test": "deploy/lib/tests/test-service-users-preexisting-group.sh (red before)",
    "device_required": "no",
    "remaining_risk": "uninstall removes an adopted orphan group (intended)",
-   "evidence": "fresh install succeeded on Ubuntu 26.04 after fix"
+   "evidence": "fresh install succeeded on Ubuntu 26.04 after fix",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-42",
@@ -72,7 +77,8 @@
    "regression_test": "same test",
    "device_required": "no",
    "remaining_risk": "",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-43",
@@ -84,7 +90,8 @@
    "regression_test": "deploy/lib/tests/test-acceptance-summary-honesty.sh (red against original)",
    "device_required": "no",
    "remaining_risk": "Alma-only SELinux/firewalld checks still non-applicable on Ubuntu (now stated)",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-44",
@@ -96,7 +103,8 @@
    "regression_test": "deploy/lib/tests/test-nginx-location-headers.sh (red before)",
    "device_required": "no",
    "remaining_risk": "reaches existing nodes only via installer re-run (I-45)",
-   "evidence": "live header observed on staging"
+   "evidence": "live header observed on staging",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-45",
@@ -108,7 +116,8 @@
    "regression_test": "",
    "device_required": "no",
    "remaining_risk": "workaround: re-run install.sh (verified idempotent on staging)",
-   "evidence": ""
+   "evidence": "confirmed on published v1.3.1-rc.2: after update its vhost lacks the HSTS fix and subscription_acceptance reports 6 HSTS failures",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-46",
@@ -120,7 +129,8 @@
    "regression_test": "deploy/lib/tests/test_release_evidence.py (13 tests)",
    "device_required": "yes",
    "remaining_risk": "gate untested in a real release run; v1.0.0-v1.3.0 exempt by name",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-47",
@@ -132,7 +142,8 @@
    "regression_test": "deploy/lib/tests/test_shorts_health.py",
    "device_required": "no",
    "remaining_risk": "",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-48",
@@ -144,7 +155,8 @@
    "regression_test": "76/76 pass hermetically on staging",
    "device_required": "no",
    "remaining_risk": "",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-49",
@@ -156,7 +168,8 @@
    "regression_test": "",
    "device_required": "no",
    "remaining_risk": "weak provenance for staging/dev installs",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-50",
@@ -168,7 +181,8 @@
    "regression_test": "",
    "device_required": "no",
    "remaining_risk": "",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-52",
@@ -180,7 +194,34 @@
    "regression_test": "deploy/lib/tests/test-isolation-ufw-readonly.sh (red before)",
    "device_required": "no",
    "remaining_risk": "prebuilt-release update path was not exercised",
-   "evidence": "found while running the update lifecycle on staging"
+   "evidence": "found while running the update lifecycle on staging",
+   "supersedes_audit_entry": false
+  },
+  {
+   "id": "I-31",
+   "severity": "high",
+   "component": "update.sh own-address backfill",
+   "state": "SERVER_VERIFIED",
+   "title": "update.sh did not record public_ipv4/public_ipv6: after v1.3.0 -> v1.3.1-rc.2 tunnel users could reach the node's own services (doctor: 'C-16: no own-public-address deny rule')",
+   "fix": "deploy/lib/own-address.sh shared by install.sh/update.sh; update_backfill_own_address before every render",
+   "regression_test": "deploy/lib/tests/test-update-backfills-own-address.sh (red before)",
+   "device_required": "no",
+   "remaining_risk": "published artifacts still contain the defect until a corrected release is cut",
+   "evidence": "reproduced on published artifacts; fixed updater (--repair) on staging: keys written, C-16 OK, own-address reject rule rendered, doctor --protocol rc 0",
+   "supersedes_audit_entry": true
+  },
+  {
+   "id": "I-53",
+   "severity": "low",
+   "component": "tests",
+   "state": "UNVERIFIED",
+   "title": "intermittent single failures in the hermetic shell suite (test-install-manifest-idempotency once, test-uninstall-hardening once) not reproduced in 3 full runs and 24 isolated runs",
+   "fix": "runner now prints failing test output to catch the next occurrence",
+   "regression_test": "",
+   "device_required": "no",
+   "remaining_risk": "cause unknown; possibly concurrent host load",
+   "evidence": "",
+   "supersedes_audit_entry": false
   },
   {
    "id": "I-51",
@@ -192,7 +233,8 @@
    "regression_test": "",
    "device_required": "yes",
    "remaining_risk": "trigger on the owner's iPhone unconfirmed",
-   "evidence": ""
+   "evidence": "",
+   "supersedes_audit_entry": false
   }
  ],
  "carried": [
@@ -524,17 +566,6 @@
    "audit_status": "open",
    "fix": "",
    "note": "listed so the gap is explicit",
-   "source": "docs/audits/2026-10-15/issues.json (not re-verified this session)"
-  },
-  {
-   "id": "I-31",
-   "severity": "high",
-   "component": "singbox-vpn",
-   "state": "CONFIRMED_OPEN",
-   "title": "update.sh does not backfill public_ipv4/public_ipv6: a host updated from rc.1 to rc.2 keeps the tunnel-to-own-services exposure (I-15) until install.sh is re-run",
-   "audit_status": "open",
-   "fix": "",
-   "note": "rc2 R3, published artifacts: after update.sh --version v1.3.1-rc.2 deployment.toml still had no public_ipv4/6, doctor warned 'C-16: no own-public-address deny rule', and a tunnel user read the node's SSH banner. Re-running the release's install.sh (in-place repair) backfilled both keys, doctor went to 0 WARN and the probe was refused. Suggested: have update.sh run the same backfill, or document the repair step in the upgrade notes.",
    "source": "docs/audits/2026-10-15/issues.json (not re-verified this session)"
   },
   {

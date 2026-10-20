@@ -1,0 +1,220 @@
+{
+ "schema": 1,
+ "utc": "2026-10-20T10:48:00+00:00",
+ "evidence_class": "server-verified-loopback-client",
+ "public_host": "fin1.xn----8sba1cvaif4e.com",
+ "passed": 36,
+ "failed": 6,
+ "results": [
+  {
+   "check": "hiddify: HTTP 200 over verified TLS",
+   "pass": true,
+   "detail": "status=200"
+  },
+  {
+   "check": "hiddify: Cache-Control no-store",
+   "pass": true,
+   "detail": "no-store"
+  },
+  {
+   "check": "hiddify: X-Content-Type-Options nosniff",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "hiddify: HSTS present",
+   "pass": false,
+   "detail": ""
+  },
+  {
+   "check": "uri: HTTP 200 over verified TLS",
+   "pass": true,
+   "detail": "status=200"
+  },
+  {
+   "check": "uri: Cache-Control no-store",
+   "pass": true,
+   "detail": "no-store"
+  },
+  {
+   "check": "uri: X-Content-Type-Options nosniff",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "uri: HSTS present",
+   "pass": false,
+   "detail": ""
+  },
+  {
+   "check": "uri-base64: HTTP 200 over verified TLS",
+   "pass": true,
+   "detail": "status=200"
+  },
+  {
+   "check": "uri-base64: Cache-Control no-store",
+   "pass": true,
+   "detail": "no-store"
+  },
+  {
+   "check": "uri-base64: X-Content-Type-Options nosniff",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "uri-base64: HSTS present",
+   "pass": false,
+   "detail": ""
+  },
+  {
+   "check": "singbox: HTTP 200 over verified TLS",
+   "pass": true,
+   "detail": "status=200"
+  },
+  {
+   "check": "singbox: Cache-Control no-store",
+   "pass": true,
+   "detail": "no-store"
+  },
+  {
+   "check": "singbox: X-Content-Type-Options nosniff",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "singbox: HSTS present",
+   "pass": false,
+   "detail": ""
+  },
+  {
+   "check": "singbox-hiddify-pinned: HTTP 200 over verified TLS",
+   "pass": true,
+   "detail": "status=200"
+  },
+  {
+   "check": "singbox-hiddify-pinned: Cache-Control no-store",
+   "pass": true,
+   "detail": "no-store"
+  },
+  {
+   "check": "singbox-hiddify-pinned: X-Content-Type-Options nosniff",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "singbox-hiddify-pinned: HSTS present",
+   "pass": false,
+   "detail": ""
+  },
+  {
+   "check": "default: HTTP 200 over verified TLS",
+   "pass": true,
+   "detail": "status=200"
+  },
+  {
+   "check": "default: Cache-Control no-store",
+   "pass": true,
+   "detail": "no-store"
+  },
+  {
+   "check": "default: X-Content-Type-Options nosniff",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "default: HSTS present",
+   "pass": false,
+   "detail": ""
+  },
+  {
+   "check": "uri: exactly one vless and one hysteria2 link",
+   "pass": true,
+   "detail": "hysteria2,vless"
+  },
+  {
+   "check": "uri vless: host is the declared public host",
+   "pass": true,
+   "detail": "fin1.xn----8sba1cvaif4e.com"
+  },
+  {
+   "check": "uri vless: REALITY params present (pbk,sid,sni,flow)",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "uri hysteria2: host is the declared public host",
+   "pass": true,
+   "detail": "fin1.xn----8sba1cvaif4e.com"
+  },
+  {
+   "check": "uri hysteria2: sni equals public host, verification on, salamander obfs",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "uri-base64: decodes to the same links",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "singbox: outbounds Reality/Hysteria2 point at the declared host",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "singbox: Hysteria2 SNI = public host, certificate verification on",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "singbox-hiddify-pinned: outbounds Reality point at the declared host",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "singbox-hiddify-pinned: no Hysteria2 outbound (single pinned route)",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "default: outbounds Reality/Hysteria2 point at the declared host",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "default: Hysteria2 SNI = public host, certificate verification on",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "default format equals format=singbox",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "invalid token is rejected (404)",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "empty token path is rejected",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "singbox: REAL sing-box client over Reality carries traffic",
+   "pass": true,
+   "detail": "egress=62.238.46.190"
+  },
+  {
+   "check": "singbox: REAL sing-box client over Hysteria2 carries traffic",
+   "pass": true,
+   "detail": "egress=62.238.46.190"
+  },
+  {
+   "check": "singbox-hiddify-pinned: REAL sing-box client over Reality carries traffic",
+   "pass": true,
+   "detail": "egress=62.238.46.190"
+  }
+ ]
+}

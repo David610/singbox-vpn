@@ -57,7 +57,7 @@ NEW = [
     n("I-45", "medium", "update.sh", "CONFIRMED_OPEN",
       "update.sh never re-renders the nginx vhost, so template-only fixes do not reach deployed nodes",
       "design: transactional vhost re-render with nginx -t + rollback in update.sh", "", "no",
-      "workaround: re-run install.sh (verified idempotent on staging)"),
+      "workaround: re-run install.sh (verified idempotent on staging)", "confirmed on published v1.3.1-rc.2: after update its vhost lacks the HSTS fix and subscription_acceptance reports 6 HSTS failures"),
     n("I-46", "high", "release gate", "FIXED_IN_BRANCH",
       "stable release gate accepted a text 'Device acceptance: PASS' although the device matrix was waived",
       "deploy/lib/release_evidence.py levels CODE/SERVER/DEVICE/PRODUCTION; wired into release.yml for new stable tags",
@@ -78,6 +78,15 @@ NEW = [
       "the updater's test-phase guard recorded the doctor's read-only `ufw status` as a refused host-control attempt, so --dev-rebuild could never pass its test phase on a ufw host",
       "allow ufw:status|version in deploy/lib/test-isolation.sh", "deploy/lib/tests/test-isolation-ufw-readonly.sh (red before)", "no",
       "prebuilt-release update path was not exercised", "found while running the update lifecycle on staging"),
+    n("I-31", "high", "update.sh own-address backfill", "SERVER_VERIFIED",
+      "update.sh did not record public_ipv4/public_ipv6: after v1.3.0 -> v1.3.1-rc.2 tunnel users could reach the node's own services (doctor: 'C-16: no own-public-address deny rule')",
+      "deploy/lib/own-address.sh shared by install.sh/update.sh; update_backfill_own_address before every render",
+      "deploy/lib/tests/test-update-backfills-own-address.sh (red before)", "no",
+      "published artifacts still contain the defect until a corrected release is cut",
+      "reproduced on published artifacts; fixed updater (--repair) on staging: keys written, C-16 OK, own-address reject rule rendered, doctor --protocol rc 0"),
+    n("I-53", "low", "tests", "UNVERIFIED",
+      "intermittent single failures in the hermetic shell suite (test-install-manifest-idempotency once, test-uninstall-hardening once) not reproduced in 3 full runs and 24 isolated runs",
+      "runner now prints failing test output to catch the next occurrence", "", "no", "cause unknown; possibly concurrent host load"),
     n("I-51", "high", "Hiddify iOS (client)", "UNVERIFIED",
       "profile JSON missing from Library/Caches/Working/configs (carried as I-08); upstream hiddify-app#2372 open, no fix",
       "upstream proposal in docs/clients/HIDDIFY_IOS.md; server cannot fix", "", "yes",
@@ -93,6 +102,10 @@ def main():
     carried = [dict(id=i["id"], severity=i["severity"], component=i.get("repo", ""), state=CARRY.get(i["status"], "UNVERIFIED"),
                     title=i["title"], audit_status=i["status"], fix=i.get("fix", ""), note=i.get("note", ""),
                     source="docs/audits/2026-10-15/issues.json (not re-verified this session)") for i in items]
+    newids = {x["id"] for x in NEW}
+    for x in NEW:
+        x["supersedes_audit_entry"] = x["id"] in {c["id"] for c in carried}
+    carried = [c for c in carried if c["id"] not in newids]
     reg = {"schema_version": 1, "generated_for": "2026-10-20 staging remediation", "new": NEW, "carried": carried}
     json.dump(reg, open(OUT + ".json", "w"), indent=1)
     md = ["# Issue registry (generated from issue-registry.json — do not edit by hand)\n",

@@ -1,0 +1,10 @@
+46325abe5e151b7a /etc/vpn/deployment.toml
+cbf64ebc54ea4878 /etc/vpn/compat/sing-box/config.json
+906b52b3ac88e493 /etc/vpn/compat/users/users.json
+7d68ba4f7fd030eb /etc/vpn/compat/reality/private.key
+e0a6c47fd63cbc3c /etc/vpn/compat/reality/short_id.txt
+dc6c3e5e4120be2b /etc/vpn/compat/hysteria/cert.pem
+4a334ee1bca52bc3 /etc/nginx/conf.d/vpn-subscription.conf
+efe47e419920ca7d bin/vpn-admin
+cab90b4e9083e50b bin/vpn-subscription-svc
+9334a1c1fe972349 bin/sing-box

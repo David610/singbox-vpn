@@ -21,6 +21,8 @@ States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFI
 | I-49 | low | installer release identity | CONFIRMED_OPEN | local-tree installs are recorded as channel 'main' with a source-tree digest and no git commit | - | no | weak provenance for staging/dev installs |
 | I-50 | low | tests | CONFIRMED_OPEN | root-run Rust tests create system groups vpn-subscription/sing-box and never remove them | - | no | - |
 | I-52 | high | update.sh --dev-rebuild / test isolation | FIXED_IN_BRANCH | the updater's test-phase guard recorded the doctor's read-only `ufw status` as a refused host-control attempt, so --dev-rebuild could never pass its test phase on a ufw host | deploy/lib/tests/test-isolation-ufw-readonly.sh (red before) | no | prebuilt-release update path was not exercised |
+| I-31 | high | update.sh own-address backfill | SERVER_VERIFIED | update.sh did not record public_ipv4/public_ipv6: after v1.3.0 -> v1.3.1-rc.2 tunnel users could reach the node's own services (doctor: 'C-16: no own-public-address deny rule') | deploy/lib/tests/test-update-backfills-own-address.sh (red before) | no | published artifacts still contain the defect until a corrected release is cut |
+| I-53 | low | tests | UNVERIFIED | intermittent single failures in the hermetic shell suite (test-install-manifest-idempotency once, test-uninstall-hardening once) not reproduced in 3 full runs and 24 isolated runs | - | no | cause unknown; possibly concurrent host load |
 | I-51 | high | Hiddify iOS (client) | UNVERIFIED | profile JSON missing from Library/Caches/Working/configs (carried as I-08); upstream hiddify-app#2372 open, no fix | - | yes | trigger on the owner's iPhone unconfirmed |
 
 ## Carried from the 2026-10-15 audit (not re-verified unless listed above)
@@ -57,7 +59,6 @@ States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFI
 | I-28 | medium | blocked | BLOCKED | Not qualified: no physical-device evidence examined; PR #47 (iOS PacketTunnel) open |
 | I-29 | low | informational | UNVERIFIED | 10 pre-existing eslint warnings |
 | I-30 | medium | open | CONFIRMED_OPEN | Interrupted-deployment recovery, disk/memory pressure, DNS-leak, IPv6-leak, kill-switch, token-entropy, secret-logging a |
-| I-31 | high | open | CONFIRMED_OPEN | update.sh does not backfill public_ipv4/public_ipv6: a host updated from rc.1 to rc.2 keeps the tunnel-to-own-services e |
 | I-32 | medium | fixed-on-main | UNVERIFIED | v1.3.1-rc.1's updater rollback fails ('UPDATE FAILED - ROLLBACK ALSO FAILED') when sing-box restarts are close together: |
 | I-33 | low | open | CONFIRMED_OPEN | The installer downloads its pinned cosign (141 MB) twice, once in the bootstrap and once in install.sh, each with a 300  |
 | I-34 | low | open | CONFIRMED_OPEN | After changing [hysteria2] listen_port and running vpn render-config, vpn-subscription keeps advertising the old port un |

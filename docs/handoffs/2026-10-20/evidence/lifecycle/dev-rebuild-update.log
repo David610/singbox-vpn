@@ -1,0 +1,19 @@
+[10:02:56] baseline: doctor rc=0 FAILS=0
+[10:02:56] sync source into /opt/singbox-vpn (persistent tree)
+[10:02:56] === TEST 1: injected failure after_switch -> expect automatic rollback
+[10:09:33] update exit code with injected failure: 0 (must be nonzero)
+[10:09:33] INJECTION FIRED: NO -> TEST 1 INVALID (update stopped earlier)
+[10:09:33] ROLLBACK LOGGED: no
+[10:09:33] state after rollback: IDENTICAL to baseline
+[10:09:34] health after rollback: doctor rc=0 FAILS=0
+test user_create_reload_failure_restores_previous_working_config ... ok
+test relay_backup_restores_onto_the_same_relay_and_keeps_its_restrictions ... ok
+test restore_refuses_a_backup_from_another_role_or_node_and_changes_nothing ... ok
+test authorization::tests::restart_view_never_restores_expired_state ... ok
+[10:09:34] === TEST 2: real dev-rebuild update
+[10:15:28] update exit code: 0 (must be 0)
+[10:15:28] COMMIT PHASE REACHED: yes
+[10:15:28] state after update: IDENTICAL to baseline
+[10:15:29] health after update: doctor rc=0 FAILS=0
+[10:15:30] doctor --protocol --require-protocol rc=0
+[10:15:30] DONE

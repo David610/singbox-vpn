@@ -83,3 +83,23 @@ standalone staging install cannot be accepted for Shorts.
 4. Real iPhone acceptance (Hiddify) remains UNVERIFIED.
 
 See `issue-registry.md (and issue-registry.json)` for the consolidated issue states.
+
+## Lifecycle results on the staging host (server verified, 2026-10-20)
+Logs: `evidence/lifecycle/`. Hashes are 16-hex prefixes; no secrets are stored.
+
+| Test | Result |
+|---|---|
+| Fresh install of the branch (Ubuntu 26.04, untested OS) | PASS on 2nd attempt; 1st attempt failed on I-41 and rolled itself back cleanly |
+| Idempotent re-install over a live node | PASS: config, users, REALITY keys, certificate and subscription output byte-identical; HSTS fix applied |
+| `uninstall.sh --yes` | PASS: no units, `/etc/vpn`, accounts/groups or packages left; ufw restored to inactive |
+| Published v1.3.0 install via checksum + attestation-verified bootstrap | PASS (about 1 minute) |
+| Update v1.3.0 -> v1.3.1-rc.2 with an **injected failure after the switch** | PASS: injection fired, exit 1, "PREVIOUS RELEASE RESTORED AND VERIFIED", binaries/config/users/keys/cert/nginx identical, doctor clean |
+| Real update v1.3.0 -> v1.3.1-rc.2 | PASS: credentials preserved, doctor `FAILS=0`, `doctor --protocol --require-protocol` rc 0 |
+| I-31 after that update (published artifacts) | **Reproduced**: no `public_ipv4/6`, doctor warns C-16 |
+| Branch `update.sh --repair` on that node | PASS: keys backfilled, C-16 OK, own-address reject rule rendered, protocol self-test rc 0 |
+| `subscription_acceptance.py` on the published rc.2 install | 36/42: only the 6 HSTS checks fail (I-44 not in rc.2; I-45 means update does not fix it) |
+| Dev-rebuild update | PASS after fixing I-52 (ufw guard) |
+| First "rollback" run | **Retracted**: it never reached the switch (tests failed earlier) so it proved nothing; the harness now requires proof the injection fired |
+| Reboot test | **UNVERIFIED**: rebooting would terminate this session's host; needs an owner-scheduled reboot |
+| Interrupted update (kill mid-transaction) | UNVERIFIED |
+| IPv6 inbound, external reachability, provider firewall | UNVERIFIED (nothing outside this host was available) |

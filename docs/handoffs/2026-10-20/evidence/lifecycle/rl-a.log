@@ -1,0 +1,7 @@
+[10:27:52] uninstall dev install
+[10:28:10] uninstall rc=0
+[10:28:10] residue: units=0 etc_vpn=no groups=0 ufw=Status: inactive
+install.sh: OK
+[10:28:11] install pinned v1.3.0
+[10:29:15] install rc=0
+[10:29:15] DONE-A
