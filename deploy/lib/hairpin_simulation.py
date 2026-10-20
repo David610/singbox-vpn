@@ -62,7 +62,7 @@ ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(sys.argv[1], 
 seen = {"sni": None}
 def cb(sock, name, c): seen["sni"] = name
 ctx.sni_callback = cb
-s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind((sys.argv[3], 443)); s.listen(64)
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind((sys.argv[3], 9443)); s.listen(64)
 log = open(sys.argv[4], "a", buffering=1)
 while True:
     c, addr = s.accept()
@@ -80,6 +80,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vpn-admin", default="/usr/local/bin/vpn-admin")
     ap.add_argument("--sing-box", default="/usr/local/bin/sing-box")
+    ap.add_argument("--mutate", choices=["none", "direct-route", "fallback"], default="none",
+                    help="self-test: break E's rendered config on purpose; the harness MUST then fail")
     ap.add_argument("--out")
     a = ap.parse_args()
     if os.geteuid() != 0:
@@ -107,6 +109,7 @@ def main():
         assert sh(f"ip netns add {NS}").returncode == 0, "cannot create netns"
         sh(ns("ip link set lo up"))
         sh(ns("ip link add sim0 type dummy")); sh(ns("ip link set sim0 up"))
+        sh(ns("ip route add default dev sim0"))           # sing-box wants a default interface; nothing can leave the namespace
         for ip in IPS.values():
             sh(ns(f"ip addr add {ip}/32 dev sim0"))
         # stub systemctl: the CLI may only believe a unit exists, never touch a real one
@@ -130,7 +133,7 @@ state_dir = "{W}/{n}/state"
 singbox_binary = "{a.sing_box}"
 
 [reality]
-listen_port = 443
+listen_port = {443 if n == "T" else 8444}
 handshake_server = "www.example.com"
 handshake_port = 443
 
@@ -158,7 +161,7 @@ public_port = 8443
         sid = {n: open(f"{W}/{n}/state/reality/short_id.txt").read().strip() for n in ("T", "E")}
         # the REAL hairpin command (uuid on stdin, never argv)
         r = admin("E", "google-egress-hairpin", "set", "--relay-host", IPS["T"], "--relay-port", "443", "--relay-server-name", "www.example.com",
-                  "--relay-reality-public-key", pub["T"], "--relay-reality-short-id", sid["T"], "--uuid-stdin", stdin=t_uuid + "\n")
+                  f"--relay-reality-public-key={pub['T']}", "--relay-reality-short-id", sid["T"], "--uuid-stdin", stdin=t_uuid + "\n")
         rec("vpn-admin google-egress-hairpin set accepts the target and renders", r.returncode == 0, (r.stderr or r.stdout)[-160:].replace(t_uuid, "<uuid>"))
         if r.returncode != 0:
             raise SystemExit(1)
@@ -177,6 +180,15 @@ public_port = 8443
             json.dump(c, open(f"{W}/{n}.run.json", "w"))
             return c
         ct, ce = patch("T"), patch("E")
+        if a.mutate != "none":
+            hp0 = [o for o in ce["outbounds"] if o.get("type") == "vless"][0]["tag"]
+            for r_ in ce["route"]["rules"]:
+                if r_.get("outbound") == hp0:
+                    r_["outbound"] = "direct" if a.mutate == "direct-route" else "fb"
+            if a.mutate == "fallback":
+                ce["outbounds"].append({"type": "urltest", "tag": "fb", "outbounds": [hp0, "direct"], "url": f"http://{IPS['D']}:9080/", "interval": "1s", "tolerance": 1})
+            json.dump(ce, open(f"{W}/E.run.json", "w"))
+            print(f"MUTATION ACTIVE: {a.mutate}")
         hp = [o for o in ce["outbounds"] if o.get("type") == "vless"]
         rec("E has exactly one hairpin outbound pointing at T", len(hp) == 1 and hp[0]["server"] == IPS["T"], f"{len(hp)} vless outbound(s)")
         rules = ce["route"]["rules"]
@@ -190,11 +202,13 @@ public_port = 8443
         open(f"{W}/dest.py", "w").write(DEST_SRC)
         destlog = f"{W}/dest.log"
         spawn(f"python3 {W}/dest.py {W}/c.pem {W}/k.pem {IPS['D']} {destlog}")
+        os.makedirs(f"{W}/www", exist_ok=True)
+        spawn(f"python3 -m http.server 9080 --bind {IPS['D']} --directory {W}/www")      # plain-HTTP probe target for the mutation
         pT = spawn(f"{a.sing_box} run -c {W}/T.run.json", f"{W}/T.log")
         pE = spawn(f"{a.sing_box} run -c {W}/E.run.json", f"{W}/E.log")
         cport = 1080
         client = {"log": {"level": "error"}, "inbounds": [{"type": "mixed", "listen": "127.0.0.1", "listen_port": cport}],
-                  "outbounds": [{"type": "vless", "tag": "p", "server": IPS["E"], "server_port": 443, "uuid": c_uuid, "flow": "xtls-rprx-vision",
+                  "outbounds": [{"type": "vless", "tag": "p", "server": IPS["E"], "server_port": 8444, "uuid": c_uuid, "flow": "xtls-rprx-vision",
                                  "inet4_bind_address": IPS["C"],
                                  "tls": {"enabled": True, "server_name": "www.example.com", "utls": {"enabled": True, "fingerprint": "chrome"},
                                          "reality": {"enabled": True, "public_key": pub["E"], "short_id": sid["E"]}}}],
@@ -203,10 +217,19 @@ public_port = 8443
         spawn(f"{a.sing_box} run -c {W}/C.json", f"{W}/C.log")
         time.sleep(4)
 
+        # the hairpin leg on its own: a plain client using E's exact hairpin outbound, straight to T
+        leg = {"log": {"level": "error"}, "inbounds": [{"type": "mixed", "listen": "127.0.0.1", "listen_port": 1081}],
+               "outbounds": [dict(hp[0], tag="leg")], "route": {"final": "leg"}}
+        json.dump(leg, open(f"{W}/L.json", "w"))
+        spawn(f"{a.sing_box} run -c {W}/L.json", f"{W}/L.log")
+        time.sleep(2)
+        r = sh(ns(f"curl -s -k -m 12 -o /dev/null -w %{{http_code}} --resolve leg.example.org:9443:{IPS['D']} -x socks5://127.0.0.1:1081 https://leg.example.org:9443/"))
+        rec("hairpin leg alone: E's exact hairpin outbound reaches the destination through T", r.stdout.strip() == "200", f"http {r.stdout.strip() or 'none'}")
+
         def request(sni):
             """TLS request to D carrying SNI `sni` through client -> E. Returns (curl ok, D's log lines added)."""
             before = sum(1 for _ in open(destlog)) if os.path.exists(destlog) else 0
-            r = sh(ns(f"curl -s -k -m 12 -o /dev/null -w %{{http_code}} --resolve {sni}:443:{IPS['D']} -x socks5://127.0.0.1:{cport} https://{sni}/"))
+            r = sh(ns(f"curl -s -k -m 12 -o /dev/null -w %{{http_code}} --resolve {sni}:9443:{IPS['D']} -x socks5://127.0.0.1:{cport} https://{sni}:9443/"))
             time.sleep(0.5)
             lines = [json.loads(l) for l in open(destlog)] if os.path.exists(destlog) else []
             return r.stdout.strip() == "200", [x for x in lines[before:] if x.get("sni") == sni]
@@ -223,7 +246,7 @@ public_port = 8443
 
         # fail-closed: the hairpin target dies
         kill(pT)
-        time.sleep(1.5)
+        time.sleep(4)          # long enough for a (mutated) urltest group to notice and switch
         ok, ev = request("www.youtube.com")
         rec("target DOWN: a Google request fails visibly", not ok, f"curl ok={ok}")
         rec("target DOWN: the destination NEVER sees E's address for a Google SNI (no direct fallback, INV-6)", not any(x["peer"] == IPS["E"] for x in ev), f"destination saw {[x['peer'] for x in ev] or 'nothing'}")
@@ -251,7 +274,10 @@ public_port = 8443
         for p in procs:
             kill(p)
         sh(f"ip netns del {NS} 2>/dev/null")
-        shutil.rmtree(W, ignore_errors=True)
+        if os.environ.get("HPSIM_KEEP"):
+            print("kept work dir:", W)
+        else:
+            shutil.rmtree(W, ignore_errors=True)
     failed = [r for r in results if not r["pass"]]
     doc = {"schema": 1, "evidence_class": "SIMULATED two-node (local netns, real vpn-admin renderer + real sing-box); proves routing/fail-closed only, NOT any real address's YouTube acceptance",
            "passed": len(results) - len(failed), "failed": len(failed), "results": results}

@@ -1,0 +1,118 @@
+{
+ "schema": 1,
+ "evidence_class": "SIMULATED two-node (local netns, real vpn-admin renderer + real sing-box); proves routing/fail-closed only, NOT any real address's YouTube acceptance",
+ "passed": 11,
+ "failed": 11,
+ "results": [
+  {
+   "check": "vpn-admin google-egress-hairpin set accepts the target and renders",
+   "pass": true,
+   "detail": " full restart (sing-box has no in-place reload), so all currently connected clients will be briefly disconnected (Hysteria2 clients can stall for up to ~30 s).\n"
+  },
+  {
+   "check": "E has exactly one hairpin outbound pointing at T",
+   "pass": true,
+   "detail": "1 vless outbound(s)"
+  },
+  {
+   "check": "exactly one route rule sends the Google domain set to the hairpin",
+   "pass": false,
+   "detail": "0 rule(s)"
+  },
+  {
+   "check": "route.final stays direct (non-Google traffic is not hairpinned)",
+   "pass": true,
+   "detail": "direct"
+  },
+  {
+   "check": "sing-box check accepts the patched T config",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "sing-box check accepts the patched E config",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "hairpin leg alone: E's exact hairpin outbound reaches the destination through T",
+   "pass": true,
+   "detail": "http 200"
+  },
+  {
+   "check": "Google-set SNI www.youtube.com exits via the hairpin target (T)",
+   "pass": false,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "Google-set SNI rr1---sn-abc.googlevideo.com exits via the hairpin target (T)",
+   "pass": false,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "Google-set SNI i.ytimg.com exits via the hairpin target (T)",
+   "pass": false,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "Google-set SNI www.gstatic.com exits via the hairpin target (T)",
+   "pass": false,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "Google-set SNI www.google.com exits via the hairpin target (T)",
+   "pass": false,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "Google-set SNI yt3.ggpht.com exits via the hairpin target (T)",
+   "pass": false,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "non-Google/lookalike SNI www.example.org exits directly from E, NOT the hairpin",
+   "pass": true,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "non-Google/lookalike SNI notgoogle.com exits directly from E, NOT the hairpin",
+   "pass": true,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "non-Google/lookalike SNI evilyoutube.com exits directly from E, NOT the hairpin",
+   "pass": true,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "non-Google/lookalike SNI google.com.evil.example exits directly from E, NOT the hairpin",
+   "pass": true,
+   "detail": "destination saw source 192.88.99.3"
+  },
+  {
+   "check": "target DOWN: a Google request fails visibly",
+   "pass": false,
+   "detail": "curl ok=True"
+  },
+  {
+   "check": "target DOWN: the destination NEVER sees E's address for a Google SNI (no direct fallback, INV-6)",
+   "pass": false,
+   "detail": "destination saw ['192.88.99.3']"
+  },
+  {
+   "check": "target DOWN: non-Google traffic is unaffected",
+   "pass": true,
+   "detail": ""
+  },
+  {
+   "check": "target back UP: Google requests resume through T",
+   "pass": false,
+   "detail": ""
+  },
+  {
+   "check": "wrong hairpin credential: Google request fails and never falls back to E's address",
+   "pass": false,
+   "detail": "curl ok=True"
+  }
+ ]
+}

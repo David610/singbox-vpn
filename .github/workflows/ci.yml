@@ -499,6 +499,21 @@ jobs:
           fi
           echo "all two-hop local system tests executed and passed"
 
+      - name: Simulated two-node Google hairpin (real vpn-admin renderer + real sing-box, netns)
+        env:
+          SING_BOX_BIN: /usr/local/bin/sing-box
+        run: |
+          set -euo pipefail
+          # clean run: 22 checks, all must pass (routing, whole domain set, lookalikes, fail-closed, recovery)
+          sudo env "PATH=$PATH" python3 -I deploy/lib/hairpin_simulation.py --vpn-admin "$PWD/target/release/vpn-admin" --sing-box "$SING_BOX_BIN"
+          # mutations MUST fail: a harness that cannot fail proves nothing (INV-1/INV-6)
+          for m in direct-route fallback; do
+            if sudo env "PATH=$PATH" python3 -I deploy/lib/hairpin_simulation.py --vpn-admin "$PWD/target/release/vpn-admin" --sing-box "$SING_BOX_BIN" --mutate "$m" >/dev/null 2>&1; then
+              echo "::error::hairpin simulation PASSED with the '$m' mutation: the test cannot detect a broken hairpin"
+              exit 1
+            fi
+          done
+
       # The reality_interop.rs suite above proves crate-level config
       # RENDERING is protocol-correct; it never runs `vpn-admin` itself. This
       # step closes that gap: it runs the actual `vpn-admin doctor --protocol`

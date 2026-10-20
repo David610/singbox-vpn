@@ -340,7 +340,8 @@ enum GoogleEgressHairpinCommands {
         relay_port: u16,
         #[arg(long)]
         relay_server_name: String,
-        #[arg(long)]
+        /// base64url, so it can start with '-': accept it as a value, not a flag
+        #[arg(long, allow_hyphen_values = true)]
         relay_reality_public_key: String,
         #[arg(long)]
         relay_reality_short_id: String,
@@ -11176,6 +11177,36 @@ mod public_surface_tests {
             declared(&[(false, 443), (true, 443), (false, 8388), (true, 8388)])
         );
         assert!(read_declared_inbounds(std::path::Path::new("/nonexistent/x.json")).is_none());
+    }
+
+    #[test]
+    fn hairpin_set_accepts_a_reality_public_key_that_starts_with_a_hyphen() {
+        // REALITY public keys are base64url (43 chars), so about 1 in 64 start with '-'.
+        // clap used to read such a key as an unknown flag ("unexpected argument '-A'").
+        use clap::Parser;
+        for key in [
+            "-ABCdefghijklmnopqrstuvwxyz0123456789_abcdef",
+            "_ABCdefghijklmnopqrstuvwxyz0123456789-abcdef",
+            "AbCdefghijklmnopqrstuvwxyz0123456789_abcdef-",
+        ] {
+            let parsed = Cli::try_parse_from([
+                "vpn-admin",
+                "google-egress-hairpin",
+                "set",
+                "--relay-host",
+                "192.0.2.10",
+                "--relay-port",
+                "443",
+                "--relay-server-name",
+                "www.example.com",
+                "--relay-reality-public-key",
+                key,
+                "--relay-reality-short-id",
+                "143b6f8d",
+                "--uuid-stdin",
+            ]);
+            assert!(parsed.is_ok(), "key {key:?} rejected: {:?}", parsed.err());
+        }
     }
 
     #[test]

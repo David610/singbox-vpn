@@ -21,6 +21,11 @@ logs, tickets or chat (INV-9). Do not give the user an expiry or a native lease 
 **Do not re-enable a provisioning agent on a node whose control plane is unreachable**
 (INV-10, the 2026-10-06 `ru1` incident) — check it in B-4 before anything else.
 
+> **CLI gotcha (I-61, fixed in the branch, present in every published release):** REALITY public keys
+> are base64url and start with `-` about 1 time in 64; older `vpn-admin` rejects
+> `--relay-reality-public-key -AbC...` with "unexpected argument". Always write it as
+> `--relay-reality-public-key=<key>`.
+
 ## B. Read-only inspection of a candidate target (after A1)
 All commands only read. Nothing restarts, renders, rotates or creates anything. Output
 may contain host details but no credentials (do not paste `users.json`, keys or tokens).

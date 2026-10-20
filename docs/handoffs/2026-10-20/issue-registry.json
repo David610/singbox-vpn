@@ -315,6 +315,32 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-61",
+   "severity": "medium",
+   "component": "vpn-admin google-egress-hairpin set",
+   "state": "FIXED_IN_BRANCH",
+   "title": "--relay-reality-public-key rejects any key starting with '-' (clap read it as a flag): ~1 in 64 valid REALITY keys; found when the hairpin simulation failed to set up",
+   "fix": "allow_hyphen_values on that argument; docs use the --opt=value form (works on every version)",
+   "regression_test": "apps/admin public_surface_tests::hairpin_set_accepts_a_reality_public_key_that_starts_with_a_hyphen (red before)",
+   "device_required": "no",
+   "remaining_risk": "published releases still carry the bug; use --relay-reality-public-key=<key>",
+   "evidence": "",
+   "supersedes_audit_entry": false
+  },
+  {
+   "id": "I-62",
+   "severity": "medium",
+   "component": "Google hairpin (system test)",
+   "state": "CI_VERIFIED",
+   "title": "no end-to-end test of the hairpin existed (only render-level tests)",
+   "fix": "deploy/lib/hairpin_simulation.py: real vpn-admin renderer + real sing-box in a throwaway netns; 22 checks (whole domain set via the target, lookalikes stay direct, target down fails closed with no direct fallback, recovery, wrong credential) and two mutations that must fail; wired into CI",
+   "regression_test": "evidence/hairpin/clean-22-of-22.json; mutation-*-must-fail.json",
+   "device_required": "yes",
+   "remaining_risk": "SIMULATED: proves routing and fail-closed only, nothing about any real address's YouTube acceptance (C1-C8 in HAIRPIN_TARGET_QUALIFICATION.md)",
+   "evidence": "",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-51",
    "severity": "high",
    "component": "Hiddify iOS (client)",
