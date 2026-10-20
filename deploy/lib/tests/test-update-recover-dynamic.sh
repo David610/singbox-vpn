@@ -10,12 +10,12 @@ if [ "${UPDATE_RECOVER_DYN_NS:-0}" != "1" ]; then
   for t in unshare flock python3; do command -v "$t" >/dev/null || { echo "FAIL: $t missing"; exit 1; }; done
   exec env UPDATE_RECOVER_DYN_NS=1 unshare --mount --propagation private bash "$0" "$@"
 fi
-REC="$(mktemp)"; trap 'rm -f "$REC"' EXIT
+REC="/run/update-recover-test.$$.out"; trap 'rm -f "$REC"' EXIT
 failures=0
 ok() { echo "ok: $*"; }
 bad() { echo "FAIL: $*"; failures=$((failures + 1)); }
 U="$REPO_ROOT/deploy/almalinux/update.sh"
-for d in /opt /etc/vpn /var/lib/singbox-vpn /run/lock /usr/local/bin; do mkdir -p "$d"; mount -t tmpfs tmpfs "$d"; done
+for d in /opt /etc/vpn /var/lib/singbox-vpn /run/lock /usr/local/bin /tmp; do mkdir -p "$d"; mount -t tmpfs tmpfs "$d"; done
 mkdir -p /etc/vpn/backups; printf 'schema_version = 2\nrole = "exit"\npublic_host = "x.example.com"\n' >/etc/vpn/deployment.toml
 MARK=/var/lib/singbox-vpn/update-transaction.json
 run() { bash "$U" --recover >$REC 2>&1; RC=$?; }
@@ -40,6 +40,11 @@ rm -f /opt/.singbox-vpn-update-staging.LinK99
 mkdir -p /opt/.singbox-vpn-prev-777; echo old >/opt/.singbox-vpn-prev-777/f
 run; { [ -f /opt/.singbox-vpn-prev-777/f ] && grep -q 'leaving /opt/.singbox-vpn-prev-777 untouched' $REC; } && ok "-prev- dir left untouched and reported" || bad "-prev- dir handling wrong"
 rm -rf /opt/.singbox-vpn-prev-777
+
+# --- 4b. leaked cosign dirs from OLD updaters are reported, never deleted
+mkdir -p /tmp/tmp.LEAK1; : >/tmp/tmp.LEAK1/cosign-linux-amd64; mkdir -p /tmp/tmp.OTHER; echo x >/tmp/tmp.OTHER/f
+run; { [ -f /tmp/tmp.LEAK1/cosign-linux-amd64 ] && [ -f /tmp/tmp.OTHER/f ] && grep -q 'leaked cosign download' "$REC"; } && ok "leaked cosign dir reported (not deleted); unrelated /tmp dirs untouched" || bad "cosign leak handling wrong"
+rm -rf /tmp/tmp.LEAK1 /tmp/tmp.OTHER
 
 # --- 5. liveness: a running updater (or ORPHANED child of a killed one) holds the update lock => refuse, delete nothing
 mkdir -p /opt/.singbox-vpn-update-staging.Live01/x

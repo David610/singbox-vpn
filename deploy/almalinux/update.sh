@@ -430,6 +430,11 @@ clear_stale_staging_dirs() {
   done
   shopt -u nullglob
   [ "$n" -eq 0 ] || log "removed $n stale update-staging director$([ "$n" -eq 1 ] && echo y || echo ies) left by a killed updater."
+  # Older updaters downloaded cosign (~135 MB) into a bare mktemp dir that was never removed. Report, never delete:
+  # /tmp is shared and a generic cleanup there is not ours to do.
+  local leaks=0 c
+  for c in /tmp/tmp.*/cosign-linux-*; do [ -f "$c" ] && leaks=$((leaks + 1)); done
+  [ "$leaks" -eq 0 ] || warn "found $leaks leaked cosign download director$([ "$leaks" -eq 1 ] && echo y || echo ies) under /tmp left by older updaters (about 135 MB each). They are safe to remove: rm -rf the /tmp/tmp.* directories that contain only cosign-linux-*."
 }
 
 # --recover: finish or undo a transaction whose updater process was killed (SIGKILL,

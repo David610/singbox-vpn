@@ -47,7 +47,10 @@ if verdict != "INVALID":
         need(kv.get("services_final") == "all-active" and kv.get("doctor_fails_final") == "0" and kv.get("protocol_rc_final") == "0", "unhealthy after the final update")
         need(kv.get("marker_final") == "no" and kv.get("stale_dirs_final") == "0", "marker/stale dirs after the final update")
         need(kv.get("idempotent_rc") == "0" and kv.get("idempotent_bins_same") == "yes", "re-running the update was not idempotent")
-        need(kv.get("tmp_leaks_delta") in ("0", "-1", "-2"), f"/tmp leaked {kv.get('tmp_leaks_delta')} directories")
+        # The cosign /tmp leak is a defect of OLDER updaters (fixed in the branch updater). It is informational when
+        # the old installed updater ran (the number is still recorded); it fails the stage for the branch updater.
+        if kv.get("updater") == "branch":
+            need(kv.get("tmp_leaks_delta") in ("0", "-1", "-2"), f"/tmp leaked {kv.get('tmp_leaks_delta')} directories")
         verdict = "PASS" if not reasons else "FAIL"
 else:
     reasons = [kv.get("reason", "")]
