@@ -171,6 +171,18 @@
    "evidence": ""
   },
   {
+   "id": "I-52",
+   "severity": "high",
+   "component": "update.sh --dev-rebuild / test isolation",
+   "state": "FIXED_IN_BRANCH",
+   "title": "the updater's test-phase guard recorded the doctor's read-only `ufw status` as a refused host-control attempt, so --dev-rebuild could never pass its test phase on a ufw host",
+   "fix": "allow ufw:status|version in deploy/lib/test-isolation.sh",
+   "regression_test": "deploy/lib/tests/test-isolation-ufw-readonly.sh (red before)",
+   "device_required": "no",
+   "remaining_risk": "prebuilt-release update path was not exercised",
+   "evidence": "found while running the update lifecycle on staging"
+  },
+  {
    "id": "I-51",
    "severity": "high",
    "component": "Hiddify iOS (client)",

@@ -20,6 +20,7 @@ States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFI
 | I-48 | low | tests | FIXED_IN_BRANCH | five shell tests read the live host (/etc/vpn, /opt, /var/lib, /usr/local/bin) and fail on any installed host | 76/76 pass hermetically on staging | no | - |
 | I-49 | low | installer release identity | CONFIRMED_OPEN | local-tree installs are recorded as channel 'main' with a source-tree digest and no git commit | - | no | weak provenance for staging/dev installs |
 | I-50 | low | tests | CONFIRMED_OPEN | root-run Rust tests create system groups vpn-subscription/sing-box and never remove them | - | no | - |
+| I-52 | high | update.sh --dev-rebuild / test isolation | FIXED_IN_BRANCH | the updater's test-phase guard recorded the doctor's read-only `ufw status` as a refused host-control attempt, so --dev-rebuild could never pass its test phase on a ufw host | deploy/lib/tests/test-isolation-ufw-readonly.sh (red before) | no | prebuilt-release update path was not exercised |
 | I-51 | high | Hiddify iOS (client) | UNVERIFIED | profile JSON missing from Library/Caches/Working/configs (carried as I-08); upstream hiddify-app#2372 open, no fix | - | yes | trigger on the owner's iPhone unconfirmed |
 
 ## Carried from the 2026-10-15 audit (not re-verified unless listed above)
