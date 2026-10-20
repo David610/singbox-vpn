@@ -132,7 +132,7 @@ if [ -n "$create_line" ]; then
 else
   fail "--production-listener did not create a user"
 fi
-exp="$(printf '%s\n' "$create_line" | grep -oE -- '--expires-at [0-9]+' | awk '{print $2}' || true)"
+exp="$(grep -oE -- '--expires-at [0-9]+' <<<"$create_line" | awk '{print $2}' || true)"
 if [ -n "$exp" ] && [ "$exp" -gt "$before" ] && [ "$exp" -le $((after + 1800 + 5)) ]; then
   ok "temporary user expires within the benchmark TTL (expires_at=$exp)"
 else

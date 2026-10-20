@@ -39,12 +39,12 @@ mkdir -p "$FIXTURE_SYSTEMD_DIR"
 
 echo "--- static: check_no_ambiguous_preexisting_residue() is called only on the fresh-install path, never for a recognized repair ---"
 preflight_body="$(sed -n '/^preflight_stage() {/,/^}/p' "$INSTALL_SH")"
-if echo "$preflight_body" | grep -A2 'else$' | grep -q 'check_no_ambiguous_preexisting_residue'; then
+if grep -A2 'else$' <<<"$preflight_body" | grep -q 'check_no_ambiguous_preexisting_residue'; then
   ok "check_no_ambiguous_preexisting_residue() is called in the 'no existing installation detected' branch"
 else
   fail "check_no_ambiguous_preexisting_residue() is not wired into preflight_stage()'s fresh-install branch"
 fi
-if echo "$preflight_body" | grep -B4 'check_no_ambiguous_preexisting_residue' | grep -q 'if existing_install_present; then'; then
+if grep -B4 'check_no_ambiguous_preexisting_residue' <<<"$preflight_body" | grep -q 'if existing_install_present; then'; then
   ok "the call site is gated behind the same existing_install_present() branch structure (never runs for a recognized repair)"
 else
   fail "could not confirm check_no_ambiguous_preexisting_residue() is gated on existing_install_present() being false"

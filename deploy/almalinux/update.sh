@@ -389,7 +389,7 @@ flock -x 200
 # ---------------------------------------------------------------------
 manifest_field() {
   grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$INSTALL_STATE_MANIFEST" 2>/dev/null \
-    | head -n1 | sed -E 's/.*"([^"]*)"$/\1/'
+    | head -n1 | sed -E 's/.*"([^"]*)"$/\1/' || true
 }
 CURRENT_VERSION=""
 CURRENT_REPO=""
@@ -709,7 +709,7 @@ else
   die "a production update requires an explicit target: --version vX.Y.Z, --latest, or --repair (reconcile the current release). See --help."
 fi
 
-echo "$TARGET_VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$' \
+grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$' <<<"$TARGET_VERSION" \
   || die "TARGET_VERSION '$TARGET_VERSION' does not look like a valid release tag (expected vX.Y.Z) — refusing to use it."
 
 if [ "$ALLOW_DOWNGRADE" -eq 1 ] && { [ "$RESOLVE_LATEST" -eq 1 ] || [ "$REPAIR" -eq 1 ]; }; then
@@ -782,7 +782,7 @@ download_verified_source_release() {
 
 download_verified_source_release "$TARGET_VERSION" "$STAGING_ROOT/singbox-vpn-src.tar.gz"
 tar -xzf "$STAGING_ROOT/singbox-vpn-src.tar.gz" -C "$STAGING_ROOT" || die "failed to extract downloaded source archive. Nothing live has been changed."
-STAGED_SRC_DIR="$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '*.tar.gz' | head -n1)"
+STAGED_SRC_DIR="$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '*.tar.gz' | head -n1 || true)"
 [ -n "$STAGED_SRC_DIR" ] && [ -x "$STAGED_SRC_DIR/deploy/almalinux/install.sh" ] \
   || die "downloaded release source for $TARGET_VERSION does not look like a valid singbox-vpn source tree. Nothing live has been changed."
 [ -f "$STAGED_SRC_DIR/deploy/lib/versions.env" ] \
@@ -1271,10 +1271,10 @@ case "$ARCH" in
   arm64) pinned_singbox_sha256="$TARGET_SINGBOX_SHA256_ARM64" ;;
 esac
 prior_manifest="$(cat "$INSTALL_STATE_MANIFEST" 2>/dev/null || echo '{}')"
-public_host="$(echo "$prior_manifest" | grep -o '"public_host"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')"
-subscription_host="$(echo "$prior_manifest" | grep -o '"subscription_host"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')"
-firewall_backend="$(echo "$prior_manifest" | grep -o '"firewall_backend"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')"
-os_family="$(echo "$prior_manifest" | grep -o '"os_family"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')"
+public_host="$(grep -o '"public_host"[[:space:]]*:[[:space:]]*"[^"]*"' <<<"$prior_manifest" | sed -E 's/.*"([^"]*)"$/\1/')"
+subscription_host="$(grep -o '"subscription_host"[[:space:]]*:[[:space:]]*"[^"]*"' <<<"$prior_manifest" | sed -E 's/.*"([^"]*)"$/\1/')"
+firewall_backend="$(grep -o '"firewall_backend"[[:space:]]*:[[:space:]]*"[^"]*"' <<<"$prior_manifest" | sed -E 's/.*"([^"]*)"$/\1/')"
+os_family="$(grep -o '"os_family"[[:space:]]*:[[:space:]]*"[^"]*"' <<<"$prior_manifest" | sed -E 's/.*"([^"]*)"$/\1/')"
 cat > "$INSTALL_STATE_MANIFEST.tmp" <<EOF
 {
   "singbox_vpn_version": "$TARGET_VERSION",

@@ -333,7 +333,7 @@ capture_cert_for_reuse() {
   [ "$CERT_REUSE_READY" -eq 0 ] || return 0
   local meta=""
   if meta="$(ssh_run '
-    host="$(sed -nE "s/^public_host[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" /etc/vpn/deployment.toml 2>/dev/null | head -1)"
+    host="$(sed -nE "s/^public_host[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" /etc/vpn/deployment.toml 2>/dev/null | head -1 || true)"
     case "$host" in ""|*[!A-Za-z0-9.-]*) exit 2 ;; esac
     [ -s "/etc/letsencrypt/live/$host/fullchain.pem" ] || exit 3
     [ -s "/etc/letsencrypt/live/$host/privkey.pem" ] || exit 3
@@ -415,7 +415,7 @@ exit \"\$rc\""
   out="$(cat "$log_file" 2>/dev/null || true)"
   rm -f "$log_file"
 
-  sentinel_line="$(printf '%s\n' "$out" | grep -F "$sentinel" | tail -1 || true)"
+  sentinel_line="$(grep -F "$sentinel" <<<"$out" | tail -1 || true)"
   if [[ "$sentinel_line" =~ rc=([0-9]+) ]]; then
     sentinel_present=1
     sentinel_rc="${BASH_REMATCH[1]}"
@@ -508,7 +508,7 @@ check_residue_vs_baseline() {
   new_residue=""
   while IFS='=' read -r field after_val; do
     [ -n "$field" ] || continue
-    baseline_val="$(printf '%s\n' "$BASELINE" | awk -F= -v k="$field" '$1==k{print $2; exit}')"
+    baseline_val="$(printf '%s\n' "$BASELINE" | awk -F= -v k="$field" '$1==k{print $2; exit}' || true)"
     baseline_val="${baseline_val:-0}"
     if [[ "$after_val" =~ ^[0-9]+$ ]] && [[ "$baseline_val" =~ ^[0-9]+$ ]] && [ "$after_val" -gt "$baseline_val" ]; then
       new_residue="$new_residue $field(baseline=$baseline_val,after=$after_val)"
@@ -800,7 +800,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
 
   section "11. REALITY authentication proof (vpn-admin doctor --protocol --require-protocol)"
   if PROTOCOL_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol' 2>&1)"; then protocol_rc=0; else protocol_rc=$?; fi
-  if [ "$protocol_rc" -eq 0 ] && printf '%s' "$PROTOCOL_OUT" | grep -q 'completed a full handshake'; then
+  if [ "$protocol_rc" -eq 0 ] && grep -q 'completed a full handshake' <<<"$PROTOCOL_OUT"; then
     pass "REALITY handshake self-test PASSED (real sing-box client, live public_key/short_id, application bytes end-to-end)"
   else
     fail_required "REALITY handshake self-test (doctor --protocol --require-protocol)" "(exit=$protocol_rc; see remote output above)"
@@ -821,9 +821,9 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # below was always empty and this stage FAILed on every real,
   # successful benchmark run — reproduced directly against real
   # benchmark output, not a guess.
-  hy_line="$(printf '%s\n' "$hy_block" | grep -m1 'throughput (Mbps)' || true)"
-  hy_min_mbps="$(printf '%s' "$hy_line" | grep -oE 'min=[0-9.]+' | cut -d= -f2 || true)"
-  if [ "$hy_rc" -eq 0 ] && ! printf '%s' "$hy_block" | grep -qE 'SKIPPED|FAILED|unavailable' \
+  hy_line="$(grep -m1 'throughput (Mbps)' <<<"$hy_block" || true)"
+  hy_min_mbps="$(grep -oE 'min=[0-9.]+' <<<"$hy_line" | cut -d= -f2 || true)"
+  if [ "$hy_rc" -eq 0 ] && ! grep -qE 'SKIPPED|FAILED|unavailable' <<<"$hy_block" \
     && [ -n "$hy_min_mbps" ] && awk -v n="$hy_min_mbps" 'BEGIN{exit !(n>0)}'; then
     pass "Hysteria2 real handshake+transfer proof (throughput: $hy_line Mbps)"
   else
@@ -951,14 +951,14 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
 
   if [ "$failed_state_ready" -eq 1 ]; then
     if DOCTOR_DURING_FAILURE_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor' 2>&1)"; then doctor_during_failure_rc=0; else doctor_during_failure_rc=$?; fi
-    if [ "$doctor_during_failure_rc" -ne 0 ] && printf '%s' "$DOCTOR_DURING_FAILURE_OUT" | grep -qi 'sing-box.service is in a FAILED state'; then
+    if [ "$doctor_during_failure_rc" -ne 0 ] && grep -qi 'sing-box.service is in a FAILED state' <<<"$DOCTOR_DURING_FAILURE_OUT"; then
       pass "vpn-admin doctor correctly reports sing-box.service as FAILED (distinct from merely 'not active')"
     else
       doctor_during_failure_excerpt="$(printf '%s\n' "$DOCTOR_DURING_FAILURE_OUT" | tail -20)"
       fail_required "vpn-admin doctor did not report the FAILED sing-box.service" "(exit=$doctor_during_failure_rc; output: ${doctor_during_failure_excerpt:-none})"
     fi
     STATUS_DURING_FAILURE_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin status' 2>&1 || true)"
-    if printf '%s' "$STATUS_DURING_FAILURE_OUT" | grep -qi 'sing-box.*failed'; then pass "vpn-admin status correctly reports sing-box as failed"; else fail_required "vpn-admin status did not report sing-box as failed"; fi
+    if grep -qi 'sing-box.*failed' <<<"$STATUS_DURING_FAILURE_OUT"; then pass "vpn-admin status correctly reports sing-box as failed"; else fail_required "vpn-admin status did not report sing-box as failed"; fi
 
     if ssh_run 'sudo systemctl start vpn-service-watchdog.service' 2>/dev/null; then pass "vpn-service-watchdog.service ran without error"; else fail_required "vpn-service-watchdog.service ran without error"; fi
     watchdog_recovered=0
@@ -1044,7 +1044,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   section "14. protocol works after recovery (re-run doctor --protocol --require-protocol)"
   if [ "$singbox_restored_after_stop" -eq 1 ]; then
     if POST_RECOVERY_PROTOCOL_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol' 2>&1)"; then post_recovery_rc=0; else post_recovery_rc=$?; fi
-    if [ "$post_recovery_rc" -eq 0 ] && printf '%s' "$POST_RECOVERY_PROTOCOL_OUT" | grep -q 'completed a full handshake'; then
+    if [ "$post_recovery_rc" -eq 0 ] && grep -q 'completed a full handshake' <<<"$POST_RECOVERY_PROTOCOL_OUT"; then
       pass "REALITY handshake self-test still PASSES after the SIGKILL+recovery cycle"
     else
       # doctor --protocol's output is descriptive prose about pass/fail
@@ -1087,7 +1087,7 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
     # cmd_user_create/render_and_apply_singbox_config), so the id is
     # still extracted with grep -o against the whole captured text.
     create_output="$(sudo /usr/local/bin/vpn-admin user create --name lifecycle-scratch-user --json)" || { echo create; exit 1; }
-    scratch_id="$(printf "%s\n" "$create_output" | grep -o "\"id\": *\"[^\"]*\"" | head -1 | sed -E "s/.*\"([^\"]+)\"$/\1/")"
+    scratch_id="$(grep -o "\"id\": *\"[^\"]*\"" <<<"$create_output" | head -1 | sed -E "s/.*\"([^\"]+)\"$/\1/")"
     [ -n "$scratch_id" ] || { echo parse-id; exit 1; }
     sudo /usr/local/bin/vpn-admin user list | grep -q "$scratch_id" || { echo list; exit 1; }
     sudo /usr/local/bin/vpn-admin user rotate-token "$scratch_id" >/dev/null || { echo rotate-token; exit 1; }
@@ -1205,17 +1205,17 @@ if [ "$WORKING_BASELINE_READY" -eq 1 ]; then
   # capture_cert_for_reuse() above — and this controller re-validates the
   # returned name against the same allowlist before ever using it again.
   cert_lookup_cmd='
-host="$(sed -nE "s/^public_host[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" /etc/vpn/deployment.toml 2>/dev/null | head -1)"
+host="$(sed -nE "s/^public_host[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" /etc/vpn/deployment.toml 2>/dev/null | head -1 || true)"
 case "$host" in
   "") echo "CERT_LOOKUP:NO_DEPLOYMENT_HOST"; exit 2 ;;
   *[!A-Za-z0-9.-]*) echo "CERT_LOOKUP:INVALID_HOST"; exit 2 ;;
 esac
 info="$(sudo certbot certificates --cert-name "$host" 2>/dev/null)"
-if ! printf "%s\n" "$info" | grep -qE "^[[:space:]]*Certificate Name:[[:space:]]*${host}\$"; then
+if ! grep -qE "^[[:space:]]*Certificate Name:[[:space:]]*${host}\$" <<<"$info"; then
   echo "CERT_LOOKUP:NO_MATCHING_LINEAGE:$host"
   exit 3
 fi
-if ! printf "%s\n" "$info" | grep -E "^[[:space:]]*Domains:" | grep -qE "(^|[[:space:]])${host}([[:space:]]|\$)"; then
+if ! grep -E "^[[:space:]]*Domains:" <<<"$info" | grep -qE "(^|[[:space:]])${host}([[:space:]]|\$)"; then
   echo "CERT_LOOKUP:DOMAIN_MISMATCH:$host"
   exit 4
 fi
@@ -1302,7 +1302,7 @@ exit \"\$rc\""
   rm -f "$CERTBOT_LOG_FILE"
   CERTBOT_LOG_FILE=""
 
-  sentinel_line="$(printf '%s\n' "$CERTBOT_DRY_OUT" | grep -F "$CERTBOT_SENTINEL" | tail -1 || true)"
+  sentinel_line="$(grep -F "$CERTBOT_SENTINEL" <<<"$CERTBOT_DRY_OUT" | tail -1 || true)"
   sentinel_present=0
   sentinel_rc=""
   if [[ "$sentinel_line" =~ rc=([0-9]+) ]]; then
@@ -1310,7 +1310,7 @@ exit \"\$rc\""
     sentinel_rc="${BASH_REMATCH[1]}"
   fi
   zero_renewals=0
-  printf '%s' "$CERTBOT_DRY_OUT" | grep -qF 'No simulated renewals were attempted.' && zero_renewals=1
+  grep -qF 'No simulated renewals were attempted.' <<<"$CERTBOT_DRY_OUT" && zero_renewals=1
 
   # Failure classes (never collapsed into one generic "certbot failed" —
   # each names a different root cause and a different fix):
@@ -1383,7 +1383,7 @@ exit \"\$rc\""
     # (never mistaken for "open" below), it never suppresses the real
     # pass/fail signal, which comes from $post_certbot_rc (the actual
     # remote exit code), not from this string extraction.
-    port80_after="$(printf '%s\n' "$POST_CERTBOT_STATE" | grep -o 'PORT80_AFTER=.*' | cut -d= -f2 || true)"
+    port80_after="$(grep -o 'PORT80_AFTER=.*' <<<"$POST_CERTBOT_STATE" | cut -d= -f2 || true)"
     port80_regression=0
     if [ "$port80_before" != "open" ] && [ "$port80_after" = "open" ]; then
       port80_regression=1
@@ -1391,7 +1391,7 @@ exit \"\$rc\""
     if [ "$post_certbot_rc" -eq 0 ] && [ "$port80_regression" -eq 0 ]; then
       pass "nginx restored, certbot hook markers cleaned, TCP/80 firewall state restored after renewal"
     else
-      failed_bits="$(printf '%s\n' "$POST_CERTBOT_STATE" | grep -o 'POST_CERTBOT_FAILED:.*' || true)"
+      failed_bits="$(grep -o 'POST_CERTBOT_FAILED:.*' <<<"$POST_CERTBOT_STATE" || true)"
       [ "$port80_regression" -eq 1 ] && failed_bits="$failed_bits tcp80-left-open(before=$port80_before,after=$port80_after)"
       fail_required "post-renewal cleanup contract (nginx/markers/firewall) [POST_RENEWAL_STATE_INVALID]" "(${failed_bits:-see remote state below}; before=$port80_before after=$port80_after; remote state: ${POST_CERTBOT_STATE:-none})"
     fi
@@ -1426,7 +1426,7 @@ exit \"\$rc\""
         sudo firewall-cmd --list-ports 2>&1 || true
       ' 2>&1 || true)"
     fi
-    concise_out="$(printf '%s\n' "$CERTBOT_DRY_OUT" | grep -E 'ERROR|WARNING|Failed|failure|timeout|challenge|renew|Congratulations|simulated' || true)"
+    concise_out="$(grep -E 'ERROR|WARNING|Failed|failure|timeout|challenge|renew|Congratulations|simulated' <<<"$CERTBOT_DRY_OUT" || true)"
     [ -z "$concise_out" ] && concise_out="$(printf '%s\n' "$CERTBOT_DRY_OUT" | tail -20)"
     fail_required "certbot renew --dry-run [${certbot_class:-UNKNOWN}]" "(exit=$certbot_dry_rc; sentinel=${sentinel_present}/${sentinel_rc:-none}; output: ${concise_out:-none}; diagnostics: ${CERTBOT_DIAG:-none})"
   fi
@@ -1502,7 +1502,7 @@ if [ "$REINSTALL_READY" -eq 1 ] && [ "$BACKUP_READY" -eq 1 ]; then
 
   section "24. doctor/protocol checks again (post-restore)"
   if POST_RESTORE_PROTOCOL_OUT="$(ssh_run 'sudo /usr/local/bin/vpn-admin doctor --protocol --require-protocol' 2>&1)"; then post_restore_rc=0; else post_restore_rc=$?; fi
-  if [ "$post_restore_rc" -eq 0 ] && printf '%s' "$POST_RESTORE_PROTOCOL_OUT" | grep -q 'completed a full handshake'; then pass "REALITY handshake self-test PASSES against the restored key material"; else fail_required "REALITY handshake self-test against restored key material" "(exit=$post_restore_rc; see remote output above)"; fi
+  if [ "$post_restore_rc" -eq 0 ] && grep -q 'completed a full handshake' <<<"$POST_RESTORE_PROTOCOL_OUT"; then pass "REALITY handshake self-test PASSES against the restored key material"; else fail_required "REALITY handshake self-test against restored key material" "(exit=$post_restore_rc; see remote output above)"; fi
 else
   section "22-24. backup restore/state/protocol checks"
   block "stages 22-24" "(requires both a successful backup and stage-21 reinstall; dependent failures are not counted separately)"

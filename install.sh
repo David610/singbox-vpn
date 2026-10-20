@@ -392,7 +392,7 @@ download_source() {
   # "singbox-vpn-src/") extract to a single top-level directory — find it
   # rather than hardcoding either name.
   local extracted
-  extracted="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  extracted="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1 || true)"
   [ -n "$extracted" ] || die "extracted archive did not contain the expected repository directory."
   if [ -n "$SINGBOX_VPN_VERSION" ]; then
     local expected_package_version="${SINGBOX_VPN_VERSION#v}"

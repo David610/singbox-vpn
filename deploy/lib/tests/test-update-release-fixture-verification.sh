@@ -119,7 +119,7 @@ cp "$FIXTURE_A/SHA256SUMS" "$TAMPERED/"
 echo "tampered-after-checksum" >> "$TAMPERED/singbox-vpn-src.tar.gz"
 rc=0
 out="$(run_verification_against_fixture "$TAMPERED" 2>&1)" || rc=$?
-if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'checksum verification failed'; then
+if [ "$rc" -ne 0 ] && grep -qi 'checksum verification failed' <<<"$out"; then
   ok "tampered archive is rejected by the real verification block (fails closed)"
 else
   fail "tampered archive was NOT rejected (rc=$rc out=$out) — checksum verification is not fail-closed"
@@ -133,7 +133,7 @@ cp "$FIXTURE_A/singbox-vpn-src.tar.gz" "$MALFORMED/"
 echo "not-a-valid-checksum-line" > "$MALFORMED/SHA256SUMS"
 rc=0
 out="$(run_verification_against_fixture "$MALFORMED" 2>&1)" || rc=$?
-if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'no well-formed entry'; then
+if [ "$rc" -ne 0 ] && grep -qi 'no well-formed entry' <<<"$out"; then
   ok "malformed SHA256SUMS is rejected by the real verification block (fails closed)"
 else
   fail "malformed SHA256SUMS was NOT rejected (rc=$rc out=$out)"

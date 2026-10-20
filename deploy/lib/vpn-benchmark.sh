@@ -257,9 +257,9 @@ sample_min_median_max() {
   sorted="$(printf '%s\n' "${values[@]}" | sort -n)"
   local n=${#values[@]}
   local min max median
-  min="$(echo "$sorted" | head -1)"
+  min="$(echo "$sorted" | head -1 || true)"
   max="$(echo "$sorted" | tail -1)"
-  median="$(echo "$sorted" | awk -v n="$n" 'NR==int((n+1)/2){print; exit}')"
+  median="$(echo "$sorted" | awk -v n="$n" 'NR==int((n+1)/2){print; exit}' || true)"
   if [ -n "$key_prefix" ]; then
     json_add "${key_prefix}_min" "$min"
     json_add "${key_prefix}_median" "$median"

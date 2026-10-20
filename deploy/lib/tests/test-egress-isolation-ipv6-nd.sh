@@ -39,7 +39,7 @@ else
 fi
 
 # Scope: the sing-box uid must still be refused towards denied ranges (ULA fc00::/7 here).
-cnt() { ip netns exec "$N1" nft list table inet arcana_egress_isolation | awk '/fc00::\/7/ && /counter packets/ {for(i=1;i<=NF;i++) if($i=="packets") print $(i+1)}' | head -1; }
+cnt() { ip netns exec "$N1" nft list table inet arcana_egress_isolation | awk '/fc00::\/7/ && /counter packets/ {for(i=1;i<=NF;i++) if($i=="packets") print $(i+1)}' | head -1 || true; }
 before="$(cnt)"; before="${before:-NONE}"
 ip netns exec "$N1" python3 - <<'PY' >/dev/null 2>&1
 import socket

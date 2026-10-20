@@ -28,7 +28,7 @@ STATE="$BACKUP_DIR/state.env"
 die() { echo "ssh-harden: ERROR: $*" >&2; exit 1; }
 log() { echo "ssh-harden: $*"; }
 
-effective() { "$SSHD_BIN" -T 2>/dev/null | awk -v k="$1" '$1==k{print $2; exit}'; }
+effective() { "$SSHD_BIN" -T 2>/dev/null | awk -v k="$1" '$1==k{print $2; exit}' || true; }
 fp_of() { ssh-keygen -l -f "$1" 2>/dev/null | awk '{print $2}'; }
 
 cmd_status() {
@@ -73,7 +73,7 @@ cmd_verify() {
   . "$STATE"
   local logs
   logs="$($LOG_CMD 2>/dev/null || true)"
-  if printf '%s\n' "$logs" | grep -E "Accepted publickey for $TARGET_USER from " | grep -qF "$KEY_FP"; then
+  if grep -E "Accepted publickey for $TARGET_USER from " <<<"$logs" | grep -qF "$KEY_FP"; then
     log "VERIFIED: sshd logged a successful public-key login for $TARGET_USER with $KEY_FP"
     return 0
   fi

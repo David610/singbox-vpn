@@ -106,7 +106,7 @@ cp "$dir/new-cert.pem" "$dir/renewed/$PUBLIC_HOST/fullchain.pem"
 cp "$dir/new-key.pem" "$dir/renewed/$PUBLIC_HOST/privkey.pem"
 
 out=$(run_hook "$dir" "$dir/renewed/$PUBLIC_HOST") || { echo "Test A FAILED: hook exited non-zero:"; echo "$out"; exit 1; }
-echo "$out" | grep -q "already completed safely" || { echo "Test A FAILED: did not recognize the already-completed swap:"; echo "$out"; exit 1; }
+grep -q "already completed safely" <<<"$out" || { echo "Test A FAILED: did not recognize the already-completed swap:"; echo "$out"; exit 1; }
 live_pair_matches "$dir" "$dir/new-cert.pem" || { echo "Test A FAILED: live cert is not the renewed cert"; exit 1; }
 [ ! -e "$dir/state/hysteria/cert.pem.renew-bak" ] || { echo "Test A FAILED: stale backup was not cleaned up"; exit 1; }
 echo "Test A (swap already completed before interruption): PASS"
@@ -128,7 +128,7 @@ cp "$dir/new-cert.pem" "$dir/renewed/$PUBLIC_HOST/fullchain.pem"
 cp "$dir/new-key.pem" "$dir/renewed/$PUBLIC_HOST/privkey.pem"
 
 out=$(run_hook "$dir" "$dir/renewed/$PUBLIC_HOST") || { echo "Test B FAILED: hook exited non-zero:"; echo "$out"; exit 1; }
-echo "$out" | grep -q "restoring the last known-good pair" || { echo "Test B FAILED: did not detect the mismatched live pair:"; echo "$out"; exit 1; }
+grep -q "restoring the last known-good pair" <<<"$out" || { echo "Test B FAILED: did not detect the mismatched live pair:"; echo "$out"; exit 1; }
 live_pair_matches "$dir" "$dir/new-cert.pem" || { echo "Test B FAILED: final live cert is not the newly renewed cert"; exit 1; }
 [ ! -e "$dir/state/hysteria/cert.pem.renew-bak" ] || { echo "Test B FAILED: backup was not cleaned up after successful recovery+renewal"; exit 1; }
 echo "Test B (interrupted mid-swap, mismatched pair): PASS"
@@ -168,7 +168,7 @@ cp "$dir/new-cert.pem" "$dir/renewed/$PUBLIC_HOST/fullchain.pem"
 cp "$dir/new-key.pem" "$dir/renewed/$PUBLIC_HOST/privkey.pem"
 
 out=$(run_hook "$dir" "$dir/renewed/$PUBLIC_HOST") || { echo "Test D FAILED: hook exited non-zero:"; echo "$out"; exit 1; }
-echo "$out" | grep -q "leftover certificate transaction backup" && { echo "Test D FAILED: reported a stale backup where none existed:"; echo "$out"; exit 1; }
+grep -q "leftover certificate transaction backup" <<<"$out" && { echo "Test D FAILED: reported a stale backup where none existed:"; echo "$out"; exit 1; }
 live_pair_matches "$dir" "$dir/new-cert.pem" || { echo "Test D FAILED: live cert is not the renewed cert"; exit 1; }
 [ ! -e "$dir/state/hysteria/cert.pem.renew-bak" ] || { echo "Test D FAILED: backup left behind after a normal successful renewal"; exit 1; }
 echo "Test D (ordinary renewal, no stale backup): PASS"

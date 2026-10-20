@@ -122,13 +122,13 @@ b_json="$TMPDIR_TEST/b.json"
 echo '{"schema_version":1,"raw_download_mbps_median":10,"tcp_congestion_control":"cubic"}' > "$a_json"
 echo '{"schema_version":1,"raw_download_mbps_median":25,"tcp_congestion_control":"bbr"}' > "$b_json"
 cmp_out="$("$SCRIPT" --compare "$a_json" "$b_json")"
-if echo "$cmp_out" | grep -q "raw_download_mbps_median" && echo "$cmp_out" | grep -q "15"; then
+if grep -q "raw_download_mbps_median" <<<"$cmp_out" && grep -q "15" <<<"$cmp_out"; then
   ok "--compare computes the correct numeric delta (25-10=15) for a matched key"
 else
   fail "--compare did not show the expected delta:
 $cmp_out"
 fi
-if echo "$cmp_out" | grep -q "cubic" && echo "$cmp_out" | grep -q "bbr"; then
+if grep -q "cubic" <<<"$cmp_out" && grep -q "bbr" <<<"$cmp_out"; then
   ok "--compare shows both sides of a changed non-numeric key"
 else
   fail "--compare did not show both non-numeric values:
@@ -152,7 +152,7 @@ fi
 echo
 echo "--- text mode (no --json) is unaffected: still prints the prose report ---"
 text_out="$("$SCRIPT" --quick --skip-tunnel --target-host 127.0.0.1 2>/dev/null)"
-if echo "$text_out" | grep -q "^Host$" && echo "$text_out" | grep -q "Assessment"; then
+if grep -q "^Host$" <<<"$text_out" && grep -q "Assessment" <<<"$text_out"; then
   ok "default (non-JSON) mode still prints the prose sections"
 else
   fail "default mode's prose report looks broken:

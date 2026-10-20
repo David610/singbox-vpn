@@ -129,12 +129,12 @@ with_install_functions() {
 echo
 echo "--- functional: install.sh flag parsing refuses a bad role/node-id before any mutation ---"
 out="$(with_install_functions 'parse_cli_args --role gateway; echo PARSED' 2>&1 || true)"
-echo "$out" | grep -q "DIE: invalid --role 'gateway'" && ! echo "$out" | grep -q PARSED \
+grep -q "DIE: invalid --role 'gateway'" <<<"$out" && ! grep -q PARSED <<<"$out" \
   && ok "--role gateway refused" || fail "--role gateway not refused: $out"
 out="$(with_install_functions 'parse_cli_args --node-id "-bad"; echo PARSED' 2>&1 || true)"
-echo "$out" | grep -q "DIE: invalid --node-id" && ok "--node-id -bad refused" || fail "--node-id -bad not refused: $out"
+grep -q "DIE: invalid --node-id" <<<"$out" && ok "--node-id -bad refused" || fail "--node-id -bad not refused: $out"
 out="$(with_install_functions 'parse_cli_args --role=relay --node-id=ru1; echo "role=$NODE_ROLE node=$NODE_ID"' 2>&1)"
-echo "$out" | grep -q "role=relay node=ru1" && ok "--role=relay --node-id=ru1 parsed" || fail "flags not parsed: $out"
+grep -q "role=relay node=ru1" <<<"$out" && ok "--role=relay --node-id=ru1 parsed" || fail "flags not parsed: $out"
 
 echo
 echo "--- functional: fresh install renders exit/relay deployment.toml with identity ---"
@@ -202,9 +202,9 @@ else
   fail "relay deployment carries [egress]"
 fi
 out="$(with_install_functions 'parse_cli_args --ipv6-literal-policy=bogus; echo PARSED' 2>&1 || true)"
-echo "$out" | grep -q "DIE: invalid --ipv6-literal-policy 'bogus'" && ! echo "$out" | grep -q PARSED   && ok "an unknown --ipv6-literal-policy is refused before any mutation" || fail "bad policy not refused: $out"
+grep -q "DIE: invalid --ipv6-literal-policy 'bogus'" <<<"$out" && ! grep -q PARSED <<<"$out" && ok "an unknown --ipv6-literal-policy is refused before any mutation" || fail "bad policy not refused: $out"
 out="$(with_install_functions 'parse_cli_args --role=relay --ipv6-literal-policy=reject_google; echo PARSED' 2>&1 || true)"
-echo "$out" | grep -q "DIE: --ipv6-literal-policy is exit-only" && ! echo "$out" | grep -q PARSED   && ok "--ipv6-literal-policy with --role relay is refused" || fail "relay + policy not refused: $out"
+grep -q "DIE: --ipv6-literal-policy is exit-only" <<<"$out" && ! grep -q PARSED <<<"$out" && ok "--ipv6-literal-policy with --role relay is refused" || fail "relay + policy not refused: $out"
 # The rendered default must be accepted by the Rust parser's own spelling.
 grep -q 'ipv6_literal' "$DEPLOYMENT_RS" && grep -q '"reject_google"' "$DEPLOYMENT_RS"   && ok "the rendered policy spelling matches the Rust parser" || fail "Rust parser does not mention reject_google"
 
@@ -212,16 +212,16 @@ echo
 echo "--- functional: repair keeps the existing role/identity and refuses conflicting flags ---"
 cp "$WORK/fresh-relay.toml" "$WORK/existing.toml"
 out="$(with_install_functions "DEPLOYMENT_TOML='$WORK/existing.toml'; PUBLIC_HOST=ru1.example.test; NODE_ROLE=''; NODE_ID=''; resolve_node_identity; echo \"role=\$NODE_ROLE node=\$NODE_ID\"" 2>&1)"
-echo "$out" | grep -q "role=relay node=ru1" && ok "repair without flags keeps role=relay node_id=ru1" || fail "repair lost identity: $out"
+grep -q "role=relay node=ru1" <<<"$out" && ok "repair without flags keeps role=relay node_id=ru1" || fail "repair lost identity: $out"
 out="$(with_install_functions "DEPLOYMENT_TOML='$WORK/existing.toml'; PUBLIC_HOST=ru1.example.test; NODE_ROLE=exit; NODE_ID=''; resolve_node_identity; echo CONTINUED" 2>&1 || true)"
-echo "$out" | grep -q "DIE: this deployment is already installed with role 'relay'" && ! echo "$out" | grep -q CONTINUED \
+grep -q "DIE: this deployment is already installed with role 'relay'" <<<"$out" && ! grep -q CONTINUED <<<"$out" \
   && ok "repair with --role exit on a relay is refused" || fail "relay -> exit conversion not refused: $out"
 out="$(with_install_functions "DEPLOYMENT_TOML='$WORK/existing.toml'; PUBLIC_HOST=ru1.example.test; NODE_ROLE=''; NODE_ID=ru2; resolve_node_identity; echo CONTINUED" 2>&1 || true)"
-echo "$out" | grep -q "would rename a live node" && ! echo "$out" | grep -q CONTINUED \
+grep -q "would rename a live node" <<<"$out" && ! grep -q CONTINUED <<<"$out" \
   && ok "repair with a different --node-id is refused" || fail "node rename not refused: $out"
 cp "$WORK/legacy.toml" "$WORK/existing-legacy.toml"
 out="$(with_install_functions "DEPLOYMENT_TOML='$WORK/existing-legacy.toml'; PUBLIC_HOST=vpn.example.test; NODE_ROLE=''; NODE_ID=''; resolve_node_identity; echo \"role=\$NODE_ROLE node=\$NODE_ID\"" 2>&1)"
-echo "$out" | grep -q "role=exit node=vpn" && ok "legacy deployment without role/node_id repairs as an exit with the documented node_id" \
+grep -q "role=exit node=vpn" <<<"$out" && ok "legacy deployment without role/node_id repairs as an exit with the documented node_id" \
   || fail "legacy repair identity wrong: $out"
 [ "$(cat "$WORK/existing.toml")" = "$(cat "$WORK/fresh-relay.toml")" ] \
   && ok "resolve_node_identity never writes deployment.toml" || fail "resolve_node_identity modified an existing deployment.toml"
@@ -229,10 +229,10 @@ echo "$out" | grep -q "role=exit node=vpn" && ok "legacy deployment without role
 echo
 echo "--- static: install.sh wiring ---"
 preflight_body="$(sed -n '/^preflight_stage() {/,/^}/p' "$INSTALL_SH")"
-if echo "$preflight_body" | grep -q '^\s*resolve_host_config$' && echo "$preflight_body" | grep -q '^\s*resolve_node_identity$'; then
-  host_line="$(echo "$preflight_body" | grep -n '^\s*resolve_host_config$' | cut -d: -f1)"
-  node_line="$(echo "$preflight_body" | grep -n '^\s*resolve_node_identity$' | cut -d: -f1)"
-  manifest_line="$(echo "$preflight_body" | grep -n 'write_install_state_manifest "installing"' | cut -d: -f1)"
+if grep -q '^\s*resolve_host_config$' <<<"$preflight_body" && grep -q '^\s*resolve_node_identity$' <<<"$preflight_body"; then
+  host_line="$(grep -n '^\s*resolve_host_config$' <<<"$preflight_body" | cut -d: -f1)"
+  node_line="$(grep -n '^\s*resolve_node_identity$' <<<"$preflight_body" | cut -d: -f1)"
+  manifest_line="$(grep -n 'write_install_state_manifest "installing"' <<<"$preflight_body" | cut -d: -f1)"
   [ "$host_line" -lt "$node_line" ] && [ "$node_line" -lt "$manifest_line" ] \
     && ok "identity is resolved in preflight after the host and before the first manifest write" \
     || fail "resolve_node_identity is mis-ordered in preflight_stage"
@@ -240,7 +240,7 @@ else
   fail "preflight_stage does not resolve node identity"
 fi
 acceptance_body="$(sed -n '/^acceptance_stage() {/,/^}/p' "$INSTALL_SH")"
-echo "$acceptance_body" | grep -q 'verify_relay_subscription_fail_closed_through_nginx' \
+grep -q 'verify_relay_subscription_fail_closed_through_nginx' <<<"$acceptance_body" \
   && ok "acceptance uses the relay fail-closed subscription check for relays" \
   || fail "acceptance_stage has no relay-specific subscription check"
 for key in node_id role; do
@@ -262,7 +262,7 @@ echo "--- static: update.sh snapshots identity, guards migration, restores deplo
   && ok "both rollback functions restore the pre-update deployment.toml" \
   || fail "rollback does not restore deployment.toml in both paths"
 prod_body="$(sed -n '/^exec 201>\/run\/lock\/singbox-vpn.lock$/,/^mutation_started=1$/p' "$UPDATE_SH")"
-echo "$prod_body" | grep -q '^snapshot_deployment_identity$' \
+grep -q '^snapshot_deployment_identity$' <<<"$prod_body" \
   && ok "production snapshot happens under the state lock, before mutation starts" \
   || fail "production snapshot is not between the lock and mutation_started=1"
 
@@ -273,8 +273,8 @@ rust_marker="$(sed -n 's/^pub const RELAY_ENFORCEMENT_CAPABILITY: &str = "\(.*\)
   && ok "shell and Rust agree on the relay enforcement capability marker" \
   || fail "RELAY_ENFORCEMENT_CAPABILITY differs: rust='$rust_marker' shell='$RELAY_ENFORCEMENT_CAPABILITY'"
 precheck_body="$(sed -n '/^if \[ -f "\$DEPLOYMENT_TOML" \]; then$/,/^fi$/p' "$UPDATE_SH")"
-echo "$precheck_body" | grep -q 'admin_output_declares_relay_enforcement "\$precheck_output"' \
-  && echo "$precheck_body" | grep -q 'die "this node is a RELAY' \
+grep -q 'admin_output_declares_relay_enforcement "\$precheck_output"' <<<"$precheck_body" \
+  && grep -q 'die "this node is a RELAY' <<<"$precheck_body" \
   && ok "update.sh's pre-switch check refuses a relay target without relay enforcement" \
   || fail "update.sh does not guard relay nodes against a vpn-admin without relay enforcement"
 admin_output_declares_relay_enforcement "deployment.toml: CURRENT
@@ -289,7 +289,7 @@ egress_marker="$(sed -n 's/^pub const EXIT_EGRESS_POLICY_CAPABILITY: &str = "\(.
 [ -n "$egress_marker" ] && [ "$egress_marker" = "$EXIT_EGRESS_POLICY_CAPABILITY" ] \
   && ok "shell and Rust agree on the exit egress capability marker" \
   || fail "EXIT_EGRESS_POLICY_CAPABILITY differs: rust='$egress_marker' shell='$EXIT_EGRESS_POLICY_CAPABILITY'"
-echo "$precheck_body" | grep -q 'egress_policy_switch_refusal "\$DEPLOYMENT_TOML" "\$installed_validate_output" "\$precheck_output"' \
+grep -q 'egress_policy_switch_refusal "\$DEPLOYMENT_TOML" "\$installed_validate_output" "\$precheck_output"' <<<"$precheck_body" \
   && ok "update.sh's pre-switch check refuses a target without egress-policy support (behaviour: test-egress-downgrade-guard.sh)" \
   || fail "update.sh does not guard [egress] deployments against an older vpn-admin"
 admin_output_declares_exit_egress_policy "deployment.toml: CURRENT

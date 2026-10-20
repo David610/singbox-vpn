@@ -46,7 +46,7 @@ echo
 echo "--- functional: bin/singbox-vpn-uninstall refuses to run as non-root ---"
 rc=0
 out="$(su -s /bin/bash nobody -c "$WRAPPER --yes" 2>&1)" || rc=$?
-if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'must run as root'; then
+if [ "$rc" -ne 0 ] && grep -qi 'must run as root' <<<"$out"; then
   ok "bin/singbox-vpn-uninstall refuses non-root execution"
 else
   echo "SKIP: could not exercise non-root path in this sandbox (su unavailable or behaves differently): rc=$rc out=$out"
@@ -60,7 +60,7 @@ cp "$WRAPPER" "$INCOMPLETE_COPY/bin/singbox-vpn-uninstall"
 chmod +x "$INCOMPLETE_COPY/bin/singbox-vpn-uninstall"
 rc=0
 out="$("$INCOMPLETE_COPY/bin/singbox-vpn-uninstall" --yes 2>&1)" || rc=$?
-if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'not found or not executable'; then
+if [ "$rc" -ne 0 ] && grep -qi 'not found or not executable' <<<"$out"; then
   ok "bin/singbox-vpn-uninstall refuses cleanly when deploy/almalinux/uninstall.sh is missing, and names the online fallback"
 else
   fail "bin/singbox-vpn-uninstall did not refuse cleanly on an incomplete copy (rc=$rc): $out"
@@ -98,7 +98,7 @@ out="$( {
   assert_root_controlled_path "$GROUP_WRITABLE_DIR" "test dir"
   echo "reached end"
 } 2>&1 )" || rc=$?
-if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'group- or world-writable'; then
+if [ "$rc" -ne 0 ] && grep -qi 'group- or world-writable' <<<"$out"; then
   ok "assert_root_controlled_path() refuses a group-writable directory"
 else
   fail "assert_root_controlled_path() did not refuse a group-writable directory (rc=$rc): $out"
@@ -115,7 +115,7 @@ out="$( {
   assert_root_controlled_path "$WORLD_WRITABLE_DIR" "test dir"
   echo "reached end"
 } 2>&1 )" || rc=$?
-if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'group- or world-writable'; then
+if [ "$rc" -ne 0 ] && grep -qi 'group- or world-writable' <<<"$out"; then
   ok "assert_root_controlled_path() refuses a world-writable directory"
 else
   fail "assert_root_controlled_path() did not refuse a world-writable directory (rc=$rc): $out"
@@ -131,7 +131,7 @@ if chown nobody:nogroup "$NOT_ROOT_OWNED" 2>/dev/null; then
     assert_root_controlled_path "$NOT_ROOT_OWNED" "test dir"
     echo "reached end"
   } 2>&1 )" || rc=$?
-  if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'not owned by root'; then
+  if [ "$rc" -ne 0 ] && grep -qi 'not owned by root' <<<"$out"; then
     ok "assert_root_controlled_path() refuses a directory not owned by root"
   else
     fail "assert_root_controlled_path() did not refuse a non-root-owned directory (rc=$rc): $out"
@@ -159,7 +159,7 @@ out="$(ASSUME_YES=0 bash -c '
     fi
   fi
 ' 2>&1 </dev/null)" || rc=$?
-if [ "$rc" -ne 0 ] && echo "$out" | grep -qi 'no terminal attached'; then
+if [ "$rc" -ne 0 ] && grep -qi 'no terminal attached' <<<"$out"; then
   ok "confirmation gate refuses when no /dev/tty is available and --yes was not given (same logic uninstall.sh uses)"
 else
   echo "SKIP: could not isolate the no-tty case in this sandbox (rc=$rc): $out"
@@ -267,14 +267,14 @@ fi
 echo
 echo "--- static: online bootstrap uninstall.sh prefers the local offline entry point before any network access ---"
 bootstrap_body="$(cat "$BOOTSTRAP_UNINSTALL_SH")"
-opt_bin_line="$(echo "$bootstrap_body" | grep -n '/opt/singbox-vpn/bin/singbox-vpn-uninstall' | head -n1 | cut -d: -f1)"
-download_line="$(echo "$bootstrap_body" | grep -n 'codeload.github.com' | head -n1 | cut -d: -f1)"
+opt_bin_line="$(grep -n '/opt/singbox-vpn/bin/singbox-vpn-uninstall' <<<"$bootstrap_body" | head -n1 | cut -d: -f1)"
+download_line="$(grep -n 'codeload.github.com' <<<"$bootstrap_body" | head -n1 | cut -d: -f1)"
 if [ -n "$opt_bin_line" ] && [ -n "$download_line" ] && [ "$opt_bin_line" -lt "$download_line" ]; then
   ok "bootstrap uninstall.sh checks for the local /opt/singbox-vpn/bin/singbox-vpn-uninstall entry point strictly before any network download"
 else
   fail "bootstrap uninstall.sh does not clearly prefer the local entry point before downloading"
 fi
-if echo "$bootstrap_body" | grep -q 'PASSTHROUGH_ARGS+=("\$1")'; then
+if grep -q 'PASSTHROUGH_ARGS+=("\$1")' <<<"$bootstrap_body"; then
   ok "bootstrap uninstall.sh forwards unrecognized flags (e.g. --yes) through to the real uninstaller"
 else
   fail "bootstrap uninstall.sh does not forward --yes/other flags to the real uninstaller"

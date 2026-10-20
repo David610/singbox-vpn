@@ -11,13 +11,17 @@ bad() { echo "FAIL: $*"; failures=$((failures + 1)); }
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/dropin.d" "$T/bin"
 : >"$T/log"
+# BIGOUT: real sshd -T prints about 100 lines (kilobytes). With BIGOUT the stub keeps writing long after the
+# first match, so a consumer that exits early (awk ... exit) kills it with SIGPIPE every time; under pipefail
+# that must NOT become a failure (I-53).
 # sshd stub: -T reflects the drop-in unless FORCE_YES (an earlier override); -t fails if BAD_CONF exists.
 cat >"$T/bin/sshd" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
   -t) [ ! -e "$T/BAD_CONF" ] ;;
   -T) if [ -e "$T/dropin.d/00-singbox-vpn-hardening.conf" ] && [ ! -e "$T/FORCE_YES" ]; then echo "passwordauthentication no"; else echo "passwordauthentication yes"; fi
-      echo "permitrootlogin yes"; echo "kbdinteractiveauthentication no" ;;
+      echo "permitrootlogin yes"; echo "kbdinteractiveauthentication no"
+      if [ -e "$T/BIGOUT" ]; then i=0; while [ \$i -lt 6000 ]; do echo "hostkeyalgorithms ssh-ed25519-cert-v01@openssh.com,ecdsa-sha2-nistp256-cert-v01@openssh.com,rsa-sha2-512"; i=\$((i+1)); done; fi ;;
 esac
 EOF
 chmod +x "$T/bin/sshd"
@@ -27,6 +31,8 @@ export SSH_HARDEN_USER=root SSH_HARDEN_AUTH_KEYS="$T/ak" SSH_HARDEN_DROPIN_DIR="
 ssh-keygen -q -t ed25519 -N '' -f "$T/k1" -C t1; ssh-keygen -q -t ed25519 -N '' -f "$T/k2" -C t2
 FP1="$(ssh-keygen -l -f "$T/k1.pub" | awk '{print $2}')"; FP2="$(ssh-keygen -l -f "$T/k2.pub" | awk '{print $2}')"
 DROP="$T/dropin.d/00-singbox-vpn-hardening.conf"
+# Capture first, then grep a here-string: never pipe a producer into `grep -q` (I-53).
+eff_pw() { local o; o="$("$T/bin/sshd" -T)"; awk '$1=="passwordauthentication"{print $2}' <<<"$o"; }
 
 bash "$H" add-key --pubkey-file "$T/k1" >/dev/null 2>&1 && bad "accepted a PRIVATE key file" || ok "private key refused"
 bash "$H" add-key --pubkey "garbage" >/dev/null 2>&1 && bad "accepted garbage" || ok "garbage refused"
@@ -53,7 +59,13 @@ bash "$H" disable-passwords >/dev/null 2>&1 && bad "reported success while an ov
 rm -f "$T/FORCE_YES"
 
 bash "$H" disable-passwords >/dev/null 2>&1 && ok "disable-passwords succeeds with proof + valid config" || bad "disable-passwords failed with proof"
-grep -q '^PasswordAuthentication no' "$DROP" && "$T/bin/sshd" -T | grep -q 'passwordauthentication no' && ok "effective passwordauthentication=no" || bad "not effective"
-bash "$H" rollback >/dev/null 2>&1; [ ! -e "$DROP" ] && "$T/bin/sshd" -T | grep -q 'passwordauthentication yes' && ok "rollback restores password login" || bad "rollback failed"
+grep -q '^PasswordAuthentication no' "$DROP" && [ "$(eff_pw)" = no ] && ok "effective passwordauthentication=no" || bad "not effective"
+# large sshd -T output (early-exit awk must not make the script fail)
+: >"$T/BIGOUT"
+bash "$H" rollback >/dev/null 2>&1   # reset to the pre-hardening state first
+bash "$H" disable-passwords >/dev/null 2>&1 && ok "BIGOUT: disable-passwords succeeds although sshd -T output is huge (no SIGPIPE failure)" || bad "BIGOUT: disable-passwords failed on large sshd -T output"
+st_out="$(bash "$H" status 2>&1)"; grep -q "effective passwordauthentication=no" <<<"$st_out" && ok "BIGOUT: status reports the effective value" || bad "BIGOUT: status lost the effective value: $st_out"
+rm -f "$T/BIGOUT"
+bash "$H" rollback >/dev/null 2>&1; [ ! -e "$DROP" ] && [ "$(eff_pw)" = yes ] && ok "rollback restores password login" || bad "rollback failed"
 
 [ "$failures" -eq 0 ] || { echo "$failures failure(s)"; exit 1; }; echo "all passed"

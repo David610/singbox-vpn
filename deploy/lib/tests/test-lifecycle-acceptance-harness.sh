@@ -432,7 +432,7 @@ set +e
 run_harness --host root@disposable-test --i-understand-this-is-destructive --domain vpn.xn--p1aen4b.com --skip-reboot >"$TMPDIR_TEST/out-domain.log" 2>&1
 set -e
 install_line="$(grep -F 'install.sh' "$SSH_LOG" | grep -F 'curl' | head -1 || true)"
-if printf '%s' "$install_line" | grep -qE -- '--domain vpn\.xn--p1aen4b\.com'; then
+if grep -qE -- '--domain vpn\.xn--p1aen4b\.com' <<<"$install_line"; then
   ok "a valid IDN/punycode --domain reaches the remote install.sh invocation intact"
 else
   fail "valid --domain vpn.xn--p1aen4b.com did not reach the remote install.sh command: $install_line"
@@ -486,7 +486,7 @@ rm -f "$TMPDIR_TEST/mock_missing_curl"
 if grep -qE '\[FAIL\]\[required\][[:space:]]+bootstrap prerequisites[[:space:]]+missing:.*curl' <<< "$out"; then
   ok "missing curl is reported as one clear '[FAIL][required] bootstrap prerequisites ... missing: curl' line"
 else
-  fail "missing curl was not reported as a clear bootstrap-prerequisite failure: $(grep -i 'bootstrap\|curl' <<< "$out" | head -5)"
+  fail "missing curl was not reported as a clear bootstrap-prerequisite failure: $(grep -i 'bootstrap\|curl' <<< "$out" | head -5 || true)"
 fi
 if grep -qE '\[BLOCKED\][[:space:]]+install\.sh \(clean\)' <<< "$out"; then
   ok "install.sh (clean) is reported BLOCKED, not attempted, once bootstrap prerequisites are known missing"
@@ -718,17 +718,17 @@ fi
 echo
 echo "--- StartLimitBurst exhaustion + vpn-service-watchdog recovery (stage 13b) ---"
 stage13b_block="$(sed -n '/=== 13b\./,/=== 13c\./p' "$TMPDIR_TEST/out-2222.log")"
-if printf '%s' "$stage13b_block" | grep -q 'reached FAILED state after exhausting StartLimitBurst'; then
+if grep -q 'reached FAILED state after exhausting StartLimitBurst' <<<"$stage13b_block"; then
   ok "the harness actually drives sing-box into a FAILED state, not just asserting one exists"
 else
   fail "stage 13b did not report exhausting StartLimitBurst"
 fi
-if printf '%s' "$stage13b_block" | grep -q 'vpn-admin doctor correctly reports sing-box.service as FAILED'; then
+if grep -q 'vpn-admin doctor correctly reports sing-box.service as FAILED' <<<"$stage13b_block"; then
   ok "vpn doctor is checked for the FAILED state during the outage, not just service state after recovery"
 else
   fail "stage 13b did not check vpn-admin doctor during the outage"
 fi
-if printf '%s' "$stage13b_block" | grep -q 'vpn-admin status correctly reports sing-box as failed'; then
+if grep -q 'vpn-admin status correctly reports sing-box as failed' <<<"$stage13b_block"; then
   ok "vpn status is also checked for the failed state during the outage"
 else
   fail "stage 13b did not check vpn-admin status during the outage"
@@ -738,7 +738,7 @@ if grep -q 'systemctl start vpn-service-watchdog.service' "$SSH_LOG"; then
 else
   fail "stage 13b never invoked vpn-service-watchdog.service"
 fi
-if printf '%s' "$stage13b_block" | grep -q 'vpn-service-watchdog recovered sing-box.service from its parked FAILED state'; then
+if grep -q 'vpn-service-watchdog recovered sing-box.service from its parked FAILED state' <<<"$stage13b_block"; then
   ok "the harness proves the watchdog actually recovers a parked FAILED unit"
 else
   fail "stage 13b did not prove watchdog recovery"
@@ -756,12 +756,12 @@ if grep -v '^\s*#' "$SCRIPT" | grep -q 'systemctl is-inactive'; then
 else
   ok "no 'systemctl is-inactive' invocation remains anywhere in the script (outside explanatory comments)"
 fi
-if printf '%s' "$stage13b_block" | grep -q 'vpn-service-watchdog.timer suspended for deterministic crash-loop test'; then
+if grep -q 'vpn-service-watchdog.timer suspended for deterministic crash-loop test' <<<"$stage13b_block"; then
   ok "the watchdog timer is successfully suspended using a real systemctl check"
 else
   fail "stage 13b did not report the timer as successfully suspended"
 fi
-if printf '%s' "$stage13b_block" | grep -q 'vpn-service-watchdog.timer re-armed after deterministic crash-loop test'; then
+if grep -q 'vpn-service-watchdog.timer re-armed after deterministic crash-loop test' <<<"$stage13b_block"; then
   ok "the watchdog timer is re-armed (restored to its pre-test active state) after the crash-loop test"
 else
   fail "stage 13b did not report the timer as re-armed"
@@ -824,22 +824,22 @@ e_out="$(run_harness --host root@disposable-test --i-understand-this-is-destruct
 set -e
 rm -f "$TMPDIR_TEST/mock_protocol_fails"
 stage14_block="$(sed -n '/=== 14\./,/=== 15\./p' <<< "$e_out")"
-if printf '%s' "$stage14_block" | grep -qE '\[FAIL\]\[required\]'; then
+if grep -qE '\[FAIL\]\[required\]' <<<"$stage14_block"; then
   ok "stage 14 is a required FAIL when sing-box is healthy but the protocol self-test fails on its own"
 else
   fail "stage 14 was not reported as a required FAIL for a genuine protocol failure"
 fi
-if printf '%s' "$stage14_block" | grep -q 'BLOCKED'; then
+if grep -q 'BLOCKED' <<<"$stage14_block"; then
   fail "stage 14 was incorrectly BLOCKED even though its sing-box prerequisite (13c) succeeded"
 else
   ok "stage 14 is not blocked when its prerequisite (sing-box) actually succeeded"
 fi
-if printf '%s' "$stage14_block" | grep -q 'see remote output above'; then
+if grep -q 'see remote output above' <<<"$stage14_block"; then
   fail "stage 14 still claims output is 'above' even though it is only ever captured into a variable, never printed"
 else
   ok "stage 14 no longer claims diagnostic output is displayed 'above' when it isn't"
 fi
-if printf '%s' "$stage14_block" | grep -qE 'output: '; then
+if grep -qE 'output: ' <<<"$stage14_block"; then
   ok "stage 14's failure message includes the actual doctor --protocol output"
 else
   fail "stage 14's failure message does not include diagnostic output"
@@ -922,17 +922,17 @@ fi
 echo
 echo "--- systemctl stop still behaves normally, and the watchdog leaves a stopped unit alone (stage 13c) ---"
 stage13c_block="$(sed -n '/=== 13c\./,/=== 14\./p' "$TMPDIR_TEST/out-2222.log")"
-if printf '%s' "$stage13c_block" | grep -q "is inactive after systemctl stop"; then
+if grep -q "is inactive after systemctl stop" <<<"$stage13c_block"; then
   ok "a deliberate systemctl stop leaves sing-box inactive (not silently auto-restarted)"
 else
   fail "stage 13c did not confirm sing-box went inactive after systemctl stop"
 fi
-if printf '%s' "$stage13c_block" | grep -q "'inactive', not 'failed', after a deliberate stop"; then
+if grep -q "'inactive', not 'failed', after a deliberate stop" <<<"$stage13c_block"; then
   ok "a deliberate stop is distinguished from a failure (inactive, never failed)"
 else
   fail "stage 13c did not distinguish a deliberate stop from a failure"
 fi
-if printf '%s' "$stage13c_block" | grep -q "left the deliberately-stopped sing-box alone"; then
+if grep -q "left the deliberately-stopped sing-box alone" <<<"$stage13c_block"; then
   ok "the watchdog is proven to never restart a deliberately-stopped unit"
 else
   fail "stage 13c did not prove the watchdog leaves a stopped unit alone"
@@ -946,7 +946,7 @@ echo "--- stage 15 reports PASS end-to-end against the default (healthy) mocked 
 # calls succeed, i.e. that stage 13c's new BLOCKED-gating didn't
 # accidentally break the ordinary healthy-target path.
 stage15_block="$(sed -n '/=== 15\./,/=== 16/p' "$TMPDIR_TEST/out-2222.log")"
-if printf '%s' "$stage15_block" | grep -qE '\[PASS\][[:space:]]+scratch user create/rotate/disable/remove'; then
+if grep -qE '\[PASS\][[:space:]]+scratch user create/rotate/disable/remove' <<<"$stage15_block"; then
   ok "the scratch-user lifecycle reports PASS against a healthy mocked target"
 else
   fail "stage 15 did not pass against a healthy mocked target"

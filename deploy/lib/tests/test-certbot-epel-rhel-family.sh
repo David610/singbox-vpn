@@ -124,13 +124,13 @@ fi
 echo
 echo "--- static: install_dependencies_rhel() calls install_certbot_repo_rhel() before installing the package list ---"
 DEPS_BODY="$(sed -n '/^install_dependencies_rhel() {/,/^}/p' "$REPO_ROOT/deploy/almalinux/install.sh")"
-if echo "$DEPS_BODY" | grep -q 'install_certbot_repo_rhel'; then
+if grep -q 'install_certbot_repo_rhel' <<<"$DEPS_BODY"; then
   ok "install_dependencies_rhel() calls install_certbot_repo_rhel()"
 else
   fail "install_dependencies_rhel() no longer calls install_certbot_repo_rhel()"
 fi
-call_line="$(echo "$DEPS_BODY" | grep -n 'install_certbot_repo_rhel' | head -1 | cut -d: -f1)"
-dnf_install_line="$(echo "$DEPS_BODY" | grep -n 'dnf install -y --setopt=install_weak_deps=False' | head -1 | cut -d: -f1)"
+call_line="$(grep -n 'install_certbot_repo_rhel' <<<"$DEPS_BODY" | head -1 | cut -d: -f1)"
+dnf_install_line="$(grep -n 'dnf install -y --setopt=install_weak_deps=False' <<<"$DEPS_BODY" | head -1 | cut -d: -f1)"
 if [ -n "$call_line" ] && [ -n "$dnf_install_line" ] && [ "$call_line" -lt "$dnf_install_line" ]; then
   ok "install_certbot_repo_rhel() runs before the main package list is installed (EPEL is available in time for 'certbot')"
 else

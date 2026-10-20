@@ -1435,7 +1435,7 @@ host_config_stage() {
 # canned openssl output — see deploy/lib/tests/test-reality-decoy-tls13-probe.sh.
 reality_decoy_openssl_output_confirms_tls13() {
   local probe_out="${1:-$(cat)}"
-  printf '%s\n' "$probe_out" | grep -qE '^(New|Reused), TLSv1\.3,'
+  grep -qE '^(New|Reused), TLSv1\.3,' <<<"$probe_out"
 }
 
 resolve_reality_handshake_server() {
@@ -3033,7 +3033,7 @@ acceptance_stage() {
   if [ "$doctor_rc" -ne 0 ]; then
     echo "$doctor_output" >&2
     local fail_lines
-    fail_lines="$(echo "$doctor_output" | grep -F '[FAIL]' || true)"
+    fail_lines="$(grep -F '[FAIL]' <<<"$doctor_output" || true)"
     if [ -n "$fail_lines" ]; then
       die "post-install acceptance check(s) failed — see the [FAIL] line(s) above for the specific cause (this is not necessarily the VLESS+REALITY handshake itself; re-run 'vpn doctor --protocol' any time to see current status):
 $fail_lines"

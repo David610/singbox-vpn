@@ -188,8 +188,8 @@ fi
 echo
 echo "--- static: deploy/almalinux/install.sh records ETC_VPN_PRE_EXISTED before ever creating /etc/vpn ---"
 create_dirs_body="$(sed -n '/^create_directories() {/,/^}/p' "$INSTALL_SH")"
-baseline_line="$(echo "$create_dirs_body" | grep -n 'ownership_set_baseline_once ETC_VPN_PRE_EXISTED' | head -n1 | cut -d: -f1)"
-mkdir_line="$(echo "$create_dirs_body" | grep -n 'install -d -m 0755 /etc/vpn$' | head -n1 | cut -d: -f1)"
+baseline_line="$(grep -n 'ownership_set_baseline_once ETC_VPN_PRE_EXISTED' <<<"$create_dirs_body" | head -n1 | cut -d: -f1)"
+mkdir_line="$(grep -n 'install -d -m 0755 /etc/vpn$' <<<"$create_dirs_body" | head -n1 | cut -d: -f1)"
 if [ -n "$baseline_line" ] && [ -n "$mkdir_line" ] && [ "$baseline_line" -lt "$mkdir_line" ]; then
   ok "ETC_VPN_PRE_EXISTED is captured before install.sh ever creates /etc/vpn"
 else
@@ -199,8 +199,8 @@ fi
 echo
 echo "--- static: deploy/almalinux/uninstall.sh only 'rm -rf /etc/vpn' inside the ETC_VPN_PRE_EXISTED=0 case branch, never unconditionally ---"
 etc_vpn_block="$(awk '/^if \[ -d \/etc\/vpn \]; then/{flag=1} flag{print} flag && /^fi$/{exit}' "$UNINSTALL_SH")"
-case_line="$(echo "$etc_vpn_block" | grep -n 'case "\$etc_vpn_pre_existed" in' | head -n1 | cut -d: -f1)"
-rmrf_line="$(echo "$etc_vpn_block" | grep -n '^ *rm -rf /etc/vpn$' | head -n1 | cut -d: -f1)"
+case_line="$(grep -n 'case "\$etc_vpn_pre_existed" in' <<<"$etc_vpn_block" | head -n1 | cut -d: -f1)"
+rmrf_line="$(grep -n '^ *rm -rf /etc/vpn$' <<<"$etc_vpn_block" | head -n1 | cut -d: -f1)"
 if [ -n "$case_line" ] && [ -n "$rmrf_line" ] && [ "$case_line" -lt "$rmrf_line" ]; then
   ok "the only 'rm -rf /etc/vpn' is inside the ownership-gated case statement (not a bare unconditional removal)"
 else
@@ -306,8 +306,8 @@ fi
 echo
 echo "--- static: OPT_SINGBOX_VPN_PRE_EXISTED (and unit PRE_EXISTED facts) are cached BEFORE STATE_DIR_ROOT is removed ---"
 tail_body="$(tail -n 150 "$UNINSTALL_SH")"
-cache_line="$(echo "$tail_body" | grep -n 'opt_singbox_vpn_pre_existed="\$(ownership_get OPT_SINGBOX_VPN_PRE_EXISTED' | head -n1 | cut -d: -f1)"
-rm_line="$(echo "$tail_body" | grep -n 'rm -rf "\$STATE_DIR_ROOT"' | head -n1 | cut -d: -f1)"
+cache_line="$(grep -n 'opt_singbox_vpn_pre_existed="\$(ownership_get OPT_SINGBOX_VPN_PRE_EXISTED' <<<"$tail_body" | head -n1 | cut -d: -f1 || true)"
+rm_line="$(grep -n 'rm -rf "\$STATE_DIR_ROOT"' <<<"$tail_body" | head -n1 | cut -d: -f1)"
 if [ -n "$cache_line" ] && [ -n "$rm_line" ] && [ "$cache_line" -lt "$rm_line" ]; then
   ok "OPT_SINGBOX_VPN_PRE_EXISTED is read and cached strictly before \$STATE_DIR_ROOT is removed (a prior ordering bug always read the post-removal default here)"
 else
@@ -347,7 +347,7 @@ EOF
     export PATH=\"$MOCKBIN:\$PATH\"
     run_legacy_uninstaller '$LEGACY_FIXTURE' --yes
   " 2>&1)"
-  if echo "$out" | grep -q "MOCK_BASH_CALLED:$LEGACY_FIXTURE --purge-state --purge-firewall"; then
+  if grep -q "MOCK_BASH_CALLED:$LEGACY_FIXTURE --purge-state --purge-firewall" <<<"$out"; then
     ok "run_legacy_uninstaller() correctly translates --yes to --purge-state --purge-firewall (drops the unsupported --yes) for the real pre-07f8b72 script"
   else
     fail "run_legacy_uninstaller() did not translate flags as expected against the real historical fixture; got: $out"
@@ -362,7 +362,7 @@ EOF
     export PATH=\"$MOCKBIN:\$PATH\"
     run_legacy_uninstaller '$UNINSTALL_SH' --yes
   " 2>&1)"
-  if echo "$out2" | grep -q "MOCK_BASH_CALLED:$UNINSTALL_SH --yes"; then
+  if grep -q "MOCK_BASH_CALLED:$UNINSTALL_SH --yes" <<<"$out2"; then
     ok "run_legacy_uninstaller() forwards --yes unchanged to a script that actually supports it (no unnecessary translation)"
   else
     fail "run_legacy_uninstaller() altered args unnecessarily for the current uninstaller; got: $out2"

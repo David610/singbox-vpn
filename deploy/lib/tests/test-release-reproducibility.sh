@@ -61,14 +61,14 @@ echo "--- regression: ci.yml's \$GITHUB_ENV load of versions.env must filter com
 ci_load_line="$(grep -n 'versions\.env.*GITHUB_ENV' "$CI_YML" || true)"
 if [ -z "$ci_load_line" ]; then
   fail "could not find the ci.yml step that loads versions.env into \$GITHUB_ENV"
-elif echo "$ci_load_line" | grep -qE "^\s*[0-9]+:\s*run:\s*cat "; then
+elif grep -qE "^\s*[0-9]+:\s*run:\s*cat " <<<"$ci_load_line"; then
   fail "ci.yml appends deploy/lib/versions.env to \$GITHUB_ENV with a raw 'cat' — this breaks on the file's own comment header (VERIFIED against a real CI run: 'Invalid format' on the first comment line)"
 else
   ok "ci.yml filters comments/blank lines before appending versions.env to \$GITHUB_ENV"
 fi
 filtered="$(grep -vE '^\s*(#|$)' "$VERSIONS_ENV")"
-if echo "$filtered" | grep -qvE '^[A-Za-z_][A-Za-z0-9_]*='; then
-  fail "the comment/blank-line filter still leaves a non-KEY=value line: $(echo "$filtered" | grep -vE '^[A-Za-z_][A-Za-z0-9_]*=')"
+if grep -qvE '^[A-Za-z_][A-Za-z0-9_]*=' <<<"$filtered"; then
+  fail "the comment/blank-line filter still leaves a non-KEY=value line: $(grep -vE '^[A-Za-z_][A-Za-z0-9_]*=' <<<"$filtered")"
 else
   ok "filtering deploy/lib/versions.env with the same pattern ci.yml uses leaves only valid KEY=value lines"
 fi
@@ -137,7 +137,7 @@ fi
 echo
 echo "--- static: unsupported CPU architecture is rejected in preflight, before any privileged mutation ---"
 detect_arch_body="$(sed -n '/^detect_arch() {/,/^}/p' "$REPO_ROOT/deploy/lib/os.sh")"
-if echo "$detect_arch_body" | grep -q 'return 1'; then
+if grep -q 'return 1' <<<"$detect_arch_body"; then
   ok "detect_arch() returns non-zero for an unrecognized uname -m"
 else
   fail "detect_arch() has no rejection path for an unsupported architecture"
@@ -159,12 +159,12 @@ fi
 echo
 echo "--- static: production (stable-channel) bootstrap install.sh refuses to fall back to branch source when no release tag exists ---"
 resolve_body="$(sed -n '/^resolve_version() {/,/^}/p' "$BOOTSTRAP_SH")"
-if echo "$resolve_body" | grep -q '^\s*die "no tagged release found'; then
+if grep -q '^\s*die "no tagged release found' <<<"$resolve_body"; then
   ok "resolve_version() calls die() (not warn+continue) when no tagged release is found in the default channel"
 else
   fail "resolve_version() no longer refuses branch-source fallback in the default channel"
 fi
-if echo "$resolve_body" | grep -qi 'warn "no tagged release found'; then
+if grep -qi 'warn "no tagged release found' <<<"$resolve_body"; then
   fail "resolve_version() still contains the old silent-warn-and-fall-back-to-main path"
 else
   ok "resolve_version() no longer silently warns-and-falls-back to branch source"
@@ -172,7 +172,7 @@ fi
 
 echo
 echo "--- static: SINGBOX_VPN_CHANNEL=dev remains the ONLY documented way to install unpinned branch source ---"
-if echo "$resolve_body" | grep -q 'SINGBOX_VPN_CHANNEL" = "dev"'; then
+if grep -q 'SINGBOX_VPN_CHANNEL" = "dev"' <<<"$resolve_body"; then
   ok "resolve_version() still has an explicit SINGBOX_VPN_CHANNEL=dev opt-in path"
 else
   fail "SINGBOX_VPN_CHANNEL=dev opt-in path is missing from resolve_version()"
@@ -496,8 +496,8 @@ UPSTREAM_SUMS_MATCHING_ACTUAL="$REAL_TARBALL_SHA256  pinned.tar.gz"
 WRONG_ARCANA_PIN="0000000000000000000000000000000000000000000000000000000000000000"
 
 out="$(run_pin_check_against_fixture 'attacker-or-drifted sing-box tarball bytes' "$WRONG_ARCANA_PIN" "$UPSTREAM_SUMS_MATCHING_ACTUAL")"
-if echo "$out" | grep -qi 'DIE:.*does not match the Arcana pin' \
-    && echo "$out" | grep -q 'UPSTREAM_REACHED=no'; then
+if grep -qi 'DIE:.*does not match the Arcana pin' <<<"$out" \
+    && grep -q 'UPSTREAM_REACHED=no' <<<"$out"; then
   ok "a tarball that fails the Arcana pin is rejected WITHOUT ever consulting upstream's checksums.txt, even though upstream would have validated it"
 else
   fail "Arcana-pin-mismatch case did not reject-before-upstream as expected: $out"
@@ -505,7 +505,7 @@ fi
 
 CORRECT_ARCANA_PIN="$REAL_TARBALL_SHA256"
 out="$(run_pin_check_against_fixture 'attacker-or-drifted sing-box tarball bytes' "$CORRECT_ARCANA_PIN" "$UPSTREAM_SUMS_MATCHING_ACTUAL")"
-if echo "$out" | grep -q 'UPSTREAM_REACHED=yes' && ! echo "$out" | grep -qi '^DIE:'; then
+if grep -q 'UPSTREAM_REACHED=yes' <<<"$out" && ! grep -qi '^DIE:' <<<"$out"; then
   ok "when the Arcana pin matches, verification proceeds to (and passes) the corroborating upstream checksums.txt check"
 else
   fail "matching-pin case unexpectedly failed or skipped the upstream corroboration step: $out"

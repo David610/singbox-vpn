@@ -193,7 +193,7 @@ else
   fail "install.sh no longer calls resolve_ssh_port()"
 fi
 preflight_body_ssh="$(sed -n '/^preflight_stage() {/,/^}/p' "$INSTALL_SH")"
-if echo "$preflight_body_ssh" | grep -qE '^\s*resolve_ssh_port$'; then
+if grep -qE '^\s*resolve_ssh_port$' <<<"$preflight_body_ssh"; then
   ok "resolve_ssh_port() runs inside preflight_stage (stage 1)"
 else
   fail "resolve_ssh_port() does not run inside preflight_stage"
@@ -218,10 +218,10 @@ activate_body="$(sed -n '/^activate_firewalld_ssh_safe() {/,/^}/p' "$INSTALL_SH"
 # added afterward, however "immediately". A test that blesses
 # start-then-add encodes the wrong invariant and would pass code with a
 # real (if brief) default-deny window on a custom SSH port.
-offline_add_line="$(echo "$activate_body" | grep -n 'firewall-offline-cmd.*add-service=ssh\|firewall-offline-cmd.*add-port="\${SSH_PORT}' | head -n1 | cut -d: -f1)"
-offline_query_line="$(echo "$activate_body" | grep -n 'firewall-offline-cmd.*query-service=ssh\|firewall-offline-cmd.*query-port="\${SSH_PORT}' | head -n1 | cut -d: -f1)"
-start_line="$(echo "$activate_body" | grep -n '^\s*systemctl start firewalld' | head -n1 | cut -d: -f1)"
-runtime_query_line="$(echo "$activate_body" | grep -n 'firewall-cmd.*query-service=ssh\|firewall-cmd.*query-port="\${SSH_PORT}' | head -n1 | cut -d: -f1)"
+offline_add_line="$(grep -n 'firewall-offline-cmd.*add-service=ssh\|firewall-offline-cmd.*add-port="\${SSH_PORT}' <<<"$activate_body" | head -n1 | cut -d: -f1 || true)"
+offline_query_line="$(grep -n 'firewall-offline-cmd.*query-service=ssh\|firewall-offline-cmd.*query-port="\${SSH_PORT}' <<<"$activate_body" | head -n1 | cut -d: -f1 || true)"
+start_line="$(grep -n '^\s*systemctl start firewalld' <<<"$activate_body" | head -n1 | cut -d: -f1)"
+runtime_query_line="$(grep -n 'firewall-cmd.*query-service=ssh\|firewall-cmd.*query-port="\${SSH_PORT}' <<<"$activate_body" | head -n1 | cut -d: -f1 || true)"
 if [ -n "$offline_add_line" ] && [ -n "$offline_query_line" ] && [ -n "$start_line" ] && [ -n "$runtime_query_line" ] \
     && [ "$offline_add_line" -lt "$start_line" ] && [ "$offline_query_line" -lt "$start_line" ] \
     && [ "$start_line" -lt "$runtime_query_line" ]; then
@@ -229,23 +229,23 @@ if [ -n "$offline_add_line" ] && [ -n "$offline_query_line" ] && [ -n "$start_li
 else
   fail "activate_firewalld_ssh_safe() does not clearly order offline-stage(add=$offline_add_line,query=$offline_query_line) before start($start_line) before runtime-verify($runtime_query_line)"
 fi
-if echo "$activate_body" | grep -qE 'firewall-cmd --zone="\$zone" --add-(service=ssh|port="\$\{SSH_PORT\}/tcp") >/dev/null 2>&1 \|\| true'; then
+if grep -qE 'firewall-cmd --zone="\$zone" --add-(service=ssh|port="\$\{SSH_PORT\}/tcp") >/dev/null 2>&1 \|\| true' <<<"$activate_body"; then
   fail "activate_firewalld_ssh_safe() still fail-opens an SSH-allow rule with '|| true' — a failed add would be silently treated as success"
 else
   ok "activate_firewalld_ssh_safe() has no fail-open ('|| true') SSH-allow rule"
 fi
-if echo "$activate_body" | grep -q 'command -v firewall-offline-cmd'; then
+if grep -q 'command -v firewall-offline-cmd' <<<"$activate_body"; then
   ok "activate_firewalld_ssh_safe() fails closed if firewall-offline-cmd is unavailable, rather than falling back to the unsafe start-then-add ordering"
 else
   fail "activate_firewalld_ssh_safe() does not guard against a missing firewall-offline-cmd"
 fi
-if echo "$activate_body" | grep -q 'is-active --quiet firewalld'; then
+if grep -q 'is-active --quiet firewalld' <<<"$activate_body"; then
   ok "activate_firewalld_ssh_safe() checks whether firewalld was already active and preserves its existing config in that case"
 else
   fail "activate_firewalld_ssh_safe() does not guard against re-activating an already-active (pre-existing) firewalld"
 fi
 install_deps_rhel_body2="$(sed -n '/^install_dependencies_rhel() {/,/^}/p' "$INSTALL_SH")"
-if echo "$install_deps_rhel_body2" | grep -q 'activate_firewalld_ssh_safe'; then
+if grep -q 'activate_firewalld_ssh_safe' <<<"$install_deps_rhel_body2"; then
   ok "install_dependencies_rhel() (packages_stage) activates firewalld only through the SSH-safe helper"
 else
   fail "install_dependencies_rhel() does not call activate_firewalld_ssh_safe()"
@@ -254,8 +254,8 @@ fi
 echo
 echo "--- static: firewall ownership of pre-existing state is captured before any firewall mutation ---"
 main_body="$(sed -n '/^main() {/,/^}/p' "$INSTALL_SH")"
-packages_line="$(echo "$main_body" | grep -n '^\s*packages_stage$' | head -n1 | cut -d: -f1)"
-firewall_line="$(echo "$main_body" | grep -n '^\s*firewall_stage$' | head -n1 | cut -d: -f1)"
+packages_line="$(grep -n '^\s*packages_stage$' <<<"$main_body" | head -n1 | cut -d: -f1)"
+firewall_line="$(grep -n '^\s*firewall_stage$' <<<"$main_body" | head -n1 | cut -d: -f1)"
 if [ -n "$packages_line" ] && [ -n "$firewall_line" ] && [ "$packages_line" -lt "$firewall_line" ]; then
   ok "main() runs packages_stage strictly before firewall_stage"
 else
@@ -263,8 +263,8 @@ else
 fi
 install_deps_rhel_body="$(sed -n '/^install_dependencies_rhel() {/,/^}/p' "$INSTALL_SH")"
 install_deps_debian_body="$(sed -n '/^install_dependencies_debian() {/,/^}/p' "$INSTALL_SH")"
-if echo "$install_deps_rhel_body" | grep -q 'ownership_set_baseline_once FIREWALLD_PRE_INSTALLED' \
-    && echo "$install_deps_debian_body" | grep -q 'ownership_set_baseline_once UFW_PRE_ENABLED'; then
+if grep -q 'ownership_set_baseline_once FIREWALLD_PRE_INSTALLED' <<<"$install_deps_rhel_body" \
+    && grep -q 'ownership_set_baseline_once UFW_PRE_ENABLED' <<<"$install_deps_debian_body"; then
   ok "install_dependencies_rhel()/install_dependencies_debian() (packages_stage's real work, stage 2) capture pre-existing firewalld/ufw state before firewall_stage (stage ~15) ever runs"
 else
   fail "pre-existing firewall state is not captured inside packages_stage's install_dependencies_* functions"
@@ -273,22 +273,22 @@ fi
 echo
 echo "--- static: ACME temporary TCP/80 rule is ownership-tracked and always closed (success, failure, interrupt) ---"
 acme_body="$(sed -n '/^attempt_automatic_certbot() {/,/^}/p' "$INSTALL_SH")"
-if echo "$acme_body" | grep -q 'firewall_open_port_80_temp' && echo "$acme_body" | grep -q 'firewall_close_port_80_temp'; then
+if grep -q 'firewall_open_port_80_temp' <<<"$acme_body" && grep -q 'firewall_close_port_80_temp' <<<"$acme_body"; then
   ok "attempt_automatic_certbot() opens AND closes the temporary TCP/80 rule"
 else
   fail "attempt_automatic_certbot() does not both open and close the temporary TCP/80 rule"
 fi
-if echo "$acme_body" | grep -q "trap 'acme_cleanup; on_interrupt' INT" && echo "$acme_body" | grep -q "trap 'acme_cleanup; on_terminate' TERM"; then
+if grep -q "trap 'acme_cleanup; on_interrupt' INT" <<<"$acme_body" && grep -q "trap 'acme_cleanup; on_terminate' TERM" <<<"$acme_body"; then
   ok "attempt_automatic_certbot() restores state (acme_cleanup) AND still routes through the global rollback handler (on_interrupt/on_terminate) if interrupted (INT/TERM) -- not a bare exit that would skip rollback for a fresh install"
 else
   fail "attempt_automatic_certbot() has no interrupt-safe cleanup trap, or it bypasses the global on_interrupt/on_terminate rollback handler"
 fi
-if echo "$acme_body" | grep -q 'trap - INT TERM'; then
+if grep -q 'trap - INT TERM' <<<"$acme_body"; then
   fail "attempt_automatic_certbot() clears INT/TERM to no handler (trap - INT TERM) instead of restoring on_interrupt/on_terminate -- a signal after this function returns would again skip rollback"
 else
   ok "attempt_automatic_certbot() restores the global on_interrupt/on_terminate handler on exit rather than clearing it"
 fi
-if echo "$acme_body" | grep -q 'nginx_was_stopped=1' && echo "$acme_body" | grep -q 'systemctl start nginx'; then
+if grep -q 'nginx_was_stopped=1' <<<"$acme_body" && grep -q 'systemctl start nginx' <<<"$acme_body"; then
   ok "attempt_automatic_certbot() restarts nginx if it stopped it for the ACME challenge"
 else
   fail "attempt_automatic_certbot() does not restore nginx after stopping it"
@@ -297,12 +297,12 @@ fi
 echo
 echo "--- static: custom domain is the default; --allow-ip-hostname/SINGBOX_VPN_ALLOW_IP_HOSTNAME is required for a silent non-interactive IP-derived fallback ---"
 resolve_host_body="$(sed -n '/^resolve_host_config() {/,/^}/p' "$INSTALL_SH")"
-if echo "$resolve_host_body" | grep -q 'ALLOW_IP_HOSTNAME'; then
+if grep -q 'ALLOW_IP_HOSTNAME' <<<"$resolve_host_body"; then
   ok "resolve_host_config() checks ALLOW_IP_HOSTNAME before silently falling back to sslip.io"
 else
   fail "resolve_host_config() has no explicit-opt-in gate for the IP-derived hostname"
 fi
-if echo "$resolve_host_body" | grep -q 'die "no PUBLIC_HOST/--domain given'; then
+if grep -q 'die "no PUBLIC_HOST/--domain given' <<<"$resolve_host_body"; then
   ok "resolve_host_config() refuses (die) rather than silently defaulting when no prompt was possible and no opt-in was given"
 else
   fail "resolve_host_config() does not refuse the silent IP-derived fallback"
@@ -325,7 +325,7 @@ out="$( {
   DEPLOYMENT_TOML="$TMPDIR_TEST/does-not-exist-deployment.toml"
   resolve_host_config
 } 2>&1 )" || rc=$?
-if [ "$rc" -ne 0 ] && echo "$out" | grep -q 'allow-ip-hostname'; then
+if [ "$rc" -ne 0 ] && grep -q 'allow-ip-hostname' <<<"$out"; then
   ok "resolve_host_config() dies (non-zero) and names --allow-ip-hostname as the fix, when non-interactive with no domain and no opt-in"
 else
   fail "resolve_host_config() did not refuse as expected (rc=$rc): $out"
@@ -345,7 +345,7 @@ out="$( {
   resolve_host_config
   echo "PUBLIC_HOST=$PUBLIC_HOST"
 } 2>&1 )" || rc=$?
-if [ "$rc" -eq 0 ] && echo "$out" | grep -q 'PUBLIC_HOST=203-0-113-1.sslip.io'; then
+if [ "$rc" -eq 0 ] && grep -q 'PUBLIC_HOST=203-0-113-1.sslip.io' <<<"$out"; then
   ok "resolve_host_config() with SINGBOX_VPN_ALLOW_IP_HOSTNAME=1 proceeds to the sslip.io fallback and succeeds"
 else
   fail "resolve_host_config() with the explicit opt-in did not behave as expected (rc=$rc): $out"
@@ -364,7 +364,7 @@ out="$( {
   resolve_host_config
   echo "PUBLIC_HOST=$PUBLIC_HOST"
 } 2>&1 )" || rc=$?
-if [ "$rc" -eq 0 ] && echo "$out" | grep -q 'PUBLIC_HOST=vpn.example.com'; then
+if [ "$rc" -eq 0 ] && grep -q 'PUBLIC_HOST=vpn.example.com' <<<"$out"; then
   ok "an operator-supplied --domain always works non-interactively, no opt-in needed"
 else
   fail "operator-supplied domain path regressed (rc=$rc): $out"

@@ -130,7 +130,7 @@ preflight_check_port_free() {
     udp) ss_flag="-lnup" ;;
     *) return 0 ;;
   esac
-  owner="$(ss -H "$ss_flag" 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {print; exit}')"
+  owner="$(ss -H "$ss_flag" 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {print; exit}' || true)"
   if [ -n "$owner" ]; then
     echo "Port ${proto^^}/$port is already used by:" >&2
     echo "  $owner" >&2
@@ -158,13 +158,13 @@ preflight_detect_ssh_port() {
   local sshd_config_file="${SSHD_CONFIG_FILE:-/etc/ssh/sshd_config}"
   local port=""
   if command -v sshd >/dev/null 2>&1; then
-    port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
+    port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}' || true)"
   fi
   if [ -z "$port" ] && [ -f "$sshd_config_file" ]; then
     port="$(awk 'tolower($1)=="port"{print $2; exit}' "$sshd_config_file" 2>/dev/null)"
   fi
   if [ -z "$port" ] && command -v ss >/dev/null 2>&1; then
-    port="$(ss -H -lntp 2>/dev/null | grep -E 'sshd|"ssh"' | head -n1 | sed -E 's/.*:([0-9]+)[[:space:]].*/\1/')"
+    port="$(ss -H -lntp 2>/dev/null | grep -E 'sshd|"ssh"' | head -n1 | sed -E 's/.*:([0-9]+)[[:space:]].*/\1/' || true)"
   fi
   if [ -z "$port" ]; then
     return 1
@@ -262,7 +262,7 @@ preflight_check_hostname_resolves_here() {
   my_ips="$( { command -v hostname >/dev/null 2>&1 && hostname -I 2>/dev/null; preflight_detect_public_ip 2>/dev/null; } | tr ' ' '\n' | sed '/^$/d' | sort -u)"
   while IFS= read -r r; do
     [ -z "$r" ] && continue
-    printf '%s\n' "$my_ips" | grep -qx "$r" && match=1
+    grep -qx "$r" <<<"$my_ips" && match=1
   done <<EOF
 $resolved
 EOF
@@ -304,7 +304,7 @@ preflight_is_public_ip() {
     return 0
   fi
   if [[ "$ip" =~ ^[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}$ ]] && [[ "$ip" != *:::* ]]; then
-    [ "$(printf '%s' "$ip" | grep -o '::' | wc -l)" -le 1 ] || return 1
+    [ "$(grep -o '::' <<<"$ip" | wc -l)" -le 1 ] || return 1
     first="${ip%%:*}"
     [ -n "$first" ] || return 1
     a=$((16#$first))

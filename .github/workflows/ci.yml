@@ -68,6 +68,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
+      - name: the test run leaves no dummy interface behind (I-59)
+        run: |
+          if ip link show arcana-2hop0 >/dev/null 2>&1 || ip -4 -o addr show | grep -q ' 192\.88\.99\.'; then
+            echo "::error::the workspace tests leaked the arcana-2hop0 dummy interface / 192.88.99.x host routes"
+            exit 1
+          fi
       # The release SBOM/license inventory generator against the real
       # workspace on every change, so a dependency without license metadata
       # fails here instead of at release time (SEC-005).

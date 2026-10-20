@@ -114,7 +114,7 @@ for fn in check_expected_public_surface check_firewall_zone_and_ownership enumer
     '"add-port"' '"remove-port"' '"--add-' '"--remove-' '"--reload"' \
     '"reset-failed"' '"disable"' '"enable"' '"stop"' '"restart"' \
     '"set"' 'set-default-zone'; do
-    if printf '%s' "$body" | grep -qF -- "$pattern"; then
+    if grep -qF -- "$pattern" <<<"$body"; then
       mutating_hit="$pattern"
       break
     fi

@@ -134,11 +134,11 @@ render "$STUB_DNS_LIES" "$WORK/dns.toml" >/dev/null || true
 
 echo "--- fail safely when the invariant cannot be established ---"
 out="$(render "$STUB_NONE" "$WORK/none.toml" || true)"
-if echo "$out" | grep -q "DIE:.*PUBLIC_IPV4" && [ ! -e "$WORK/none.toml" ]; then
+if grep -q "DIE:.*PUBLIC_IPV4" <<<"$out" && [ ! -e "$WORK/none.toml" ]; then
   ok "no detectable address: install refuses with an actionable PUBLIC_IPV4 hint and writes nothing"
 else fail "undetectable address did not fail safely: $out"; fi
 out="$(render "$STUB_NONE" "$WORK/none-ok.toml" 'SINGBOX_VPN_ALLOW_UNKNOWN_OWN_ADDRESS=1')" || true
-if echo "$out" | grep -q "WARN:" && [ -f "$WORK/none-ok.toml" ] && [ -z "$(toml_value "$WORK/none-ok.toml" public_ipv4)" ]; then
+if grep -q "WARN:" <<<"$out" && [ -f "$WORK/none-ok.toml" ] && [ -z "$(toml_value "$WORK/none-ok.toml" public_ipv4)" ]; then
   ok "explicit opt-out proceeds with a loud warning and records nothing"
 else fail "opt-out path: $out"; fi
 
@@ -148,10 +148,10 @@ if [ "$(toml_value "$WORK/op.toml" public_ipv4)" = "198.51.100.50" ] && [ "$(tom
   ok "PUBLIC_IPV4/PUBLIC_IPV6 override detection"
 else fail "operator override: $(cat "$WORK/op.toml" 2>/dev/null)"; fi
 out="$(render "$STUB_V4_ONLY" "$WORK/bad.toml" 'PUBLIC_IPV4=not-an-ip')" || true
-echo "$out" | grep -q "DIE:.*PUBLIC_IPV4" && [ ! -e "$WORK/bad.toml" ] \
+grep -q "DIE:.*PUBLIC_IPV4" <<<"$out" && [ ! -e "$WORK/bad.toml" ] \
   && ok "invalid PUBLIC_IPV4 is refused" || fail "invalid override accepted: $out"
 out="$(render "$STUB_V4_ONLY" "$WORK/bad6.toml" 'PUBLIC_IPV4=2001:db8::1')" || true
-echo "$out" | grep -q "DIE:.*PUBLIC_IPV4" && ok "an IPv6 literal in PUBLIC_IPV4 is refused" || fail "family mismatch accepted: $out"
+grep -q "DIE:.*PUBLIC_IPV4" <<<"$out" && ok "an IPv6 literal in PUBLIC_IPV4 is refused" || fail "family mismatch accepted: $out"
 
 echo "--- repair/update never overwrites configured addresses ---"
 cat >"$WORK/existing.toml" <<'EOF'

@@ -267,7 +267,7 @@
    "severity": "low",
    "component": "preflight_is_public_ip",
    "state": "FIXED_IN_BRANCH",
-   "title": "192.88.99.0/24 (deprecated 6to4 anycast; also the product's own arcana-2hop0 addresses) counted as public host addresses, producing a spurious 'more public IPv4 addresses than deployment.toml can record' warning on every install/update",
+   "title": "192.88.99.0/24 (deprecated 6to4 anycast; also the addresses of the test suite's leaked arcana-2hop0 dummy interface, see I-59) counted as public host addresses, producing a spurious 'more public IPv4 addresses than deployment.toml can record' warning on every install/update",
    "fix": "exclude 192.88.99.0/24 in preflight_is_public_ip",
    "regression_test": "deploy/lib/tests/test-own-address-detection.sh (red before)",
    "device_required": "no",
@@ -286,6 +286,19 @@
    "device_required": "no",
    "remaining_risk": "contract still has UNDECIDED fields awaiting owner approval; not yet wired as a deployment gate",
    "evidence": "live run on staging: 11 PASS, 2 FAIL (SSH), 7 UNDECIDED",
+   "supersedes_audit_entry": false
+  },
+  {
+   "id": "I-59",
+   "severity": "high",
+   "component": "workspace tests (two_hop_system) / update --dev-rebuild",
+   "state": "SERVER_VERIFIED",
+   "title": "the two-hop system tests create a dummy interface arcana-2hop0 with 192.88.99.2-6 as root and NEVER delete it (a process-wide OnceLock is not dropped at exit); update.sh --dev-rebuild runs them on the live node, leaving the interface and host routes permanently (found on the staging node; it also polluted own-address detection)",
+   "fix": "reference-counted NetLease: the last test to finish deletes the interface; CI step fails if it survives a test run",
+   "regression_test": "CI step 'the test run leaves no dummy interface behind'; local: interface absent after the 22-test run (was present after every run before)",
+   "device_required": "no",
+   "remaining_risk": "SIGKILL of the test process still cannot clean up (documented limit); nodes already polluted must delete the interface by hand (ip link delete arcana-2hop0)",
+   "evidence": "",
    "supersedes_audit_entry": false
   },
   {

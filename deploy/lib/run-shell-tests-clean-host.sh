@@ -50,8 +50,11 @@ for t in "${tests[@]}"; do
     { echo "=== $(date -u +%FT%TZ) $t"; printf '%s\n' "$out"; } >>"$FLAKE_LOG"
     flaky=$((flaky + 1))
   else
-    echo "FAIL $t"; printf '%s\n' "$out2" | grep -E 'FAIL|UNEXPECTED|rror' | head -8 | sed 's/^/    | /'; fails=$((fails + 1))
+    echo "FAIL $t"; grep -E 'FAIL|UNEXPECTED|rror' <<<"$out2" | head -8 | sed 's/^/    | /' || true; fails=$((fails + 1))
   fi
 done
 echo "clean-host shell test failures: $fails of ${#tests[@]} (flaky, passed on retry: $flaky)"
-[ "$fails" -eq 0 ]
+# A retry-pass is NOT a pass for release purposes: it exits 3 so a gate cannot
+# treat an intermittent failure as clean (I-53).
+[ "$fails" -eq 0 ] || exit 1
+[ "$flaky" -eq 0 ] || exit 3

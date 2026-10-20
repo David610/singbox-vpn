@@ -88,7 +88,7 @@ elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status
   # Debian/Ubuntu backend: verify the VPN ports are actually allowed.
   ufw_rules="$(ufw status 2>/dev/null)"
   for rule in "443/tcp" "443/udp"; do
-    if printf '%s\n' "$ufw_rules" | grep -qE "^${rule}[[:space:]]+(ALLOW|LIMIT)"; then
+    if grep -qE "^${rule}[[:space:]]+(ALLOW|LIMIT)" <<<"$ufw_rules"; then
       pass "ufw allows $rule"
     else
       fail_required "ufw allows $rule" "(ufw is active but the VPN port is not allowed)"

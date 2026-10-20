@@ -38,12 +38,12 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 # ---------------------------------------------------------------------
 echo "--- static: require_subscription_tls() exits (fails closed) rather than warn-and-continue ---"
 req_tls_body="$(sed -n '/^require_subscription_tls() {/,/^}/p' "$INSTALL_SH")"
-if echo "$req_tls_body" | grep -q 'SUBSCRIPTION_TLS_READY=0'; then
+if grep -q 'SUBSCRIPTION_TLS_READY=0' <<<"$req_tls_body"; then
   fail "require_subscription_tls() still sets SUBSCRIPTION_TLS_READY=0 and continues — subscription HTTPS must be mandatory"
 else
   ok "require_subscription_tls() no longer has a SUBSCRIPTION_TLS_READY=0 continue-anyway path"
 fi
-if echo "$req_tls_body" | grep -q '^\s*exit 1\s*$'; then
+if grep -q '^\s*exit 1\s*$' <<<"$req_tls_body"; then
   ok "require_subscription_tls() exits nonzero when the certificate is unavailable"
 else
   fail "require_subscription_tls() does not clearly exit nonzero on certificate failure"
@@ -52,7 +52,7 @@ fi
 echo
 echo "--- static: acceptance_stage() runs verify_subscription_through_nginx() except on a repair of an already-accepted install ---"
 acc_body="$(sed -n '/^acceptance_stage() {/,/^}/p' "$INSTALL_SH")"
-if echo "$acc_body" | grep -q 'PRIOR_ACCEPTANCE_STATE" = "accepted"' && echo "$acc_body" | grep -q 'verify_subscription_through_nginx'; then
+if grep -q 'PRIOR_ACCEPTANCE_STATE" = "accepted"' <<<"$acc_body" && grep -q 'verify_subscription_through_nginx' <<<"$acc_body"; then
   ok "acceptance_stage() gates verify_subscription_through_nginx() on PRIOR_ACCEPTANCE_STATE"
 else
   fail "acceptance_stage() does not clearly gate the subscription-through-nginx check"
@@ -61,13 +61,13 @@ fi
 echo
 echo "--- static: verify_subscription_through_nginx() never weakens TLS verification and checks real REALITY material ---"
 vsn_body="$(sed -n '/^verify_subscription_through_nginx() {/,/^}/p' "$INSTALL_SH")"
-if echo "$vsn_body" | grep -E '^\s*curl ' | grep -qE -- ' -k(\s|$)| --insecure(\s|$)'; then
+if grep -E '^\s*curl ' <<<"$vsn_body" | grep -qE -- ' -k(\s|$)| --insecure(\s|$)'; then
   fail "verify_subscription_through_nginx() uses -k/--insecure — this must never weaken TLS verification to pass"
 else
   ok "verify_subscription_through_nginx() never uses -k/--insecure"
 fi
 for needle in 'reality/public.key' 'reality/short_id.txt' 'pbk=' 'sid=' "vless://" 'privatekey'; do
-  echo "$vsn_body" | grep -qi -- "$needle" && ok "verify_subscription_through_nginx() checks for '$needle'" || fail "verify_subscription_through_nginx() does not check for '$needle'"
+  grep -qi -- "$needle" <<<"$vsn_body" && ok "verify_subscription_through_nginx() checks for '$needle'" || fail "verify_subscription_through_nginx() does not check for '$needle'"
 done
 
 echo
@@ -76,22 +76,22 @@ print_status_body="$(sed -n '/^print_status() {/,/^}/p' "$INSTALL_SH")"
 # The FIRST occurrence is the actual gate check; SUBSCRIPTION_FETCH_OK is
 # also referenced again later, inside the banner heredoc itself (to show
 # a checkmark), which is expected to come AFTER the manifest write.
-last_gate_line="$(echo "$print_status_body" | grep -n '\[ "\$SUBSCRIPTION_FETCH_OK" -eq 1 \] || die' | head -n1 | cut -d: -f1)"
-write_line="$(echo "$print_status_body" | grep -n 'write_install_state_manifest "accepted"' | head -n1 | cut -d: -f1)"
+last_gate_line="$(grep -n '\[ "\$SUBSCRIPTION_FETCH_OK" -eq 1 \] || die' <<<"$print_status_body" | head -n1 | cut -d: -f1)"
+write_line="$(grep -n 'write_install_state_manifest "accepted"' <<<"$print_status_body" | head -n1 | cut -d: -f1)"
 if [ -n "$last_gate_line" ] && [ -n "$write_line" ] && [ "$last_gate_line" -lt "$write_line" ]; then
   ok "'accepted' is written strictly after the subscription-fetch gate check"
 else
   fail "'accepted' write does not clearly follow every gate check (gate=$last_gate_line write=$write_line)"
 fi
 for gate in VLESS_REALITY_OK HYSTERIA2_OK SUBSCRIPTION_BACKEND_OK SUBSCRIPTION_HTTPS_OK NGINX_OK; do
-  echo "$print_status_body" | grep -q "\"\$${gate}\" -eq 1 \] || die" && ok "print_status() hard-gates on $gate" || fail "print_status() does not hard-gate on $gate"
+  grep -q "\"\$${gate}\" -eq 1 \] || die" <<<"$print_status_body" && ok "print_status() hard-gates on $gate" || fail "print_status() does not hard-gate on $gate"
 done
 
 echo
 echo "--- static: PRIOR_ACCEPTANCE_STATE is captured in preflight_stage before any 'installing'/'pending' manifest write in this run ---"
 preflight_body="$(sed -n '/^preflight_stage() {/,/^}/p' "$INSTALL_SH")"
-capture_line="$(echo "$preflight_body" | grep -n 'PRIOR_ACCEPTANCE_STATE=' | head -n1 | cut -d: -f1)"
-installing_write_line="$(echo "$preflight_body" | grep -n 'write_install_state_manifest "installing"' | head -n1 | cut -d: -f1)"
+capture_line="$(grep -n 'PRIOR_ACCEPTANCE_STATE=' <<<"$preflight_body" | head -n1 | cut -d: -f1)"
+installing_write_line="$(grep -n 'write_install_state_manifest "installing"' <<<"$preflight_body" | head -n1 | cut -d: -f1)"
 if [ -n "$capture_line" ] && [ -n "$installing_write_line" ] && [ "$capture_line" -lt "$installing_write_line" ]; then
   ok "PRIOR_ACCEPTANCE_STATE is captured before this run's own manifest writes begin"
 else
@@ -209,7 +209,7 @@ run_ensure_first_user() {
 echo
 echo "--- functional: fresh install (no users, PRIOR_ACCEPTANCE_STATE=none) creates the default user ---"
 out="$(run_ensure_first_user "none" "" 2>&1)" || true
-if echo "$out" | grep -q 'CALLS=CREATE_CALLED,' && echo "$out" | grep -q 'SUBSCRIPTION_URL=https://sub.example.com:8443/sub/N8ZsLdoMjbs_Sx6K1dyBrJO77zc?format=hiddify'; then
+if grep -q 'CALLS=CREATE_CALLED,' <<<"$out" && grep -q 'SUBSCRIPTION_URL=https://sub.example.com:8443/sub/N8ZsLdoMjbs_Sx6K1dyBrJO77zc?format=hiddify' <<<"$out"; then
   ok "fresh install creates the default user and captures a usable subscription URL"
 else
   fail "fresh install did not create the user / capture the URL as expected: $out"
@@ -225,7 +225,7 @@ out="$(MOCK_CREATE_RC=1 run_ensure_first_user "none" "" 2>&1)" || rc=$?
 echo
 echo "--- functional: repair of an ALREADY-ACCEPTED install with ZERO users does NOT auto-create one ---"
 out="$(run_ensure_first_user "accepted" "" 2>&1)" || true
-if echo "$out" | grep -q '^CALLS=$'; then
+if grep -q '^CALLS=$' <<<"$out"; then
   ok "repair with zero users never calls 'user create' or 'user rotate-token' — operator's (deliberately empty) user state is preserved"
 else
   fail "repair with zero users unexpectedly touched user state: $out"
@@ -235,7 +235,7 @@ echo
 echo "--- functional: repair of an ALREADY-ACCEPTED install with existing users does NOT rotate/mint anything ---"
 out="$(run_ensure_first_user "accepted" "$(printf "%-20s %-16s %-8s\n" ID NAME ENABLED)
 $(printf "%-20s %-16s %-8s\n" user_abc123 existing-name yes)" 2>&1)" || true
-if echo "$out" | grep -q '^CALLS=$'; then
+if grep -q '^CALLS=$' <<<"$out"; then
   ok "repair with existing users never calls 'user create' or 'user rotate-token'"
 else
   fail "repair with existing users unexpectedly touched user state: $out"
@@ -245,8 +245,8 @@ echo
 echo "--- functional: PENDING retry with an existing user (from a prior failed attempt) mints ONLY a fresh subscription token ---"
 out="$(run_ensure_first_user "pending" "$(printf "%-20s %-16s %-8s\n" ID NAME ENABLED)
 $(printf "%-20s %-16s %-8s\n" user_abc123 default yes)" 2>&1)" || true
-if echo "$out" | grep -q 'CALLS=ROTATE_CALLED,' && echo "$out" | grep -qv 'CREATE_CALLED' \
-    && echo "$out" | grep -q 'SUBSCRIPTION_URL=https://sub.example.com:8443/sub/rotatedTokenXYZ?format=hiddify'; then
+if grep -q 'CALLS=ROTATE_CALLED,' <<<"$out" && grep -qv 'CREATE_CALLED' <<<"$out" \
+    && grep -q 'SUBSCRIPTION_URL=https://sub.example.com:8443/sub/rotatedTokenXYZ?format=hiddify' <<<"$out"; then
   ok "pending-retry with an existing user mints a fresh token via rotate-token (not create) and captures a usable URL"
 else
   fail "pending-retry with an existing user did not behave as expected: $out"
@@ -255,7 +255,7 @@ fi
 echo
 echo "--- functional: PENDING retry with NO existing user still creates the default user (onboarding not yet complete) ---"
 out="$(run_ensure_first_user "pending" "" 2>&1)" || true
-if echo "$out" | grep -q 'CALLS=CREATE_CALLED,'; then
+if grep -q 'CALLS=CREATE_CALLED,' <<<"$out"; then
   ok "pending-retry with no existing user still creates the default user"
 else
   fail "pending-retry with no existing user did not create one: $out"
