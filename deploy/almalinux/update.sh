@@ -80,6 +80,24 @@ update_backfill_own_address() {
   backfill_own_public_addresses || warn "could not backfill this node's own public address; tunnel users may reach its services until public_ipv4/public_ipv6 are set in $DEPLOYMENT_TOML."
 }
 
+# I-45: refresh the nginx subscription vhost from this release's template so
+# fixes made there (e.g. HSTS in the credential locations) reach existing
+# nodes. Only an existing vhost is touched; nginx -t + reload, exact restore on
+# failure. A failed refresh is a warning, never an update failure: the previous
+# vhost stays in service.
+update_refresh_nginx_vhost() {
+  local conf="/etc/nginx/conf.d/vpn-subscription.conf" sub_host pub_host port backend
+  [ -f "$conf" ] && [ -f "$DEPLOYMENT_TOML" ] || return 0
+  pub_host="$(awk -F'"' '/^public_host[[:space:]]*=/{print $2; exit}' "$DEPLOYMENT_TOML")"
+  sub_host="$(awk -F'"' '/^subscription_host[[:space:]]*=/{print $2; exit}' "$DEPLOYMENT_TOML")"
+  port="$(awk '/^\[subscription\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*public_port[[:space:]]*=/{gsub(/[^0-9]/,"",$0); print; exit}' "$DEPLOYMENT_TOML")"
+  backend="$(awk '/^\[subscription\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*listen_port[[:space:]]*=/{gsub(/[^0-9]/,"",$0); print; exit}' "$DEPLOYMENT_TOML")"
+  [ -n "$pub_host$sub_host" ] && [ -n "$port" ] && [ -n "$backend" ] || { warn "could not read the subscription settings from $DEPLOYMENT_TOML; nginx vhost not refreshed."; return 0; }
+  refresh_nginx_vhost "$REPO_ROOT/deploy/almalinux/templates/nginx-vpn-subscription.conf.template" \
+    "$conf" "${sub_host:-$pub_host}" "${pub_host:-$sub_host}" "$port" "$backend" \
+    || warn "nginx vhost refresh failed; the previous vhost was kept."
+}
+
 snapshot_arcana_egress_table() {
   systemctl is-active --quiet vpn-egress-isolation.service 2>/dev/null \
     && : >"$BACKUP_DIR/arcana-egress-unit.active" \
@@ -150,6 +168,8 @@ done
 . "$REPO_ROOT/deploy/lib/preflight.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/own-address.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/nginx-vhost.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 # shellcheck source=/dev/null
@@ -600,6 +620,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   assert_deployment_identity_unchanged
 
   update_backfill_own_address
+  update_refresh_nginx_vhost
   log "rendering current authoritative users/REALITY state with new tooling..."
   SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
     "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
@@ -1175,6 +1196,7 @@ assert_deployment_identity_unchanged
 lifecycle_gate_abort_hook after_switch
 
 update_backfill_own_address
+update_refresh_nginx_vhost
 log "rendering current authoritative users/REALITY state with new tooling (credentials are never rotated by an update)..."
 SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
   "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config

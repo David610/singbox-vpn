@@ -109,14 +109,14 @@
   {
    "id": "I-45",
    "severity": "medium",
-   "component": "update.sh",
-   "state": "CONFIRMED_OPEN",
-   "title": "update.sh never re-renders the nginx vhost, so template-only fixes do not reach deployed nodes",
-   "fix": "design: transactional vhost re-render with nginx -t + rollback in update.sh",
-   "regression_test": "",
+   "component": "update.sh nginx vhost",
+   "state": "SERVER_VERIFIED",
+   "title": "update.sh never re-rendered the nginx vhost, so template-level fixes (HSTS) did not reach deployed nodes",
+   "fix": "deploy/lib/nginx-vhost.sh: shared renderer (install.sh uses it too) + transactional refresh (no-op if identical, nginx -t + reload, exact restore on failure, never creates a vhost); update_refresh_nginx_vhost on both update paths",
+   "regression_test": "deploy/lib/tests/test-nginx-vhost-refresh.sh",
    "device_required": "no",
-   "remaining_risk": "workaround: re-run install.sh (verified idempotent on staging)",
-   "evidence": "confirmed on published v1.3.1-rc.2: after update its vhost lacks the HSTS fix and subscription_acceptance reports 6 HSTS failures",
+   "remaining_risk": "published releases still need this updater; a failed refresh is a warning and keeps the old vhost; SELinux/port label changes are not handled",
+   "evidence": "staging: published rc.2 node, branch update --repair: HSTS 1->3, nginx -t ok, subscription acceptance 42/42",
    "supersedes_audit_entry": false
   },
   {

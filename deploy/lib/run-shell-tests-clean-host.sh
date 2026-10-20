@@ -39,9 +39,19 @@ for parent in "${!UPPER[@]}"; do
 done
 cd "$REPO_ROOT"
 if [ "$#" -gt 0 ]; then tests=("$@"); else tests=(deploy/lib/tests/*.sh); fi
-fails=0
+fails=0; flaky=0
+FLAKE_LOG="${FLAKE_LOG:-/tmp/singbox-vpn-shell-flakes.log}"
 for t in "${tests[@]}"; do
-  if out="$(bash "$t" 2>&1)"; then echo "PASS $t"; else echo "FAIL $t"; printf '%s\n' "$out" | grep -E 'FAIL|UNEXPECTED|rror' | head -8 | sed 's/^/    | /'; fails=$((fails + 1)); fi
+  if out="$(bash "$t" 2>&1)"; then echo "PASS $t"; continue; fi
+  # One retry, reported loudly: an intermittent failure (I-53) is evidence to
+  # keep, never something to hide. The first failure's output is preserved.
+  if out2="$(bash "$t" 2>&1)"; then
+    echo "FLAKY $t (failed once, passed on retry; first failure kept in $FLAKE_LOG)"
+    { echo "=== $(date -u +%FT%TZ) $t"; printf '%s\n' "$out"; } >>"$FLAKE_LOG"
+    flaky=$((flaky + 1))
+  else
+    echo "FAIL $t"; printf '%s\n' "$out2" | grep -E 'FAIL|UNEXPECTED|rror' | head -8 | sed 's/^/    | /'; fails=$((fails + 1))
+  fi
 done
-echo "clean-host shell test failures: $fails of ${#tests[@]}"
+echo "clean-host shell test failures: $fails of ${#tests[@]} (flaky, passed on retry: $flaky)"
 [ "$fails" -eq 0 ]

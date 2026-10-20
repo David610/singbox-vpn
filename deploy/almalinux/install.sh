@@ -135,6 +135,8 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/own-address.sh"
 # shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/nginx-vhost.sh"
+# shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/ownership.sh"
@@ -2466,10 +2468,8 @@ configure_nginx() {
   local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
   local port="${SUBSCRIPTION_PORT:-8443}"
   install -d -m 0755 "$(dirname "$NGINX_CONF")"
-  sed -e "s/{{SUBSCRIPTION_HOST}}/$host/" -e "s/{{PUBLIC_HOST}}/${PUBLIC_HOST:-$host}/" \
-      -e "s/{{SUBSCRIPTION_PORT}}/$port/" \
-      -e "s/{{SUBSCRIPTION_BACKEND_PORT}}/$SUBSCRIPTION_BACKEND_PORT/" \
-    "$REPO_ROOT/deploy/almalinux/templates/nginx-vpn-subscription.conf.template" >"$NGINX_CONF.tmp"
+  render_nginx_vhost "$REPO_ROOT/deploy/almalinux/templates/nginx-vpn-subscription.conf.template" \
+    "$host" "${PUBLIC_HOST:-$host}" "$port" "$SUBSCRIPTION_BACKEND_PORT" >"$NGINX_CONF.tmp"
   # SELinux (RHEL family) only lets nginx (httpd_t) bind() to a fixed
   # allow-list of ports labeled http_port_t (80/443/8080/8443/etc. are
   # on it by default) — a custom SUBSCRIPTION_PORT is very likely NOT on
