@@ -7936,6 +7936,44 @@ fn classify_public_surface(
     expected: &[ExpectedPort],
     subscription_backend_port: u16,
 ) -> Vec<(CheckStatus, String)> {
+    classify_public_surface_in(
+        listeners,
+        ssh_port,
+        expected,
+        subscription_backend_port,
+        local_ephemeral_port_range(),
+    )
+}
+
+/// Kernel ephemeral (auto-assigned) port range, `net.ipv4.ip_local_port_range`.
+fn parse_ephemeral_range(text: &str) -> Option<(u16, u16)> {
+    let mut it = text.split_whitespace();
+    let lo: u16 = it.next()?.parse().ok()?;
+    let hi: u16 = it.next()?.parse().ok()?;
+    (lo <= hi).then_some((lo, hi))
+}
+
+fn local_ephemeral_port_range() -> (u16, u16) {
+    std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|t| parse_ephemeral_range(&t))
+        .unwrap_or((32768, 60999))
+}
+
+/// `classify_public_surface` with the ephemeral range injected (pure/testable).
+///
+/// An unconnected UDP socket owned by one of singbox-vpn's own processes, bound
+/// on an auto-assigned (ephemeral) port that is not a configured inbound, is an
+/// outbound flow socket (sing-box sends UDP from the wildcard address), not a
+/// listener. `ss -ulnp` still lists it. It is reported INFO; the same socket on
+/// a port outside the ephemeral range, or any such TCP socket, stays FAIL.
+fn classify_public_surface_in(
+    listeners: &[ListenSocket],
+    ssh_port: Option<u16>,
+    expected: &[ExpectedPort],
+    subscription_backend_port: u16,
+    ephemeral: (u16, u16),
+) -> Vec<(CheckStatus, String)> {
     let mut findings = Vec::new();
     for l in listeners {
         let loopback = l.is_loopback();
@@ -8012,6 +8050,16 @@ fn classify_public_surface(
 
         if let Some(name) = owner {
             if is_singbox_vpn_process(name) {
+                if l.udp && (ephemeral.0..=ephemeral.1).contains(&l.port) {
+                    findings.push((
+                        CheckStatus::Info,
+                        format!(
+                            "{name} holds an outbound UDP flow socket on {addr_port}/{proto} \
+                             (ephemeral port, not a configured inbound; not a listener)"
+                        ),
+                    ));
+                    continue;
+                }
                 findings.push((
                     CheckStatus::Fail,
                     format!(
@@ -10896,6 +10944,56 @@ mod public_surface_tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, CheckStatus::Fail);
         assert!(findings[0].1.contains("internal singbox-vpn process"));
+    }
+
+    const EPHEMERAL: (u16, u16) = (32768, 60999);
+
+    #[test]
+    fn own_process_outbound_udp_flow_socket_on_ephemeral_port_is_not_a_failure() {
+        // sing-box's outbound UDP flows are unconnected sockets bound to the
+        // wildcard on an auto-assigned port; `ss -ulnp` lists them as if they
+        // were listeners (23 false FAILs observed on the previous node).
+        let listeners: Vec<_> = (0..23)
+            .map(|i| sock(true, "0.0.0.0", 40000 + i, Some("sing-box")))
+            .collect();
+        let findings =
+            classify_public_surface_in(&listeners, Some(22), &expected(), 9100, EPHEMERAL);
+        assert_eq!(findings.len(), 23);
+        assert!(
+            findings.iter().all(|f| f.0 == CheckStatus::Info),
+            "outbound flow sockets must be INFO, not FAIL: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn own_process_udp_on_a_non_ephemeral_unexpected_port_is_still_fail() {
+        // Deliberate unintended exposure must still fail the doctor.
+        for port in [5353, 1900, 8444] {
+            let listeners = vec![sock(true, "0.0.0.0", port, Some("sing-box"))];
+            let findings =
+                classify_public_surface_in(&listeners, Some(22), &expected(), 9100, EPHEMERAL);
+            assert_eq!(findings[0].0, CheckStatus::Fail, "udp/{port}");
+        }
+    }
+
+    #[test]
+    fn own_process_unexpected_tcp_listener_on_an_ephemeral_port_is_still_fail() {
+        // Only UDP has outbound sockets that appear in `ss -l`; a TCP
+        // listener is always a real listener.
+        let listeners = vec![sock(false, "0.0.0.0", 40000, Some("sing-box"))];
+        let findings =
+            classify_public_surface_in(&listeners, Some(22), &expected(), 9100, EPHEMERAL);
+        assert_eq!(findings[0].0, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn ephemeral_range_parser_reads_proc_format_and_rejects_garbage() {
+        assert_eq!(
+            parse_ephemeral_range("32768\t60999\n"),
+            Some((32768, 60999))
+        );
+        assert_eq!(parse_ephemeral_range("60999 32768"), None);
+        assert_eq!(parse_ephemeral_range("x"), None);
     }
 
     #[test]
