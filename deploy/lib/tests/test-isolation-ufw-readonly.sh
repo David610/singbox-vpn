@@ -26,7 +26,17 @@ for args in "allow 22" "enable" "--force disable" "delete allow 443"; do
 done
 [ "$(wc -l <"$LOG")" -eq 4 ] && ok "mutating ufw calls are all recorded" || bad "mutating ufw calls not all recorded: $(cat "$LOG")"
 
-: >"$LOG"; "$T/bin/firewall-cmd" --state >/dev/null 2>&1; "$T/bin/nft" list ruleset >/dev/null 2>&1
-[ "$(wc -l <"$LOG")" -eq 1 ] && ok "firewall-cmd query stays silent, nft is still recorded (behaviour unchanged)" || bad "other guards changed: $(cat "$LOG")"
+# I-54/I-55: doctor's IPv6 check runs the read-only `nft list table ...`; that must not
+# count as host control (it made --dev-rebuild unable to pass its own test phase).
+: >"$LOG"; "$T/bin/firewall-cmd" --state >/dev/null 2>&1; "$T/bin/nft" list table inet arcana_egress_isolation >/dev/null 2>&1
+[ ! -s "$LOG" ] && ok "firewall-cmd query and read-only 'nft list' stay silent" || bad "read-only queries recorded: $(cat "$LOG")"
+"$T/bin/nft" list table inet x >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 97 ] && ok "nft list is still refused (exit 97)" || bad "nft list exit $rc"
+: >"$LOG"
+for args in "delete table inet x" "flush ruleset" "-f /tmp/x.nft" "add table inet y"; do
+  # shellcheck disable=SC2086
+  "$T/bin/nft" $args >/dev/null 2>&1
+done
+[ "$(wc -l <"$LOG")" -eq 4 ] && ok "mutating nft calls are all recorded" || bad "mutating nft calls not all recorded: $(cat "$LOG")"
 
 [ "$failures" -eq 0 ] || { echo "$failures failure(s)"; exit 1; }; echo "all passed"
