@@ -69,6 +69,8 @@ precheck_state() {
   [ -e /var/lib/singbox-vpn/update-transaction.json ] && { echo "a transaction marker already exists"; bad=1; }
   [ "$(stale_dirs)" = 0 ] || { echo "stale /opt/.singbox-vpn-* directories exist"; bad=1; }
   [ "$(lock_held)" = free ] || { echo "the update lock is held by a live process"; bad=1; }
+  local failed; failed="$(systemctl --failed --no-legend 2>/dev/null | grep -E 'vpn-|sing-box' | awk '{print $2}' | tr '\n' ',' || true)"
+  [ -z "$failed" ] || { echo "units in a failed state after the restore: $failed"; bad=1; }
   return $bad
 }
 precheck() { local r=0; precheck_capacity || r=1; precheck_state || r=1; return $r; }
@@ -122,13 +124,16 @@ snapshot() {
   echo "snapshot $(du -h "$SNAP" | cut -f1) version=$(ver) creds=$(creds) bins=$(binsig)"
 }
 restore() {
-  systemctl stop sing-box vpn-subscription vpn-service-watchdog.timer vpn-expiry-reconcile.timer 2>/dev/null
+  # stop the timers AND their one-shot services: a timer firing while /etc/vpn is being replaced leaves a failed
+  # one-shot (matrix variant run: "read certificate: no such file"), which is the harness's doing, not the product's
+  systemctl stop vpn-service-watchdog.timer vpn-expiry-reconcile.timer vpn-service-watchdog.service vpn-expiry-reconcile.service 2>/dev/null
+  systemctl stop sing-box vpn-subscription 2>/dev/null
   rm -rf /opt/.singbox-vpn-* /var/lib/singbox-vpn/update-transaction.json
   rm -rf /etc/vpn /var/lib/singbox-vpn /opt/singbox-vpn
   tar -xpf "$SNAP" --numeric-owner -C / || { echo "restore FAILED"; return 1; }
   systemctl daemon-reload
   # a previous stage can leave a unit in start-limit-hit; clear it so the restore itself is not refused
-  systemctl reset-failed sing-box vpn-subscription 2>/dev/null
+  systemctl reset-failed sing-box vpn-subscription vpn-service-watchdog.service vpn-expiry-reconcile.service 2>/dev/null
   systemctl start sing-box vpn-subscription vpn-service-watchdog.timer vpn-expiry-reconcile.timer 2>/dev/null; systemctl reload nginx 2>/dev/null
   sleep 5
   echo "restored version=$(ver) creds=$(creds) bins=$(binsig) services=$(svc_ok) doctor_fails=$(doctor_fails)"
