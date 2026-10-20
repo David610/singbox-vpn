@@ -1909,8 +1909,24 @@ systemd_stage() {
 # [7] users/groups
 # ---------------------------------------------------------------------
 create_service_users() {
-  id vpn-subscription >/dev/null 2>&1 || { useradd --system --no-create-home --shell /usr/sbin/nologin vpn-subscription; ownership_mark USER_VPNSUB_CREATED; }
-  id sing-box >/dev/null 2>&1 || { useradd --system --no-create-home --shell /usr/sbin/nologin sing-box; ownership_mark USER_SINGBOX_CREATED; }
+  # useradd refuses ("group X exists", exit 9) when the same-named primary
+  # group already exists — left by a root-run test suite or an interrupted
+  # earlier install/uninstall (I-41, reproduced on Ubuntu 26.04). Adopt such
+  # a group with -g instead of aborting the whole install. The user is still
+  # marked created, so uninstall removes the user and its orphaned group.
+  local spec name mark
+  for spec in vpn-subscription:USER_VPNSUB_CREATED sing-box:USER_SINGBOX_CREATED; do
+    name="${spec%%:*}"
+    mark="${spec##*:}"
+    if ! id "$name" >/dev/null 2>&1; then
+      if getent group "$name" >/dev/null 2>&1; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin -g "$name" "$name"
+      else
+        useradd --system --no-create-home --shell /usr/sbin/nologin "$name"
+      fi
+      ownership_mark "$mark"
+    fi
+  done
   # Shared traversal-only group: neither service's *files* become
   # readable by the other (that's still controlled by per-file group
   # ownership below), but both services' primary groups need to walk

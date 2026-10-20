@@ -37,9 +37,17 @@ Port 2222
 EOF
 port_out=""
 rc=0
+# Host isolation (I-42): preflight_detect_ssh_port also asks the host's real
+# `sshd -T` and `ss`. Cases that exercise config-file fallback / fail-closed
+# behaviour must not see them, or they fail on any machine running sshd.
+NOSSH_BIN="$TMPDIR_TEST/nossh-bin"
+mkdir -p "$NOSSH_BIN"
+for tool in sshd ss; do printf '#!/bin/sh\nexit 1\n' >"$NOSSH_BIN/$tool"; chmod +x "$NOSSH_BIN/$tool"; done
+
 port_out="$(
   # shellcheck disable=SC1090
   . "$PREFLIGHT_SH"
+  PATH="$NOSSH_BIN:$PATH"
   SSHD_CONFIG_FILE="$FAKE_SSHD_CONFIG"
   preflight_detect_ssh_port
 )" || rc=$?
@@ -81,6 +89,7 @@ rc=0
 port_out="$(
   # shellcheck disable=SC1090
   . "$PREFLIGHT_SH"
+  PATH="$NOSSH_BIN:$PATH"
   SSHD_CONFIG_FILE="$TMPDIR_TEST/does-not-exist"
   preflight_detect_ssh_port
 )" || rc=$?
@@ -96,6 +105,7 @@ rc=0
 port_out="$(
   # shellcheck disable=SC1090
   . "$PREFLIGHT_SH"
+  PATH="$NOSSH_BIN:$PATH"
   SSHD_CONFIG_FILE="$TMPDIR_TEST/does-not-exist"
   unset SINGBOX_VPN_SSH_PORT
   preflight_resolve_ssh_port
@@ -112,6 +122,7 @@ rc=0
 port_out="$(
   # shellcheck disable=SC1090
   . "$PREFLIGHT_SH"
+  PATH="$NOSSH_BIN:$PATH"
   SSHD_CONFIG_FILE="$TMPDIR_TEST/does-not-exist"
   SINGBOX_VPN_SSH_PORT="2222"
   preflight_resolve_ssh_port
