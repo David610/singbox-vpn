@@ -1,0 +1,122 @@
+{
+ "schema": 1,
+ "label": "direct-ipv6-domain",
+ "utc": "2026-10-20T07:40:53+00:00",
+ "evidence_class": "browser-emulation-tcp-only",
+ "summary": {
+  "short": "1/4",
+  "video": "0/2"
+ },
+ "results": [
+  {
+   "kind": "short",
+   "trial": 1,
+   "url": "https://m.youtube.com/shorts/sAcElROnYIE",
+   "playabilityStatus": "OK",
+   "reason": "",
+   "bot_wall": false,
+   "ui_unavailable": true,
+   "time_start": 0,
+   "time_end": 0,
+   "media": {
+    "responses": 1,
+    "bytes": 0,
+    "status": {
+     "200": 1
+    }
+   },
+   "play": false
+  },
+  {
+   "kind": "short",
+   "trial": 1,
+   "url": "https://m.youtube.com/shorts/NlHemkN8xq4",
+   "playabilityStatus": "OK",
+   "reason": "",
+   "bot_wall": false,
+   "ui_unavailable": true,
+   "time_start": 0,
+   "time_end": 0,
+   "media": {
+    "responses": 1,
+    "bytes": 0,
+    "status": {
+     "200": 1
+    }
+   },
+   "play": false
+  },
+  {
+   "kind": "short",
+   "trial": 1,
+   "url": "https://m.youtube.com/shorts/GJVO2DrTqUY",
+   "playabilityStatus": "OK",
+   "reason": "",
+   "bot_wall": false,
+   "ui_unavailable": true,
+   "time_start": 0,
+   "time_end": 0,
+   "media": {
+    "responses": 1,
+    "bytes": 0,
+    "status": {
+     "200": 1
+    }
+   },
+   "play": false
+  },
+  {
+   "kind": "short",
+   "trial": 1,
+   "url": "https://m.youtube.com/shorts/dQw4w9WgXcQ",
+   "playabilityStatus": "OK",
+   "reason": "",
+   "bot_wall": false,
+   "ui_unavailable": false,
+   "time_start": 2.17,
+   "time_end": 7.18,
+   "media": {
+    "responses": 3,
+    "bytes": 0,
+    "status": {
+     "200": 3
+    }
+   },
+   "play": true
+  },
+  {
+   "kind": "video",
+   "trial": 1,
+   "url": "https://m.youtube.com/watch?v=jNQXAC9IpQU",
+   "playabilityStatus": "ERROR",
+   "reason": "This video is unavailable",
+   "bot_wall": false,
+   "ui_unavailable": true,
+   "time_start": 0,
+   "time_end": 0,
+   "media": {
+    "responses": 0,
+    "bytes": 0,
+    "status": {}
+   },
+   "play": false
+  },
+  {
+   "kind": "video",
+   "trial": 1,
+   "url": "https://m.youtube.com/watch?v=aqz-KE-bpKQ",
+   "playabilityStatus": "LOGIN_REQUIRED",
+   "reason": "Sign in to confirm you\u2019re not a bot",
+   "bot_wall": true,
+   "ui_unavailable": false,
+   "time_start": 0,
+   "time_end": 0,
+   "media": {
+    "responses": 0,
+    "bytes": 0,
+    "status": {}
+   },
+   "play": false
+  }
+ ]
+}
