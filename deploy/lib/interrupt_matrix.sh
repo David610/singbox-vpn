@@ -156,7 +156,12 @@ stage() {
   kv baseline_version "$base_ver"; kv baseline_bins "$base_bins"; kv free_root_mb_start "$free_root0"; kv free_tmp_mb_start "$free_tmp0"
   # --- run the updater and kill it at the marker
   local LOG="$D/update.log"; : >"$LOG"
-  setsid bash -c "$(declare -f run_updater); BRANCH_UPDATER='$BRANCH_UPDATER' INSTALLED_UPDATER='$INSTALLED_UPDATER'; run_updater $UPD --version $TARGET" >"$LOG" 2>&1 & local PID=$!
+  # Launch the updater script DIRECTLY (no wrapper shell): $PID is then the updater itself, so a "main only" kill
+  # really kills the updater and leaves only its children (the orphan case). A wrapper would be killed instead and
+  # the real updater would carry on and finish the update (the first version of this harness did exactly that).
+  local SCRIPT; if [ "$UPD" = branch ]; then SCRIPT="$BRANCH_UPDATER"; else SCRIPT="$INSTALLED_UPDATER"; fi
+  setsid bash "$SCRIPT" --version "$TARGET" >"$LOG" 2>&1 & local PID=$!
+  kv updater_pid "$PID"
   local fired=no
   for _ in $(seq 1 3000); do grep -qF "$M" "$LOG" 2>/dev/null && { fired=yes; break; }; kill -0 $PID 2>/dev/null || break; sleep 0.1; done
   if [ "$fired" = yes ]; then
@@ -164,6 +169,7 @@ stage() {
     if [ "$KILL" = tree ]; then kill_tree $PID >"$D/killed-procs.txt"; else KILLED_PIDS=$PID; kill -9 $PID 2>/dev/null; fi
     sleep 1
     kv kill_fired true; kv killed_pids "$(echo $KILLED_PIDS | tr ' ' ',')"; kv survivors_after_kill "$(survivors "$KILLED_PIDS")"
+    kv updater_alive_after_kill "$(kill -0 "$PID" 2>/dev/null && echo yes || echo no)"
   else
     kv kill_fired false; kill_tree $PID >/dev/null 2>&1; kv verdict INVALID; kv reason "kill point '$M' never reached"
     python3 -I "$(dirname "$0")/interrupt_matrix_report.py" "$KV" >>"$OUTDIR/matrix.jsonl"; echo "stage $N INVALID (kill point never reached)"; return 0

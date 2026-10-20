@@ -36,6 +36,7 @@ class Report(unittest.TestCase):
         self.assertEqual(v, "FAIL")
     def test_post_commit_kill_leaving_the_new_release_is_a_pass(self):
         self.assertEqual(verdict(marker_after_kill="no", version_after_recover="1.3.1", bins_after_recover="NEW,")[0], "PASS")
+    def test_an_updater_that_survived_the_kill_is_invalid(self): self.assertEqual(verdict(updater_alive_after_kill="yes")[0], "INVALID")
     def test_credential_change_fails(self): self.assertEqual(verdict(creds_after_recover="CHANGED")[0], "FAIL")
     def test_tmp_leak_fails(self): self.assertEqual(verdict(tmp_leaks_delta="3")[0], "FAIL")
     def test_non_idempotent_rerun_fails(self): self.assertEqual(verdict(idempotent_bins_same="NO")[0], "FAIL")

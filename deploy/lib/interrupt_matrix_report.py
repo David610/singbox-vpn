@@ -23,6 +23,8 @@ if verdict != "INVALID":
             invalid.append(f"capacity collapsed during the run ({k}={kv[k]} MB)")
     if kv.get("kill_scope") == "tree" and kv.get("survivors_after_kill") not in ("0", None):
         invalid.append("tree kill left surviving processes")
+    if kv.get("updater_alive_after_kill") == "yes":
+        invalid.append("the updater process itself was still alive after the kill (the experiment did not kill what it claims)")
     if invalid:
         verdict, reasons = "INVALID", invalid
     else:
