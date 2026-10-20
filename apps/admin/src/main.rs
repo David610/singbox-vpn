@@ -8010,6 +8010,7 @@ fn read_declared_inbounds(path: &std::path::Path) -> Option<DeclaredInbounds> {
 ///   - no inbound declares it and the port is not ephemeral -> FAIL;
 ///   - the config could not be read (`declared` is None) -> ephemeral is WARN
 ///     (cannot be told apart), anything else FAIL. Never INFO without proof.
+///
 /// Any TCP listener stays FAIL.
 fn classify_public_surface_in(
     listeners: &[ListenSocket],
