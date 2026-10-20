@@ -18,6 +18,7 @@ Thresholds (docs/operations/ACCEPTANCE_THRESHOLDS.md, marked calibrate there):
   soak              success rate >= --min-soak-success       (default 0.99)
 """
 import argparse
+import atexit
 import datetime
 import json
 import os
@@ -100,6 +101,8 @@ def main():
     ap.add_argument("--sing-box", default="/usr/local/bin/sing-box")
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--bytes", type=int, default=25_000_000)
+    ap.add_argument("--local-source", action="store_true",
+                    help="serve the payload from 192.88.99.5 on a TEMPORARY dummy interface on this node (removed on exit), so a throttling third-party source cannot distort the result")
     ap.add_argument("--download-url", default="https://proof.ovh.net/files/1Gb.dat",
                     help="a source that supports Range requests; rate-limit answers (403/429/503) are reported as source_limited, never as tunnel failures")
     ap.add_argument("--latency-samples", type=int, default=60)
@@ -118,6 +121,21 @@ def main():
     ap.add_argument("--out")
     a = ap.parse_args()
     url = open(a.url_file).read().strip()
+    cleanup = []
+    if a.local_source:
+        d = tempfile.mkdtemp(prefix="perfsrc-")
+        with open(os.path.join(d, "payload.bin"), "wb") as f:
+            f.truncate(a.bytes)
+        iface = "perfsrc0"
+        subprocess.run(["ip", "link", "delete", iface], capture_output=True)
+        if subprocess.run(["ip", "link", "add", iface, "type", "dummy"], capture_output=True).returncode != 0:
+            print("cannot create the temporary source interface (need root)"); return 2
+        subprocess.run(["ip", "link", "set", iface, "up"]); subprocess.run(["ip", "addr", "add", "192.88.99.5/32", "dev", iface])
+        srv = subprocess.Popen([sys.executable, "-m", "http.server", "8099", "--bind", "192.88.99.5", "--directory", d], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cleanup.append(lambda: (srv.terminate(), subprocess.run(["ip", "link", "delete", iface], capture_output=True)))
+        atexit.register(lambda: [fn() for fn in cleanup])      # also runs on an exception / early return
+        time.sleep(1)
+        a.download_url = "http://192.88.99.5:8099/payload.bin"
     dl = a.download_url
     small = a.download_url          # soak/restart probes use a small range of the same source
     doc = json.loads(sa.fetch(url.split("?")[0] + "?format=singbox")[2])
@@ -206,7 +224,10 @@ def main():
                 print(f"{tag}: {json.dumps(t)}")
             finally:
                 proc.terminate(); proc.wait(5)
+    for fn in cleanup:
+        fn()
     res["verdicts"] = verd
+    res["source"] = "local temporary destination 192.88.99.5 (dummy interface, removed after the run)" if a.local_source else a.download_url
     res["method_notes"] = [
         "latency = median end-to-end time_total of http://1.1.1.1/ via tunnel minus direct (first versions of this tool timed the local SOCKS connect and under-reported it)",
         "restart recovery on LOOPBACK understates Hysteria2: a closed local UDP socket returns ICMP port-unreachable at once; a real network does not (I-22: ~30 s stalls). Real-network recovery is UNVERIFIED",

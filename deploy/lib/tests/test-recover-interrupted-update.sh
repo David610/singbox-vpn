@@ -14,7 +14,7 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/opt" "$T/state" "$T/victim/keep"
 printf '#!/bin/sh\nexit 0\n' >"$T/bin/systemctl"; chmod +x "$T/bin/systemctl"
 echo canary >"$T/victim/keep/canary"; echo canary >"$T/canary-cwd"
-export PATH="$T/bin:$PATH" RECOVER_MARKER="$T/state/update-transaction.json" RECOVER_OPT_DIR="$T/opt" RECOVER_ARCHIVE_DIR="$T/state" RECOVER_HEALTH_CMD="echo [OK] fine"
+export PATH="$T/bin:$PATH" RECOVER_EXPECT_UID="$(id -u)" RECOVER_MARKER="$T/state/update-transaction.json" RECOVER_OPT_DIR="$T/opt" RECOVER_ARCHIVE_DIR="$T/state" RECOVER_HEALTH_CMD="echo [OK] fine"
 P="$T/opt/.singbox-vpn-prev-1"; S="$T/opt/.singbox-vpn-update-staging.abc"
 reset() { rm -rf "$T/opt" "$T/state"; mkdir -p "$T/opt/singbox-vpn" "$T/state"; }
 marker() { printf '{"prev_opt_dir":%s,"staged_src_dir":%s}' "$1" "$2" >"$RECOVER_MARKER"; }
