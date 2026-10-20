@@ -55,16 +55,23 @@ kill_tree() {
 }
 survivors() { local n=0 p; for p in $1; do kill -0 "$p" 2>/dev/null && n=$((n + 1)); done; echo $n; }
 
-precheck() { # prints reasons it is not valid to start; returns nonzero if any
+# Capacity must hold BEFORE anything is restored; cleanliness is judged AFTER the restore (the restore is what
+# makes a node clean, so a stage that failed earlier must not poison every later stage).
+precheck_capacity() {
   local bad=0
   [ "$(free_mb /)" -ge "$MIN_FREE_MB_ROOT" ] || { echo "disk / has $(free_mb /) MB free (< $MIN_FREE_MB_ROOT)"; bad=1; }
   [ "$(free_mb /tmp)" -ge "$MIN_FREE_MB_TMP" ] || { echo "/tmp has $(free_mb /tmp) MB free (< $MIN_FREE_MB_TMP)"; bad=1; }
   [ "$(free_inode_pct /)" -ge 10 ] || { echo "inodes on / below 10% free"; bad=1; }
+  return $bad
+}
+precheck_state() {
+  local bad=0
   [ -e /var/lib/singbox-vpn/update-transaction.json ] && { echo "a transaction marker already exists"; bad=1; }
   [ "$(stale_dirs)" = 0 ] || { echo "stale /opt/.singbox-vpn-* directories exist"; bad=1; }
   [ "$(lock_held)" = free ] || { echo "the update lock is held by a live process"; bad=1; }
   return $bad
 }
+precheck() { local r=0; precheck_capacity || r=1; precheck_state || r=1; return $r; }
 
 selftest() {
   local T F=0; T="$(mktemp -d)"
@@ -138,10 +145,10 @@ stage() {
   local KV="$D/kv"; : >"$KV"; kv() { echo "$1=$2" >>"$KV"; }
   local h0; h0="$(sha256sum <"$0" | cut -c1-16)"; kv harness_sha "$h0"; kv stage "$N"; kv marker "$M"; kv updater "$UPD"; kv kill_scope "$KILL"
   local invalid=""
-  precheck >"$D/precheck.txt" 2>&1 || invalid="precheck: $(tr '\n' ';' <"$D/precheck.txt")"
+  precheck_capacity >"$D/precheck.txt" 2>&1 || invalid="capacity precheck: $(tr '\n' ';' <"$D/precheck.txt")"
   if [ -z "$invalid" ]; then
     restore >"$D/restore.txt" 2>&1; kv restore "$(tail -1 "$D/restore.txt" | cut -c1-200)"
-    precheck >"$D/precheck2.txt" 2>&1 || invalid="post-restore precheck: $(tr '\n' ';' <"$D/precheck2.txt")"
+    { precheck_capacity && precheck_state; } >"$D/precheck2.txt" 2>&1 || invalid="post-restore precheck: $(tr '\n' ';' <"$D/precheck2.txt")"
   fi
   if [ -n "$invalid" ]; then kv verdict "INVALID"; kv reason "$invalid"; python3 -I "$(dirname "$0")/interrupt_matrix_report.py" "$KV" >>"$OUTDIR/matrix.jsonl"; echo "stage $N INVALID: $invalid"; return 0; fi
   local base_creds base_bins base_ver leaks0 free_root0 free_tmp0
