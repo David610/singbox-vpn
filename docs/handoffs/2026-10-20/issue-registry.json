@@ -224,6 +224,32 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-54",
+   "severity": "critical",
+   "component": "nftables egress isolation (vpn-egress-isolation.service)",
+   "state": "SERVER_VERIFIED",
+   "title": "the host-layer table broke IPv6 neighbour discovery: 'meta skuid != UID accept' does not match socketless kernel packets, so ND to fe80::/10 and ff00::/8 was rejected; the whole host lost IPv6 after install/update (gateway FAILED, no IPv6 egress for anyone)",
+   "fix": "positive uid-scoped rejects with counters in deploy/almalinux/nftables-egress-isolation.sh",
+   "regression_test": "deploy/lib/tests/test-egress-isolation-ipv6-nd.sh (two-netns behavioural; red before, also proves uid scoping)",
+   "device_required": "no",
+   "remaining_risk": "published v1.3.1-rc.2 and every earlier release carry the defect; existing nodes keep the old table until the script is re-run",
+   "evidence": "staging: IPv6 dead with the table, restored at once without it; after the fix a flushed-cache ND succeeds, v6 egress and YouTube/v6 HTTP 200",
+   "supersedes_audit_entry": false
+  },
+  {
+   "id": "I-55",
+   "severity": "high",
+   "component": "admin/doctor",
+   "state": "CONFIRMED_OPEN",
+   "title": "doctor has no IPv6 health check: it passed (rc 0) while the host's IPv6 was completely broken by I-54",
+   "fix": "add a check: global IPv6 address + default route present => gateway ND/ICMPv6 and a real IPv6 connection must work, else WARN/FAIL",
+   "regression_test": "",
+   "device_required": "no",
+   "remaining_risk": "until then an IPv6 outage is invisible to doctor",
+   "evidence": "",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-51",
    "severity": "high",
    "component": "Hiddify iOS (client)",

@@ -22,3 +22,13 @@ Summary of what failed and why, in order found; details and evidence in
    and recomputed (I-47).
 8. **SSH**: password root login with no authorized keys and continuous
    brute-force. Tooling and rate limit added; hardening awaits the owner's key (I-39).
+9. **Host IPv6 destroyed by the egress-isolation table (I-54, critical).** Found
+   while checking IPv6 after the lifecycle tests: gateway neighbour entry
+   `FAILED`, no IPv6 egress. ufw was ruled out (IPv6 stayed dead with it off);
+   removing `table inet arcana_egress_isolation` restored IPv6 immediately.
+   Mechanism: `meta skuid != UID accept` never matches packets without a socket
+   owner (kernel neighbour discovery), which then hit the `fe80::/10`/`ff00::/8`
+   rejects. Doctor did not notice (I-55). Fixed with positive uid-scoped rules and
+   a two-namespace behavioural test; applied and verified on staging. This
+   plausibly affects every dual-stack node installed from any release so far, and
+   is the strongest argument for cutting a corrected release.
