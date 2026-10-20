@@ -29,8 +29,16 @@ if verdict != "INVALID":
         need = lambda cond, msg: None if cond else reasons.append(msg)
         need(kv.get("creds_after_kill") == "same" and kv.get("creds_after_recover") == "same" and kv.get("creds_final") == "same" and kv.get("creds_idem") == "same", "credentials changed")
         need(kv.get("marker_after_recover") == "no" and kv.get("stale_dirs_after_recover") == "0", "marker or stale directories remain after recovery")
-        need(kv.get("version_after_recover") == kv.get("baseline_version") and kv.get("bins_after_recover") == kv.get("baseline_bins") or kv.get("marker_after_kill") == "no" and kv.get("stale_dirs_after_kill") in ("0", "1") and kv.get("version_after_recover") == kv.get("baseline_version"),
-             "previous release not consistently restored (version/binaries differ from the baseline)")
+        # Consistency of the release after recovery. A kill BEFORE the commit leaves a marker: recovery must give
+        # back exactly the baseline release. A kill AFTER the commit (the update already finished; only the
+        # post-commit manifest/agent refresh was running) leaves no marker: the node legitimately runs the NEW
+        # release and recovery must be a no-op. Either way the release must be ONE consistent release, never a mix.
+        old_ok = kv.get("version_after_recover") == kv.get("baseline_version") and kv.get("bins_after_recover") == kv.get("baseline_bins")
+        new_ok = kv.get("version_after_recover") == kv.get("version_final") and kv.get("bins_after_recover") == kv.get("bins_final")
+        if kv.get("marker_after_kill") == "yes":
+            need(old_ok, "an open transaction was not rolled back to exactly the baseline release (version/binaries differ)")
+        else:
+            need(old_ok or new_ok, "no open transaction, yet the node runs a MIXED release (neither the baseline nor the final binaries)")
         need(kv.get("services_after_recover") == "all-active" and kv.get("doctor_fails_after_recover") == "0", "services/doctor unhealthy after recovery")
         need(kv.get("protocol_rc_after_recover") == "0", "protocol self-test failed after recovery")
         need(kv.get("final_update_rc") == "0" and kv.get("version_final", "").startswith("1.3.1"), "normal update after recovery failed")
