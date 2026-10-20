@@ -1,0 +1,17 @@
+[Unit]
+Description=singbox-vpn Shorts health probe (egress path %i)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# %i is the path label. Set the proxy for the path under test in
+# /etc/vpn/shorts-health.env, e.g. PROXY_exit-ipv4=socks5://127.0.0.1:1084
+EnvironmentFile=-/etc/vpn/shorts-health.env
+ExecStart=/usr/bin/python3 /opt/singbox-vpn/deploy/lib/monitoring/shorts_health.py --label %i
+# Exit 1 (suspect/degraded), 2 (critical), 3 (unverified) are all visible as a
+# failed unit; do not mask them.
+SuccessExitStatus=0
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/singbox-vpn
+PrivateTmp=true

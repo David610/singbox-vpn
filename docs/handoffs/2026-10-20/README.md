@@ -33,18 +33,22 @@ Source address verified per family (`ifconfig.me` through the forced-family prox
 
 | Path | Result |
 |---|---|
-| Direct IPv4, domain destination | Shorts 1/4, normal videos 0/2 |
-| Direct IPv6, domain destination | Shorts 1/4, normal videos 0/2 |
-| Direct IPv4, repeat (2 trials) | Shorts 2/8, normal videos 0/4 |
+| Direct IPv4, domain destination | true Shorts 0/3 (recorded 1/4 — see correction), normal videos 0/2 |
+| Direct IPv6, domain destination | true Shorts 0/3 (recorded 1/4), normal videos 0/2 |
+| Direct IPv4, repeat (2 trials) | true Shorts 0/6 (recorded 2/8), normal videos 0/4 |
 | Direct IPv4, literal-IPv4 destination | Shorts 0/4 (stdout of `youtube_shorts_probe.py`, not saved as JSON) |
 | Direct IPv6, literal-IPv6 destination | Shorts 0/4 |
 
 Signature: `playabilityStatus: OK` with media requested but the clock stuck at
 0, and on a normal video `LOGIN_REQUIRED "Sign in to confirm you're not a bot"`
 — the same signature recorded historically for this IP
-(`docs/YOUTUBE_FINAL_ROOT_CAUSE.md`). The single video that played in each
-trial (`dQw4w9WgXcQ`, not a true Short) shows the harness itself can play
-media. Caveats: no known-good control egress is available on this host, so
+(`docs/YOUTUBE_FINAL_ROOT_CAUSE.md`). **Correction (same day):** the first probe version counted `dQw4w9WgXcQ` as a
+Short. It is not one (YouTube serves it as an ordinary video), so the recorded
+1/4, 1/4 and 2/8 overstated playback. The probe now counts an item as a Short
+only if the page stays on `/shorts/` and reports other items separately. Recomputed
+from the saved JSON, true Shorts played **0/3, 0/3 and 0/6**. That one ordinary
+video playing still shows the harness can play media, and that this IP is not
+blanket-blocked for media; the refusal is specific to Shorts/the bot wall. Caveats: no known-good control egress is available on this host, so
 "refused" is inferred from the historical equivalence and the signature, not from
 a same-run control; Short IDs may age out.
 

@@ -5,10 +5,11 @@ Evidence classes follow `CLAUDE.md`. Companion: `docs/YOUTUBE_FIX_INVARIANTS.md`
 (protected), `docs/operations/ACCEPTANCE_THRESHOLDS.md`.
 
 ## Measured facts (browser verified, 2026-10-20, staging host 62.238.46.190)
-Both address families of this host fail Shorts playback: IPv4 domain 1/4 and
-2/8 (repeat), IPv6 domain 1/4, literal IPv4 0/4, literal IPv6 0/4; normal videos
-0/2 and 0/4 with `LOGIN_REQUIRED "not a bot"` on one. Raw evidence:
-`docs/handoffs/2026-10-20/evidence/`. The single playing item was not a true Short.
+Both address families of this host fail Shorts playback: true Shorts played
+0/3 (IPv4 domain), 0/6 (IPv4 repeat), 0/3 (IPv6 domain), 0/4 literal IPv4, 0/4
+literal IPv6; normal videos 0/2 and 0/4 with `LOGIN_REQUIRED "not a bot"` on one.
+Raw evidence: `docs/handoffs/2026-10-20/evidence/` (the saved JSON predates the
+fix that excludes non-Shorts from the count; recomputed numbers are above).
 Caveat: no same-run known-good control exists on this host.
 
 ## Options
