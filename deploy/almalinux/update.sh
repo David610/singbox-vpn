@@ -115,6 +115,14 @@ snapshot_arcana_egress_table() {
 
 # Restore exactly what existed before this transaction without relying on the
 # restored release containing this newly introduced helper.
+# Explicit service restarts that systemd's start-rate limiter cannot refuse. An update, a rollback and a
+# recovery restart vpn-subscription/sing-box several times within seconds; with StartLimitBurst=8 per 300 s a
+# retried or back-to-back sequence parks the unit in `failed (start-limit-hit)` and the rollback's own health
+# verification then fails (found by the SIGKILL matrix: "Start request repeated too quickly"). reset-failed
+# clears the counter and the failed state first (vpn-admin's own service control already does this).
+restart_unit() { systemctl reset-failed "$1" >/dev/null 2>&1 || true; systemctl restart "$1"; }
+reload_or_restart_unit() { systemctl reset-failed "$1" >/dev/null 2>&1 || true; systemctl reload-or-restart "$1"; }
+
 restore_arcana_egress_table() {
   command -v nft >/dev/null 2>&1 || return 1
   local batch="$BACKUP_DIR/arcana-egress-restore.nft"
@@ -275,8 +283,8 @@ perform_rollback_from_backup() {
       failed=1
     fi
   fi
-  systemctl restart vpn-subscription || failed=1
-  systemctl reload-or-restart sing-box || failed=1
+  restart_unit vpn-subscription || failed=1
+  reload_or_restart_unit sing-box || failed=1
   /usr/local/bin/vpn-health-check || failed=1
 
   # install-state.json is never rewritten until COMMIT, so nothing to
@@ -767,8 +775,8 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
         failed=1
       fi
     fi
-    systemctl restart vpn-subscription || failed=1
-    systemctl reload-or-restart sing-box || failed=1
+    restart_unit vpn-subscription || failed=1
+    reload_or_restart_unit sing-box || failed=1
     /usr/local/bin/vpn-health-check || failed=1
     rm -f "$BIN_DIR/vpn-admin.update-new" "$BIN_DIR/vpn.update-new" \
       "$BIN_DIR/vpn-subscription-svc.update-new"
@@ -818,7 +826,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   ownership_capture_egress_table_baseline_once \
     || die "could not capture the pre-update nftables egress-table ownership baseline"
   systemctl enable vpn-egress-isolation.service
-  systemctl reload-or-restart vpn-egress-isolation.service \
+  reload_or_restart_unit vpn-egress-isolation.service \
     || die "host C-16 egress isolation failed to apply"
 
   log "install mode: UPGRADE (dev-rebuild) — checking persistent state schema before rendering..."
@@ -842,7 +850,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
     "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
 
   log "deliberate service activation (apply stage, not the test phase): restarting vpn-subscription once..."
-  systemctl restart vpn-subscription
+  restart_unit vpn-subscription
   singbox_config_changed=1
   if [ -f "$BACKUP_DIR/config.json" ] && [ -f /etc/vpn/compat/sing-box/config.json ] \
       && cmp -s "$BACKUP_DIR/config.json" /etc/vpn/compat/sing-box/config.json; then
@@ -855,7 +863,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   fi
   if [ "$singbox_config_changed" -eq 0 ] && [ "$singbox_unit_changed" -eq 1 ]; then
     log "sing-box.service unit file changed (config content did not); restarting to pick it up..."
-    systemctl reload-or-restart sing-box
+    reload_or_restart_unit sing-box
   elif [ "$singbox_config_changed" -eq 1 ]; then
     log "sing-box config changed; render-config above already reloaded/restarted it."
   else
@@ -1319,7 +1327,7 @@ systemctl daemon-reload
 ownership_capture_egress_table_baseline_once \
   || die "could not capture the pre-update nftables egress-table ownership baseline"
 systemctl enable vpn-egress-isolation.service
-systemctl reload-or-restart vpn-egress-isolation.service \
+reload_or_restart_unit vpn-egress-isolation.service \
   || die "host C-16 egress isolation failed to apply"
 
 log "install mode: UPDATE ${CURRENT_VERSION:-unknown} -> $TARGET_VERSION — checking persistent state schema before rendering..."
@@ -1347,7 +1355,7 @@ SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
   "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
 
 log "restarting services..."
-systemctl restart vpn-subscription
+restart_unit vpn-subscription
 
 singbox_config_changed=1
 if [ -f "$BACKUP_DIR/config.json" ] && [ -f /etc/vpn/compat/sing-box/config.json ] \
@@ -1361,10 +1369,10 @@ if [ -f "$BACKUP_DIR/systemd/sing-box.service" ] \
 fi
 if [ "$singbox_binary_changed" -eq 1 ]; then
   log "sing-box binary changed ($CURRENT_SINGBOX_PINNED -> $TARGET_SINGBOX_VERSION); restarting to run the new binary..."
-  systemctl restart sing-box
+  restart_unit sing-box
 elif [ "$singbox_config_changed" -eq 0 ] && [ "$singbox_unit_changed" -eq 1 ]; then
   log "sing-box.service unit file changed (config/binary did not); restarting to pick it up..."
-  systemctl reload-or-restart sing-box
+  reload_or_restart_unit sing-box
 elif [ "$singbox_config_changed" -eq 1 ]; then
   log "sing-box config changed; render-config above already reloaded/restarted it."
 else

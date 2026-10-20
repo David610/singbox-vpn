@@ -120,8 +120,10 @@ restore() {
   rm -rf /etc/vpn /var/lib/singbox-vpn /opt/singbox-vpn
   tar -xpf "$SNAP" --numeric-owner -C / || { echo "restore FAILED"; return 1; }
   systemctl daemon-reload
+  # a previous stage can leave a unit in start-limit-hit; clear it so the restore itself is not refused
+  systemctl reset-failed sing-box vpn-subscription 2>/dev/null
   systemctl start sing-box vpn-subscription vpn-service-watchdog.timer vpn-expiry-reconcile.timer 2>/dev/null; systemctl reload nginx 2>/dev/null
-  sleep 3
+  sleep 5
   echo "restored version=$(ver) creds=$(creds) bins=$(binsig) services=$(svc_ok) doctor_fails=$(doctor_fails)"
 }
 
