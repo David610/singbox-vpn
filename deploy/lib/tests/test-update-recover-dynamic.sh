@@ -14,7 +14,7 @@ failures=0
 ok() { echo "ok: $*"; }
 bad() { echo "FAIL: $*"; failures=$((failures + 1)); }
 U="$REPO_ROOT/deploy/almalinux/update.sh"
-for d in /opt /etc/vpn /var/lib/singbox-vpn /run/lock; do mkdir -p "$d"; mount -t tmpfs tmpfs "$d"; done
+for d in /opt /etc/vpn /var/lib/singbox-vpn /run/lock /usr/local/bin; do mkdir -p "$d"; mount -t tmpfs tmpfs "$d"; done
 mkdir -p /etc/vpn/backups; printf 'schema_version = 2\nrole = "exit"\npublic_host = "x.example.com"\n' >/etc/vpn/deployment.toml
 MARK=/var/lib/singbox-vpn/update-transaction.json
 run() { bash "$U" --recover >/tmp/rec.out 2>&1; RC=$?; }
@@ -75,5 +75,39 @@ run
 # ...but if the source tree WAS moved aside while the backup is incomplete => inconsistent => refuse
 mkdir -p /opt/.singbox-vpn-prev-1; cp "$MARK" /dev/null 2>&1; printf '{"backup_dir":"/etc/vpn/backups/20261020-100000-1","prev_opt_dir":"/opt/.singbox-vpn-prev-1","staged_src_dir":"","from_version":"v1.3.0","to_version":"v1.3.1-rc.2"}' >"$MARK"
 run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ] && [ -d /opt/.singbox-vpn-prev-1 ] && grep -q 'inconsistent transaction' /tmp/rec.out; } && ok "tree moved aside but backup incomplete: refused as inconsistent, nothing deleted" || bad "inconsistent case wrong (rc=$RC)"
+
+# --- 8. COMMIT-BOUNDARY kills (found by matrix stage 10): the manifest rename is the commit point; the backup, previous tree and
+#        staging are deleted afterwards and the marker last. A kill in that gap leaves a marker naming a backup that is gone.
+printf '#!/bin/sh\nexit 0\n' >/usr/local/bin/systemctl; chmod +x /usr/local/bin/systemctl
+export PATH="/usr/local/bin:$PATH"
+printf 'fake vpn-admin build\n' >/usr/local/bin/vpn-admin; chmod +x /usr/local/bin/vpn-admin
+SHA="$(sha256sum /usr/local/bin/vpn-admin | cut -d' ' -f1)"
+MAN=/var/lib/singbox-vpn/install-state.json
+START="$(date +%s)"
+mkdir -p /opt/singbox-vpn/deploy/almalinux; : >/opt/singbox-vpn/deploy/almalinux/update.sh
+fixture() { # $1=manifest version  $2=installed_at offset (s, relative to START)  $3=sha  ; backup dir is absent
+  rm -rf /etc/vpn/backups/20261020-100000-1 /opt/.singbox-vpn-prev-9 /opt/.singbox-vpn-update-staging.C9
+  printf '{"singbox_vpn_version":"%s","installed_at_unix":%s,"vpn_admin_sha256":"%s"}' "$1" "$((START + $2))" "$3" >"$MAN"
+  printf '{"backup_dir":"/etc/vpn/backups/20261020-100000-1","prev_opt_dir":"/opt/.singbox-vpn-prev-9","staged_src_dir":"/opt/.singbox-vpn-update-staging.C9/src","from_version":"v1.3.0","to_version":"v1.3.1-rc.2","started_at_unix":%s}' "$START" >"$MARK"
+}
+# 8a. committed + cleanup half done (prev dir PARTIALLY deleted, backup gone): roll FORWARD, never restore the partial tree
+fixture v1.3.1-rc.2 5 "$SHA"; mkdir -p /opt/.singbox-vpn-prev-9/deploy; echo half >/opt/.singbox-vpn-prev-9/deploy/x
+run; { [ "$RC" -eq 0 ] && [ ! -e "$MARK" ] && [ ! -d /opt/.singbox-vpn-prev-9 ] && [ -f /opt/singbox-vpn/deploy/almalinux/update.sh ] && grep -q 'committed' /tmp/rec.out; } \
+  && ok "kill after the manifest commit: rolled FORWARD (marker + leftovers cleared, live tree kept, partial prev tree NOT restored)" || bad "commit-boundary roll-forward wrong (rc=$RC): $(tail -3 /tmp/rec.out)"
+# 8b. committed, nothing left but the marker
+fixture v1.3.1-rc.2 5 "$SHA"; run; { [ "$RC" -eq 0 ] && [ ! -e "$MARK" ]; } && ok "only the marker left after a completed update: cleared" || bad "marker-only case (rc=$RC): $(tail -2 /tmp/rec.out)"
+# 8c. NOT committed evidence => refuse (backup is gone and nothing proves the update finished)
+fixture v1.3.0 5 "$SHA"; run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ]; } && ok "manifest still at the OLD version and the backup is gone: refused (inconsistent)" || bad "accepted an uncommitted transaction"
+fixture v1.3.1-rc.2 -50 "$SHA"; run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ]; } && ok "manifest older than the transaction start: refused (not written by this transaction)" || bad "accepted a stale manifest"
+fixture v1.3.1-rc.2 5 "0000000000000000000000000000000000000000000000000000000000000000"; run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ]; } && ok "manifest hash does not match the installed vpn-admin: refused" || bad "accepted a hash mismatch"
+# 8d. committed but the live source tree is missing / services down => explicit refusal, nothing deleted
+fixture v1.3.1-rc.2 5 "$SHA"; mkdir -p /opt/.singbox-vpn-prev-9/keep; mv /opt/singbox-vpn /opt/singbox-vpn.away
+run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ] && [ -d /opt/.singbox-vpn-prev-9/keep ]; } && ok "committed but /opt/singbox-vpn is missing: refused, previous tree kept" || bad "rolled forward without a live tree (rc=$RC)"
+mv /opt/singbox-vpn.away /opt/singbox-vpn
+printf '#!/bin/sh\n[ "$1" = is-active ] && exit 3\nexit 0\n' >/usr/local/bin/systemctl
+fixture v1.3.1-rc.2 5 "$SHA"; mkdir -p /opt/.singbox-vpn-prev-9/keep
+run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ] && [ -d /opt/.singbox-vpn-prev-9/keep ]; } && ok "committed but a service is not active: refused, nothing deleted" || bad "rolled forward on an unhealthy host (rc=$RC)"
+printf '#!/bin/sh\nexit 0\n' >/usr/local/bin/systemctl
+rm -rf /opt/.singbox-vpn-prev-9
 
 [ "$failures" -eq 0 ] || { echo "$failures failure(s)"; exit 1; }; echo "all passed"

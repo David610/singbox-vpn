@@ -467,23 +467,57 @@ def child(path, parent, pattern, what):
     return True
 backup = s("backup_dir"); prev = s("prev_opt_dir"); staged = d.get("staged_src_dir") or ""
 if not isinstance(staged, str) or any(ord(c) < 0x20 for c in staged): fail("staged_src_dir is not a clean string")
-if not child(backup, backup_root, r"^[0-9]{8}-[0-9]{6}-[0-9]+$", "backup_dir"): fail("backup_dir does not exist")
+backup_exists = child(backup, backup_root, r"^[0-9]{8}-[0-9]{6}-[0-9]+$", "backup_dir")   # False: already deleted (commit cleanup)
 child(prev, "/opt", r"^\.singbox-vpn-prev-[0-9]+$", "prev_opt_dir")
 staging = os.path.dirname(staged) if staged else ""
 if staging: child(staging, "/opt", r"^\.singbox-vpn-update-staging\.[A-Za-z0-9]+$", "staging dir")
 ver = lambda k: (s(k) if re.match(r"^[A-Za-z0-9._-]{1,64}$", s(k)) else fail(f"{k} is not a version string"))
-print("\n".join([backup, prev, staging, ver("from_version"), ver("to_version")]))
+started = d.get("started_at_unix", 0)
+if not isinstance(started, int) or isinstance(started, bool) or started < 0: fail("started_at_unix is not a non-negative integer")
+print("\n".join([backup, prev, staging, ver("from_version"), ver("to_version"), "1" if backup_exists else "0", str(started)]))
 PY
 )" || die "the transaction marker failed validation; nothing was changed. Inspect $TRANSACTION_MARKER by hand."
   mapfile -t _rec <<<"$fields"
   BACKUP_DIR="${_rec[0]}"; PREV_OPT_DIR="${_rec[1]}"; STAGING_ROOT="${_rec[2]}"
   CURRENT_VERSION="${_rec[3]}"; TARGET_VERSION="${_rec[4]}"
+  local backup_exists="${_rec[5]}" started_at="${_rec[6]}"
   local prev_exists=0
   [ -d "$PREV_OPT_DIR" ] && prev_exists=1
   clear_transaction() {
     rm -f "$TRANSACTION_MARKER"
     [ -n "$STAGING_ROOT" ] && rm -rf --one-file-system -- "$STAGING_ROOT"
   }
+  # COMMIT POINT. The manifest rename is where an update becomes final; afterwards the updater deletes the
+  # backup, the previous tree and staging, and removes the marker LAST. A kill in that window leaves a marker
+  # (naming a backup that may be half or fully gone). The update is then COMMITTED: roll FORWARD (finish the
+  # cleanup); rolling back would be wrong and could restore a half-deleted tree. Evidence required: the manifest
+  # carries this transaction's target version, was written at/after the transaction started, and records the hash
+  # of the installed vpn-admin.
+  local committed
+  committed="$(python3 -I - "$INSTALL_STATE_MANIFEST" "$TARGET_VERSION" "$started_at" "$BIN_DIR/vpn-admin" <<'PY'
+import hashlib, json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+    ok = (m.get("singbox_vpn_version") == sys.argv[2] and int(m.get("installed_at_unix", 0)) >= int(sys.argv[3])
+          and m.get("vpn_admin_sha256") == hashlib.sha256(open(sys.argv[4], "rb").read()).hexdigest())
+except Exception:
+    ok = False
+print("yes" if ok else "no")
+PY
+)"
+  if [ "$committed" = yes ]; then
+    [ -f /opt/singbox-vpn/deploy/almalinux/update.sh ] || die "the update looks committed but /opt/singbox-vpn is incomplete; refusing to clean anything. Manual recovery needed (see $PREV_OPT_DIR)."
+    systemctl is-active --quiet sing-box && systemctl is-active --quiet vpn-subscription \
+      || die "the update looks committed but sing-box/vpn-subscription is not active; refusing to clean anything. Investigate the services first."
+    log "the interrupted update to ${TARGET_VERSION} had already COMMITTED (manifest written by this transaction): finishing the cleanup instead of rolling back."
+    rm -rf --one-file-system -- "$PREV_OPT_DIR"
+    [ "$backup_exists" = 1 ] && rm -rf --one-file-system -- "$BACKUP_DIR"
+    clear_transaction
+    clear_stale_staging_dirs
+    echo "[update] RECOVERY COMPLETE — the update to ${TARGET_VERSION} had committed; leftovers removed." >&2
+    exit 0
+  fi
+  [ "$backup_exists" = 1 ] || die "the transaction backup ($BACKUP_DIR) is gone but nothing proves the update committed (manifest version/time/hash do not match this transaction). Inconsistent: manual recovery needed."
   # deployment.toml is the LAST snapshot PREPARE takes: without it the transaction never reached SWITCH
   if [ ! -f "$BACKUP_DIR/deployment.toml" ]; then
     [ "$prev_exists" -eq 0 ] || die "inconsistent transaction: the source tree was moved aside but the backup is incomplete. Manual recovery needed (see $BACKUP_DIR)."
