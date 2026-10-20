@@ -5439,6 +5439,7 @@ fn cmd_doctor(
         report_check(status, "L2", message);
     }
     check_expected_public_surface(cfg, &mut failures);
+    check_host_ipv6_egress();
     check_firewall_zone_and_ownership();
     check_l4_subscription_coherence(cfg, &mut failures);
     check_l4_live_subscription_process_state(cfg, &mut failures);
@@ -8150,6 +8151,83 @@ fn classify_public_surface_in(
         ));
     }
     findings
+}
+
+/// IPv6 egress health of the host itself (I-55). A node with a global IPv6
+/// address and a default route whose gateway neighbour entry is FAILED has
+/// broken IPv6 for every user it exits, whatever its DNS says — exactly how a
+/// host firewall rejecting neighbour discovery (I-54) looks from the inside.
+/// Pure: all inputs are observations passed in.
+fn classify_host_ipv6(
+    has_global: bool,
+    gateway: Option<&str>,
+    neighbour_state: Option<&str>,
+) -> (CheckStatus, String) {
+    if !has_global {
+        return (
+            CheckStatus::Info,
+            "no global IPv6 address on this host: IPv6 egress is not applicable".into(),
+        );
+    }
+    let Some(gw) = gateway else {
+        return (
+            CheckStatus::Warn,
+            "this host has a global IPv6 address but no default IPv6 route: users cannot egress over IPv6".into(),
+        );
+    };
+    match neighbour_state {
+        Some(state) if state.eq_ignore_ascii_case("FAILED") => (
+            CheckStatus::Warn,
+            format!(
+                "IPv6 default gateway {gw} neighbour entry is FAILED: IPv6 egress is broken for every user \
+                 (neighbour discovery is failing — check host firewall/nftables rules that reject \
+                 ICMPv6 or fe80::/10 and ff00::/8, and the provider's IPv6 setup)"
+            ),
+        ),
+        Some(_) | None => (
+            CheckStatus::Ok,
+            format!("IPv6 default gateway {gw} neighbour discovery is not failing"),
+        ),
+    }
+}
+
+fn host_ipv6_observations() -> (bool, Option<String>, Option<String>) {
+    let run = |args: &[&str]| -> Option<String> {
+        let o = std::process::Command::new("ip").args(args).output().ok()?;
+        o.status
+            .success()
+            .then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    let has_global = run(&["-6", "-o", "addr", "show", "scope", "global"])
+        .map(|t| {
+            t.lines().any(|l| {
+                !l.contains("temporary") && !l.contains("deprecated") && !l.contains("tentative")
+            })
+        })
+        .unwrap_or(false);
+    let route = run(&["-6", "route", "show", "default"]).unwrap_or_default();
+    let mut gw = None;
+    let mut dev = None;
+    let words: Vec<&str> = route.split_whitespace().collect();
+    for w in words.windows(2) {
+        match w[0] {
+            "via" if gw.is_none() => gw = Some(w[1].to_string()),
+            "dev" if dev.is_none() => dev = Some(w[1].to_string()),
+            _ => {}
+        }
+    }
+    let state = match (&gw, &dev) {
+        (Some(g), Some(d)) => run(&["-6", "neigh", "show", g, "dev", d])
+            .and_then(|t| t.split_whitespace().last().map(str::to_string)),
+        _ => None,
+    };
+    (has_global, gw, state)
+}
+
+fn check_host_ipv6_egress() {
+    let (has_global, gw, state) = host_ipv6_observations();
+    let (status, msg) = classify_host_ipv6(has_global, gw.as_deref(), state.as_deref());
+    report_check(status, "L3", msg);
 }
 
 /// `vpn doctor`'s expected-public-surface check: enumerates real
@@ -11098,6 +11176,38 @@ mod public_surface_tests {
             declared(&[(false, 443), (true, 443), (false, 8388), (true, 8388)])
         );
         assert!(read_declared_inbounds(std::path::Path::new("/nonexistent/x.json")).is_none());
+    }
+
+    #[test]
+    fn host_ipv6_failed_gateway_neighbour_is_a_warning_not_ok() {
+        let (st, msg) = classify_host_ipv6(true, Some("fe80::1"), Some("FAILED"));
+        assert_eq!(st, CheckStatus::Warn, "{msg}");
+        assert!(msg.contains("FAILED") && msg.contains("fe80::1"));
+        assert_eq!(
+            classify_host_ipv6(true, Some("fe80::1"), Some("failed")).0,
+            CheckStatus::Warn
+        );
+    }
+
+    #[test]
+    fn host_ipv6_healthy_missing_or_not_applicable_states() {
+        assert_eq!(
+            classify_host_ipv6(true, Some("fe80::1"), Some("REACHABLE")).0,
+            CheckStatus::Ok
+        );
+        assert_eq!(
+            classify_host_ipv6(true, Some("fe80::1"), Some("STALE")).0,
+            CheckStatus::Ok
+        );
+        assert_eq!(
+            classify_host_ipv6(true, Some("fe80::1"), None).0,
+            CheckStatus::Ok
+        );
+        assert_eq!(classify_host_ipv6(true, None, None).0, CheckStatus::Warn);
+        assert_eq!(
+            classify_host_ipv6(false, Some("fe80::1"), Some("FAILED")).0,
+            CheckStatus::Info
+        );
     }
 
     #[test]
