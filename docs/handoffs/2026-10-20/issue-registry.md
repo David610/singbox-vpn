@@ -29,6 +29,7 @@ States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFI
 | I-57 | low | preflight_is_public_ip | FIXED_IN_BRANCH | 192.88.99.0/24 (deprecated 6to4 anycast; also the addresses of the test suite's leaked arcana-2hop0 dummy interface, see I-59) counted as public host addresses, producing a spurious 'more public IPv4 addresses than deployment.toml can record' warning on every install/update | deploy/lib/tests/test-own-address-detection.sh (red before) | no | - |
 | I-58 | medium | configuration contract / drift | FIXED_IN_BRANCH | no version-controlled production contract or drift check; routing/ssh/host/port drift was only found by hand | deploy/lib/tests/test_deployment_contract.py (12 tests) | no | contract still has UNDECIDED fields awaiting owner approval; not yet wired as a deployment gate |
 | I-59 | high | workspace tests (two_hop_system) / update --dev-rebuild | SERVER_VERIFIED | the two-hop system tests create a dummy interface arcana-2hop0 with 192.88.99.2-6 as root and NEVER delete it (a process-wide OnceLock is not dropped at exit); update.sh --dev-rebuild runs them on the live node, leaving the interface and host routes permanently (found on the staging node; it also polluted own-address detection) | CI step 'the test run leaves no dummy interface behind'; local: interface absent after the 22-test run (was present after every run before) | no | SIGKILL of the test process still cannot clean up (documented limit); nodes already polluted must delete the interface by hand (ip link delete arcana-2hop0) |
+| I-60 | medium | REALITY connection setup (performance) | CONFIRMED_OPEN | every new VLESS+REALITY connection adds ~60-80 ms (Hysteria2 ~2.5 ms): the server completes a TLS handshake with the decoy per connection. Isolated: remote decoy +80.9 ms vs local decoy +9.7 ms in otherwise identical servers | deploy/lib/tunnel_perf.py (added-latency gate <= 40 ms is expected to FAIL for REALITY with a remote decoy) | no | provisional 40 ms threshold fails for REALITY by design of the remote decoy; changing the decoy is service-affecting |
 | I-51 | high | Hiddify iOS (client) | UNVERIFIED | profile JSON missing from Library/Caches/Working/configs (carried as I-08); upstream hiddify-app#2372 open, no fix | - | yes | trigger on the owner's iPhone unconfirmed |
 
 ## Carried from the 2026-10-15 audit (not re-verified unless listed above)
@@ -46,13 +47,13 @@ States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFI
 | I-09 | high | open | CONFIRMED_OPEN | Issue B: 'failed to start core / CoreAlert.startService' on Hiddify 4.0.0 dev |
 | I-10 | high | open | CONFIRMED_OPEN | 7 of 10 user operations restart sing-box and drop every client's connections |
 | I-11 | critical | fixed-on-branch | UNVERIFIED | Burst of 8 restarts in 300 s parks sing-box in start-limit-hit: full outage until the watchdog (3 min 35 s measured), op |
-| I-12 | high | fixed-on-main | UNVERIFIED | Hysteria2 caps render ignore_client_bandwidth=true and lock out every standard client (v1.3.0) |
+| I-12 | high | fixed-on-main | SERVER_VERIFIED | Hysteria2 caps render ignore_client_bandwidth=true and lock out every standard client (v1.3.0) |
 | I-13 | high | open | CONFIRMED_OPEN | Stable v1.3.0 lacks fixes already on main: rustls bump (RUSTSEC-2026-0346..0349), vpn-benchmark restarting production by |
-| I-14 | medium | fixed-on-branch | UNVERIFIED | doctor FAILs a correct config once public_ipv4/public_ipv6 are set (contradicts its own warning) |
-| I-15 | high | fixed-on-main | UNVERIFIED | Installer leaves the C-16 own-address reject off when public_host is a DNS name: tunnel users reach the node's own servi |
-| I-16 | medium | fixed-on-main | UNVERIFIED | Dev-channel installer over an existing install reuses the old source tree and records version 'main' |
-| I-17 | low | fixed-on-main | UNVERIFIED | doctor release-identity WARN on source builds because vpn and vpn-admin are separate compiles with different hashes |
-| I-18 | medium | fixed-on-main | UNVERIFIED | doctor --protocol and installer self-test cover REALITY only; Hysteria2 breakage passes health checks |
+| I-14 | medium | fixed-on-branch | SERVER_VERIFIED | doctor FAILs a correct config once public_ipv4/public_ipv6 are set (contradicts its own warning) |
+| I-15 | high | fixed-on-main | SERVER_VERIFIED | Installer leaves the C-16 own-address reject off when public_host is a DNS name: tunnel users reach the node's own servi |
+| I-16 | medium | fixed-on-main | SERVER_VERIFIED | Dev-channel installer over an existing install reuses the old source tree and records version 'main' |
+| I-17 | low | fixed-on-main | SERVER_VERIFIED | doctor release-identity WARN on source builds because vpn and vpn-admin are separate compiles with different hashes |
+| I-18 | medium | fixed-on-main | SERVER_VERIFIED | doctor --protocol and installer self-test cover REALITY only; Hysteria2 breakage passes health checks |
 | I-19 | medium | open | CONFIRMED_OPEN | Existing deployments keep exit ipv6_literal=allow after update; dual-stack destinations are reached over IPv6 |
 | I-20 | medium | blocked | BLOCKED | Exit IPv4 91.244.71.165 is refused by YouTube for Shorts (0/6 default and IPv4-only; control 6/6) |
 | I-21 | medium | blocked | BLOCKED | UDP/443 from the test PC is filtered; Hysteria2/QUIC real-client tests and the real reconnect-stall measurement are impo |

@@ -122,6 +122,11 @@ NEW = [
       "reference-counted NetLease: the last test to finish deletes the interface; CI step fails if it survives a test run",
       "CI step 'the test run leaves no dummy interface behind'; local: interface absent after the 22-test run (was present after every run before)", "no",
       "SIGKILL of the test process still cannot clean up (documented limit); nodes already polluted must delete the interface by hand (ip link delete arcana-2hop0)"),
+    n("I-60", "medium", "REALITY connection setup (performance)", "CONFIRMED_OPEN",
+      "every new VLESS+REALITY connection adds ~60-80 ms (Hysteria2 ~2.5 ms): the server completes a TLS handshake with the decoy per connection. Isolated: remote decoy +80.9 ms vs local decoy +9.7 ms in otherwise identical servers",
+      "owner decision: serve the decoy from the node (re-import of all profiles + restart) or accept; docs/operations/REALITY_DECOY_LATENCY.md",
+      "deploy/lib/tunnel_perf.py (added-latency gate <= 40 ms is expected to FAIL for REALITY with a remote decoy)", "no",
+      "provisional 40 ms threshold fails for REALITY by design of the remote decoy; changing the decoy is service-affecting", "experiment recorded in the doc; run evidence/tunnel-perf-*.json"),
     n("I-51", "high", "Hiddify iOS (client)", "UNVERIFIED",
       "profile JSON missing from Library/Caches/Working/configs (carried as I-08); upstream hiddify-app#2372 open, no fix",
       "upstream proposal in docs/clients/HIDDIFY_IOS.md; server cannot fix", "", "yes",
@@ -129,12 +134,24 @@ NEW = [
 ]
 
 
+# Carried audit issues re-assessed this session WITH evidence. Nothing is promoted
+# without a pointer to the evidence that supports the new state.
+UPGRADES = {
+    "I-12": ("SERVER_VERIFIED", "Hysteria2 inbound renders ignore_client_bandwidth=true with no declared caps (the shipped default) and standard clients are NOT locked out: pinned sing-box 1.14.1 clients and the real Hiddify core v5.0.3 (hiddify-sing-box 1.13.0-rc.2) both connect over Hysteria2 with Salamander (evidence/staging-subscription-acceptance*.json, evidence/hiddify-core-v5.0.3-acceptance.json). Not tested: a deployment with declared bandwidth caps."),
+    "I-14": ("SERVER_VERIFIED", "doctor reports FAILS=0 and C-16 OK on nodes with public_ipv4/public_ipv6 recorded (staging, dev install and rc.2 + backfill)."),
+    "I-15": ("SERVER_VERIFIED", "fresh install with a DNS public_host records the node's own addresses; own-address isolation proven through real REALITY and Hysteria2 tunnels (evidence/c16-isolation-through-tunnel.json)."),
+    "I-16": ("SERVER_VERIFIED", "re-running install.sh on a dev install used the new source tree (the vhost template fix, absent from the old tree, was applied; evidence/lifecycle/)."),
+    "I-17": ("SERVER_VERIFIED", "doctor on a dev-channel install reports release identity OK with all three executables matching the recorded hashes."),
+    "I-18": ("SERVER_VERIFIED", "doctor --protocol --require-protocol now runs both a REALITY and a Hysteria2 self-test (both lines present and passing on staging)."),
+}
+
+
 def main():
     audit = json.load(open(AUDIT))
     items = audit if isinstance(audit, list) else list(audit.values()) if "id" not in audit else [audit]
     if isinstance(audit, dict) and "issues" in audit:
         items = audit["issues"]
-    carried = [dict(id=i["id"], severity=i["severity"], component=i.get("repo", ""), state=CARRY.get(i["status"], "UNVERIFIED"),
+    carried = [dict(id=i["id"], severity=i["severity"], component=i.get("repo", ""), state=UPGRADES.get(i["id"], (CARRY.get(i["status"], "UNVERIFIED"),))[0], evidence_2026_10_20=UPGRADES.get(i["id"], (None, ""))[1],
                     title=i["title"], audit_status=i["status"], fix=i.get("fix", ""), note=i.get("note", ""),
                     source="docs/audits/2026-10-15/issues.json (not re-verified this session)") for i in items]
     newids = {x["id"] for x in NEW}

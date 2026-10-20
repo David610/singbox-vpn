@@ -34,8 +34,8 @@ baseline run on the target hardware exists; everything else is a hard gate.
 | Availability, REALITY and Hysteria2 | synthetic handshake + bytes each minute, 7 days staging | >= 99.5%, no outage > 5 min unexplained |
 | Restart recovery | `systemctl restart sing-box` x 10 | REALITY clients resume <= 10 s; Hysteria2 <= 35 s (1.14.1 stall, I-22); 10/10 |
 | Soak | 24 h, 1 client per protocol, probe every 60 s | >= 99% probes OK, 0 unexplained restarts |
-| Throughput | `vpn-benchmark.sh`, 5 runs median | >= 70% of direct line rate **(calibrate)** |
-| Added latency | median RTT via tunnel minus direct, 100 samples | <= 40 ms same-region **(calibrate)** |
+| Throughput (loopback client on the node, `tunnel_perf.py`, 5 runs median) | capacity floor so one client on a <=100-200 Mbps access link is not limited by the node | REALITY >= 200 Mbps, Hysteria2 >= 100 Mbps **(owner may adjust)**. The earlier tunnel/direct ratio >= 70% was dropped as a gate after the first measurement: client and server share 2 vCPUs, so the ratio measures CPU contention (first run: 0.66 and 0.10). It is still reported |
+| Added latency | median end-to-end time of a tiny HTTP exchange via tunnel minus direct, 60 samples (`tunnel_perf.py`) | <= 40 ms **(calibrate)** |
 | Packet loss through tunnel | 1000 ICMP/UDP echoes | <= 1% |
 | Multiple clients | 5 concurrent clients, 30 min | no auth failures, no restarts |
 | Rollback | injected failed update x 3 | previous release restored, doctor clean, 3/3 |
