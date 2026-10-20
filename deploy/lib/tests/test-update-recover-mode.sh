@@ -28,9 +28,15 @@ grep -q 'deployment.toml' <<<"$rec" && grep -q 'PREPARE had not finished' <<<"$r
 grep -q 'inconsistent transaction' <<<"$rec" && ok "inconsistent state (source tree moved but backup incomplete) refuses" || bad "inconsistent state not refused"
 grep -q 'backup is incomplete' <<<"$rec" && ok "restore refuses when binaries/units are missing from the backup" || bad "no completeness check before restoring"
 grep -q 'switch had not started' <<<"$rec" && ok "healthy + previous release untouched => just clear" || bad "healthy-unmodified case missing"
+grep -q '^clear_stale_staging_dirs() {' "$U" && ok "--recover clears stale update-staging dirs even when no marker exists (SIGKILL during download)" || bad "no stale staging cleanup"
+sc="$(sed -n '/^clear_stale_staging_dirs() {/,/^}/p' "$U")"
+grep -q 'another update.sh is running' <<<"$sc" && ok "staging cleanup refuses while another updater runs" || bad "cleanup could race a running updater"
+grep -q 'leaving .* untouched' <<<"$sc" && ok "-prev- directories (possible last known-good tree) are never auto-deleted" || bad "prev dirs not protected"
+grep -q 'one-file-system' <<<"$sc" && grep -q '\-L "\$d"' <<<"$sc" && ok "cleanup skips symlinks and stays on one filesystem" || bad "cleanup symlink/fs safety missing"
+grep -q 'run: update.sh --recover removes stale update-staging' "$U" && ok "the stale-staging refusal tells the operator to run --recover" || bad "stale refusal text"
 # ordering: the helper functions the shared rollback needs are defined before it
 for fn in quiesce_new_egress_unit_for_rollback restore_arcana_egress_table restore_egress_unit_runtime_baseline restore_deployment_toml_snapshot; do
-  a="$(grep -n "^$fn() {" "$U" | head -1 | cut -d: -f1)"; b="$(grep -n '^perform_rollback_from_backup() {' "$U" | cut -d: -f1)"
+  a="$(grep -n "^$fn() {" "$U" | head -1 | cut -d: -f1 || true)"; b="$(grep -n '^perform_rollback_from_backup() {' "$U" | cut -d: -f1 || true)"
   [ -n "$a" ] && [ "$a" -lt "$b" ] && ok "$fn is defined before perform_rollback_from_backup" || bad "$fn ordering"
 done
 # the refusal message points at the new mode

@@ -392,6 +392,31 @@ done
 # marker is written in PREPARE, before the first live mutation, and
 # removed only on a successful COMMIT or a successful rollback.
 # ---------------------------------------------------------------------
+# A killed updater leaves /opt/.singbox-vpn-update-staging.* behind (the marker is only written in
+# PREPARE, so there may be NO marker). They never hold the last known-good tree, so --recover removes
+# them — but only when no other updater is running. -prev-* directories may hold the last known-good
+# source tree: they are reported, never deleted here.
+clear_stale_staging_dirs() {
+  local p other="" d n=0
+  for p in $(pgrep -f 'almalinux/update\.sh' 2>/dev/null || true); do
+    [ "$p" = "$$" ] && continue
+    [ "$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')" = "$$" ] && continue
+    other="$other $p"
+  done
+  [ -z "$other" ] || die "another update.sh is running (pid(s):$other); refusing to touch staging directories."
+  shopt -s nullglob
+  for d in /opt/.singbox-vpn-update-staging.*; do
+    [ -L "$d" ] && { warn "skipping symlink $d"; continue; }
+    [ -d "$d" ] && [ "$(stat -c %u "$d")" = 0 ] && [ "$(dirname "$d")" = "/opt" ] || continue
+    rm -rf --one-file-system -- "$d" && n=$((n + 1))
+  done
+  for d in /opt/.singbox-vpn-prev-*; do
+    [ -e "$d" ] && warn "leaving $d untouched: it may hold the last known-good source tree; review it manually."
+  done
+  shopt -u nullglob
+  [ "$n" -eq 0 ] || log "removed $n stale update-staging director$([ "$n" -eq 1 ] && echo y || echo ies) left by a killed updater."
+}
+
 # --recover: finish or undo a transaction whose updater process was killed (SIGKILL,
 # power loss). Validates the marker strictly, then either just clears it (no live
 # mutation can have happened) or restores the previous release from the backup the
@@ -472,6 +497,7 @@ PY
   local failed=0
   perform_rollback_from_backup || failed=1
   clear_transaction
+  clear_stale_staging_dirs
   if [ "$failed" -eq 0 ]; then
     echo "[update] RECOVERY COMPLETE — PREVIOUS RELEASE (${CURRENT_VERSION}) RESTORED AND VERIFIED. Re-run the update when ready." >&2
     exit 0
@@ -483,7 +509,9 @@ PY
 if [ -e "$TRANSACTION_MARKER" ] && [ "$RECOVER" -eq 1 ]; then
   recover_interrupted_update
 elif [ "$RECOVER" -eq 1 ]; then
-  log "no interrupted-update marker at $TRANSACTION_MARKER: nothing to recover."
+  log "no interrupted-update marker at $TRANSACTION_MARKER."
+  clear_stale_staging_dirs
+  log "nothing else to recover."
   exit 0
 fi
 if [ -e "$TRANSACTION_MARKER" ]; then
@@ -554,7 +582,7 @@ verify_release_attestation() {
 shopt -s nullglob
 for stale in /opt/.singbox-vpn-update-staging.* /opt/.singbox-vpn-prev-*; do
   [ -e "$stale" ] || continue
-  die "a stale update-staging/rollback directory exists at $stale from a previous run that did not clean up — refusing to start a new update until it is reviewed and removed manually (it may contain the last known-working release; do not delete it without checking first)."
+  die "a stale update-staging/rollback directory exists at $stale from a previous run that did not clean up — refusing to start a new update until it is cleared (run: update.sh --recover removes stale update-staging directories; review any -prev- directory by hand) (it may contain the last known-working release; do not delete it without checking first)."
 done
 shopt -u nullglob
 
