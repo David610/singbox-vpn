@@ -105,3 +105,12 @@ Logs: `evidence/lifecycle/`. Hashes are 16-hex prefixes; no secrets are stored.
 | Reboot test | **UNVERIFIED**: rebooting would terminate this session's host; needs an owner-scheduled reboot |
 | Interrupted update (kill mid-transaction) | UNVERIFIED |
 | IPv6 inbound, external reachability, provider firewall | UNVERIFIED (nothing outside this host was available) |
+
+## Additional results (server verified, 2026-10-20, later in the session)
+| Test | Result |
+|---|---|
+| Own-address isolation **through real tunnels** (REALITY and Hysteria2): node's own SSH on IPv4 and IPv6, loopback subscription backend | all rejected; control destination reachable (`evidence/c16-isolation-through-tunnel.json`) |
+| `update.sh` killed with SIGKILL right after SWITCHING | host healthy and byte-identical; next run refuses (fail-safe); recovery then required manual steps -> `recover-interrupted-update.sh` (I-56) |
+| Branch updater refreshes the nginx vhost on a published-rc.2 node | HSTS 1 -> 3, `nginx -t` ok, subscription acceptance 42/42 (I-45) |
+| Deployment contract check on staging | 11 PASS, 2 FAIL (SSH password/root login, I-39), 7 UNDECIDED, 0 UNOBSERVABLE |
+| Client matrix | only the pinned sing-box core is SERVER_VERIFIED; all native clients UNVERIFIED (`client-matrix.json`) |

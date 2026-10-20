@@ -1,0 +1,14 @@
+{
+ "check": "c16_own_address_isolation_through_tunnel",
+ "results": {
+  "Reality -> own IPv4 :22 (SSH)": "CONNECTED but closed with no data (rejected after connect)",
+  "Reality -> own IPv6 :22 (SSH)": "CONNECTED but closed with no data (rejected after connect)",
+  "Reality -> loopback :9100 (subscription backend)": "CONNECTED but closed with no data (rejected after connect)",
+  "Reality -> control: public 1.1.1.1:443": "CONNECTED (no banner within 4s)",
+  "Hysteria2 -> own IPv4 :22 (SSH)": "CONNECTED but closed with no data (rejected after connect)",
+  "Hysteria2 -> own IPv6 :22 (SSH)": "CONNECTED but closed with no data (rejected after connect)",
+  "Hysteria2 -> loopback :9100 (subscription backend)": "CONNECTED but closed with no data (rejected after connect)",
+  "Hysteria2 -> control: public 1.1.1.1:443": "CONNECTED (no banner within 4s)"
+ },
+ "evidence_class": "server-verified (loopback client)"
+}
