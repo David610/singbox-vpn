@@ -41,7 +41,7 @@ cd "$REPO_ROOT"
 if [ "$#" -gt 0 ]; then tests=("$@"); else tests=(deploy/lib/tests/*.sh); fi
 fails=0
 for t in "${tests[@]}"; do
-  if bash "$t" >/dev/null 2>&1; then echo "PASS $t"; else echo "FAIL $t"; fails=$((fails + 1)); fi
+  if out="$(bash "$t" 2>&1)"; then echo "PASS $t"; else echo "FAIL $t"; printf '%s\n' "$out" | grep -E 'FAIL|UNEXPECTED|rror' | head -8 | sed 's/^/    | /'; fails=$((fails + 1)); fi
 done
 echo "clean-host shell test failures: $fails of ${#tests[@]}"
 [ "$fails" -eq 0 ]

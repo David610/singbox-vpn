@@ -67,6 +67,19 @@ lifecycle_gate_abort_hook() {
   die "SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=$1 — deliberately aborting for lifecycle-gate testing."
 }
 
+# I-31: an update must not leave a node without its own-address deny rule.
+# Hosts installed before public_ipv4/public_ipv6 existed (or updated from a
+# release that did not record them) otherwise keep letting tunnel users reach
+# the node's own services after an update. Adds the keys only when neither is
+# present; never replaces a configured value; a failed detection warns and
+# never aborts the update. Runs before config is re-rendered.
+update_backfill_own_address() {
+  [ -f "$DEPLOYMENT_TOML" ] || return 0
+  # shellcheck disable=SC2034 # read by backfill_own_public_addresses (own-address.sh)
+  PUBLIC_HOST="$(awk -F'"' '/^public_host[[:space:]]*=/{print $2; exit}' "$DEPLOYMENT_TOML")"
+  backfill_own_public_addresses || warn "could not backfill this node's own public address; tunnel users may reach its services until public_ipv4/public_ipv6 are set in $DEPLOYMENT_TOML."
+}
+
 snapshot_arcana_egress_table() {
   systemctl is-active --quiet vpn-egress-isolation.service 2>/dev/null \
     && : >"$BACKUP_DIR/arcana-egress-unit.active" \
@@ -135,6 +148,8 @@ done
 . "$REPO_ROOT/deploy/lib/os.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/preflight.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/own-address.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 # shellcheck source=/dev/null
@@ -584,6 +599,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   esac
   assert_deployment_identity_unchanged
 
+  update_backfill_own_address
   log "rendering current authoritative users/REALITY state with new tooling..."
   SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
     "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
@@ -1158,6 +1174,7 @@ esac
 assert_deployment_identity_unchanged
 lifecycle_gate_abort_hook after_switch
 
+update_backfill_own_address
 log "rendering current authoritative users/REALITY state with new tooling (credentials are never rotated by an update)..."
 SINGBOX_VPN_LOCK_PATH="$BACKUP_DIR/update-inner.lock" \
   "$BIN_DIR/vpn-admin" --config "$DEPLOYMENT_TOML" render-config
