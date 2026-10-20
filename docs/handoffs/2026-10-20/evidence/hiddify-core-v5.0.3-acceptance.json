@@ -1,0 +1,84 @@
+{
+ "schema": 1,
+ "utc": "2026-10-20T12:13:55+00:00",
+ "evidence_class": "client-core verified (Hiddify core CLI, loopback on the node); NOT the native app",
+ "core": "hiddify-core version v5.0.3 hiddify-sing-box version 1.13.0-rc.2",
+ "passed": 6,
+ "total": 6,
+ "results": [
+  {
+   "case": "pinned-json",
+   "egress": "62.238.46.190",
+   "http_204": "204",
+   "protocols_seen_in_core_log": [
+    "vless"
+   ],
+   "expected_protocols": [
+    "vless"
+   ],
+   "pass": true
+  },
+  {
+   "case": "full-multiroute-json",
+   "egress": "62.238.46.190",
+   "http_204": "204",
+   "protocols_seen_in_core_log": [
+    "hysteria2",
+    "vless"
+   ],
+   "expected_protocols": [
+    "vless"
+   ],
+   "pass": true
+  },
+  {
+   "case": "share-links",
+   "egress": "62.238.46.190",
+   "http_204": "204",
+   "protocols_seen_in_core_log": [
+    "hysteria2",
+    "vless"
+   ],
+   "expected_protocols": [
+    "vless"
+   ],
+   "pass": true
+  },
+  {
+   "case": "vless-link-only",
+   "egress": "62.238.46.190",
+   "http_204": "204",
+   "protocols_seen_in_core_log": [
+    "vless"
+   ],
+   "expected_protocols": [
+    "vless"
+   ],
+   "pass": true
+  },
+  {
+   "case": "hysteria2-link-only",
+   "egress": "62.238.46.190",
+   "http_204": "204",
+   "protocols_seen_in_core_log": [
+    "hysteria2"
+   ],
+   "expected_protocols": [
+    "hysteria2"
+   ],
+   "pass": true
+  },
+  {
+   "case": "hysteria2-json-only",
+   "egress": "62.238.46.190",
+   "http_204": "204",
+   "protocols_seen_in_core_log": [
+    "hysteria2"
+   ],
+   "expected_protocols": [
+    "hysteria2"
+   ],
+   "pass": true
+  }
+ ]
+}
