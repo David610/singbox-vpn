@@ -79,6 +79,10 @@ server {
         proxy_cache_bypass 1;
         add_header Cache-Control "no-store" always;
         add_header Pragma "no-cache" always;
+        # nginx does not inherit server-level add_header into a location that
+        # sets its own, so HSTS must be repeated here (I-44).
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        add_header Referrer-Policy "no-referrer" always;
 
         # Deliberately not forwarding X-Forwarded-For/X-Real-IP: the
         # backend does not read them (see
@@ -104,6 +108,10 @@ server {
         proxy_cache_bypass 1;
         add_header Cache-Control "no-store" always;
         add_header Pragma "no-cache" always;
+        # nginx does not inherit server-level add_header into a location that
+        # sets its own, so HSTS must be repeated here (I-44).
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        add_header Referrer-Policy "no-referrer" always;
     }
 
     location /healthz {
