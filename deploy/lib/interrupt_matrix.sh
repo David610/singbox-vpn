@@ -21,7 +21,7 @@ INSTALLED_UPDATER="${INSTALLED_UPDATER:-/opt/singbox-vpn/deploy/almalinux/update
 MIN_FREE_MB_ROOT="${MIN_FREE_MB_ROOT:-2048}"
 MIN_FREE_MB_TMP="${MIN_FREE_MB_TMP:-1024}"
 LOCKFILE=/run/lock/singbox-vpn-update.lock
-MARKERS=("downloading singbox-vpn" "STAGE complete" "SWITCHING to" "reloading systemd unit definitions" "install mode: UPDATE" "rendering current authoritative" "restarting services" "running health check" "verifying real protocol handshake" "writing install-state manifest")
+MARKERS=("downloading singbox-vpn" "STAGE complete" "SWITCHING to" "reloading systemd unit definitions" "install mode: UPDATE" "rendering current authoritative" "restarting services" "running health check" "verifying real protocol handshake" "writing install-state manifest" "provisioning agent binary refreshed" "UPDATE COMPLETE")
 PATHS=(/etc/vpn /var/lib/singbox-vpn /opt/singbox-vpn /etc/nginx/conf.d/vpn-subscription.conf /etc/sysctl.d/99-singbox-vpn-dataplane.conf)
 UNITGLOB=(/etc/systemd/system/sing-box.service /etc/systemd/system/vpn-*.service /etc/systemd/system/vpn-*.timer)
 BINS=(/usr/local/bin/vpn /usr/local/bin/vpn-admin /usr/local/bin/vpn-subscription-svc /usr/local/bin/vpn-provisioning-agent /usr/local/bin/sing-box /usr/local/bin/vpn-health-check /usr/local/bin/vpn-service-watchdog /usr/local/bin/vpn-benchmark /usr/local/bin/vpn-benchmark-lib.sh)
@@ -201,6 +201,6 @@ case "${1:-}" in
   restore) restore ;;
   precheck) precheck; echo "precheck rc=$?" ;;
   stage) mkdir -p "$OUTDIR"; shift; stage "$@" ;;
-  all) mkdir -p "$OUTDIR"; shift; for n in 1 2 3 4 5 6 7 8 9 10; do stage "$n" "$@"; done ;;
+  all) mkdir -p "$OUTDIR"; shift; for n in $(seq 1 "${#MARKERS[@]}"); do stage "$n" "$@"; done ;;   # 1-10 are the defined stages; 11-12 bracket the commit boundary
   *) sed -n '2,16p' "$0"; exit 2 ;;
 esac
