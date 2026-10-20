@@ -82,4 +82,4 @@ standalone staging install cannot be accepted for Shorts.
 3. Owner decides whether to publish an AAAA record (none today; not changed).
 4. Real iPhone acceptance (Hiddify) remains UNVERIFIED.
 
-See `ISSUE_REGISTRY.md` for the consolidated issue states.
+See `issue-registry.md (and issue-registry.json)` for the consolidated issue states.

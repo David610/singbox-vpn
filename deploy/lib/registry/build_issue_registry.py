@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Build docs/handoffs/2026-10-20/issue-registry.{json,md} from the 2026-10-15
+audit (carried issues, history preserved there) plus this session's issues
+(NEW below). States: CONFIRMED_OPEN IN_PROGRESS FIXED_IN_BRANCH CI_VERIFIED
+SERVER_VERIFIED DEVICE_VERIFIED PRODUCTION_VERIFIED BLOCKED UNVERIFIED.
+A carried issue keeps its audit status text; it is NOT promoted here."""
+import json
+import sys
+
+AUDIT = "docs/audits/2026-10-15/issues.json"
+OUT = "docs/handoffs/2026-10-20/issue-registry"
+CARRY = {"open": "CONFIRMED_OPEN", "blocked": "BLOCKED", "fixed-on-branch": "UNVERIFIED",
+         "fixed-on-main": "UNVERIFIED", "informational": "UNVERIFIED", "environmental": "UNVERIFIED"}
+
+
+def n(id_, sev, comp, state, title, fix="", test="", device="no", risk="", evidence=""):
+    return dict(id=id_, severity=sev, component=comp, state=state, title=title, fix=fix,
+                regression_test=test, device_required=device, remaining_risk=risk, evidence=evidence)
+
+
+NEW = [
+    n("I-37", "medium", "admin/doctor", "FIXED_IN_BRANCH",
+      "doctor reported sing-box outbound UDP flow sockets as FAIL; first heuristic could hide a mistaken inbound on an ephemeral port",
+      "classifier uses the on-disk config's declared inbounds: declared->FAIL, undeclared ephemeral->INFO, unreadable config->WARN",
+      "apps/admin public_surface_tests::* (red before/green after)", "no",
+      "relies on the on-disk config matching the running process (doctor already checks drift)", "unit tests; full-suite run"),
+    n("I-38", "high", "staging host egress", "BLOCKED",
+      "62.238.46.190: both address families refused for Shorts (0/3,0/6,0/3 true Shorts; literal v4/v6 0/4)",
+      "needs an owner-authorized good hairpin target (docs/operations/YOUTUBE_EGRESS_ARCHITECTURE.md)",
+      "youtube_evidence_probe.py (live acceptance, not CI)", "yes", "no same-run known-good control on this host",
+      "docs/handoffs/2026-10-20/evidence/direct-*.json"),
+    n("I-39", "high", "staging host ssh", "IN_PROGRESS",
+      "PermitRootLogin yes + PasswordAuthentication yes, empty authorized_keys, 447+ failed attempts",
+      "deploy/lib/ssh-harden.sh (refuses to disable passwords without logged key-login proof); needs owner public key",
+      "deploy/lib/tests/test-ssh-harden.sh (mutation-checked)", "no", "passwords still enabled until a key is supplied and proven"),
+    n("I-40", "medium", "staging host firewall", "SERVER_VERIFIED",
+      "no host firewall before install; provider firewall not visible",
+      "installer enabled ufw (22,443/tcp,443/udp,8443/tcp); SSH now rate-limited (LIMIT)",
+      "acceptance-test.sh ufw checks", "no", "provider/cloud firewall UNVERIFIED; IPv6 inbound untested"),
+    n("I-41", "high", "installer", "SERVER_VERIFIED",
+      "install aborts (useradd exit 9) when sing-box/vpn-subscription primary group already exists (leaked by root-run tests or interrupted install)",
+      "create_service_users adopts the existing group with -g",
+      "deploy/lib/tests/test-service-users-preexisting-group.sh (red before)", "no",
+      "uninstall removes an adopted orphan group (intended)", "fresh install succeeded on Ubuntu 26.04 after fix"),
+    n("I-42", "low", "tests", "FIXED_IN_BRANCH",
+      "SSH-port tests depended on the host's real sshd/ss", "stub sshd/ss in test-installer-hardening.sh",
+      "same test", "no"),
+    n("I-43", "medium", "deploy/almalinux/acceptance-test.sh", "SERVER_VERIFIED",
+      "printed 'PASSED (all required checks passed)' under FAIL lines; no ufw verification",
+      "verdict counts non-required FAILs ('PASSED WITH N NON-REQUIRED FAILURE(S)'), ACCEPTANCE_STRICT=1, ufw rule checks",
+      "deploy/lib/tests/test-acceptance-summary-honesty.sh (red against original)", "no",
+      "Alma-only SELinux/firewalld checks still non-applicable on Ubuntu (now stated)"),
+    n("I-44", "medium", "nginx subscription vhost", "SERVER_VERIFIED",
+      "HSTS silently dropped from /sub/ and /v1/provision/ (nginx add_header inheritance)",
+      "repeat HSTS (+Referrer-Policy) in each location", "deploy/lib/tests/test-nginx-location-headers.sh (red before)", "no",
+      "reaches existing nodes only via installer re-run (I-45)", "live header observed on staging"),
+    n("I-45", "medium", "update.sh", "CONFIRMED_OPEN",
+      "update.sh never re-renders the nginx vhost, so template-only fixes do not reach deployed nodes",
+      "design: transactional vhost re-render with nginx -t + rollback in update.sh", "", "no",
+      "workaround: re-run install.sh (verified idempotent on staging)"),
+    n("I-46", "high", "release gate", "FIXED_IN_BRANCH",
+      "stable release gate accepted a text 'Device acceptance: PASS' although the device matrix was waived",
+      "deploy/lib/release_evidence.py levels CODE/SERVER/DEVICE/PRODUCTION; wired into release.yml for new stable tags",
+      "deploy/lib/tests/test_release_evidence.py (13 tests)", "yes", "gate untested in a real release run; v1.0.0-v1.3.0 exempt by name"),
+    n("I-47", "medium", "youtube probe", "FIXED_IN_BRANCH",
+      "probe counted non-Shorts pages as Shorts (baseline overstated 1/4,1/4,2/8; true 0/3,0/3,0/6)",
+      "count only pages staying on /shorts/; report others separately", "deploy/lib/tests/test_shorts_health.py", "no"),
+    n("I-48", "low", "tests", "FIXED_IN_BRANCH",
+      "five shell tests read the live host (/etc/vpn, /opt, /var/lib, /usr/local/bin) and fail on any installed host",
+      "deploy/lib/run-shell-tests-clean-host.sh (mount-namespace overlay whiteouts); CI runners unaffected", "76/76 pass hermetically on staging", "no"),
+    n("I-49", "low", "installer release identity", "CONFIRMED_OPEN",
+      "local-tree installs are recorded as channel 'main' with a source-tree digest and no git commit",
+      "record the git commit when available", "", "no", "weak provenance for staging/dev installs"),
+    n("I-50", "low", "tests", "CONFIRMED_OPEN",
+      "root-run Rust tests create system groups vpn-subscription/sing-box and never remove them",
+      "I-41 removes the harm; a cleanup would still be cleaner", "", "no"),
+    n("I-51", "high", "Hiddify iOS (client)", "UNVERIFIED",
+      "profile JSON missing from Library/Caches/Working/configs (carried as I-08); upstream hiddify-app#2372 open, no fix",
+      "upstream proposal in docs/clients/HIDDIFY_IOS.md; server cannot fix", "", "yes",
+      "trigger on the owner's iPhone unconfirmed"),
+]
+
+
+def main():
+    audit = json.load(open(AUDIT))
+    items = audit if isinstance(audit, list) else list(audit.values()) if "id" not in audit else [audit]
+    if isinstance(audit, dict) and "issues" in audit:
+        items = audit["issues"]
+    carried = [dict(id=i["id"], severity=i["severity"], component=i.get("repo", ""), state=CARRY.get(i["status"], "UNVERIFIED"),
+                    title=i["title"], audit_status=i["status"], fix=i.get("fix", ""), note=i.get("note", ""),
+                    source="docs/audits/2026-10-15/issues.json (not re-verified this session)") for i in items]
+    reg = {"schema_version": 1, "generated_for": "2026-10-20 staging remediation", "new": NEW, "carried": carried}
+    json.dump(reg, open(OUT + ".json", "w"), indent=1)
+    md = ["# Issue registry (generated from issue-registry.json — do not edit by hand)\n",
+          "States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFIED, DEVICE_VERIFIED, PRODUCTION_VERIFIED, BLOCKED, UNVERIFIED.\n",
+          "## New / re-assessed this session\n", "| ID | Sev | Component | State | Title | Regression test | Device | Remaining risk |", "|---|---|---|---|---|---|---|---|"]
+    for r in NEW:
+        md.append(f"| {r['id']} | {r['severity']} | {r['component']} | {r['state']} | {r['title']} | {r['regression_test'] or '-'} | {r['device_required']} | {r['remaining_risk'] or '-'} |")
+    md += ["\n## Carried from the 2026-10-15 audit (not re-verified unless listed above)\n", "| ID | Sev | Audit status | State | Title |", "|---|---|---|---|---|"]
+    for r in carried:
+        md.append(f"| {r['id']} | {r['severity']} | {r['audit_status']} | {r['state']} | {r['title'][:120].replace('|','/')} |")
+    open(OUT + ".md", "w").write("\n".join(md) + "\n")
+    print(len(NEW), "new,", len(carried), "carried")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
