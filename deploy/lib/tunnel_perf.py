@@ -91,6 +91,10 @@ def main():
     ap.add_argument("--latency-samples", type=int, default=60)
     ap.add_argument("--concurrency", default="1,4,8")
     ap.add_argument("--soak-seconds", type=int, default=0)
+    ap.add_argument("--restart-recovery", type=int, default=0,
+                    help="N: restart sing-box N times per protocol and time the client's recovery (SERVICE-AFFECTING)")
+    ap.add_argument("--max-reality-recovery-s", type=float, default=10.0)
+    ap.add_argument("--max-hy2-recovery-s", type=float, default=35.0)
     ap.add_argument("--min-ratio", type=float, default=0.70)
     ap.add_argument("--max-added-ms", type=float, default=40.0)
     ap.add_argument("--min-soak-success", type=float, default=0.99)
@@ -145,12 +149,32 @@ def main():
                         else: bad += 1
                         time.sleep(5)
                     t["soak"] = {"seconds": a.soak_seconds, "ok": okc, "failed": bad, "success_rate": round(okc / max(1, okc + bad), 4), "max_gap_s": round(maxgap, 1)}
+                if a.restart_recovery:
+                    rec_times, never = [], 0
+                    for _ in range(a.restart_recovery):
+                        subprocess.run(["systemctl", "restart", "sing-box"], check=False)
+                        t0 = time.time(); got = None
+                        while time.time() - t0 < 90:
+                            if curl_download(small, sock, 6)[0]:
+                                got = time.time() - t0; break
+                            time.sleep(0.5)
+                        if got is None: never += 1
+                        else: rec_times.append(got)
+                        time.sleep(3)
+                    t["restart_recovery_s"] = {"samples": [round(x, 1) for x in rec_times], "never_recovered": never,
+                                               "max": round(max(rec_times), 1) if rec_times else None,
+                                               "median": round(statistics.median(rec_times), 1) if rec_times else None}
                 res["tunnels"][tag] = t
                 v = lambda name, ok, detail: verd.append({"check": f"{tag}: {name}", "pass": bool(ok), "detail": detail})
                 v("no failed transfers", t["transfer_failures"] == 0 and t["connect_failures"] == 0, f"transfers {t['transfer_failures']}, connects {t['connect_failures']}")
                 v(f"throughput ratio >= {a.min_ratio}", (t["ratio_vs_direct"] or 0) >= a.min_ratio, f"{t['mbps_median']} vs direct {res['direct']['mbps_median']} Mbps = {t['ratio_vs_direct']}")
                 v(f"added connect latency <= {a.max_added_ms} ms", t["added_ms_median"] is not None and t["added_ms_median"] <= a.max_added_ms, f"{t['added_ms_median']} ms (median)")
                 v("concurrency: 0 failed transfers", all(c["failed"] == 0 for c in conc.values()), json.dumps(conc))
+                if a.restart_recovery:
+                    lim = a.max_reality_recovery_s if tag == "Reality" else a.max_hy2_recovery_s
+                    rr = t["restart_recovery_s"]
+                    v(f"recovers after a server restart within {lim} s ({a.restart_recovery}/{a.restart_recovery})",
+                      rr["never_recovered"] == 0 and rr["max"] is not None and rr["max"] <= lim, json.dumps(rr))
                 if a.soak_seconds:
                     v(f"soak success >= {a.min_soak_success}", t["soak"]["success_rate"] >= a.min_soak_success, json.dumps(t["soak"]))
                 print(f"{tag}: {json.dumps(t)}")

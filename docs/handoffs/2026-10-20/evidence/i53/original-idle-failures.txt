@@ -1,0 +1,2 @@
+FAIL it=5 deploy/lib/tests/test-ssh-harden.sh
+FAIL it=6 deploy/lib/tests/test-ssh-harden.sh

@@ -1,0 +1,7 @@
+iteration 1: runs=81 failures=1
+iteration 2: runs=162 failures=2
+iteration 3: runs=243 failures=3
+iteration 4: runs=324 failures=4
+iteration 5: runs=405 failures=5
+iteration 6: runs=486 failures=6
+FINAL runs=486 failures=6

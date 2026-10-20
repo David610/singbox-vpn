@@ -1,0 +1,17 @@
+ok: private key refused
+ok: garbage refused
+ok: public key added
+ok: add-key is idempotent
+ok: authorized_keys mode 0600
+ok: refused: no key login logged
+ok: no drop-in written without proof
+ok: refused: logged login was another key's fingerprint
+ok: password login is not proof
+ok: sshd -t failure: not applied
+ok: rolled back after sshd -t failure
+ok: effective value still yes: reported failure
+ok: rolled back when effective value did not change
+FAIL: disable-passwords failed with proof
+ok: effective passwordauthentication=no
+FAIL: rollback failed
+2 failure(s)
