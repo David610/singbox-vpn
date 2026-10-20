@@ -1,0 +1,6 @@
+fa9b5e7f89723a1d  /etc/vpn/deployment.toml
+1e533f2a16ae9194  /etc/vpn/compat/sing-box/config.json
+4f5893ebcf888fee  /etc/vpn/compat/users/users.json
+19e58b614bb72734  /etc/vpn/compat/reality/private.key
+3fc76b35b9ad1a7e  /etc/vpn/compat/reality/short_id.txt
+4966a83a4a45487d  /etc/vpn/compat/hysteria/cert.pem
