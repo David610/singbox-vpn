@@ -1,5 +1,5 @@
 {
- "revision": "97ef78f (code qualified at 3570927; diff = cfg(test) message + registry generator)",
+ "revision": "19e93fd (qualified and installed on staging as a development build)",
  "verdict": "FAIL",
  "mandatory_counts": {
   "PASS": 8,
@@ -18,15 +18,15 @@
    "mandatory": true,
    "status": "PASS",
    "evidence": [
-    "docs/handoffs/2026-10-21/evidence/qualify-3570927/SUMMARY.tsv",
-    "docs/handoffs/2026-10-21/evidence/qualify-3570927/cargo-test-totals.txt",
-    "docs/handoffs/2026-10-21/evidence/qualify-3570927/ENVIRONMENT.txt"
+    "docs/handoffs/2026-10-21/evidence/qualify-19e93fd/SUMMARY.tsv",
+    "docs/handoffs/2026-10-21/evidence/qualify-19e93fd/cargo-test-totals.txt",
+    "docs/handoffs/2026-10-21/evidence/qualify-19e93fd/ENVIRONMENT.txt"
    ],
-   "note": "Run on an immutable export of 3570927. HEAD 97ef78f differs only by a cfg(test) assertion message and the registry generator.",
+   "note": "109/109 gates at 19e93fd on an immutable export (1105 workspace tests, 0 failed/ignored). HEAD may carry docs-only commits after it.",
    "evidence_hashes": {
-    "docs/handoffs/2026-10-21/evidence/qualify-3570927/SUMMARY.tsv": "2cbb2e4d8bbd65bc",
-    "docs/handoffs/2026-10-21/evidence/qualify-3570927/cargo-test-totals.txt": "2b6fd7d1c0c92f63",
-    "docs/handoffs/2026-10-21/evidence/qualify-3570927/ENVIRONMENT.txt": "c2f62a8dd1c01247"
+    "docs/handoffs/2026-10-21/evidence/qualify-19e93fd/SUMMARY.tsv": "4e7396fb0f9f2478",
+    "docs/handoffs/2026-10-21/evidence/qualify-19e93fd/cargo-test-totals.txt": "6172c333034d07e4",
+    "docs/handoffs/2026-10-21/evidence/qualify-19e93fd/ENVIRONMENT.txt": "0a8120fb9b43883b"
    },
    "effective": "PASS"
   },
@@ -37,11 +37,11 @@
    "mandatory": true,
    "status": "PASS",
    "evidence": [
-    "docs/handoffs/2026-10-21/evidence/qualify-3570927/SUMMARY.tsv"
+    "docs/handoffs/2026-10-21/evidence/qualify-19e93fd/SUMMARY.tsv"
    ],
-   "note": "107/107 gates PASS at 3570927. The earlier 625a34f run's single FAIL was a launch-environment error (kept: qualify-625a34f-FAILED-launch-env).",
+   "note": "Includes the new proc-safe, clean-host summary, monitor installer and secret-scan tests. The 625a34f run's single FAIL was a launch-environment error (kept: qualify-625a34f-FAILED-launch-env).",
    "evidence_hashes": {
-    "docs/handoffs/2026-10-21/evidence/qualify-3570927/SUMMARY.tsv": "2cbb2e4d8bbd65bc"
+    "docs/handoffs/2026-10-21/evidence/qualify-19e93fd/SUMMARY.tsv": "4e7396fb0f9f2478"
    },
    "effective": "PASS"
   },
@@ -56,7 +56,7 @@
     "docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt1-FAILED.log",
     "docs/handoffs/2026-10-21/evidence/staging-268808d/candidate-268808d-devrebuild.log"
    ],
-   "note": "I-71 (reality_decoy_budget, 1 failure, client-abandoned authenticated handshake) and I-75 (admin service reload burst, 1 failure, verify-window hypothesis). Neither reproduced; neither fixed; policy: blocks any production release.",
+   "note": "I-71: 1 failure, unexplained, ~150 clean runs, assertion deliberately unchanged, client log + load now captured. I-75: root cause reproduced and FIXED (count-based verify bound); still FLAKY by policy until 3 clean qualification runs on distinct revisions (1 so far: 19e93fd). Either blocks a production release.",
    "evidence_hashes": {
     "docs/handoffs/2026-10-21/FLAKY-POLICY.md": "0c003e9b27cb707a",
     "docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt1-FAILED.log": "50a2486380ce2407",
@@ -123,15 +123,15 @@
    "mandatory": true,
    "status": "PASS",
    "evidence": [
-    "docs/handoffs/2026-10-21/evidence/staging-3570927/doctor-protocol-97ef78f.txt",
-    "docs/handoffs/2026-10-21/evidence/staging-3570927/repair-guard-97ef78f.txt",
-    "docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt2-OK.log"
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/doctor-protocol-19e93fd.txt",
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/repair-guard-19e93fd.txt",
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/devrebuild-OK.log"
    ],
-   "note": "Development build, not a release; attempt 1 failed its pre-install tests (I-75) and installed nothing.",
+   "note": "Development build of 19e93fd: I-54 fixed (0 negated/3 positive skuid rules), gateway REACHABLE, doctor 0 FAIL, --repair refused. Not a release. The pre-install test gate failed once per attempt on I-71, I-75 earlier and passed on this build.",
    "evidence_hashes": {
-    "docs/handoffs/2026-10-21/evidence/staging-3570927/doctor-protocol-97ef78f.txt": "8749ee9924954964",
-    "docs/handoffs/2026-10-21/evidence/staging-3570927/repair-guard-97ef78f.txt": "1365d7d3c601d3ff",
-    "docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt2-OK.log": "e7556be3b8728a73"
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/doctor-protocol-19e93fd.txt": "083538c6e98e8153",
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/repair-guard-19e93fd.txt": "1365d7d3c601d3ff",
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/devrebuild-OK.log": "834b416fd777f2e9"
    },
    "effective": "PASS"
   },
@@ -175,11 +175,11 @@
    "mandatory": true,
    "status": "PASS",
    "evidence": [
-    "docs/handoffs/2026-10-21/evidence/staging-3570927/doctor-protocol-97ef78f.txt"
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/doctor-protocol-19e93fd.txt"
    ],
    "note": "Loopback throwaway clients; not a native client.",
    "evidence_hashes": {
-    "docs/handoffs/2026-10-21/evidence/staging-3570927/doctor-protocol-97ef78f.txt": "8749ee9924954964"
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/doctor-protocol-19e93fd.txt": "083538c6e98e8153"
    },
    "effective": "PASS"
   },
@@ -390,9 +390,13 @@
    "title": "Shorts monitor deployed from source control and verified (install + --check)",
    "mandatory": true,
    "status": "UNVERIFIED",
-   "evidence": [],
-   "note": "I-70: install-shorts-monitor.sh --check passes on staging (hermetic test 14/14, 4 mutations), but install/update do not run it and doctor does not call it; promote after the CI run and an owner decision on default deployment.",
-   "evidence_hashes": {},
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/shorts-monitor-check.txt"
+   ],
+   "note": "I-70: install-shorts-monitor.sh --check passes on staging (14-check hermetic test, 4 mutations). Install/update do not run it and doctor does not call it; promote after CI and an owner decision on default deployment.",
+   "evidence_hashes": {
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/shorts-monitor-check.txt": "680e74aa816b21fd"
+   },
    "effective": "UNVERIFIED"
   }
  ]

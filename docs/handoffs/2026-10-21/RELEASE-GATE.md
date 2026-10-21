@@ -1,4 +1,4 @@
-# Release gate report — revision `97ef78f (code qualified at 3570927; diff = cfg(test) message + registry generator)`
+# Release gate report — revision `19e93fd (qualified and installed on staging as a development build)`
 
 **Verdict: FAIL** (computed; mandatory gates: PASS=8, FAIL=1, FLAKY=1, BLOCKED=6, UNVERIFIED=10)
 
@@ -6,9 +6,9 @@
 
 | Gate | Mandatory | Status | Evidence / note |
 |---|---|---|---|
-| SRC-1 Rust fmt, clippy, rustdoc, workspace tests (1097) | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/qualify-3570927/SUMMARY.tsv`; `docs/handoffs/2026-10-21/evidence/qualify-3570927/cargo-test-totals.txt`; `docs/handoffs/2026-10-21/evidence/qualify-3570927/ENVIRONMENT.txt`. Run on an immutable export of 3570927. HEAD 97ef78f differs only by a cfg(test) assertion message and the registry generator. |
-| SRC-2 Shellcheck, hermetic shell suite, Python tooling tests, workflow contract | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/qualify-3570927/SUMMARY.tsv`. 107/107 gates PASS at 3570927. The earlier 625a34f run's single FAIL was a launch-environment error (kept: qualify-625a34f-FAILED-launch-env). |
-| SRC-3 No unresolved flaky tests | yes | **FLAKY** | `docs/handoffs/2026-10-21/FLAKY-POLICY.md`; `docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt1-FAILED.log`; `docs/handoffs/2026-10-21/evidence/staging-268808d/candidate-268808d-devrebuild.log`. I-71 (reality_decoy_budget, 1 failure, client-abandoned authenticated handshake) and I-75 (admin service reload burst, 1 failure, verify-window hypothesis). Neither reproduced; neither fixed; policy: blocks any production release. |
+| SRC-1 Rust fmt, clippy, rustdoc, workspace tests (1097) | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/qualify-19e93fd/SUMMARY.tsv`; `docs/handoffs/2026-10-21/evidence/qualify-19e93fd/cargo-test-totals.txt`; `docs/handoffs/2026-10-21/evidence/qualify-19e93fd/ENVIRONMENT.txt`. 109/109 gates at 19e93fd on an immutable export (1105 workspace tests, 0 failed/ignored). HEAD may carry docs-only commits after it. |
+| SRC-2 Shellcheck, hermetic shell suite, Python tooling tests, workflow contract | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/qualify-19e93fd/SUMMARY.tsv`. Includes the new proc-safe, clean-host summary, monitor installer and secret-scan tests. The 625a34f run's single FAIL was a launch-environment error (kept: qualify-625a34f-FAILED-launch-env). |
+| SRC-3 No unresolved flaky tests | yes | **FLAKY** | `docs/handoffs/2026-10-21/FLAKY-POLICY.md`; `docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt1-FAILED.log`; `docs/handoffs/2026-10-21/evidence/staging-268808d/candidate-268808d-devrebuild.log`. I-71: 1 failure, unexplained, ~150 clean runs, assertion deliberately unchanged, client log + load now captured. I-75: root cause reproduced and FIXED (count-based verify bound); still FLAKY by policy until 3 clean qualification runs on distinct revisions (1 so far: 19e93fd). Either blocks a production release. |
 | SRC-4 GitHub CI on the branch (os-matrix, audit, container smoke, singbox-validate, security) | yes | **UNVERIFIED** | -. Branch never pushed (R1 needs owner authorization). |
 | SRC-5 Secrets scan and release provenance checks in CI | yes | **UNVERIFIED** | -. Run by security.yml / release.yml; not reproducible locally. |
 
@@ -23,7 +23,7 @@
 | Gate | Mandatory | Status | Evidence / note |
 |---|---|---|---|
 | LIF-1 16-stage interruption matrix, two identical runs, updater at 268808d (update.sh/install.sh/recovery/harness byte-identical at HEAD) | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/matrix-A-268808d/matrix.jsonl`; `docs/handoffs/2026-10-21/evidence/matrix-B-268808d/matrix.jsonl`; `docs/handoffs/2026-10-21/evidence/matrix-A-268808d/baseline.json`. 16/16 each, 0 differences, same harness hash. Payload is the published rc.2 (not a CI-built corrected release). |
-| LIF-2 Staging dev build of the qualified revision: I-54 fixed (skuid 995), IPv6 ND, doctor 0 FAIL, repair guard refuses | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/staging-3570927/doctor-protocol-97ef78f.txt`; `docs/handoffs/2026-10-21/evidence/staging-3570927/repair-guard-97ef78f.txt`; `docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt2-OK.log`. Development build, not a release; attempt 1 failed its pre-install tests (I-75) and installed nothing. |
+| LIF-2 Staging dev build of the qualified revision: I-54 fixed (skuid 995), IPv6 ND, doctor 0 FAIL, repair guard refuses | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/staging-19e93fd/doctor-protocol-19e93fd.txt`; `docs/handoffs/2026-10-21/evidence/staging-19e93fd/repair-guard-19e93fd.txt`; `docs/handoffs/2026-10-21/evidence/staging-19e93fd/devrebuild-OK.log`. Development build of 19e93fd: I-54 fixed (0 negated/3 positive skuid rules), gateway REACHABLE, doctor 0 FAIL, --repair refused. Not a release. The pre-install test gate failed once per attempt on I-71, I-75 earlier and passed on this build. |
 | LIF-3 Attested upgrade rc.2 -> rc.3, repeated --repair on the installed release, rollback | yes | **BLOCKED** | -. Needs the CI-built artifact (ART-1). |
 | LIF-4 Fresh installation with the final installer (isolated, no public certificate issuance) | yes | **UNVERIFIED** | -. Not run. Unit/hermetic tests only (installer-scratch-cleanup etc.). |
 | LIF-5 Reboot acceptance (services, egress table, IPv6 ND, ufw, both protocols) | yes | **BLOCKED** | -. Needs owner authorization and confirmed out-of-band access. |
@@ -32,7 +32,7 @@
 
 | Gate | Mandatory | Status | Evidence / note |
 |---|---|---|---|
-| NET-1 REALITY and Hysteria2 self-tests on the installed build | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/staging-3570927/doctor-protocol-97ef78f.txt`. Loopback throwaway clients; not a native client. |
+| NET-1 REALITY and Hysteria2 self-tests on the installed build | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/staging-19e93fd/doctor-protocol-19e93fd.txt`. Loopback throwaway clients; not a native client. |
 | NET-2 Tunnel isolation (host-local services unreachable through REALITY/Hysteria2), tested through real tunnels at this revision | yes | **UNVERIFIED** | -. Behavioural test not repeated at this revision this session. |
 | NET-3 Google hairpin routing, fail-closed and mutations (SIMULATED two-node) | no | **PASS** | `docs/handoffs/2026-10-21/evidence/hairpin/clean-1.json`; `docs/handoffs/2026-10-21/evidence/hairpin/mut-direct-route.json`. Simulation only: proves routing and fail-closed, nothing about any real address. |
 
@@ -73,5 +73,5 @@
 
 | Gate | Mandatory | Status | Evidence / note |
 |---|---|---|---|
-| OPS-1 Shorts monitor deployed from source control and verified (install + --check) | yes | **UNVERIFIED** | -. I-70: install-shorts-monitor.sh --check passes on staging (hermetic test 14/14, 4 mutations), but install/update do not run it and doctor does not call it; promote after the CI run and an owner decision on default deployment. |
+| OPS-1 Shorts monitor deployed from source control and verified (install + --check) | yes | **UNVERIFIED** | `docs/handoffs/2026-10-21/evidence/staging-19e93fd/shorts-monitor-check.txt`. I-70: install-shorts-monitor.sh --check passes on staging (14-check hermetic test, 4 mutations). Install/update do not run it and doctor does not call it; promote after CI and an owner decision on default deployment. |
 

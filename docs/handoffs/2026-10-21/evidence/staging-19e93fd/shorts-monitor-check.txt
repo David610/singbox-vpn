@@ -1,0 +1,9 @@
+PASS  vpn-shorts-health@.service identical to the shipped unit
+PASS  vpn-shorts-health@.timer identical to the shipped unit
+PASS  PROBE_PYTHON can import playwright
+PASS  PLAYWRIGHT_BROWSERS_PATH present and non-empty
+PASS  vpn-shorts-health@exit-direct.timer enabled
+PASS  vpn-shorts-health@exit-direct.timer active
+PASS  exit-direct: last run 2939s ago
+INFO  exit-direct: media verdict SUSPECT (the monitor is working; this is about the egress, not about the deployment)
+SHORTS MONITOR: deployed and operating

@@ -1,0 +1,12 @@
+commit: 19e93fdae4d94dc17e86fb9745bb0deca713a714
+tree_clean: yes-or-not-git
+workspace_version: 1.3.1
+date_utc: 2026-10-21T12:40:22Z
+uid: 0
+os: Ubuntu 26.04.1 LTS
+rustc: rustc 1.94.1 (e408947bf 2026-03-25)
+cargo: cargo 1.94.1 (29ea6fb6a 2026-03-24)
+sing-box: sing-box version 1.14.1
+pinned sing-box: 1.14.1
+tests passed: 1105 in 34 suites
+fixtures: installed host detected, running each through deploy/lib/run-shell-tests-clean-host.sh
