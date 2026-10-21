@@ -58,7 +58,7 @@
    ],
    "note": "I-71 (reality_decoy_budget, 1 failure, client-abandoned authenticated handshake) and I-75 (admin service reload burst, 1 failure, verify-window hypothesis). Neither reproduced; neither fixed; policy: blocks any production release.",
    "evidence_hashes": {
-    "docs/handoffs/2026-10-21/FLAKY-POLICY.md": "4305b3734b1da418",
+    "docs/handoffs/2026-10-21/FLAKY-POLICY.md": "0c003e9b27cb707a",
     "docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt1-FAILED.log": "50a2486380ce2407",
     "docs/handoffs/2026-10-21/evidence/staging-268808d/candidate-268808d-devrebuild.log": "affd287653b913a7"
    },
@@ -363,11 +363,13 @@
    "mandatory": true,
    "status": "FAIL",
    "evidence": [
-    "docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json"
+    "docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json",
+    "docs/handoffs/2026-10-21/evidence/perf/i60-decoy-candidates.json"
    ],
-   "note": "61.9 ms median (Hysteria2 2.6 ms). Threshold not changed; owner decision (OWNER-ACTIONS #5).",
+   "note": "61.9 ms median on the node (Hysteria2 2.6 ms). Lab evidence: a different remote decoy costs 9-11 ms through REALITY (microsoft.com 73 ms), so the gate is reachable without a local decoy; NOT applied, node not re-measured. Threshold unchanged; owner decision (OWNER-ACTIONS #5).",
    "evidence_hashes": {
-    "docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json": "153648a52f9a13d0"
+    "docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json": "153648a52f9a13d0",
+    "docs/handoffs/2026-10-21/evidence/perf/i60-decoy-candidates.json": "707346e501965206"
    },
    "effective": "FAIL"
   },
@@ -385,11 +387,11 @@
   {
    "id": "OPS-1",
    "category": "Operations",
-   "title": "Shorts monitor deployed and checked by the lifecycle (and itself monitored)",
+   "title": "Shorts monitor deployed from source control and verified (install + --check)",
    "mandatory": true,
    "status": "UNVERIFIED",
    "evidence": [],
-   "note": "I-70: opt-in, not installed or verified by install/update; staging unit installed by hand.",
+   "note": "I-70: install-shorts-monitor.sh --check passes on staging (hermetic test 14/14, 4 mutations), but install/update do not run it and doctor does not call it; promote after the CI run and an owner decision on default deployment.",
    "evidence_hashes": {},
    "effective": "UNVERIFIED"
   }

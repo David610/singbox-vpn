@@ -1,0 +1,186 @@
+{
+ "evidence_class": "server verified, loopback client; not a real client network",
+ "utc": "2026-10-21T12:36:36Z",
+ "results": [
+  {
+   "variant": "remote:www.microsoft.com",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 63.5,
+   "added_ms_median": 62.0,
+   "added_ms_p25_p75": [
+    60.6,
+    64.0
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote-ip:www.microsoft.com",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.6,
+   "tunnel_ms_median": 82.4,
+   "added_ms_median": 80.8,
+   "added_ms_p25_p75": [
+    78.2,
+    85.4
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.ikea.com",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 12.7,
+   "added_ms_median": 11.2,
+   "added_ms_p25_p75": [
+    9.5,
+    12.6
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "local",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 9.4,
+   "added_ms_median": 7.9,
+   "added_ms_p25_p75": [
+    6.9,
+    9.4
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.microsoft.com",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.6,
+   "tunnel_ms_median": 84.7,
+   "added_ms_median": 83.1,
+   "added_ms_p25_p75": [
+    80.8,
+    86.1
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote-ip:www.microsoft.com",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.6,
+   "tunnel_ms_median": 82.0,
+   "added_ms_median": 80.5,
+   "added_ms_p25_p75": [
+    78.3,
+    84.4
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:www.ikea.com",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.9,
+   "tunnel_ms_median": 14.6,
+   "added_ms_median": 12.7,
+   "added_ms_p25_p75": [
+    11.5,
+    15.0
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "local",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 2.0,
+   "tunnel_ms_median": 10.9,
+   "added_ms_median": 8.9,
+   "added_ms_p25_p75": [
+    7.7,
+    10.9
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:www.microsoft.com",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.4,
+   "tunnel_ms_median": 85.0,
+   "added_ms_median": 83.6,
+   "added_ms_p25_p75": [
+    80.1,
+    88.5
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 3
+  },
+  {
+   "variant": "remote-ip:www.microsoft.com",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.9,
+   "tunnel_ms_median": 84.6,
+   "added_ms_median": 82.6,
+   "added_ms_p25_p75": [
+    78.8,
+    87.1
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 3
+  },
+  {
+   "variant": "remote:www.ikea.com",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 2.0,
+   "tunnel_ms_median": 13.9,
+   "added_ms_median": 11.9,
+   "added_ms_p25_p75": [
+    10.0,
+    13.0
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 3
+  },
+  {
+   "variant": "local",
+   "n": 40,
+   "failed": 0,
+   "direct_ms_median": 1.6,
+   "tunnel_ms_median": 10.5,
+   "added_ms_median": 9.0,
+   "added_ms_p25_p75": [
+    7.5,
+    10.7
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 3
+  }
+ ]
+}

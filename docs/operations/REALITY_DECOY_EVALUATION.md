@@ -22,8 +22,8 @@ owner's decision against the criteria below. Evidence class for each row: measur
 properly certificated site for a domain they control, and accepts the all-user re-import. **What does not:** the
 latency number by itself.
 
-**Cheaper levers first (none applied):** prefer Hysteria2 where UDP/443 works (+~2 ms); a closer remote decoy saves
-only ~8 ms (ikea.com 20.9 vs microsoft.com 28.9 ms TLS handshake from this node).
+**Cheaper levers first (none applied):** prefer Hysteria2 where UDP/443 works (+~2 ms). ~~A closer remote decoy saves only ~8 ms~~ - **superseded 2026-10-21**: measured through REALITY, a different
+remote decoy (amazon.com 9 ms, cloudflare.com 9 ms, ikea.com 11 ms vs microsoft.com 73 ms) removes almost all of the added latency without a local decoy; see the CORRECTION in `REALITY_DECOY_LATENCY.md`. A local decoy is therefore not needed for I-60.
 
 **Before any switch**, prove on a *disposable* pair of nodes: (1) real client (Hiddify core at least) connects with
 the new SNI; (2) `doctor --protocol` passes; (3) the added latency drops as measured; (4) a native iPhone

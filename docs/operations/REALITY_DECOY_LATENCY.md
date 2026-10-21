@@ -29,3 +29,37 @@ the REALITY setup cost as a known property.
 
 Not measured: real-network behaviour (the decoy RTT from the node is independent of the client's network, so the
 server-side part of this cost will be the same for a real client; the client-to-node RTT adds on top).
+
+## CORRECTION 2026-10-21 - the decoy choice IS the lever (the earlier "not the lever" conclusion was wrong)
+The section above judged remote decoys by their raw TLS 1.3 handshake time from this node and concluded that switching to the fastest one
+"would save only a few ms". Measuring the cost **through REALITY** instead (`deploy/lib/reality_decoy_latency_experiment.py`: throwaway
+REALITY server/client pairs on loopback, identical except for `handshake.server`, N sequential NEW connections each, variants interleaved over
+rounds, minus the direct request; evidence `docs/handoffs/2026-10-21/evidence/perf/i60-decoy-*.json`) shows the opposite. Server verified,
+loopback client, NOT a real client network (the decoy leg is independent of the client's network, so the server-side saving carries over).
+
+| decoy (remote, third-party) | added ms per new connection (round medians) | median |
+|---|---|---|
+| www.amazon.com | 9.0, 9.6 | 9.3 |
+| www.cloudflare.com | 8.9, 9.8 | 9.4 |
+| www.ikea.com | 11.8, 10.5 (and 11.2, 12.7, 11.9 in the first run) | 11.2 |
+| dl.google.com (excluded: see below) | 13.4, 12.4 | 12.9 |
+| www.spotify.com / www.bbc.com / www.mozilla.org | 19-20 | 19-20 |
+| www.apple.com | 44.8, 84.2 | 64.5 |
+| **www.microsoft.com (current default)** | 61.8, 83.5 (and 62.0, 83.1, 83.6) | **72.7** |
+| local TLS 1.3 server on 127.0.0.1 (lower bound) | 7.9, 8.9, 9.0 | 8.9 |
+
+Controls: pinning the decoy's IP (`handshake.server` = address, SNI unchanged) did not change www.microsoft.com (81/81/83 ms), so per-connection DNS is **not**
+the cause. All variants 0 failed requests. Raw handshake time did not predict the REALITY cost (microsoft.com 28.9 ms raw vs ikea.com 20.9 ms raw, but 73 vs 11 ms
+through REALITY); *why* microsoft.com and apple.com are slow through REALITY is not established (not the DNS, not the raw handshake). Do not generalize past the
+hosts measured: the ranking can change with the decoy's own behaviour and PoP.
+
+**Consequence for I-60.** A remote decoy that measures about 9-13 ms through REALITY would put the added latency well inside the 40 ms gate **without** a local decoy,
+a new domain or certificate, or any new service on the node. It is the same security class as today (a third-party site; the known IP/SNI mismatch is unchanged).
+It is still a service-affecting change: `sni=` changes in **every** client profile (all users re-import; Hiddify caches profiles) and sing-box restarts.
+Not applied. The 40 ms gate is unchanged and PERF-2 stays FAIL until an owner decision is carried out and re-measured on the node.
+Do not use a Google-owned name (dl.google.com measured fast) as the decoy: it sits inside the protected Google/YouTube hairpin domain set
+(`docs/YOUTUBE_FIX_INVARIANTS.md`), an interaction nobody has analysed.
+
+**Before a switch** (same list as `REALITY_DECOY_EVALUATION.md`): (1) a native client imports the changed profile and connects (UNVERIFIED), (2) `doctor --protocol`
+on the changed node, (3) re-run `tunnel_perf.py` on the node and confirm added ms <= 40, (4) the decoy keeps answering TLS 1.3 + h2 (checked now for amazon/cloudflare/ikea/microsoft).
+The installer's default decoy is a separate product decision: changing it affects only new installs and should follow the same evidence.

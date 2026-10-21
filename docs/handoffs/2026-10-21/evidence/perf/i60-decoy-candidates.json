@@ -1,0 +1,276 @@
+{
+ "evidence_class": "server verified, loopback client; not a real client network",
+ "utc": "2026-10-21T12:38:04Z",
+ "results": [
+  {
+   "variant": "remote:www.microsoft.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 63.3,
+   "added_ms_median": 61.8,
+   "added_ms_p25_p75": [
+    60.8,
+    63.2
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.ikea.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 13.3,
+   "added_ms_median": 11.8,
+   "added_ms_p25_p75": [
+    10.6,
+    13.2
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.cloudflare.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.6,
+   "tunnel_ms_median": 10.5,
+   "added_ms_median": 8.9,
+   "added_ms_p25_p75": [
+    8.1,
+    10.3
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.amazon.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 10.5,
+   "added_ms_median": 9.0,
+   "added_ms_p25_p75": [
+    8.0,
+    9.7
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.mozilla.org",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 20.8,
+   "added_ms_median": 19.3,
+   "added_ms_p25_p75": [
+    18.5,
+    20.3
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.apple.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 2.0,
+   "tunnel_ms_median": 46.8,
+   "added_ms_median": 44.8,
+   "added_ms_p25_p75": [
+    43.2,
+    46.4
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:dl.google.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.9,
+   "tunnel_ms_median": 15.3,
+   "added_ms_median": 13.4,
+   "added_ms_p25_p75": [
+    12.1,
+    14.5
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.bbc.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.9,
+   "tunnel_ms_median": 21.4,
+   "added_ms_median": 19.5,
+   "added_ms_p25_p75": [
+    18.5,
+    20.8
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.spotify.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 21.0,
+   "added_ms_median": 19.6,
+   "added_ms_p25_p75": [
+    18.7,
+    20.6
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 1
+  },
+  {
+   "variant": "remote:www.microsoft.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 85.0,
+   "added_ms_median": 83.5,
+   "added_ms_p25_p75": [
+    80.2,
+    87.4
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:www.ikea.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 12.0,
+   "added_ms_median": 10.5,
+   "added_ms_p25_p75": [
+    9.2,
+    12.5
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:www.cloudflare.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.9,
+   "tunnel_ms_median": 11.8,
+   "added_ms_median": 9.8,
+   "added_ms_p25_p75": [
+    9.0,
+    10.8
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:www.amazon.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 2.0,
+   "tunnel_ms_median": 11.7,
+   "added_ms_median": 9.6,
+   "added_ms_p25_p75": [
+    7.6,
+    10.7
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:www.mozilla.org",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.9,
+   "tunnel_ms_median": 22.4,
+   "added_ms_median": 20.5,
+   "added_ms_p25_p75": [
+    19.5,
+    22.2
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:www.apple.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.9,
+   "tunnel_ms_median": 86.1,
+   "added_ms_median": 84.2,
+   "added_ms_p25_p75": [
+    81.0,
+    87.5
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:dl.google.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 2.0,
+   "tunnel_ms_median": 14.3,
+   "added_ms_median": 12.4,
+   "added_ms_p25_p75": [
+    11.6,
+    13.9
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:www.bbc.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.5,
+   "tunnel_ms_median": 20.9,
+   "added_ms_median": 19.4,
+   "added_ms_p25_p75": [
+    18.1,
+    20.7
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  },
+  {
+   "variant": "remote:www.spotify.com",
+   "n": 30,
+   "failed": 0,
+   "direct_ms_median": 1.6,
+   "tunnel_ms_median": 20.4,
+   "added_ms_median": 18.8,
+   "added_ms_p25_p75": [
+    17.9,
+    19.6
+   ],
+   "server_decoy_ms_median": null,
+   "decoy_samples": 0,
+   "round": 2
+  }
+ ]
+}

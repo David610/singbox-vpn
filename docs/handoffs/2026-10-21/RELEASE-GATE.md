@@ -66,12 +66,12 @@
 | Gate | Mandatory | Status | Evidence / note |
 |---|---|---|---|
 | PERF-1 Throughput, concurrency 1/4/8, 5-minute soak, restart recovery (loopback client) | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json`. Loopback client sharing host CPU; NOT real-network throughput; measured on the earlier dev build with the same data-plane configuration. |
-| PERF-2 REALITY added connection latency <= 40 ms (I-60) | yes | **FAIL** | `docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json`. 61.9 ms median (Hysteria2 2.6 ms). Threshold not changed; owner decision (OWNER-ACTIONS #5). |
+| PERF-2 REALITY added connection latency <= 40 ms (I-60) | yes | **FAIL** | `docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json`; `docs/handoffs/2026-10-21/evidence/perf/i60-decoy-candidates.json`. 61.9 ms median on the node (Hysteria2 2.6 ms). Lab evidence: a different remote decoy costs 9-11 ms through REALITY (microsoft.com 73 ms), so the gate is reachable without a local decoy; NOT applied, node not re-measured. Threshold unchanged; owner decision (OWNER-ACTIONS #5). |
 | PERF-3 Real-network performance and long-term stability (> 5 min) | yes | **UNVERIFIED** | -. Not measured. |
 
 ## Operations
 
 | Gate | Mandatory | Status | Evidence / note |
 |---|---|---|---|
-| OPS-1 Shorts monitor deployed and checked by the lifecycle (and itself monitored) | yes | **UNVERIFIED** | -. I-70: opt-in, not installed or verified by install/update; staging unit installed by hand. |
+| OPS-1 Shorts monitor deployed from source control and verified (install + --check) | yes | **UNVERIFIED** | -. I-70: install-shorts-monitor.sh --check passes on staging (hermetic test 14/14, 4 mutations), but install/update do not run it and doctor does not call it; promote after the CI run and an owner decision on default deployment. |
 

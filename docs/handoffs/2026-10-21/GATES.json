@@ -268,9 +268,10 @@
    "mandatory": true,
    "status": "FAIL",
    "evidence": [
-    "docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json"
+    "docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json",
+    "docs/handoffs/2026-10-21/evidence/perf/i60-decoy-candidates.json"
    ],
-   "note": "61.9 ms median (Hysteria2 2.6 ms). Threshold not changed; owner decision (OWNER-ACTIONS #5)."
+   "note": "61.9 ms median on the node (Hysteria2 2.6 ms). Lab evidence: a different remote decoy costs 9-11 ms through REALITY (microsoft.com 73 ms), so the gate is reachable without a local decoy; NOT applied, node not re-measured. Threshold unchanged; owner decision (OWNER-ACTIONS #5)."
   },
   {
    "id": "PERF-3",
