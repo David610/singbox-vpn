@@ -1,0 +1,561 @@
+{
+ "kind": "client-profile-check",
+ "evidence_class": "server verified (profiles only; native apps UNVERIFIED)",
+ "families": {
+  "sing-box": {
+   "url_suffix": "?format=singbox",
+   "checks": [
+    {
+     "check": "HTTP 200",
+     "result": "PASS",
+     "detail": "code=200"
+    },
+    {
+     "check": "TLS certificate verified by curl (no -k)",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "HSTS header present",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "response is not cacheable by intermediaries",
+     "result": "PASS",
+     "detail": "cache-control=no-store"
+    },
+    {
+     "check": "no server version banner",
+     "result": "PASS",
+     "detail": "server=nginx"
+    },
+    {
+     "check": "no private key material anywhere",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "no literal IPv6 server (host name only)",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "exactly one REALITY outbound",
+     "result": "PASS",
+     "detail": "types=['vless', 'hysteria2', 'urltest', 'selector', 'direct']"
+    },
+    {
+     "check": "reality: server is the node's public host",
+     "result": "PASS",
+     "detail": "server=fin1.xn----8sba1cvaif4e.com"
+    },
+    {
+     "check": "reality: port set",
+     "result": "PASS",
+     "detail": "port=443"
+    },
+    {
+     "check": "reality: public_key is 43-char base64url",
+     "result": "PASS",
+     "detail": "(value not printed)"
+    },
+    {
+     "check": "reality: short_id is hex",
+     "result": "PASS",
+     "detail": "(value not printed)"
+    },
+    {
+     "check": "reality: flow xtls-rprx-vision",
+     "result": "PASS",
+     "detail": "flow=xtls-rprx-vision"
+    },
+    {
+     "check": "reality: uTLS fingerprint set",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "reality: SNI present",
+     "result": "PASS",
+     "detail": "sni=www.microsoft.com"
+    },
+    {
+     "check": "reality: uuid present",
+     "result": "PASS",
+     "detail": "(not printed)"
+    },
+    {
+     "check": "exactly one Hysteria2 outbound",
+     "result": "PASS",
+     "detail": "types=['vless', 'hysteria2', 'urltest', 'selector', 'direct']"
+    },
+    {
+     "check": "hysteria2: server is the node's public host",
+     "result": "PASS",
+     "detail": "server=fin1.xn----8sba1cvaif4e.com"
+    },
+    {
+     "check": "hysteria2: TLS verification is NOT disabled",
+     "result": "PASS",
+     "detail": "insecure=False"
+    },
+    {
+     "check": "hysteria2: SNI equals the host (certificate name)",
+     "result": "PASS",
+     "detail": "sni=fin1.xn----8sba1cvaif4e.com"
+    },
+    {
+     "check": "hysteria2: password present",
+     "result": "PASS",
+     "detail": "(not printed)"
+    },
+    {
+     "check": "hysteria2: Salamander obfuscation present",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "selector defaults deterministically to REALITY",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "auto (urltest) group exists but is not the default",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "route.final points at the selector",
+     "result": "PASS",
+     "detail": "final=select"
+    },
+    {
+     "check": "real sing-box accepts the profile (sing-box check)",
+     "result": "PASS",
+     "detail": ""
+    }
+   ],
+   "native_app": "UNVERIFIED"
+  },
+  "hiddify-pinned (REALITY only)": {
+   "url_suffix": "?format=singbox&compat=hiddify-pinned",
+   "checks": [
+    {
+     "check": "HTTP 200",
+     "result": "PASS",
+     "detail": "code=200"
+    },
+    {
+     "check": "TLS certificate verified by curl (no -k)",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "HSTS header present",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "response is not cacheable by intermediaries",
+     "result": "PASS",
+     "detail": "cache-control=no-store"
+    },
+    {
+     "check": "no server version banner",
+     "result": "PASS",
+     "detail": "server=nginx"
+    },
+    {
+     "check": "no private key material anywhere",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "no literal IPv6 server (host name only)",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "exactly one REALITY outbound",
+     "result": "PASS",
+     "detail": "types=['vless', 'urltest', 'selector', 'direct']"
+    },
+    {
+     "check": "reality: server is the node's public host",
+     "result": "PASS",
+     "detail": "server=fin1.xn----8sba1cvaif4e.com"
+    },
+    {
+     "check": "reality: port set",
+     "result": "PASS",
+     "detail": "port=443"
+    },
+    {
+     "check": "reality: public_key is 43-char base64url",
+     "result": "PASS",
+     "detail": "(value not printed)"
+    },
+    {
+     "check": "reality: short_id is hex",
+     "result": "PASS",
+     "detail": "(value not printed)"
+    },
+    {
+     "check": "reality: flow xtls-rprx-vision",
+     "result": "PASS",
+     "detail": "flow=xtls-rprx-vision"
+    },
+    {
+     "check": "reality: uTLS fingerprint set",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "reality: SNI present",
+     "result": "PASS",
+     "detail": "sni=www.microsoft.com"
+    },
+    {
+     "check": "reality: uuid present",
+     "result": "PASS",
+     "detail": "(not printed)"
+    },
+    {
+     "check": "pinned: exactly one route (REALITY) is reachable from any group; no Hysteria2",
+     "result": "PASS",
+     "detail": "routes=['Reality'] types=['vless', 'urltest', 'selector', 'direct']"
+    },
+    {
+     "check": "pinned: selector defaults to REALITY",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "route.final points at the selector",
+     "result": "PASS",
+     "detail": "final=select"
+    },
+    {
+     "check": "real sing-box accepts the profile (sing-box check)",
+     "result": "PASS",
+     "detail": ""
+    }
+   ],
+   "native_app": "UNVERIFIED"
+  },
+  "hiddify URI list": {
+   "url_suffix": "?format=hiddify",
+   "checks": [
+    {
+     "check": "HTTP 200",
+     "result": "PASS",
+     "detail": "code=200"
+    },
+    {
+     "check": "TLS certificate verified by curl (no -k)",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "HSTS header present",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "response is not cacheable by intermediaries",
+     "result": "PASS",
+     "detail": "cache-control=no-store"
+    },
+    {
+     "check": "no server version banner",
+     "result": "PASS",
+     "detail": "server=nginx"
+    },
+    {
+     "check": "no private key material",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "contains a vless and a hysteria2 link",
+     "result": "PASS",
+     "detail": "schemes=['hysteria2', 'vless']"
+    },
+    {
+     "check": "vless link: host",
+     "result": "PASS",
+     "detail": "host=fin1.xn----8sba1cvaif4e.com"
+    },
+    {
+     "check": "vless link: security=reality",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: flow vision",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: pbk 43-char",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: sid hex",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: fp and sni",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: encryption=none",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: host",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: sni equals host",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: insecure=0",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: obfs and obfs-password",
+     "result": "PASS",
+     "detail": ""
+    }
+   ],
+   "native_app": "UNVERIFIED"
+  },
+  "shadowrocket base64": {
+   "url_suffix": "?format=hiddify&encoding=base64",
+   "checks": [
+    {
+     "check": "HTTP 200",
+     "result": "PASS",
+     "detail": "code=200"
+    },
+    {
+     "check": "TLS certificate verified by curl (no -k)",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "HSTS header present",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "response is not cacheable by intermediaries",
+     "result": "PASS",
+     "detail": "cache-control=no-store"
+    },
+    {
+     "check": "no server version banner",
+     "result": "PASS",
+     "detail": "server=nginx"
+    },
+    {
+     "check": "no private key material",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "contains a vless and a hysteria2 link",
+     "result": "PASS",
+     "detail": "schemes=['hysteria2', 'vless']"
+    },
+    {
+     "check": "vless link: host",
+     "result": "PASS",
+     "detail": "host=fin1.xn----8sba1cvaif4e.com"
+    },
+    {
+     "check": "vless link: security=reality",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: flow vision",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: pbk 43-char",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: sid hex",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: fp and sni",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: encryption=none",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: host",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: sni equals host",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: insecure=0",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: obfs and obfs-password",
+     "result": "PASS",
+     "detail": ""
+    }
+   ],
+   "native_app": "UNVERIFIED"
+  },
+  "v2rayNG uri": {
+   "url_suffix": "?format=uri",
+   "checks": [
+    {
+     "check": "HTTP 200",
+     "result": "PASS",
+     "detail": "code=200"
+    },
+    {
+     "check": "TLS certificate verified by curl (no -k)",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "HSTS header present",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "response is not cacheable by intermediaries",
+     "result": "PASS",
+     "detail": "cache-control=no-store"
+    },
+    {
+     "check": "no server version banner",
+     "result": "PASS",
+     "detail": "server=nginx"
+    },
+    {
+     "check": "no private key material",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "contains a vless and a hysteria2 link",
+     "result": "PASS",
+     "detail": "schemes=['hysteria2', 'vless']"
+    },
+    {
+     "check": "vless link: host",
+     "result": "PASS",
+     "detail": "host=fin1.xn----8sba1cvaif4e.com"
+    },
+    {
+     "check": "vless link: security=reality",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: flow vision",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: pbk 43-char",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: sid hex",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: fp and sni",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "vless link: encryption=none",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: host",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: sni equals host",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: insecure=0",
+     "result": "PASS",
+     "detail": ""
+    },
+    {
+     "check": "hysteria2 link: obfs and obfs-password",
+     "result": "PASS",
+     "detail": ""
+    }
+   ],
+   "native_app": "UNVERIFIED"
+  },
+  "refusals": {
+   "checks": [
+    {
+     "check": "unknown compat is refused",
+     "result": "PASS",
+     "detail": "code=400"
+    },
+    {
+     "check": "pinned with a URI format is refused",
+     "result": "PASS",
+     "detail": "code=400"
+    },
+    {
+     "check": "unknown format is refused",
+     "result": "PASS",
+     "detail": "code=400"
+    }
+   ],
+   "native_app": "N/A"
+  }
+ },
+ "totals": {
+  "PASS": 103,
+  "FAIL": 0
+ },
+ "verdict": "PASS"
+}

@@ -9,9 +9,10 @@ maintainer hands you a dedicated test profile out of band.
 | Step | Action | Expected | Send back |
 |---|---|---|---|
 | 0 | Settings > General > About: model + iOS version. Hiddify: Settings > About: version/build. Note whether it is App Store or TestFlight. | - | the three values as text |
-| 1 | Import the test subscription (QR or link) into Hiddify. | the profile appears with two routes (REALITY and Hysteria2) and **no error dialog** | screenshot of the profile list; any error text verbatim |
-| 2 | Select **REALITY** and connect. Open Safari > a "what is my IP" page. | the iOS VPN indicator shows; the page shows **62.238.46.190** | screenshot; the IP shown |
-| 3 | Disconnect, select **Hysteria2**, connect, repeat the IP check. | same address | screenshot; note if connecting took > 10 s |
+| 1 | On the VPS (your own SSH terminal): `sudo bash /opt/singbox-vpn/deploy/lib/qa_profile_pack.sh <qa-user-id>` (see `vpn user list`; use a dedicated QA user). It prints three QR codes **to your terminal only** and writes nothing. Scan **1. REALITY only** with Hiddify (Add profile > scan). | the profile appears with **one** route and **no error dialog** | screenshot of the profile list (not of the QR); any error text verbatim |
+| 2 | Connect. Open Safari > a "what is my IP" page. | the iOS VPN indicator shows; the page shows **62.238.46.190** | screenshot; the IP shown |
+| 3 | Disconnect. Scan/paste **2. Hysteria2 only** (a single share link: Hiddify > Add from clipboard or scan). Connect; repeat the IP check. | same address | screenshot; note if connecting took > 10 s |
+| 3b | Optionally import **3. Both transports** the way a normal user would. | two routes; Hiddify balances new connections across them (it ignores the profile's own selector), so this cell does not isolate a transport | screenshot |
 | 4 | With either transport: open a DNS-leak test page and a "test-ipv6" page. | resolvers belong to the VPN node's network, not your carrier/ISP; IPv6 shown is the node's (2a01:4f9:...) or none, **never your carrier's** | screenshots (this is the only valid DNS/IPv6-leak evidence; server tests cannot give it) |
 | 5 | Browse 3-4 ordinary sites and download a ~50 MB file over Wi-Fi. | normal speed, no stalls | rough speed, any failure |
 | 6 | Lock the phone 2 min, unlock; then switch Wi-Fi -> cellular, then cellular -> Wi-Fi. | the VPN recovers within ~30 s each time and traffic resumes | seconds to recover per switch (Hysteria2 may take longer; record it) |
@@ -22,3 +23,9 @@ maintainer hands you a dedicated test profile out of band.
 
 A cell of the release matrix = one transport x one network with steps S1 recorded; steps 0-9 feed the supporting
 notes. If any step fails, record it as FAIL with the text/screenshot; do not retry silently.
+
+Why separate imports: Hiddify rebuilds its own groups and balances new connections across all routes it finds, so a profile with
+both transports cannot tell you which one carried your traffic. The pinned REALITY profile and the single Hysteria2 link each
+contain exactly one route (verified server-side by `deploy/lib/client_profile_check.py`, which does **not** prove the app works).
+
+After the test, on the VPS: `vpn user remove <qa-user-id>`. Never paste the QR contents, the subscription URL or the links anywhere.
