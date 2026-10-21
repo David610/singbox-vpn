@@ -75,9 +75,12 @@ ln -s /opt/victim /opt/.singbox-vpn-prev-2; printf '{"backup_dir":"/etc/vpn/back
 
 # --- 7. valid marker whose backup has no deployment.toml snapshot => PREPARE never finished: only the marker + staging are cleared, backup left
 printf '{"backup_dir":"/etc/vpn/backups/20261020-100000-1","prev_opt_dir":"/opt/.singbox-vpn-prev-1","staged_src_dir":"/opt/.singbox-vpn-update-staging.M1/src","from_version":"v1.3.0","to_version":"v1.3.1-rc.2"}' >"$MARK"
+: >/var/lib/singbox-vpn/install-state.json.tmp   # a kill just before the commit rename leaves this behind
 run
-{ [ "$RC" -eq 0 ] && [ ! -e "$MARK" ] && [ ! -d /opt/.singbox-vpn-update-staging.M1 ] && [ -d /opt/singbox-vpn ] && [ -d /etc/vpn/backups/20261020-100000-1 ]; } \
-  && ok "no snapshot in the backup => nothing was mutated => marker and staging cleared, live tree and backup kept" || bad "prepare-incomplete case wrong (rc=$RC): $(tail -3 $REC)"
+[ ! -e /var/lib/singbox-vpn/install-state.json.tmp ] && ok "an uncommitted manifest .tmp is removed by recovery" || bad "install-state.json.tmp survived recovery"
+{ [ "$RC" -eq 0 ] && [ ! -e "$MARK" ] && [ ! -d /opt/.singbox-vpn-update-staging.M1 ] && [ -d /opt/singbox-vpn ] && [ ! -d /etc/vpn/backups/20261020-100000-1 ]; } \
+  && ok "no snapshot in the backup => nothing was mutated => marker, staging AND the useless transaction backup cleared, live tree kept" || bad "prepare-incomplete case wrong (rc=$RC): $(tail -3 $REC)"
+mkdir -p /etc/vpn/backups/20261020-100000-1   # the next cases reuse the same fixture backup
 # ...but if the source tree WAS moved aside while the backup is incomplete => inconsistent => refuse
 mkdir -p /opt/.singbox-vpn-prev-1; cp "$MARK" /dev/null 2>&1; printf '{"backup_dir":"/etc/vpn/backups/20261020-100000-1","prev_opt_dir":"/opt/.singbox-vpn-prev-1","staged_src_dir":"","from_version":"v1.3.0","to_version":"v1.3.1-rc.2"}' >"$MARK"
 run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ] && [ -d /opt/.singbox-vpn-prev-1 ] && grep -q 'inconsistent transaction' $REC; } && ok "tree moved aside but backup incomplete: refused as inconsistent, nothing deleted" || bad "inconsistent case wrong (rc=$RC)"

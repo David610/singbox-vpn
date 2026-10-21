@@ -500,8 +500,15 @@ PY
   local prev_exists=0
   [ -d "$PREV_OPT_DIR" ] && prev_exists=1
   clear_transaction() {
-    rm -f "$TRANSACTION_MARKER"
+    rm -f "$TRANSACTION_MARKER" "$INSTALL_STATE_MANIFEST.tmp"   # the .tmp exists only if a kill landed just before the commit rename
     [ -n "$STAGING_ROOT" ] && rm -rf --one-file-system -- "$STAGING_ROOT"
+  }
+  # The transaction backup exists only to undo THIS transaction. Once the previous release is proven in place (nothing was
+  # changed, or the restore was verified) it is dead weight and would otherwise accumulate in /etc/vpn/backups, one per
+  # interrupted update. Its path was validated above (direct, root-owned, non-symlink child of the backup root).
+  drop_transaction_backup() {
+    [ "$backup_exists" = 1 ] && rm -rf --one-file-system -- "$BACKUP_DIR"
+    return 0
   }
   # COMMIT POINT. The manifest rename is where an update becomes final; afterwards the updater deletes the
   # backup, the previous tree and staging, and removes the marker LAST. A kill in that window leaves a marker
@@ -541,6 +548,7 @@ PY
     [ "$prev_exists" -eq 0 ] || die "inconsistent transaction: the source tree was moved aside but the backup is incomplete. Manual recovery needed (see $BACKUP_DIR)."
     log "PREPARE had not finished: no live state was changed. Clearing the interrupted transaction."
     clear_transaction
+    drop_transaction_backup
     exit 0
   fi
   local same=1 f
@@ -549,6 +557,7 @@ PY
       && systemctl is-active --quiet sing-box && systemctl is-active --quiet vpn-subscription; then
     log "the switch had not started (previous release still installed and active): clearing the interrupted transaction."
     clear_transaction
+    drop_transaction_backup
     exit 0
   fi
   for f in vpn-admin vpn vpn-subscription-svc; do
@@ -566,6 +575,7 @@ PY
   clear_transaction
   clear_stale_staging_dirs
   if [ "$failed" -eq 0 ]; then
+    drop_transaction_backup   # restore verified; on failure the backup is kept for the manual recovery message below
     echo "[update] RECOVERY COMPLETE — PREVIOUS RELEASE (${CURRENT_VERSION}) RESTORED AND VERIFIED. Re-run the update when ready." >&2
     exit 0
   fi
@@ -630,7 +640,7 @@ verify_release_attestation() {
   local artifact="$1" version="$2" repo="$3"
   ensure_cosign
   local bundle
-  bundle="$(mktemp)"
+  bundle="$(mktemp "${STAGING_ROOT:-/tmp}/attestation.XXXXXX")"
   if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$bundle" "https://github.com/$repo/releases/download/$version/$(basename "$artifact").sigstore.json"; then
     rm -f "$bundle"
     die "could not download the attestation bundle for $(basename "$artifact")/$version. Nothing live has changed. There is no checksum-only fallback for any release, historical or otherwise."
@@ -1299,10 +1309,11 @@ rollback_update() {
   warn "update to $TARGET_VERSION did not commit; restoring previous release (${CURRENT_VERSION:-unknown}) from $BACKUP_DIR"
   perform_rollback_from_backup || failed=1
 
-  rm -f "$TRANSACTION_MARKER"
+  rm -f "$TRANSACTION_MARKER" "$INSTALL_STATE_MANIFEST.tmp"
   rm -rf "$STAGING_ROOT"
 
   if [ "$failed" -eq 0 ]; then
+    rm -rf --one-file-system -- "$BACKUP_DIR"   # verified restore: the transaction backup has served its purpose
     echo "[update] UPDATE FAILED — PREVIOUS RELEASE RESTORED AND VERIFIED (${CURRENT_VERSION:-unknown})." >&2
     exit 1
   fi

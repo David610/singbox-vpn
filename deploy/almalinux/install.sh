@@ -413,6 +413,27 @@ on_fatal_error() {
 }
 trap 'on_fatal_error $? "${LINENO:-unknown}" "${FUNCNAME[0]:-main}" "${SINGBOX_VPN_STAGE:-initialization}"' ERR
 
+# I-33: ONE scratch workspace for the whole run. Every bare `mktemp` below honours TMPDIR, so the cosign download (~135 MB),
+# release tarballs, rustup-init and probe files all land inside it and are removed by the EXIT trap on success, failure
+# and managed signals. After SIGKILL/host crash a later run removes workspaces whose recorded owner is gone.
+sweep_stale_scratch() { # $1=parent dir  $2=name glob
+  local d pid
+  for d in "$1"/$2; do
+    [ -d "$d" ] && [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] || continue
+    [ -n "$(find "$d" -maxdepth 0 -mmin +10 2>/dev/null)" ] || continue
+    pid="$(cat "$d/.owner-pid" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    kill -0 "$pid" 2>/dev/null && continue
+    rm -rf --one-file-system -- "$d"
+  done
+}
+sweep_stale_scratch /tmp 'singbox-vpn-inner.*'
+INSTALL_WORK="$(mktemp -d /tmp/singbox-vpn-inner.XXXXXXXX)" || die "cannot create the scratch workspace"
+echo "$$" >"$INSTALL_WORK/.owner-pid"
+export TMPDIR="$INSTALL_WORK"
+cleanup_scratch() { rm -rf --one-file-system -- "$INSTALL_WORK"; }
+trap cleanup_scratch EXIT
+
 # SIGINT/SIGTERM (Ctrl-C, or `systemctl stop`/timeout/orchestration
 # killing this script) previously had NO handler outside the narrow
 # ACME-issuance window below — bash's default disposition for both
@@ -1508,6 +1529,19 @@ ensure_cosign() {
     arm64) expected_sha256="$COSIGN_SHA256_ARM64" ;;
     *) die "unsupported architecture '$ARCH' — cannot verify release attestations." ;;
   esac
+  # I-33: the bootstrap already downloaded the pinned cosign. Reuse it, but trust nothing: copy it into this run's
+  # workspace and re-verify it against THIS script's own pinned digest; any mismatch falls back to a fresh download.
+  local handed="${SINGBOX_VPN_COSIGN_BIN:-}"
+  if [ -n "$handed" ] && [ -f "$handed" ] && [ ! -L "$handed" ]; then
+    local mine="$INSTALL_WORK/cosign-handed"
+    if install -m 0700 "$handed" "$mine" 2>/dev/null && [ "$(sha256sum "$mine" | awk '{print $1}')" = "$expected_sha256" ]; then
+      log "reusing the bootstrap's already-verified cosign v${COSIGN_VERSION} (digest re-checked)."
+      COSIGN_BIN="$mine"
+      return 0
+    fi
+    rm -f "$mine"
+    warn "the cosign handed over by the bootstrap did not match the pinned digest; downloading it again."
+  fi
   local tmp asset dest
   tmp="$(mktemp -d)"
   asset="cosign-linux-${ARCH}"
