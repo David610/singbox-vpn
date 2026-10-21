@@ -76,7 +76,10 @@ fn generate_reality_keypair(sb: &common::SingBox) -> (String, String) {
 /// probe of the rendered subscription, abandoned 5 ms in, while the test's own relay connection succeeded).
 fn diagnose_invalid_connections(log: &str) -> String {
     let mut out = Vec::new();
-    for line in log.lines().filter(|l| l.contains("processed invalid connection")) {
+    for line in log
+        .lines()
+        .filter(|l| l.contains("processed invalid connection"))
+    {
         let remote = line
             .split("process connection from ")
             .nth(1)

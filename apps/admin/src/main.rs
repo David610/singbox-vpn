@@ -11169,7 +11169,12 @@ mod public_surface_tests {
     fn dhcpv4_client_socket_of_systemd_networkd_is_info_not_a_warning() {
         // `ss -ulnp` on a DHCP-configured host: systemd-networkd's DHCPv4 client holds UDP 68 bound to the
         // interface's own address and device (`addr%eth0`). It is the host's address lease, not a service.
-        let l = vec![sock(true, "62.238.46.190%eth0", 68, Some("systemd-network"))];
+        let l = vec![sock(
+            true,
+            "62.238.46.190%eth0",
+            68,
+            Some("systemd-network"),
+        )];
         let f = classify_in(&l, None);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].0, CheckStatus::Info);
@@ -11190,7 +11195,12 @@ mod public_surface_tests {
         ] {
             let f = classify_in(&[sock(udp, addr, port, owner)], None);
             assert_eq!(f.len(), 1);
-            assert_eq!(f[0].0, CheckStatus::Warn, "{udp} {addr}:{port} {owner:?}: {}", f[0].1);
+            assert_eq!(
+                f[0].0,
+                CheckStatus::Warn,
+                "{udp} {addr}:{port} {owner:?}: {}",
+                f[0].1
+            );
         }
     }
 
