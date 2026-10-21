@@ -156,6 +156,19 @@ class Discovery(unittest.TestCase):
             self.assertIsNone(yep.extract_short_id(bad), bad)
 
 
+class ProbeContract(unittest.TestCase):
+    def test_every_page_state_key_the_probe_reads_is_produced_by_the_page_script(self):
+        # The probe once crashed with KeyError('path') on every run because one() read b["path"] that STATE_JS never returned,
+        # so the shipped monitor could not have detected anything. Browser-free contract check.
+        import re
+        src = open(os.path.join(HERE, "..", "youtube_evidence_probe.py")).read()
+        js = re.search(r'STATE_JS = """(.*?)"""', src, re.S).group(1)
+        produced = set(re.findall(r"(?:^|[{,]\s*)(\w+):", js[js.index("return {"):]))
+        read = set(re.findall(r'\b[ab]\["(\w+)"\]', src))
+        self.assertTrue(read, "no page-state reads found: the regex is stale")
+        self.assertEqual(read - produced, set(), "keys read by one() but never returned by STATE_JS")
+
+
 class Corpus(unittest.TestCase):
     def test_validation_and_rotation(self):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:

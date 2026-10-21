@@ -17,7 +17,7 @@ CONSENT = {"name": "SOCS", "value": "CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg"
            "domain": ".youtube.com", "path": "/"}
 STATE_JS = """() => {const v=[...document.querySelectorAll('video')].find(x=>x.readyState>0||x.currentTime>0)||document.querySelector('video');
  let pr=null; try{pr=window.ytInitialPlayerResponse&&window.ytInitialPlayerResponse.playabilityStatus}catch(e){}
- return {t:v?+v.currentTime.toFixed(2):null, ready:v?v.readyState:null,
+ return {path:location.pathname, t:v?+v.currentTime.toFixed(2):null, ready:v?v.readyState:null,
   ps:pr?pr.status:null, reason:pr?(pr.reason||'').slice(0,80):null,
   bot:(document.body.innerText||'').toLowerCase().includes('not a bot'),
   unavailable:(document.body.innerText||'').toLowerCase().includes('unavailable')}}"""

@@ -217,7 +217,10 @@ def run_probe(a, shorts: list[str], out: str, run=subprocess.run) -> dict | None
     try:
         if os.path.exists(out):
             os.unlink(out)
-        run(cmd, capture_output=True, text=True, timeout=600)
+        r = run(cmd, capture_output=True, text=True, timeout=600)
+        # keep the tail of the probe's stderr: a HARNESS verdict without a reason is not operable (public ids/paths only)
+        with open(out + ".err", "w") as ef:
+            ef.write((r.stderr or "")[-4000:])
         return json.load(open(out))
     except Exception:  # noqa: BLE001 - any failure to obtain a result is a HARNESS problem, never a verdict on the egress
         return None
