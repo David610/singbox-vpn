@@ -38,6 +38,8 @@ MIN_SHORTS = 3
 WARN_AFTER = 2
 CRIT_AFTER = 4
 RECOVER_AFTER = 2
+# A media-failure streak older than this is not "consecutive" with a new failure (probe/host down for hours in between).
+MEDIA_STALE_S = 3 * 3600
 ALERT_COOLDOWN_S = 6 * 3600
 MIN_INTERVAL_S = 300
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -97,19 +99,38 @@ def classify_path(controls: dict[str, dict]) -> tuple[bool, str]:
     return False, "control(s) failed: " + ", ".join(f"{k}={c}" for k, c in sorted(bad.items()))
 
 
-def evaluate(prev_streak: int, probe: dict | None, path_ok: bool = True, path_reason: str = "") -> dict:
-    """Pure: -> {status, cause, streak, reason, summary}. A non-OK run always increments the streak."""
+NO_EVIDENCE_CAUSES = ("HARNESS", "PATH_DOWN")
+
+
+def klass(cause: str | None) -> str:
+    """Evidence class of a run: 'other' = it produced NO media evidence (probe could not run / too few Shorts / path down),
+    'media' = real playback evidence against the egress. The two have separate streaks: a broken probe is not a refusal."""
+    return "other" if cause in NO_EVIDENCE_CAUSES else "media"
+
+
+def effective_media_streak(prev: dict, now: float) -> int:
+    """The persisted media streak, or 0 when its last media observation is too old to be 'consecutive'."""
+    n = int(prev.get("media_streak", prev.get("streak", 0)) or 0) if "media_last" in prev or "media_streak" in prev else 0
+    return n if now - float(prev.get("media_last", 0) or 0) <= MEDIA_STALE_S else 0
+
+
+def evaluate(prev_streak: int, probe: dict | None, path_ok: bool = True, path_reason: str = "", prev_other: int = 0) -> dict:
+    """Pure: -> {status, cause, streak, media_streak, other_streak, reason, summary}.
+    `prev_streak` is the MEDIA streak, `prev_other` the no-evidence streak. A media failure advances the media streak and clears
+    the other one (the probe demonstrably works); a run without evidence advances only the other streak and leaves the media
+    streak untouched; OK clears both. `streak` is the streak of this run's own class (it drives the status)."""
     s = summarize(probe)
     if not path_ok:
         # The path is down: the media verdict is meaningless (and must not be blamed on YouTube).
-        return _bad(prev_streak, "PATH_DOWN", "PATH_DOWN", path_reason or "path controls failed", s)
+        return _bad(prev_streak, prev_other, "PATH_DOWN", "PATH_DOWN", path_reason or "path controls failed", s)
     if probe is None:
-        return _bad(prev_streak, "UNVERIFIED", "HARNESS", "probe did not run or produced no result", s)
+        return _bad(prev_streak, prev_other, "UNVERIFIED", "HARNESS", "probe did not run or produced no result", s)
     if s["genuine"] < MIN_SHORTS:
-        return _bad(prev_streak, "UNVERIFIED", "HARNESS",
+        return _bad(prev_streak, prev_other, "UNVERIFIED", "HARNESS",
                     f"only {s['genuine']} genuine Shorts loaded (need {MIN_SHORTS}); non-Shorts are excluded", s)
     if s["played"] == s["genuine"]:
-        return {"status": "OK", "cause": None, "streak": 0, "reason": f"{s['played']}/{s['genuine']} genuine Shorts played", "summary": s}
+        return {"status": "OK", "cause": None, "streak": 0, "media_streak": 0, "other_streak": 0,
+                "reason": f"{s['played']}/{s['genuine']} genuine Shorts played", "summary": s}
     failing = {c: n for c, n in s["classes"].items() if c not in ("PLAY", "NOT_SHORT")}
     refused = sum(n for c, n in failing.items() if c in REFUSAL)
     stalled = failing.get("STALLED", 0)
@@ -122,11 +143,16 @@ def evaluate(prev_streak: int, probe: dict | None, path_ok: bool = True, path_re
         cause = "HARNESS"   # only probe errors/timeouts on a path whose controls passed: not evidence against the egress
     else:
         cause = "MIXED"
-    return _bad(prev_streak, "FAILING", cause, f"{s['played']}/{s['genuine']} genuine Shorts played; {failing}", s)
+    return _bad(prev_streak, prev_other, "FAILING", cause, f"{s['played']}/{s['genuine']} genuine Shorts played; {failing}", s)
 
 
-def _bad(prev: int, kind: str, cause: str, reason: str, s: dict) -> dict:
-    n = prev + 1
+def _bad(prev_media: int, prev_other: int, kind: str, cause: str, reason: str, s: dict) -> dict:
+    if klass(cause) == "other":
+        media, other = prev_media, prev_other + 1      # no evidence: the media streak is neither advanced nor reset
+        n = other
+    else:
+        media, other = prev_media + 1, 0               # real evidence: the probe works, so any no-evidence streak ends
+        n = media
     if kind == "PATH_DOWN":
         status = "CRITICAL" if n >= CRIT_AFTER else "DEGRADED" if n >= WARN_AFTER else "PATH_DOWN"
     elif n >= CRIT_AFTER:
@@ -135,7 +161,8 @@ def _bad(prev: int, kind: str, cause: str, reason: str, s: dict) -> dict:
         status = "DEGRADED"
     else:
         status = "SUSPECT" if kind == "FAILING" else "UNVERIFIED"
-    return {"status": status, "cause": cause, "streak": n, "reason": f"{kind}: {reason}", "summary": s}
+    return {"status": status, "cause": cause, "streak": n, "media_streak": media, "other_streak": other,
+            "reason": f"{kind}: {reason}", "summary": s}
 
 
 def next_state(prev: dict, ev: dict, now: float) -> tuple[dict, list[dict]]:
@@ -145,20 +172,28 @@ def next_state(prev: dict, ev: dict, now: float) -> tuple[dict, list[dict]]:
     events: list[dict] = []
     level = {"OK": 0, "SUSPECT": 1, "UNVERIFIED": 1, "PATH_DOWN": 1, "DEGRADED": 2, "CRITICAL": 3}[ev["status"]]
     st["streak"] = ev["streak"]
+    st["media_streak"] = ev.get("media_streak", ev["streak"] if klass(ev["cause"]) == "media" else st.get("media_streak", 0))
+    st["other_streak"] = ev.get("other_streak", ev["streak"] if klass(ev["cause"]) == "other" else 0)
+    if klass(ev["cause"]) == "media" and ev["status"] != "OK":
+        st["media_last"] = now
     st["status"] = ev["status"]
     if ev["status"] == "OK":
         st["ok_streak"] = st.get("ok_streak", 0) + 1
         if st.get("alerted_level", 0) and st["ok_streak"] >= RECOVER_AFTER:
             events.append({"event": "RECOVERED", "cause": st.get("alerted_cause"), "ok_streak": st["ok_streak"]})
             st["alerted_level"] = 0
+            st["alerted_levels"] = {}
             st["alerted_cause"] = None
     else:
         st["ok_streak"] = 0
         if level >= 2:
-            last = st.get("alert_times", {}).get(str(level), 0)
-            if level > st.get("alerted_level", 0) or now - last >= ALERT_COOLDOWN_S:
+            # Deduplicate per evidence class: "the monitor is blind" (HARNESS/PATH_DOWN) must never mask "the egress is refused".
+            k = klass(ev["cause"])
+            last = st.get("alert_times", {}).get(f"{k}:{level}", 0)
+            if level > st.get("alerted_levels", {}).get(k, 0) or now - last >= ALERT_COOLDOWN_S:
                 events.append({"event": ev["status"], "cause": ev["cause"], "streak": ev["streak"], "reason": ev["reason"]})
-                st.setdefault("alert_times", {})[str(level)] = now
+                st.setdefault("alert_times", {})[f"{k}:{level}"] = now
+                st.setdefault("alerted_levels", {})[k] = max(st.get("alerted_levels", {}).get(k, 0), level)
                 st["alerted_level"] = max(st.get("alerted_level", 0), level)
                 st["alerted_cause"] = ev["cause"]
     return st, events
@@ -275,7 +310,7 @@ def main(argv=None) -> int:
     t0 = time.time()
     if path_ok:   # no point (and no load on Google) in driving a browser through a dead path
         probe = run_probe(a, shorts, os.path.join(a.state_dir, f"{a.label}.last-probe.json"))
-    ev = evaluate(prev.get("streak", 0), probe, path_ok, path_reason)
+    ev = evaluate(effective_media_streak(prev, now), probe, path_ok, path_reason, int(prev.get("other_streak", 0) or 0))
     st, events = next_state(prev, ev, now)
     st["last_run"] = now
     st["utc"] = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat(timespec="seconds")
@@ -291,7 +326,7 @@ def main(argv=None) -> int:
         json.dump(st, f)
     os.replace(state_file + ".tmp", state_file)
     line = {"utc": st["utc"], "label": a.label, "status": ev["status"], "cause": ev["cause"], "streak": ev["streak"],
-            "reason": ev["reason"], "path": {k: v["class"] for k, v in controls.items()}, "sample": shorts,
+            "media_streak": ev["media_streak"], "other_streak": ev["other_streak"], "reason": ev["reason"], "path": {k: v["class"] for k, v in controls.items()}, "sample": shorts,
             "summary": ev["summary"], "probe_seconds": round(time.time() - t0, 1), "alerts": [e["event"] for e in events],
             "alert_errors": alert_errors}
     with open(os.path.join(a.state_dir, "shorts-health.jsonl"), "a") as f:

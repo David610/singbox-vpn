@@ -79,8 +79,41 @@ class Evaluate(unittest.TestCase):
         e = self.ev(0, probe(*[row(False, media={"responses": 4}) for _ in range(3)]))
         self.assertEqual(e["cause"], "PLAYBACK_STALLED")
 
-    def test_unverified_is_never_ok_and_counts_as_a_miss(self):
-        self.assertEqual(self.ev(1, None)["streak"], 2)
+    # --- evidence classes (found on the live staging node, 2026-10-21): ONE counter used to be shared by runs that produced
+    # no evidence (probe could not start / path down) and runs that produced media evidence. A broken probe followed by the
+    # first real refusal therefore read "streak 2" and went straight to DEGRADED. The policy is N consecutive MEDIA failures.
+    def test_unverified_is_never_ok_and_is_a_miss_of_its_own_class(self):
+        e = self.ev(0, None, prev_other=1)
+        self.assertEqual((e["status"], e["streak"], e["other_streak"], e["media_streak"]), ("DEGRADED", 2, 2, 0))
+        self.assertNotEqual(e["status"], "OK")
+
+    def test_a_run_without_evidence_does_not_advance_the_media_streak(self):
+        e = self.ev(1, None)
+        self.assertEqual((e["media_streak"], e["other_streak"], e["status"], e["cause"]), (1, 1, "UNVERIFIED", "HARNESS"))
+
+    def test_first_media_failure_after_a_broken_probe_is_only_suspect(self):
+        bad = probe(row(False), row(False), row(False))
+        e = self.ev(0, bad, prev_other=1)
+        self.assertEqual((e["status"], e["cause"], e["media_streak"], e["other_streak"]), ("SUSPECT", "EGRESS_REFUSED", 1, 0))
+
+    def test_harness_failures_escalate_on_their_own_streak_and_say_so(self):
+        self.assertEqual(self.ev(0, None, prev_other=3)["status"], "CRITICAL")
+        self.assertEqual(self.ev(0, None, prev_other=3)["cause"], "HARNESS")
+        self.assertEqual(self.ev(0, None, prev_other=3)["media_streak"], 0)
+
+    def test_a_working_probe_clears_the_no_evidence_streak(self):
+        e = self.ev(2, probe(row(False), row(False), row(False)), prev_other=5)
+        self.assertEqual((e["media_streak"], e["other_streak"], e["status"]), (3, 0, "DEGRADED"))
+
+    def test_an_ok_run_clears_both_streaks(self):
+        e = self.ev(3, probe(row(), row(), row()), prev_other=2)
+        self.assertEqual((e["status"], e["media_streak"], e["other_streak"]), ("OK", 0, 0))
+
+    def test_a_stale_media_streak_is_not_carried_across_a_long_gap(self):
+        st = {"media_streak": 3, "media_last": 1000.0}
+        self.assertEqual(sh.effective_media_streak(st, 1000.0 + sh.MEDIA_STALE_S - 1), 3)
+        self.assertEqual(sh.effective_media_streak(st, 1000.0 + sh.MEDIA_STALE_S + 1), 0)
+        self.assertEqual(sh.effective_media_streak({}, 5.0), 0)
 
 
 class Path(unittest.TestCase):
@@ -121,6 +154,14 @@ class Alerts(unittest.TestCase):
         self.assertEqual([e["event"] for e in ev], ["CRITICAL"])
         st, ev = self.step(st, "CRITICAL", 5, now=40)
         self.assertEqual(ev, [])
+
+    def test_a_harness_alert_does_not_suppress_the_egress_alert(self):
+        st, ev = self.step({}, "DEGRADED", 2, cause="HARNESS", now=10)
+        self.assertEqual([(e["event"], e["cause"]) for e in ev], [("DEGRADED", "HARNESS")])
+        st, ev = self.step(st, "DEGRADED", 2, cause="EGRESS_REFUSED", now=20)      # different class, same level, inside the cooldown
+        self.assertEqual([(e["event"], e["cause"]) for e in ev], [("DEGRADED", "EGRESS_REFUSED")])
+        st, ev = self.step(st, "DEGRADED", 3, cause="EGRESS_REFUSED", now=30)
+        self.assertEqual(ev, [])                                                   # and still deduplicated per class
 
     def test_reminder_after_the_cooldown(self):
         st, _ = self.step({}, "CRITICAL", 4, now=0)

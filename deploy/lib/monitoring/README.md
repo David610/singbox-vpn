@@ -12,6 +12,13 @@ Tunnel health and media health are reported separately, every run:
   items that are not Shorts are `NOT_SHORT` and excluded. The run's `cause` is `EGRESS_REFUSED`, `PLAYBACK_STALLED`,
   `PATH_DOWN`, `HARNESS` (probe broken / too few genuine Shorts: not evidence against the egress) or `MIXED`.
 
+Two streaks, never mixed: a **media** streak (real playback evidence against the egress: `EGRESS_REFUSED`, `PLAYBACK_STALLED`,
+`MIXED`) and a **no-evidence** streak (`HARNESS`, `PATH_DOWN`: the probe could not run, too few genuine Shorts, the path was down).
+A media failure advances the media streak and ends the other; a run without evidence advances only its own streak and leaves the
+media streak as it was; OK clears both. A media streak not refreshed for 3 h is not "consecutive" with a new failure. Alerts are
+deduplicated per class, so "the monitor is blind" can never mask "the egress is refused" (found live: a broken probe followed by the
+first real refusal used to read as streak 2 and go straight to DEGRADED).
+
 Escalation (`docs/operations/ACCEPTANCE_THRESHOLDS.md`): 1st miss SUSPECT (no alert), 2nd DEGRADED, 4th CRITICAL;
 **RECOVERED** only after 2 consecutive OK runs. Alerts fire on transitions (6 h reminder), go to `SHORTS_ALERT_CMD` as JSON and are
 always appended to `alerts.jsonl`; an undeliverable alert fails the unit (exit 4). Runs are rate-limited (>=5 min apart), serialized
