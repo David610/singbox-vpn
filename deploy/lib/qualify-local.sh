@@ -89,10 +89,22 @@ else
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
-  for t in deploy/lib/tests/*.sh; do gate "fixture-$(basename "$t" .sh)" -- bash "$t"; done
+  # Several fixtures source install.sh, whose paths are fixed (/etc/vpn, /opt/singbox-vpn, /var/lib/singbox-vpn): on a host that
+  # has an installation they read the LIVE deployment and fail for reasons that are not defects (I-48). On such a host run each
+  # one through the clean-host wrapper (private mount namespace, nothing on the host is touched); a retry-pass is a FAIL (exit 3).
+  if [ -e /etc/vpn/deployment.toml ] || [ -d /opt/singbox-vpn ] || [ -d /var/lib/singbox-vpn ]; then
+    echo "fixtures: installed host detected, running each through deploy/lib/run-shell-tests-clean-host.sh" >>"$OUT/ENVIRONMENT.txt"
+    for t in deploy/lib/tests/*.sh; do gate "fixture-$(basename "$t" .sh)" -- bash deploy/lib/run-shell-tests-clean-host.sh "$t"; done
+  else
+    echo "fixtures: clean host, run directly" >>"$OUT/ENVIRONMENT.txt"
+    for t in deploy/lib/tests/*.sh; do gate "fixture-$(basename "$t" .sh)" -- bash "$t"; done
+  fi
 else
   not_run shell-fixtures "the privileged fixtures need root"
 fi
+for f in deploy/lib/tests/test_*.py; do
+  gate "python-$(basename "$f" .py)" -- bash -c 'cd deploy/lib/tests && python3 -m unittest "$1"' _ "$(basename "$f" .py)"
+done
 if [ -n "$PYTHON_BIN" ] && [ -x "$PYTHON_BIN" ]; then
   gate egress-tools-python -- "$PYTHON_BIN" deploy/lib/tests/test-egress-tools.py
 else

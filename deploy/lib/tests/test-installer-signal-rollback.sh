@@ -70,7 +70,7 @@ chmod +x "$TMP/trigger.sh"
 export TEST_ROOT="$ROOT" TEST_TMP="$TMP" ROLLBACK_LOG="$TMP/rollback.log"
 
 # Every wait below is bounded so a regression fails the test instead of hanging the whole suite.
-wait_bounded() { local p="$1" i; for i in $(seq 1 300); do kill -0 "$p" 2>/dev/null || { wait "$p"; return $?; }; sleep 0.1; done; kill -9 "$p" 2>/dev/null; wait "$p" 2>/dev/null; return 124; }
+wait_bounded() { local p="$1" _; for _ in $(seq 1 300); do kill -0 "$p" 2>/dev/null || { wait "$p"; return $?; }; sleep 0.1; done; kill -9 "$p" 2>/dev/null; wait "$p" 2>/dev/null; return 124; }
 wait_for_ready() {
   local out="$1" tries=0
   while [ "$tries" -lt 50 ]; do

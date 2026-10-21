@@ -210,6 +210,15 @@ jobs:
             sudo bash "$test_script"
             echo "::endgroup::"
           done
+      - name: python tool unit tests (Shorts monitor, interruption-matrix report, gate report, hairpin target, client profiles, ...)
+        run: |
+          set -euo pipefail
+          cd deploy/lib/tests
+          for f in test_*.py; do
+            echo "::group::$f"
+            python3 -m unittest "${f%.py}"
+            echo "::endgroup::"
+          done
 
   os-matrix:
     # L1/L2 server-support-matrix regression coverage (docs/SUPPORTED_PRODUCT.md,
