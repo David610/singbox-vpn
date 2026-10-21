@@ -1,0 +1,294 @@
+{
+ "revision": "97ef78f (code qualified at 3570927; diff = cfg(test) message + registry generator)",
+ "gates": [
+  {
+   "id": "SRC-1",
+   "category": "Source qualification",
+   "title": "Rust fmt, clippy, rustdoc, workspace tests (1097)",
+   "mandatory": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/qualify-3570927/SUMMARY.tsv",
+    "docs/handoffs/2026-10-21/evidence/qualify-3570927/cargo-test-totals.txt",
+    "docs/handoffs/2026-10-21/evidence/qualify-3570927/ENVIRONMENT.txt"
+   ],
+   "note": "Run on an immutable export of 3570927. HEAD 97ef78f differs only by a cfg(test) assertion message and the registry generator."
+  },
+  {
+   "id": "SRC-2",
+   "category": "Source qualification",
+   "title": "Shellcheck, hermetic shell suite, Python tooling tests, workflow contract",
+   "mandatory": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/qualify-3570927/SUMMARY.tsv"
+   ],
+   "note": "107/107 gates PASS at 3570927. The earlier 625a34f run's single FAIL was a launch-environment error (kept: qualify-625a34f-FAILED-launch-env)."
+  },
+  {
+   "id": "SRC-3",
+   "category": "Source qualification",
+   "title": "No unresolved flaky tests",
+   "mandatory": true,
+   "status": "FLAKY",
+   "evidence": [
+    "docs/handoffs/2026-10-21/FLAKY-POLICY.md",
+    "docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt1-FAILED.log",
+    "docs/handoffs/2026-10-21/evidence/staging-268808d/candidate-268808d-devrebuild.log"
+   ],
+   "note": "I-71 (reality_decoy_budget, 1 failure, client-abandoned authenticated handshake) and I-75 (admin service reload burst, 1 failure, verify-window hypothesis). Neither reproduced; neither fixed; policy: blocks any production release."
+  },
+  {
+   "id": "SRC-4",
+   "category": "Source qualification",
+   "title": "GitHub CI on the branch (os-matrix, audit, container smoke, singbox-validate, security)",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "Branch never pushed (R1 needs owner authorization)."
+  },
+  {
+   "id": "SRC-5",
+   "category": "Source qualification",
+   "title": "Secrets scan and release provenance checks in CI",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "Run by security.yml / release.yml; not reproducible locally."
+  },
+  {
+   "id": "ART-1",
+   "category": "Artifact qualification",
+   "title": "CI-built, cosign-attested rc.3 artifact (checksums, SBOM, provenance)",
+   "mandatory": true,
+   "status": "BLOCKED",
+   "evidence": [],
+   "note": "Needs R1..R5 (docs/operations/RC3_RELEASE_SEQUENCE.md); nothing pushed, tagged or published."
+  },
+  {
+   "id": "LIF-1",
+   "category": "Lifecycle acceptance",
+   "title": "16-stage interruption matrix, two identical runs, updater at 268808d (update.sh/install.sh/recovery/harness byte-identical at HEAD)",
+   "mandatory": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/matrix-A-268808d/matrix.jsonl",
+    "docs/handoffs/2026-10-21/evidence/matrix-B-268808d/matrix.jsonl",
+    "docs/handoffs/2026-10-21/evidence/matrix-A-268808d/baseline.json"
+   ],
+   "note": "16/16 each, 0 differences, same harness hash. Payload is the published rc.2 (not a CI-built corrected release)."
+  },
+  {
+   "id": "LIF-2",
+   "category": "Lifecycle acceptance",
+   "title": "Staging dev build of the qualified revision: I-54 fixed (skuid 995), IPv6 ND, doctor 0 FAIL, repair guard refuses",
+   "mandatory": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/staging-3570927/doctor-protocol-97ef78f.txt",
+    "docs/handoffs/2026-10-21/evidence/staging-3570927/repair-guard-97ef78f.txt",
+    "docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt2-OK.log"
+   ],
+   "note": "Development build, not a release; attempt 1 failed its pre-install tests (I-75) and installed nothing."
+  },
+  {
+   "id": "LIF-3",
+   "category": "Lifecycle acceptance",
+   "title": "Attested upgrade rc.2 -> rc.3, repeated --repair on the installed release, rollback",
+   "mandatory": true,
+   "status": "BLOCKED",
+   "evidence": [],
+   "note": "Needs the CI-built artifact (ART-1)."
+  },
+  {
+   "id": "LIF-4",
+   "category": "Lifecycle acceptance",
+   "title": "Fresh installation with the final installer (isolated, no public certificate issuance)",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "Not run. Unit/hermetic tests only (installer-scratch-cleanup etc.)."
+  },
+  {
+   "id": "LIF-5",
+   "category": "Lifecycle acceptance",
+   "title": "Reboot acceptance (services, egress table, IPv6 ND, ufw, both protocols)",
+   "mandatory": true,
+   "status": "BLOCKED",
+   "evidence": [],
+   "note": "Needs owner authorization and confirmed out-of-band access."
+  },
+  {
+   "id": "NET-1",
+   "category": "Network acceptance",
+   "title": "REALITY and Hysteria2 self-tests on the installed build",
+   "mandatory": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/staging-3570927/doctor-protocol-97ef78f.txt"
+   ],
+   "note": "Loopback throwaway clients; not a native client."
+  },
+  {
+   "id": "NET-2",
+   "category": "Network acceptance",
+   "title": "Tunnel isolation (host-local services unreachable through REALITY/Hysteria2), tested through real tunnels at this revision",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "Behavioural test not repeated at this revision this session."
+  },
+  {
+   "id": "NET-3",
+   "category": "Network acceptance",
+   "title": "Google hairpin routing, fail-closed and mutations (SIMULATED two-node)",
+   "mandatory": false,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/hairpin/clean-1.json",
+    "docs/handoffs/2026-10-21/evidence/hairpin/mut-direct-route.json"
+   ],
+   "note": "Simulation only: proves routing and fail-closed, nothing about any real address."
+  },
+  {
+   "id": "EXT-1",
+   "category": "External-service acceptance",
+   "title": "Real YouTube Shorts playback through a verified-good Google-facing egress",
+   "mandatory": true,
+   "status": "BLOCKED",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/monitor-live-escalation.jsonl"
+   ],
+   "note": "Staging IP is refused (0/5 REFUSED, repeated). Needs an owner-authorized target (OWNER-ACTIONS #3)."
+  },
+  {
+   "id": "EXT-2",
+   "category": "External-service acceptance",
+   "title": "Shorts monitor: healthy baseline, recovery, alert-clear against a real egress",
+   "mandatory": true,
+   "status": "BLOCKED",
+   "evidence": [],
+   "note": "No good egress exists to recover to."
+  },
+  {
+   "id": "EXT-3",
+   "category": "External-service acceptance",
+   "title": "Shorts monitor state machine, hermetic (classes, hysteresis, dedup, recovery, expiry)",
+   "mandatory": false,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/qualify-3570927/SUMMARY.tsv"
+   ],
+   "note": "python-test_shorts_health in the 3570927 qualification; simulation, not real acceptance."
+  },
+  {
+   "id": "CLI-1",
+   "category": "Native-client acceptance",
+   "title": "Subscription profiles from the production pipeline, server-side (103 checks)",
+   "mandatory": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/profile-check-268808d.json"
+   ],
+   "note": "Profiles only; every native app is UNVERIFIED."
+  },
+  {
+   "id": "CLI-2",
+   "category": "Native-client acceptance",
+   "title": "Hiddify iOS native acceptance",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "Needs the iPhone procedure (OWNER-ACTIONS #4), including control step 7b."
+  },
+  {
+   "id": "CLI-3",
+   "category": "Native-client acceptance",
+   "title": "Hiddify Android native acceptance",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "No device."
+  },
+  {
+   "id": "CLI-4",
+   "category": "Native-client acceptance",
+   "title": "Other officially supported clients (sing-box native, Shadowrocket, v2rayNG, others)",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "No device."
+  },
+  {
+   "id": "SEC-1",
+   "category": "Security acceptance",
+   "title": "Host firewall: default deny, only 443/tcp+udp and 8443 public, SSH rate-limited, v4+v6",
+   "mandatory": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/security/posture-20261021.txt"
+   ],
+   "note": "Provider-level firewall not visible from here."
+  },
+  {
+   "id": "SEC-2",
+   "category": "Security acceptance",
+   "title": "SSH key-only login",
+   "mandatory": true,
+   "status": "BLOCKED",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/security/posture-20261021.txt"
+   ],
+   "note": "Password and root login are on and root has no authorized_keys; needs the owner's public key (OWNER-ACTIONS #2)."
+  },
+  {
+   "id": "SEC-3",
+   "category": "Security acceptance",
+   "title": "Credential audit (logs, git history, artifacts, backups, archives)",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "Not performed this session."
+  },
+  {
+   "id": "PERF-1",
+   "category": "Performance acceptance",
+   "title": "Throughput, concurrency 1/4/8, 5-minute soak, restart recovery (loopback client)",
+   "mandatory": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json"
+   ],
+   "note": "Loopback client sharing host CPU; NOT real-network throughput; measured on the earlier dev build with the same data-plane configuration."
+  },
+  {
+   "id": "PERF-2",
+   "category": "Performance acceptance",
+   "title": "REALITY added connection latency <= 40 ms (I-60)",
+   "mandatory": true,
+   "status": "FAIL",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/perf/perf-2026-10-21.json"
+   ],
+   "note": "61.9 ms median (Hysteria2 2.6 ms). Threshold not changed; owner decision (OWNER-ACTIONS #5)."
+  },
+  {
+   "id": "PERF-3",
+   "category": "Performance acceptance",
+   "title": "Real-network performance and long-term stability (> 5 min)",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "Not measured."
+  },
+  {
+   "id": "OPS-1",
+   "category": "Operations",
+   "title": "Shorts monitor deployed and checked by the lifecycle (and itself monitored)",
+   "mandatory": true,
+   "status": "UNVERIFIED",
+   "evidence": [],
+   "note": "I-70: opt-in, not installed or verified by install/update; staging unit installed by hand."
+  }
+ ]
+}

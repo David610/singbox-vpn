@@ -5,7 +5,7 @@ recovery/repair guards. The production updater installs only **CI-built, cosign-
 produced by hand: the corrected source has to go through the repository's own release workflow. Versioning follows `docs/RELEASE.md`:
 workspace version stays `1.3.1`, the prerelease identity is the tag `v1.3.1-rc.3` (draft notes: `docs/release-notes/v1.3.1-rc.3-DRAFT.md`).
 
-State at preparation: `origin/main` = `de8f7d5` (unchanged, re-fetched 2026-10-21); the branch contains it (fast-forwardable), 74+ commits ahead.
+State at preparation: `origin/main` = `de8f7d5` (unchanged, re-fetched 2026-10-21); the branch contains it (fast-forwardable), 83 commits ahead (as of 97ef78f).
 Staging evidence for the exact source: `docs/handoffs/2026-10-21/` (matrix runs, candidate provenance, monitor, profile checks).
 
 ## Authorizations, in order (each is separate)
@@ -14,7 +14,7 @@ Staging evidence for the exact source: `docs/handoffs/2026-10-21/` (matrix runs,
 | R1 | Push the branch | `git push -u origin staging/2026-10-20-remediation` | creates a remote branch; `ci.yml` runs on every branch push (no release, no publish, no write scope: `permissions: contents: read`) | `git push origin --delete staging/2026-10-20-remediation` |
 | R2 | Fix CI-only failures | (I iterate on the branch; each push re-runs CI) | none beyond R1; CI has never run on this branch, so expect some findings (os-matrix, audit, release-container-smoke, singbox-validate are not reproducible on this host) | revert commits |
 | R3 | Open a PR into `main` | `gh pr create --base main --head staging/2026-10-20-remediation` (repo has no PR template; description from `docs/handoffs/2026-10-21/`) | review surface only | close PR |
-| R4 | Merge (owner decision on merge style; a merge commit keeps the 74 commits' history) | via GitHub | `main` changes | revert merge commit |
+| R4 | Merge (owner decision on merge style; a merge commit keeps the 83 commits' history) | via GitHub | `main` changes | revert merge commit |
 | R5 | Tag the merged `main` commit | `git tag -a v1.3.1-rc.3 -m "..." <merge-sha> && git push origin v1.3.1-rc.3` | triggers `release.yml`: validate-tag, version, policy, CI gate, build in the pinned AlmaLinux 8.10 container (glibc baseline), SBOM/attestation, runtime-compat, **publishes a GitHub PRERELEASE**, verifies the published bootstrap | delete the prerelease and tag (assets of a published tag must never be silently replaced: cut `rc.4` instead) |
 | R6 | I install it on the staging node | `update.sh --version v1.3.1-rc.3` from the installed tree | real attested upgrade rc.2 -> rc.3 on the staging node only | transactional rollback (proven by the matrix) |
 
