@@ -25,26 +25,39 @@ if verdict != "INVALID":
         invalid.append("tree kill left surviving processes")
     if kv.get("updater_alive_after_kill") == "yes":
         invalid.append("the updater process itself was still alive after the kill (the experiment did not kill what it claims)")
+    if kv.get("expected_committed") in ("yes", "no") and kv.get("expected_committed") != kv.get("observed_committed"):
+        invalid.append(f"the kill did not land on the claimed side of the commit boundary (expected committed={kv.get('expected_committed')}, observed {kv.get('observed_committed')})")
+    if kv.get("checkpoint_reached") is not None and kv.get("checkpoint_reached", "").find(kv.get("marker", "\0")) != 0:
+        invalid.append("the updater reported a different checkpoint than the one requested")
     if invalid:
         verdict, reasons = "INVALID", invalid
     else:
         need = lambda cond, msg: None if cond else reasons.append(msg)
         need(kv.get("creds_after_kill") == "same" and kv.get("creds_after_recover") == "same" and kv.get("creds_final") == "same" and kv.get("creds_idem") == "same", "credentials changed")
         need(kv.get("marker_after_recover") == "no" and kv.get("stale_dirs_after_recover") == "0", "marker or stale directories remain after recovery")
-        # Consistency of the release after recovery. A kill BEFORE the commit leaves a marker: recovery must give
-        # back exactly the baseline release. A kill AFTER the commit (the update already finished; only the
-        # post-commit manifest/agent refresh was running) leaves no marker: the node legitimately runs the NEW
-        # release and recovery must be a no-op. Either way the release must be ONE consistent release, never a mix.
+        # The commit state is OBSERVED independently of the updater (the install-state manifest names the target at
+        # the moment of the kill) and must match what the kill point claims to be. Then:
+        #   not committed -> recovery must give back EXACTLY the baseline release (binaries, version, manifest);
+        #   committed     -> recovery must end on ONE consistent new release (manifest hashes == installed binaries) and,
+        #                    if the marker survived, the updater must have said it rolled FORWARD.
+        # A healthy node is not enough: the direction must follow the commit evidence.
         old_ok = kv.get("version_after_recover") == kv.get("baseline_version") and kv.get("bins_after_recover") == kv.get("baseline_bins")
         new_ok = kv.get("version_after_recover") == kv.get("version_final") and kv.get("bins_after_recover") == kv.get("bins_final")
-        if kv.get("marker_after_kill") == "yes" and kv.get("recovery_decision") == "rolled_forward":
-            # Kill inside the commit window (manifest already written, marker not yet removed): the updater must roll
-            # FORWARD to one consistent NEW release and say so. Rolling back here would discard a committed update.
-            need(new_ok and kv.get("version_final", "").startswith("1.3.1"), "recovery claimed a roll-forward but the node is not on one consistent new release")
-        elif kv.get("marker_after_kill") == "yes":
-            need(old_ok, "an open transaction was not rolled back to exactly the baseline release (version/binaries differ)")
+        if kv.get("observed_committed") == "yes":
+            need(new_ok, "committed update did not end on one consistent new release")
+            need(kv.get("manifest_version_after_recover") == kv.get("manifest_version_after_kill") and kv.get("manifest_matches_bins_after_recover") == "yes", "roll-forward: manifest identity/hashes do not match the installed executables")
+            if kv.get("marker_after_kill") == "yes":
+                need(kv.get("recovery_decision") == "rolled_forward", "a committed update with a surviving marker was not rolled forward")
         else:
-            need(old_ok or new_ok, "no open transaction, yet the node runs a MIXED release (neither the baseline nor the final binaries)")
+            need(old_ok, "an uncommitted update was not rolled back to exactly the baseline release (version/binaries differ)")
+            need(kv.get("recovery_decision") != "rolled_forward", "an uncommitted update was rolled forward")
+            need(kv.get("manifest_version_after_recover") == kv.get("manifest_version_baseline"), "rollback: install-state manifest is not the baseline's")
+        need(kv.get("orphans_after_recover", "0") == "0" and kv.get("orphans_end", "0") == "0", "orphan updater/cosign processes remain")
+        need(kv.get("lock_after_recover", "free") == "free" and kv.get("lock_end", "free") == "free", "update lock still held")
+        need(kv.get("leftover_tmp_after_recover", "0") == "0", "temporary manifest or staging leftovers after recovery")
+        need(kv.get("backups_after_recover", "0") == "0", "transaction backups left in /etc/vpn/backups after recovery")
+        need(kv.get("repair_rc", "0") == "0" and kv.get("repair_bins_same", "yes") == "yes" and kv.get("creds_repair", "same") == "same", "repair after recovery failed or changed the release/credentials")
+        need(kv.get("services_repair", "all-active") == "all-active" and kv.get("doctor_fails_repair", "0") == "0", "unhealthy after repair")
         need(kv.get("services_after_recover") == "all-active" and kv.get("doctor_fails_after_recover") == "0", "services/doctor unhealthy after recovery")
         need(kv.get("protocol_rc_after_recover") == "0", "protocol self-test failed after recovery")
         need(kv.get("final_update_rc") == "0" and kv.get("version_final", "").startswith("1.3.1"), "normal update after recovery failed")

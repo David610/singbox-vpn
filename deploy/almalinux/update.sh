@@ -52,7 +52,18 @@ SINGBOX_BIN="$BIN_DIR/sing-box"
 # test-install-update-parity.sh fails loudly if these two lists drift).
 SYSTEMD_UNITS=(sing-box.service vpn-subscription.service vpn-expiry-reconcile.service vpn-expiry-reconcile.timer vpn-service-watchdog.service vpn-service-watchdog.timer vpn-egress-isolation.service)
 
-log() { echo "[update] $*"; }
+# TEST-ONLY deterministic kill points (interruption matrix, I-56). Inert unless SINGBOX_VPN_TEST_CHECKPOINT_DIR names an
+# existing root-owned 0700 directory AND SINGBOX_VPN_TEST_CHECKPOINT is set. At the named checkpoint the updater
+# records it, then blocks (bounded) so the harness can SIGKILL it at exactly that point. Never set in production.
+checkpoint() {
+  [ -n "${SINGBOX_VPN_TEST_CHECKPOINT:-}" ] && [[ "$1" == "${SINGBOX_VPN_TEST_CHECKPOINT}"* ]] || return 0
+  local d="${SINGBOX_VPN_TEST_CHECKPOINT_DIR:-}"
+  [ -n "$d" ] && [ -d "$d" ] && [ ! -L "$d" ] && [ "$(stat -c '%u:%a' "$d")" = "0:700" ] || return 0
+  echo "$1" >"$d/reached"
+  local _; for _ in $(seq 1 600); do sleep 1; done
+  return 0
+}
+log() { echo "[update] $*"; checkpoint "$*"; }
 warn() { echo "[update] WARNING: $*" >&2; }
 die() { echo "[update] ERROR: $*" >&2; exit 1; }
 
@@ -496,15 +507,17 @@ PY
   # backup, the previous tree and staging, and removes the marker LAST. A kill in that window leaves a marker
   # (naming a backup that may be half or fully gone). The update is then COMMITTED: roll FORWARD (finish the
   # cleanup); rolling back would be wrong and could restore a half-deleted tree. Evidence required: the manifest
-  # carries this transaction's target version, was written at/after the transaction started, and records the hash
-  # of the installed vpn-admin.
+  # carries this transaction's target version, was written at/after the transaction started, and records the hashes
+  # of the installed vpn-admin, vpn and vpn-subscription-svc.
   local committed
-  committed="$(python3 -I - "$INSTALL_STATE_MANIFEST" "$TARGET_VERSION" "$started_at" "$BIN_DIR/vpn-admin" <<'PY'
+  committed="$(python3 -I - "$INSTALL_STATE_MANIFEST" "$TARGET_VERSION" "$started_at" "$BIN_DIR" <<'PY'
 import hashlib, json, sys
+h = lambda n: hashlib.sha256(open(sys.argv[4] + "/" + n, "rb").read()).hexdigest()
 try:
     m = json.load(open(sys.argv[1]))
     ok = (m.get("singbox_vpn_version") == sys.argv[2] and int(m.get("installed_at_unix", 0)) >= int(sys.argv[3])
-          and m.get("vpn_admin_sha256") == hashlib.sha256(open(sys.argv[4], "rb").read()).hexdigest())
+          and m.get("vpn_admin_sha256") == h("vpn-admin") and m.get("vpn_sha256") == h("vpn")
+          and m.get("subscription_sha256") == h("vpn-subscription-svc"))
 except Exception:
     ok = False
 print("yes" if ok else "no")
@@ -1490,7 +1503,9 @@ cat > "$INSTALL_STATE_MANIFEST.tmp" <<EOF
 }
 EOF
 chmod 0644 "$INSTALL_STATE_MANIFEST.tmp"
+checkpoint "@manifest-tmp-written"
 mv -f "$INSTALL_STATE_MANIFEST.tmp" "$INSTALL_STATE_MANIFEST"
+checkpoint "@manifest-renamed"
 
 committed=1
 trap - ERR INT TERM EXIT
@@ -1501,7 +1516,9 @@ refresh_provisioning_agent_binary "$STAGED_BIN_DIR/vpn-provisioning-agent"
 # this update failed — remove them now that it did not (checkpoint-3
 # requirement: never turn update rollback backups into a permanent
 # backup product).
+checkpoint "@before-backup-removal"
 rm -rf "$PREV_OPT_DIR" "$BACKUP_DIR" "$STAGING_ROOT"
+checkpoint "@backup-removed-marker-present"
 rm -f "$TRANSACTION_MARKER"
 
 perf_tuning_apply || warn "kernel network tuning re-apply failed; update itself still succeeded."

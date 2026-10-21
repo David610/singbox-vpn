@@ -21,7 +21,10 @@ INSTALLED_UPDATER="${INSTALLED_UPDATER:-/opt/singbox-vpn/deploy/almalinux/update
 MIN_FREE_MB_ROOT="${MIN_FREE_MB_ROOT:-2048}"
 MIN_FREE_MB_TMP="${MIN_FREE_MB_TMP:-1024}"
 LOCKFILE=/run/lock/singbox-vpn-update.lock
-MARKERS=("downloading singbox-vpn" "STAGE complete" "SWITCHING to" "reloading systemd unit definitions" "install mode: UPDATE" "rendering current authoritative" "restarting services" "running health check" "verifying real protocol handshake" "writing install-state manifest" "provisioning agent binary refreshed" "UPDATE COMPLETE")
+# Kill points: updater checkpoint (prefix of a log line, or "@name" for an explicit checkpoint) and whether the
+# transaction is COMMITTED (install-state manifest carries the target) when the updater is killed there.
+MARKERS=("downloading singbox-vpn" "STAGE complete" "SWITCHING to" "reloading systemd unit definitions" "install mode: UPDATE" "rendering current authoritative" "restarting services" "running health check" "verifying real protocol handshake" "writing install-state manifest" "provisioning agent binary refreshed" "UPDATE COMPLETE" "@manifest-tmp-written" "@manifest-renamed" "@before-backup-removal" "@backup-removed-marker-present")
+EXPECT_COMMITTED=(no no no no no no no no no no yes yes no yes yes yes)
 PATHS=(/etc/vpn /var/lib/singbox-vpn /opt/singbox-vpn /etc/nginx/conf.d/vpn-subscription.conf /etc/sysctl.d/99-singbox-vpn-dataplane.conf)
 UNITGLOB=(/etc/systemd/system/sing-box.service /etc/systemd/system/vpn-*.service /etc/systemd/system/vpn-*.timer)
 BINS=(/usr/local/bin/vpn /usr/local/bin/vpn-admin /usr/local/bin/vpn-subscription-svc /usr/local/bin/vpn-provisioning-agent /usr/local/bin/sing-box /usr/local/bin/vpn-health-check /usr/local/bin/vpn-service-watchdog /usr/local/bin/vpn-benchmark /usr/local/bin/vpn-benchmark-lib.sh)
@@ -37,6 +40,24 @@ lock_held() { ( exec 9>"$LOCKFILE"; flock -n 9 ) && echo free || echo HELD; }
 tmp_leaks() { find /tmp -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l; }
 stale_dirs() { ls -d /opt/.singbox-vpn-* 2>/dev/null | wc -l; }
 
+manifest_ver() { python3 -I -c 'import json;print(json.load(open("/var/lib/singbox-vpn/install-state.json")).get("singbox_vpn_version",""))' 2>/dev/null; }
+# Independent roll-forward evidence: the manifest names the target AND its recorded hashes equal the installed executables.
+manifest_matches_bins() {
+  python3 -I - <<'PY' 2>/dev/null || echo no
+import hashlib, json
+m = json.load(open("/var/lib/singbox-vpn/install-state.json"))
+h = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
+ok = (m.get("vpn_admin_sha256") == h("/usr/local/bin/vpn-admin") and m.get("vpn_sha256") == h("/usr/local/bin/vpn")
+      and m.get("subscription_sha256") == h("/usr/local/bin/vpn-subscription-svc"))
+print("yes" if ok else "no")
+PY
+}
+orphans() { # live processes that are updater/installer/cosign children (by exact comm/exe, not by command-line matching)
+  local n=0 p c; for p in /proc/[0-9]*; do c="$(cat "$p/comm" 2>/dev/null)"; [ "$c" = cosign ] && n=$((n + 1)); done
+  for p in $(pgrep -x -f '^bash .*/(update|install)\.sh( .*)?$' 2>/dev/null); do [ "$p" != "$$" ] && n=$((n + 1)); done
+  echo "$n"
+}
+now_ms() { date +%s%3N; }
 descendants() { local p c; for c in $(pgrep -P "$1" 2>/dev/null); do echo "$c"; descendants "$c"; done; }
 # Freeze, collect descendants until the set is stable (so nothing forks away), then SIGKILL them all.
 kill_tree() {
@@ -158,28 +179,39 @@ stage() {
   if [ -n "$invalid" ]; then kv verdict "INVALID"; kv reason "$invalid"; python3 -I "$(dirname "$0")/interrupt_matrix_report.py" "$KV" >>"$OUTDIR/matrix.jsonl"; echo "stage $N INVALID: $invalid"; return 0; fi
   local base_creds base_bins base_ver leaks0 free_root0 free_tmp0
   base_creds=$(creds); base_bins=$(binsig); base_ver=$(ver); leaks0=$(tmp_leaks); free_root0=$(free_mb /); free_tmp0=$(free_mb /tmp)
-  kv baseline_version "$base_ver"; kv baseline_bins "$base_bins"; kv free_root_mb_start "$free_root0"; kv free_tmp_mb_start "$free_tmp0"
+  kv baseline_version "$base_ver"; kv manifest_version_baseline "$(manifest_ver)"; kv baseline_bins "$base_bins"; kv free_root_mb_start "$free_root0"; kv free_tmp_mb_start "$free_tmp0"
   # --- run the updater and kill it at the marker
   local LOG="$D/update.log"; : >"$LOG"
   # Launch the updater script DIRECTLY (no wrapper shell): $PID is then the updater itself, so a "main only" kill
   # really kills the updater and leaves only its children (the orphan case). A wrapper would be killed instead and
   # the real updater would carry on and finish the update (the first version of this harness did exactly that).
   local SCRIPT; if [ "$UPD" = branch ]; then SCRIPT="$BRANCH_UPDATER"; else SCRIPT="$INSTALLED_UPDATER"; fi
-  setsid bash "$SCRIPT" --version "$TARGET" >"$LOG" 2>&1 & local PID=$!
+  local CPD; CPD="$(mktemp -d /run/ixm-ckpt.XXXXXX)"; chmod 0700 "$CPD"
+  local t0; t0=$(now_ms)
+  SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" >"$LOG" 2>&1 & local PID=$!
   kv updater_pid "$PID"
   local fired=no
-  for _ in $(seq 1 3000); do grep -qF "$M" "$LOG" 2>/dev/null && { fired=yes; break; }; kill -0 $PID 2>/dev/null || break; sleep 0.1; done
+  # Deterministic: the updater itself records the checkpoint and then blocks, so the kill lands exactly there.
+  for _ in $(seq 1 3000); do [ -s "$CPD/reached" ] && { fired=yes; break; }; kill -0 $PID 2>/dev/null || break; sleep 0.1; done
+  kv ms_to_checkpoint "$(( $(now_ms) - t0 ))"
   if [ "$fired" = yes ]; then
-    sleep 0.3
+    kv checkpoint_reached "$(cat "$CPD/reached")"
+    local tk; tk=$(now_ms)
     if [ "$KILL" = tree ]; then kill_tree $PID >"$D/killed-procs.txt"; else KILLED_PIDS=$PID; kill -9 $PID 2>/dev/null; fi
+    kv ms_kill "$(( $(now_ms) - tk ))"
     sleep 1
     kv kill_fired true; kv killed_pids "$(echo $KILLED_PIDS | tr ' ' ',')"; kv survivors_after_kill "$(survivors "$KILLED_PIDS")"
     kv updater_alive_after_kill "$(kill -0 "$PID" 2>/dev/null && echo yes || echo no)"
   else
     kv kill_fired false; kill_tree $PID >/dev/null 2>&1; kv verdict INVALID; kv reason "kill point '$M' never reached"
-    python3 -I "$(dirname "$0")/interrupt_matrix_report.py" "$KV" >>"$OUTDIR/matrix.jsonl"; echo "stage $N INVALID (kill point never reached)"; return 0
+    python3 -I "$(dirname "$0")/interrupt_matrix_report.py" "$KV" >>"$OUTDIR/matrix.jsonl"; rm -rf "$CPD"; echo "stage $N INVALID (kill point never reached)"; return 0
   fi
+  rm -rf "$CPD"
   # --- immediate state
+  kv expected_committed "${EXPECT_COMMITTED[$((N - 1))]}"
+  kv manifest_version_after_kill "$(manifest_ver)"
+  kv observed_committed "$([ "$(manifest_ver)" = "${TARGET#v}" ] || [ "$(manifest_ver)" = "$TARGET" ] && echo yes || echo no)"
+  kv target "$TARGET"
   kv marker_after_kill "$([ -e /var/lib/singbox-vpn/update-transaction.json ] && echo yes || echo no)"
   kv services_after_kill "$(svc_ok)"; kv version_after_kill "$(ver)"; kv bins_after_kill "$(binsig)"; kv doctor_fails_after_kill "$(doctor_fails)"
   kv stale_dirs_after_kill "$(stale_dirs)"; kv lock_after_kill "$(lock_held)"; kv creds_after_kill "$([ "$(creds)" = "$base_creds" ] && echo same || echo CHANGED)"
@@ -201,6 +233,10 @@ stage() {
   kv marker_after_recover "$([ -e /var/lib/singbox-vpn/update-transaction.json ] && echo yes || echo no)"
   kv stale_dirs_after_recover "$(stale_dirs)"; kv version_after_recover "$(ver)"; kv bins_after_recover "$(binsig)"
   kv services_after_recover "$(svc_ok)"; kv doctor_fails_after_recover "$(doctor_fails)"; kv creds_after_recover "$([ "$(creds)" = "$base_creds" ] && echo same || echo CHANGED)"
+  kv manifest_version_after_recover "$(manifest_ver)"; kv manifest_matches_bins_after_recover "$(manifest_matches_bins)"
+  kv orphans_after_recover "$(orphans)"; kv lock_after_recover "$(lock_held)"
+  kv leftover_tmp_after_recover "$(find /var/lib/singbox-vpn /opt -maxdepth 1 \( -name '*.tmp' -o -name '.singbox-vpn-*' \) 2>/dev/null | wc -l)"
+  kv backups_after_recover "$(find /etc/vpn/backups -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)"
   vpn-admin doctor --protocol --require-protocol >"$D/protocol-recover.log" 2>&1; kv protocol_rc_after_recover "$?"
   # --- normal update, then an idempotent repeat
   run_updater "$UPD" --version "$TARGET" >"$D/final.log" 2>&1; kv final_update_rc "$?"
@@ -210,6 +246,10 @@ stage() {
   local binsA; binsA=$(binsig)
   run_updater "$UPD" --version "$TARGET" >"$D/idem.log" 2>&1; kv idempotent_rc "$?"
   kv idempotent_bins_same "$([ "$(binsig)" = "$binsA" ] && echo yes || echo NO)"; kv creds_idem "$([ "$(creds)" = "$base_creds" ] && echo same || echo CHANGED)"
+  # repair must still work and must not change the release identity or credentials
+  run_updater "$UPD" --repair >"$D/repair.log" 2>&1; kv repair_rc "$?"
+  kv repair_bins_same "$([ "$(binsig)" = "$binsA" ] && echo yes || echo NO)"; kv creds_repair "$([ "$(creds)" = "$base_creds" ] && echo same || echo CHANGED)"
+  kv services_repair "$(svc_ok)"; kv doctor_fails_repair "$(doctor_fails)"; kv orphans_end "$(orphans)"; kv lock_end "$(lock_held)"
   kv tmp_leaks_delta "$(( $(tmp_leaks) - leaks0 ))"; kv free_root_mb_end "$(free_mb /)"; kv free_tmp_mb_end "$(free_mb /tmp)"
   local h1; h1="$(sha256sum <"$0" | cut -c1-16)"; kv harness_sha_end "$h1"
   python3 -I "$(dirname "$0")/interrupt_matrix_report.py" "$KV" "$MIN_FREE_MB_ROOT" "$MIN_FREE_MB_TMP" >>"$OUTDIR/matrix.jsonl"

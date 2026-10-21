@@ -87,13 +87,15 @@ run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ] && [ -d /opt/.singbox-vpn-prev-1 ] && g
 printf '#!/bin/sh\nexit 0\n' >/usr/local/bin/systemctl; chmod +x /usr/local/bin/systemctl
 export PATH="/usr/local/bin:$PATH"
 printf 'fake vpn-admin build\n' >/usr/local/bin/vpn-admin; chmod +x /usr/local/bin/vpn-admin
+printf 'fake vpn build\n' >/usr/local/bin/vpn; printf 'fake subscription build\n' >/usr/local/bin/vpn-subscription-svc; chmod +x /usr/local/bin/vpn /usr/local/bin/vpn-subscription-svc
 SHA="$(sha256sum /usr/local/bin/vpn-admin | cut -d' ' -f1)"
+SHA_VPN="$(sha256sum /usr/local/bin/vpn | cut -d' ' -f1)"; SHA_SUB="$(sha256sum /usr/local/bin/vpn-subscription-svc | cut -d' ' -f1)"
 MAN=/var/lib/singbox-vpn/install-state.json
 START="$(date +%s)"
 mkdir -p /opt/singbox-vpn/deploy/almalinux; : >/opt/singbox-vpn/deploy/almalinux/update.sh
-fixture() { # $1=manifest version  $2=installed_at offset (s, relative to START)  $3=sha  ; backup dir is absent
+fixture() { # $1=manifest version  $2=installed_at offset (s, relative to START)  $3=vpn-admin sha  $4=vpn sha  $5=subscription sha ; backup dir is absent
   rm -rf /etc/vpn/backups/20261020-100000-1 /opt/.singbox-vpn-prev-9 /opt/.singbox-vpn-update-staging.C9
-  printf '{"singbox_vpn_version":"%s","installed_at_unix":%s,"vpn_admin_sha256":"%s"}' "$1" "$((START + $2))" "$3" >"$MAN"
+  printf '{"singbox_vpn_version":"%s","installed_at_unix":%s,"vpn_admin_sha256":"%s","vpn_sha256":"%s","subscription_sha256":"%s"}' "$1" "$((START + $2))" "$3" "${4:-$SHA_VPN}" "${5:-$SHA_SUB}" >"$MAN"
   printf '{"backup_dir":"/etc/vpn/backups/20261020-100000-1","prev_opt_dir":"/opt/.singbox-vpn-prev-9","staged_src_dir":"/opt/.singbox-vpn-update-staging.C9/src","from_version":"v1.3.0","to_version":"v1.3.1-rc.2","started_at_unix":%s}' "$START" >"$MARK"
 }
 # 8a. committed + cleanup half done (prev dir PARTIALLY deleted, backup gone): roll FORWARD, never restore the partial tree
@@ -106,6 +108,8 @@ fixture v1.3.1-rc.2 5 "$SHA"; run; { [ "$RC" -eq 0 ] && [ ! -e "$MARK" ]; } && o
 fixture v1.3.0 5 "$SHA"; run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ]; } && ok "manifest still at the OLD version and the backup is gone: refused (inconsistent)" || bad "accepted an uncommitted transaction"
 fixture v1.3.1-rc.2 -50 "$SHA"; run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ]; } && ok "manifest older than the transaction start: refused (not written by this transaction)" || bad "accepted a stale manifest"
 fixture v1.3.1-rc.2 5 "0000000000000000000000000000000000000000000000000000000000000000"; run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ]; } && ok "manifest hash does not match the installed vpn-admin: refused" || bad "accepted a hash mismatch"
+fixture v1.3.1-rc.2 5 "$SHA" "0000000000000000000000000000000000000000000000000000000000000000"; run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ]; } && ok "manifest hash of vpn does not match: refused" || bad "accepted a vpn hash mismatch"
+fixture v1.3.1-rc.2 5 "$SHA" "$SHA_VPN" "0000000000000000000000000000000000000000000000000000000000000000"; run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ]; } && ok "manifest hash of vpn-subscription-svc does not match: refused" || bad "accepted a subscription hash mismatch"
 # 8d. committed but the live source tree is missing / services down => explicit refusal, nothing deleted
 fixture v1.3.1-rc.2 5 "$SHA"; mkdir -p /opt/.singbox-vpn-prev-9/keep; mv /opt/singbox-vpn /opt/singbox-vpn.away
 run; { [ "$RC" -ne 0 ] && [ -e "$MARK" ] && [ -d /opt/.singbox-vpn-prev-9/keep ]; } && ok "committed but /opt/singbox-vpn is missing: refused, previous tree kept" || bad "rolled forward without a live tree (rc=$RC)"
