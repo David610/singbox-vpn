@@ -69,6 +69,55 @@ fn generate_reality_keypair(sb: &common::SingBox) -> (String, String) {
     )
 }
 
+/// Diagnostic only (the assertions are unchanged): for every `processed invalid connection`, say what that
+/// connection did, so a failure classifies itself instead of needing the whole trace read by hand.
+/// sing-box reports ANY handshake that does not complete that way -- a client that authenticated, received the
+/// whole certificate flight and then closed before sending Finished included (observed once: the `urltest` health
+/// probe of the rendered subscription, abandoned 5 ms in, while the test's own relay connection succeeded).
+fn diagnose_invalid_connections(log: &str) -> String {
+    let mut out = Vec::new();
+    for line in log.lines().filter(|l| l.contains("processed invalid connection")) {
+        let remote = line
+            .split("process connection from ")
+            .nth(1)
+            .and_then(|r| r.split(':').take(2).collect::<Vec<_>>().join(":").into())
+            .unwrap_or_default();
+        let mine: Vec<&str> = log
+            .lines()
+            .filter(|l| !remote.is_empty() && l.contains(&format!("remoteAddr: {remote} ")))
+            .collect();
+        let has = |needle: &str| mine.iter().any(|l| l.contains(needle));
+        let verdict = if has("hs.c.conn == conn: true") && has("readClientFinished() err: EOF") {
+            "AUTHENTICATED, server flight sent, then the CLIENT CLOSED before Finished (client-abandoned handshake, not a server/decoy failure)"
+        } else if has("hs.c.conn == conn: true") {
+            "authenticated, then failed for another reason (inspect the trace)"
+        } else {
+            "never authenticated (wrong key/short id/time, or not a REALITY client)"
+        };
+        out.push(format!("connection {remote}: {verdict}"));
+    }
+    if out.is_empty() {
+        "no `processed invalid connection` line".to_string()
+    } else {
+        out.join("\n")
+    }
+}
+
+#[test]
+fn diagnosis_recognises_a_client_abandoned_authenticated_handshake() {
+    // Lines taken from the one observed failure (staging, 2026-10-21 10:40:53Z).
+    let abandoned = "\
+inbound/vless[vless-reality-in]: REALITY remoteAddr: 127.0.0.1:49610 hs.c.conn == conn: true
+inbound/vless[vless-reality-in]: REALITY remoteAddr: 127.0.0.1:49610 hs.readClientFinished() err: EOF
+ERROR [458195100 11ms] inbound/vless[vless-reality-in]: process connection from 127.0.0.1:49610: TLS handshake: REALITY: processed invalid connection";
+    assert!(diagnose_invalid_connections(abandoned).contains("CLIENT CLOSED before Finished"));
+    let unauth = "\
+inbound/vless[vless-reality-in]: REALITY remoteAddr: 127.0.0.1:50000 hs.c.isHandshakeComplete.Load(): false
+ERROR [1 1ms] inbound/vless[vless-reality-in]: process connection from 127.0.0.1:50000: TLS handshake: REALITY: processed invalid connection";
+    assert!(diagnose_invalid_connections(unauth).contains("never authenticated"));
+    assert!(diagnose_invalid_connections("nothing").contains("no `processed invalid connection`"));
+}
+
 /// A certificate flight that broke the historical 1.13.x REALITY path must
 /// remain usable on the current data plane, with authentication completing.
 #[test]
@@ -215,6 +264,7 @@ fn historically_oversized_decoy_certificate_remains_usable() {
     assert!(
         !saw_invalid,
         "the historically over-budget decoy unexpectedly produced \
-         `processed invalid connection` again.\n--- server log ---\n{server_log_text}"
+         `processed invalid connection` again.\n--- diagnosis ---\n{}\n--- server log ---\n{server_log_text}",
+        diagnose_invalid_connections(&server_log_text)
     );
 }

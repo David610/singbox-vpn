@@ -26,4 +26,17 @@ if [ -n "$hits" ]; then
   echo "$hits" >&2
   exit 1
 fi
-echo "PASS: test-no-broad-process-kills.sh (no pkill/killall in shipped scripts or workflows)"
+
+# Discovery has the same failure mode as killing: `pgrep -f foo` matches any process whose argv merely CONTAINS foo -- the
+# calling shell, its watcher loop, an editor or a tail -- so "is the service still running?" can be wrong in both
+# directions and a PID taken from it can be the wrong process. Allowed: a PID this script started itself, systemd's
+# MainPID, `pgrep -x NAME` (exact comm), an ANCHORED `pgrep -x -f '^...$'`, or deploy/lib/proc-safe.sh (proc_pids_exact).
+find_hits="$(find deploy bin install.sh uninstall.sh -type f -name '*.sh' 2>/dev/null   | grep -vE '^deploy/lib/tests/test-no-broad-process-kills\.sh$'   | while IFS= read -r f; do
+      grep -HnE '(^|[^[:alnum:]_.-])pgrep[[:space:]]+(-[A-Za-z]*[[:space:]]+)*-f([[:space:]]|$)' "$f" | grep -vE "pgrep -x -f '\^" || true
+    done)"
+if [ -n "$find_hits" ]; then
+  echo "FAIL: unanchored pgrep -f (use an exact PID, MainPID, pgrep -x, an anchored pattern or proc-safe.sh):" >&2
+  echo "$find_hits" >&2
+  exit 1
+fi
+echo "PASS: test-no-broad-process-kills.sh (no pkill/killall, no unanchored pgrep -f in shipped scripts or workflows)"

@@ -26,6 +26,16 @@ Install (staging example; nothing is installed by the installer):
     install -m0644 vpn-shorts-health@.service vpn-shorts-health@.timer /etc/systemd/system/
     systemctl daemon-reload && systemctl enable --now vpn-shorts-health@exit-direct.timer
 
+Prerequisite (not provided by the installer): the probe needs Python `playwright` and a Chromium it can find. Put them in
+`/etc/vpn/shorts-health.env` (read by the unit, `EnvironmentFile=-`):
+
+    PROBE_PYTHON=/path/to/venv/bin/python        # a Python that can `import playwright`
+    PLAYWRIGHT_BROWSERS_PATH=/path/to/browsers   # where `playwright install chromium` put the browser
+
+Without it the probe cannot start; the monitor then records `UNVERIFIED` / cause `HARNESS` and the unit exits 3. That is the
+intended failure mode - a probe that did not run is never reported as HEALTHY - but it also means no media evidence exists.
+The unit must point at the INSTALLED tree (`/opt/singbox-vpn/...`), never at a scratch checkout.
+
 Output in `/var/lib/singbox-vpn/shorts-health/`: `shorts-health.jsonl` (one JSON line per run: status, cause, path classes,
 per-class counts, sampled public ids, seconds), `alerts.jsonl`, `<label>.state.json`. No cookies, tokens or user traffic are stored.
 Evidence class: browser verified, TCP only (the probe disables QUIC); it never replaces the native-device acceptance.

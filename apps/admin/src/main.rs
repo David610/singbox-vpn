@@ -8138,6 +8138,20 @@ fn classify_public_surface_in(
             }
         }
 
+        // The host's own DHCPv4 lease: systemd-networkd's client socket on UDP 68 is bound to the interface's
+        // address AND device (`addr%ifname`). Deliberately narrow -- UDP, port 68, that owner, an interface-bound
+        // address -- so any other unexpected listener keeps warning.
+        if l.udp && l.port == 68 && owner == Some("systemd-network") && l.addr.contains('%') {
+            findings.push((
+                CheckStatus::Info,
+                format!(
+                    "{addr_port}/{proto} is the host's DHCPv4 client (systemd-networkd, bound to its \
+                     interface address) -- this machine's own address lease, not a service"
+                ),
+            ));
+            continue;
+        }
+
         let owner_desc =
             owner.unwrap_or("an unidentified process (run as root for process detail)");
         findings.push((
@@ -11149,6 +11163,35 @@ mod public_surface_tests {
         declared: Option<&DeclaredInbounds>,
     ) -> Vec<(CheckStatus, String)> {
         classify_public_surface_in(listeners, Some(22), &expected(), 9100, EPHEMERAL, declared)
+    }
+
+    #[test]
+    fn dhcpv4_client_socket_of_systemd_networkd_is_info_not_a_warning() {
+        // `ss -ulnp` on a DHCP-configured host: systemd-networkd's DHCPv4 client holds UDP 68 bound to the
+        // interface's own address and device (`addr%eth0`). It is the host's address lease, not a service.
+        let l = vec![sock(true, "62.238.46.190%eth0", 68, Some("systemd-network"))];
+        let f = classify_in(&l, None);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].0, CheckStatus::Info);
+        assert!(f[0].1.contains("DHCP"), "{}", f[0].1);
+    }
+
+    #[test]
+    fn udp_68_is_only_benign_for_the_dhcp_client_bound_to_an_interface() {
+        // Everything near the DHCP case stays a WARN: another owner, an unknown owner, a wildcard bind, TCP,
+        // a different port. The exemption must not become a general "unknown UDP listener" suppression.
+        for (udp, addr, port, owner) in [
+            (true, "62.238.46.190%eth0", 68, Some("python3")),
+            (true, "62.238.46.190%eth0", 68, None),
+            (true, "0.0.0.0", 68, Some("systemd-network")),
+            (true, "62.238.46.190", 68, Some("systemd-network")),
+            (false, "62.238.46.190%eth0", 68, Some("systemd-network")),
+            (true, "62.238.46.190%eth0", 69, Some("systemd-network")),
+        ] {
+            let f = classify_in(&[sock(udp, addr, port, owner)], None);
+            assert_eq!(f.len(), 1);
+            assert_eq!(f[0].0, CheckStatus::Warn, "{udp} {addr}:{port} {owner:?}: {}", f[0].1);
+        }
     }
 
     #[test]

@@ -468,7 +468,7 @@ exit \"\$rc\""
       pgrep -x dnf >/dev/null 2>&1 && echo dnf-running || echo dnf-not-running
       [ -e /var/lib/rpm/.rpm.lock ] && echo rpm-lock-present || echo rpm-lock-absent
       echo "--- certbot ---"
-      pgrep -f certbot >/dev/null 2>&1 && echo certbot-running || echo certbot-not-running
+      pgrep -x certbot >/dev/null 2>&1 && echo certbot-running || echo certbot-not-running
       echo "--- nginx ---"
       systemctl is-active nginx 2>&1 || true
       echo "--- related processes ---"

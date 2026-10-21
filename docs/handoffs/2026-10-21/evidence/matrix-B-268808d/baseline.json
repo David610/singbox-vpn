@@ -1,0 +1,7 @@
+{
+ "revision": "268808d51493321c86dea16328ba72a39a2b9120",
+ "snapshot": "/root/snap/baseline.tar",
+ "snapshot_sha256": "605d429f9ffe6f04f992ed38681f88cc48cec3b41d317773062b3d6dcb266c8f",
+ "restore_line": "restored version=1.3.0 creds=2965a5a4aa5c4b38 bins=efe47e419920,efe47e419920,cab90b4e9083, services=all-active doctor_fails=0",
+ "recorded_utc": "2026-10-21T10:18:06Z"
+}
