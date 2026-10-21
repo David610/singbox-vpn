@@ -28,20 +28,17 @@ There is deliberately **no automatic re-routing**. Moving Google traffic to anot
 (`docs/operations/YOUTUBE_EGRESS_ARCHITECTURE.md`, INV-6/7/8); on CRITICAL with cause `EGRESS_REFUSED` follow
 `docs/runbooks` / the architecture record: qualify another target, never fall back to `direct`.
 
-Install (staging example; nothing is installed by the installer):
+Deploy and verify (source-controlled; the installer/updater do NOT run this, the monitor is opt-in):
 
-    install -m0644 vpn-shorts-health@.service vpn-shorts-health@.timer /etc/systemd/system/
-    systemctl daemon-reload && systemctl enable --now vpn-shorts-health@exit-direct.timer
+    sudo bash /opt/singbox-vpn/deploy/lib/monitoring/install-shorts-monitor.sh --label exit-direct          # install/refresh + enable
+    sudo bash /opt/singbox-vpn/deploy/lib/monitoring/install-shorts-monitor.sh --check --label exit-direct  # read-only verification
 
-Prerequisite (not provided by the installer): the probe needs Python `playwright` and a Chromium it can find. Put them in
-`/etc/vpn/shorts-health.env` (read by the unit, `EnvironmentFile=-`):
-
-    PROBE_PYTHON=/path/to/venv/bin/python        # a Python that can `import playwright`
-    PLAYWRIGHT_BROWSERS_PATH=/path/to/browsers   # where `playwright install chromium` put the browser
-
-Without it the probe cannot start; the monitor then records `UNVERIFIED` / cause `HARNESS` and the unit exits 3. That is the
-intended failure mode - a probe that did not run is never reported as HEALTHY - but it also means no media evidence exists.
-The unit must point at the INSTALLED tree (`/opt/singbox-vpn/...`), never at a scratch checkout.
+`--check` fails (exit 1) if the installed units differ from the shipped ones (e.g. an older release's copy, or a hand edit pointing at a
+scratch checkout), the probe prerequisites do not hold, the timer is not enabled/active, the last run is older than 2 h, or the monitor
+is blind (status UNVERIFIED/PATH_DOWN: nothing is being verified). A CRITICAL/DEGRADED media verdict is printed as INFO: it is the
+monitor doing its job about the egress, not a deployment fault. Run `--check` after every update (an update that refreshes the tree does
+not refresh `/etc/systemd/system` units) and re-run the install step if it reports drift. Install refuses, installing nothing, when the
+prerequisites do not hold.
 
 Output in `/var/lib/singbox-vpn/shorts-health/`: `shorts-health.jsonl` (one JSON line per run: status, cause, path classes,
 per-class counts, sampled public ids, seconds), `alerts.jsonl`, `<label>.state.json`. No cookies, tokens or user traffic are stored.

@@ -284,11 +284,11 @@
   {
    "id": "OPS-1",
    "category": "Operations",
-   "title": "Shorts monitor deployed and checked by the lifecycle (and itself monitored)",
+   "title": "Shorts monitor deployed from source control and verified (install + --check)",
    "mandatory": true,
    "status": "UNVERIFIED",
    "evidence": [],
-   "note": "I-70: opt-in, not installed or verified by install/update; staging unit installed by hand."
+   "note": "I-70: install-shorts-monitor.sh --check passes on staging (hermetic test 14/14, 4 mutations), but install/update do not run it and doctor does not call it; promote after the CI run and an owner decision on default deployment."
   }
  ]
 }
