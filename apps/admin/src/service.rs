@@ -420,6 +420,7 @@ exit 1
     ) -> (PathBuf, PathBuf) {
         let path = dir.join("systemctl");
         let calls = dir.join("is-active-calls");
+        let delay = format!("{}.{:03}", delay_ms / 1000, delay_ms % 1000);
         let script = format!(
             r#"#!/usr/bin/env bash
 CALLS="{calls}"
@@ -437,7 +438,7 @@ esac
 exit 1
 "#,
             calls = calls.display(),
-            delay = format!("{}.{:03}", delay_ms / 1000, delay_ms % 1000),
+            delay = delay,
             answers = answers,
         );
         std::fs::write(&path, script).unwrap();
