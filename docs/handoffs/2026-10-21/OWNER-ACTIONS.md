@@ -1,3 +1,32 @@
+# STATUS UPDATE (after your authorizations of R1 and the Selectel assessment)
+
+* **R1 (branch push) - approved, NOT performed: no GitHub credential exists on this VPS.** `git push` fails with "could not read Username"; the
+  session's repository attach did not give this checkout a credential, and a further attempt to inspect git/proxy configuration for one was blocked
+  as credential exploration, which I did not work around. The exact commits are packaged and verified: see "How to complete R1" below.
+* **Selectel (`135.106.178.167`, recorded as `ru1`) - approved for read-only assessment, A1/A2 NOT performed.** This VPS has no SSH private key, no agent and no
+  host-key record for it, and the suitability tool (rightly) requires key login and strict host-key checking. Done instead, unauthenticated and bounded:
+  reachability (ICMP 17.7 ms avg, 0% loss; TCP/22 and TCP/443 accept in 28-29 ms) and the public SSH host-key fingerprints. **Identity and operational role are not
+  established**; I need you to confirm the fingerprints and provide read-only access (below).
+
+## How to complete R1 (pick one)
+1. **From a machine that has GitHub access** (simplest, no secret leaves your hands): copy the bundle and push it.
+       scp root@62.238.46.190:/root/evidence/R1/staging-2026-10-20-remediation.bundle .
+       git clone https://github.com/David610/singbox-vpn.git && cd singbox-vpn
+       git fetch ../staging-2026-10-20-remediation.bundle staging/2026-10-20-remediation:staging/2026-10-20-remediation
+       git rev-parse staging/2026-10-20-remediation      # must equal the commit in /root/evidence/R1/COMMIT.txt
+       git push -u origin staging/2026-10-20-remediation  # branch only; no tags
+2. Or give this VPS a credential scoped to this one repository (fine-grained token, Contents: write, short expiry) by a route you choose; tell me when it is in place
+   and I will re-run the preflight and push. I will not look for credentials myself.
+After the push I inspect every CI job and report the evidence.
+
+## Selectel: what I need
+* Confirm that these are your node's host keys (compare on the node: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`):
+  ED25519 `SHA256:MReaYO3BfwTDstY1netdec7ueslyx2tCKDwGOL73rp0`, RSA `SHA256:i/sU+RLYu68cEgxUFRv1qvUolWJaXNaaekt4yR3CMC0`.
+* Say whether the node is currently serving users (the assessment is read-only, but I need to know to pace the probe) and confirm its role (`ru1`, hairpin target).
+* Give read-only access: add the public key I generate for this purpose to a dedicated account's `authorized_keys` on the node (or tell me another route). I will create a
+  dedicated keypair on this VPS (private key never leaves it, never printed) and give you only the `.pub` line, plus a pinned `known_hosts` entry written only after you confirm the fingerprints.
+
+---
 # Owner actions — the smallest set that unblocks final acceptance (2026-10-21)
 
 Nothing below has been done. Each item is separate; approving one does not approve another. Items are in the order that unblocks the
