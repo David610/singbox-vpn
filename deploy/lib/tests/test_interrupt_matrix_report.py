@@ -31,6 +31,13 @@ class Report(unittest.TestCase):
     def test_open_transaction_must_return_exactly_the_baseline(self):
         v, r = verdict(version_after_recover="1.3.1", bins_after_recover="NEW,")
         self.assertEqual(v, "FAIL"); self.assertTrue(any("baseline" in x for x in r))
+    def test_commit_window_kill_rolled_forward_is_a_pass(self):
+        self.assertEqual(verdict(recovery_decision="rolled_forward", version_after_recover="1.3.1", bins_after_recover="NEW,")[0], "PASS")
+    def test_roll_forward_claim_over_a_mixed_release_fails(self):
+        v, _ = verdict(recovery_decision="rolled_forward", version_after_recover="1.3.1", bins_after_recover="OLD,NEW,")
+        self.assertEqual(v, "FAIL")
+    def test_roll_forward_does_not_excuse_a_baseline_mismatch_without_the_claim(self):
+        self.assertEqual(verdict(recovery_decision="rolled_back_or_none", version_after_recover="1.3.1", bins_after_recover="NEW,")[0], "FAIL")
     def test_mixed_release_is_a_failure_even_without_a_marker(self):
         v, _ = verdict(marker_after_kill="no", bins_after_recover="OLD,NEW,", version_after_recover="1.3.1")
         self.assertEqual(v, "FAIL")

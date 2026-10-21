@@ -37,7 +37,11 @@ if verdict != "INVALID":
         # release and recovery must be a no-op. Either way the release must be ONE consistent release, never a mix.
         old_ok = kv.get("version_after_recover") == kv.get("baseline_version") and kv.get("bins_after_recover") == kv.get("baseline_bins")
         new_ok = kv.get("version_after_recover") == kv.get("version_final") and kv.get("bins_after_recover") == kv.get("bins_final")
-        if kv.get("marker_after_kill") == "yes":
+        if kv.get("marker_after_kill") == "yes" and kv.get("recovery_decision") == "rolled_forward":
+            # Kill inside the commit window (manifest already written, marker not yet removed): the updater must roll
+            # FORWARD to one consistent NEW release and say so. Rolling back here would discard a committed update.
+            need(new_ok and kv.get("version_final", "").startswith("1.3.1"), "recovery claimed a roll-forward but the node is not on one consistent new release")
+        elif kv.get("marker_after_kill") == "yes":
             need(old_ok, "an open transaction was not rolled back to exactly the baseline release (version/binaries differ)")
         else:
             need(old_ok or new_ok, "no open transaction, yet the node runs a MIXED release (neither the baseline nor the final binaries)")

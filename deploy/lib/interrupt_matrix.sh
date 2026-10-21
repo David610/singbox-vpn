@@ -195,6 +195,9 @@ stage() {
     bash "$BRANCH_UPDATER" --recover >"$D/recover2.log" 2>&1; kv recover_after_wait_rc "$?"
   fi
   kv recovered_msg "$(sed -E 's/\x1b\[[0-9;]*m//g' "$D"/recover*.log | grep -oE 'RECOVERY COMPLETE|PREPARE had not finished|switch had not started|RECOVERY FAILED|removed [0-9]+ stale update-staging[a-z ]*|nothing else to recover' | tr '\n' ';')"
+  # Explicit recovery decision, taken from the updater's own words: a kill after the manifest commit is rolled FORWARD.
+  if sed -E 's/\x1b\[[0-9;]*m//g' "$D"/recover*.log | grep -q 'had already COMMITTED'; then kv recovery_decision rolled_forward
+  else kv recovery_decision rolled_back_or_none; fi
   kv marker_after_recover "$([ -e /var/lib/singbox-vpn/update-transaction.json ] && echo yes || echo no)"
   kv stale_dirs_after_recover "$(stale_dirs)"; kv version_after_recover "$(ver)"; kv bins_after_recover "$(binsig)"
   kv services_after_recover "$(svc_ok)"; kv doctor_fails_after_recover "$(doctor_fails)"; kv creds_after_recover "$([ "$(creds)" = "$base_creds" ] && echo same || echo CHANGED)"
