@@ -37,7 +37,9 @@ ver() { vpn-admin --version 2>/dev/null | awk '{print $2}'; }
 doctor_fails() { vpn-admin doctor 2>&1 | grep -c '^\[FAIL\]'; }
 svc_ok() { for s in sing-box vpn-subscription nginx; do systemctl is-active --quiet $s || { echo "down:$s"; return 1; }; done; echo "all-active"; }
 lock_held() { ( exec 9>"$LOCKFILE"; flock -n 9 ) && echo free || echo HELD; }
-tmp_leaks() { find /tmp -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l; }
+# Real updater/installer artifacts only (a cosign download is ~135 MB): any file cosign-linux-* one level below /tmp, or an
+# installer workspace. Unrelated empty tmp.* directories (other tools, the operator) must not count.
+tmp_leaks() { { find /tmp -mindepth 2 -maxdepth 2 -name 'cosign-linux-*' 2>/dev/null; find /tmp -mindepth 1 -maxdepth 1 \( -name 'singbox-vpn-install.*' -o -name 'singbox-vpn-inner.*' \) 2>/dev/null; } | wc -l; }
 stale_dirs() { ls -d /opt/.singbox-vpn-* 2>/dev/null | wc -l; }
 
 manifest_ver() { python3 -I -c 'import json;print(json.load(open("/var/lib/singbox-vpn/install-state.json")).get("singbox_vpn_version",""))' 2>/dev/null; }
