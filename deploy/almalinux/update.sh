@@ -349,6 +349,7 @@ TARGET_VERSION="${SINGBOX_VPN_VERSION:-}"
 SINGBOX_VPN_REPO_OVERRIDE="${SINGBOX_VPN_REPO:-}"
 RESOLVE_LATEST=0
 REPAIR=0
+FORCE_REPAIR=0
 DEV_REBUILD=0
 ALLOW_DOWNGRADE=0
 RECOVER=0
@@ -369,6 +370,9 @@ Flags:
                      binaries, checksum-verified before any live change).
   --latest           resolve and update to the latest tagged stable
                      release (same verification as --version).
+  --force-repair-recorded-release
+                     with --repair: re-install the recorded release even though the installed
+                     executables differ from it (see the refusal message)
   --repair           reconcile the currently-installed release: re-fetch
                      and re-verify ITS OWN release material and restore
                      it exactly, fixing local drift/corruption. Never
@@ -392,6 +396,7 @@ while [ $# -gt 0 ]; do
     --version=*) TARGET_VERSION="${1#*=}"; shift ;;
     --latest) RESOLVE_LATEST=1; shift ;;
     --repair) REPAIR=1; shift ;;
+    --force-repair-recorded-release) FORCE_REPAIR=1; shift ;;
     --dev-rebuild) DEV_REBUILD=1; shift ;;
     --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
     --recover) RECOVER=1; shift ;;
@@ -722,6 +727,12 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
     # shellcheck disable=SC1091
     . "$HOME/.cargo/env"
   fi
+  # The live units (e.g. vpn-egress-isolation.service) execute their scripts from the INSTALLED tree, so a dev rebuild is only
+  # coherent when the source being built IS that tree. Built from anywhere else it would install new binaries next to the old
+  # tree's scripts (this is how a corrected build was checked against the stale rc.2 egress-isolation table).
+  _installed_root="$(manifest_field repo_root)"; _installed_root="${_installed_root:-/opt/singbox-vpn}"
+  [ "$(realpath -e "$REPO_ROOT" 2>/dev/null)" = "$(realpath -e "$_installed_root" 2>/dev/null)" ] \
+    || die "--dev-rebuild must run from the installed source tree ($_installed_root), not from $REPO_ROOT: the live systemd units run their scripts from the installed tree, so building elsewhere would pair new binaries with stale scripts. Copy the source into $_installed_root first, then run $_installed_root/deploy/almalinux/update.sh --dev-rebuild. Nothing was changed."
   command -v cargo >/dev/null 2>&1 \
     || die "cargo not found. --dev-rebuild requires a Rust toolchain. (A normal production update does not need this — use --version/--latest instead.)"
 
@@ -979,6 +990,17 @@ if [ "$REPAIR" -eq 1 ]; then
   [ -z "$TARGET_VERSION" ] || die "--repair reconciles the CURRENTLY installed release ($CURRENT_VERSION) — it does not take --version/--latest. Run the production update (--version/--latest) to change version, then --repair separately if still needed."
   [ "$RESOLVE_LATEST" -eq 0 ] || die "--repair and --latest are mutually exclusive."
   TARGET_VERSION="$CURRENT_VERSION"
+  # --repair re-installs the RECORDED release's material. If the installed executables are not that release (a corrected
+  # or development build was put in place by hand or by --dev-rebuild) repair would silently replace them with the recorded,
+  # possibly older and defective, material: this is how the published rc.2's I-54 IPv6 breakage came back after a manual fix.
+  if [ "$FORCE_REPAIR" -ne 1 ]; then
+    drift=""
+    for _pair in vpn-admin:vpn_admin_sha256 vpn:vpn_sha256 vpn-subscription-svc:subscription_sha256; do
+      _have="$(sha256sum "$BIN_DIR/${_pair%%:*}" 2>/dev/null | awk '{print $1}')"; _want="$(manifest_field "${_pair##*:}")"
+      [ -n "$_want" ] && [ "$_have" = "$_want" ] || drift="$drift ${_pair%%:*}"
+    done
+    [ -z "$drift" ] || die "refusing --repair: the installed executable(s)${drift} are not the recorded release $CURRENT_VERSION (a newer/corrected or development build). Repair would REPLACE them with $CURRENT_VERSION's material, which can reintroduce defects fixed since (e.g. I-54, the IPv6 neighbour-discovery break shipped in v1.3.1-rc.2). Move forward with 'update.sh --version <newer release>', or restore the recorded release deliberately with --force-repair-recorded-release. Nothing was changed."
+  fi
   log "REPAIR mode: reconciling the currently-installed release $TARGET_VERSION (re-fetching and re-verifying its own release material; never switching version)."
 elif [ "$RESOLVE_LATEST" -eq 1 ]; then
   [ -z "$TARGET_VERSION" ] || die "--latest and --version are mutually exclusive."
