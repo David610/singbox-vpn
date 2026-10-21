@@ -23,3 +23,5 @@ Source of truth: `/root/host-changes/CHANGES.log` on the host, copied verbatim b
 Also present, not in the log: `/root/venv-probe`, `/root/pw-browsers`, `/root/venv-tests`, `/root/evidence`, `/root/qa-secrets` (0700; QA subscription URLs — delete when done), `/root/backup-pre-install`. Dependency/Rust/Chromium installs: rollback `rustup self uninstall`; `rm -rf` the venv/browser dirs; `apt remove` the packages listed.
 
 Current staging state: published v1.3.1-rc.2 binaries; update.sh/ nftables-egress-isolation.sh from this branch applied; ufw active with `limit OpenSSH`; SSH password login STILL ENABLED.
+
+2026-10-21T13:xx Z `chmod 700 /root/backups; find /root/backups -type f -exec chmod go-rwx {} +; chmod 600 /root/qa-secrets/body.tmp` - secret-bearing backup archives were 0644 (default umask); tightening only, no rollback needed. See docs/handoffs/2026-10-21/CREDENTIAL-AUDIT.md.

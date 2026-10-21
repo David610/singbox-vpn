@@ -1,6 +1,6 @@
 # Release gate report — revision `19e93fd (qualified and installed on staging as a development build)`
 
-**Verdict: FAIL** (computed; mandatory gates: PASS=8, FAIL=1, FLAKY=1, BLOCKED=6, UNVERIFIED=10)
+**Verdict: FAIL** (computed; mandatory gates: PASS=10, FAIL=1, FLAKY=1, BLOCKED=7, UNVERIFIED=8)
 
 ## Source qualification
 
@@ -33,7 +33,7 @@
 | Gate | Mandatory | Status | Evidence / note |
 |---|---|---|---|
 | NET-1 REALITY and Hysteria2 self-tests on the installed build | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/staging-19e93fd/doctor-protocol-19e93fd.txt`. Loopback throwaway clients; not a native client. |
-| NET-2 Tunnel isolation (host-local services unreachable through REALITY/Hysteria2), tested through real tunnels at this revision | yes | **UNVERIFIED** | -. Behavioural test not repeated at this revision this session. |
+| NET-2 Tunnel isolation (host-local services unreachable through REALITY/Hysteria2), tested through real tunnels at this revision | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/staging-19e93fd/c16-isolation-19e93fd.json`. At 19e93fd, through real sing-box clients for REALITY and Hysteria2: own IPv4/IPv6 :22 and the loopback subscription backend are rejected; the control destination stays reachable. Loopback client on the node (server verified). |
 | NET-3 Google hairpin routing, fail-closed and mutations (SIMULATED two-node) | no | **PASS** | `docs/handoffs/2026-10-21/evidence/hairpin/clean-1.json`; `docs/handoffs/2026-10-21/evidence/hairpin/mut-direct-route.json`. Simulation only: proves routing and fail-closed, nothing about any real address. |
 
 ## External-service acceptance
@@ -59,7 +59,8 @@
 |---|---|---|---|
 | SEC-1 Host firewall: default deny, only 443/tcp+udp and 8443 public, SSH rate-limited, v4+v6 | yes | **PASS** | `docs/handoffs/2026-10-21/evidence/security/posture-20261021.txt`. Provider-level firewall not visible from here. |
 | SEC-2 SSH key-only login | yes | **BLOCKED** | `docs/handoffs/2026-10-21/evidence/security/posture-20261021.txt`. Password and root login are on and root has no authorized_keys; needs the owner's public key (OWNER-ACTIONS #2). |
-| SEC-3 Credential audit (logs, git history, artifacts, backups, archives) | yes | **UNVERIFIED** | -. Not performed this session. |
+| SEC-3a Credential audit of the node and the commits to be pushed (live secrets vs logs, history, tmp, evidence, repo; file permissions; log level) | yes | **PASS** | `docs/handoffs/2026-10-21/CREDENTIAL-AUDIT.md`. No live secret found outside its restricted files; loose backup permissions found and fixed. The audit method is the scan tool (labels only). |
+| SEC-3b Credential audit of CI logs, uploaded artifacts and the rc.3 release archives/SBOM | yes | **BLOCKED** | -. Does not exist until CI runs (R1) and a tag is built (R5). |
 
 ## Performance acceptance
 

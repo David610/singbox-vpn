@@ -134,9 +134,11 @@
    "category": "Network acceptance",
    "title": "Tunnel isolation (host-local services unreachable through REALITY/Hysteria2), tested through real tunnels at this revision",
    "mandatory": true,
-   "status": "UNVERIFIED",
-   "evidence": [],
-   "note": "Behavioural test not repeated at this revision this session."
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/evidence/staging-19e93fd/c16-isolation-19e93fd.json"
+   ],
+   "note": "At 19e93fd, through real sing-box clients for REALITY and Hysteria2: own IPv4/IPv6 :22 and the loopback subscription backend are rejected; the control destination stays reachable. Loopback client on the node (server verified)."
   },
   {
    "id": "NET-3",
@@ -242,13 +244,24 @@
    "note": "Password and root login are on and root has no authorized_keys; needs the owner's public key (OWNER-ACTIONS #2)."
   },
   {
-   "id": "SEC-3",
+   "id": "SEC-3a",
    "category": "Security acceptance",
-   "title": "Credential audit (logs, git history, artifacts, backups, archives)",
+   "title": "Credential audit of the node and the commits to be pushed (live secrets vs logs, history, tmp, evidence, repo; file permissions; log level)",
    "mandatory": true,
-   "status": "UNVERIFIED",
+   "status": "PASS",
+   "evidence": [
+    "docs/handoffs/2026-10-21/CREDENTIAL-AUDIT.md"
+   ],
+   "note": "No live secret found outside its restricted files; loose backup permissions found and fixed. The audit method is the scan tool (labels only)."
+  },
+  {
+   "id": "SEC-3b",
+   "category": "Security acceptance",
+   "title": "Credential audit of CI logs, uploaded artifacts and the rc.3 release archives/SBOM",
+   "mandatory": true,
+   "status": "BLOCKED",
    "evidence": [],
-   "note": "Not performed this session."
+   "note": "Does not exist until CI runs (R1) and a tag is built (R5)."
   },
   {
    "id": "PERF-1",
