@@ -179,7 +179,7 @@ stage() {
   if [ -n "$invalid" ]; then kv verdict "INVALID"; kv reason "$invalid"; python3 -I "$(dirname "$0")/interrupt_matrix_report.py" "$KV" >>"$OUTDIR/matrix.jsonl"; echo "stage $N INVALID: $invalid"; return 0; fi
   local base_creds base_bins base_ver leaks0 free_root0 free_tmp0
   base_creds=$(creds); base_bins=$(binsig); base_ver=$(ver); leaks0=$(tmp_leaks); free_root0=$(free_mb /); free_tmp0=$(free_mb /tmp)
-  kv baseline_version "$base_ver"; kv manifest_version_baseline "$(manifest_ver)"; kv baseline_bins "$base_bins"; kv free_root_mb_start "$free_root0"; kv free_tmp_mb_start "$free_tmp0"
+  kv backups_baseline "$(find /etc/vpn/backups -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)"; kv baseline_version "$base_ver"; kv manifest_version_baseline "$(manifest_ver)"; kv baseline_bins "$base_bins"; kv free_root_mb_start "$free_root0"; kv free_tmp_mb_start "$free_tmp0"
   # --- run the updater and kill it at the marker
   local LOG="$D/update.log"; : >"$LOG"
   # Launch the updater script DIRECTLY (no wrapper shell): $PID is then the updater itself, so a "main only" kill

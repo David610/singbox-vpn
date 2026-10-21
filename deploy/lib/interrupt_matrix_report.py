@@ -55,7 +55,7 @@ if verdict != "INVALID":
         need(kv.get("orphans_after_recover", "0") == "0" and kv.get("orphans_end", "0") == "0", "orphan updater/cosign processes remain")
         need(kv.get("lock_after_recover", "free") == "free" and kv.get("lock_end", "free") == "free", "update lock still held")
         need(kv.get("leftover_tmp_after_recover", "0") == "0", "temporary manifest or staging leftovers after recovery")
-        need(kv.get("backups_after_recover", "0") == "0", "transaction backups left in /etc/vpn/backups after recovery")
+        need(kv.get("backups_after_recover", "0") == kv.get("backups_baseline", "0"), "transaction backups left in /etc/vpn/backups after recovery (count differs from the baseline)")
         need(kv.get("repair_rc", "0") == "0" and kv.get("repair_bins_same", "yes") == "yes" and kv.get("creds_repair", "same") == "same", "repair after recovery failed or changed the release/credentials")
         need(kv.get("services_repair", "all-active") == "all-active" and kv.get("doctor_fails_repair", "0") == "0", "unhealthy after repair")
         need(kv.get("services_after_recover") == "all-active" and kv.get("doctor_fails_after_recover") == "0", "services/doctor unhealthy after recovery")

@@ -10,7 +10,7 @@ BASE = {"harness_sha": "h", "harness_sha_end": "h", "stage": "3", "kill_fired": 
         "expected_committed": "no", "observed_committed": "no", "manifest_version_baseline": "v1.3.0", "manifest_version_after_kill": "v1.3.0",
         "manifest_version_after_recover": "v1.3.0", "manifest_matches_bins_after_recover": "yes", "recovery_decision": "rolled_back_or_none",
         "orphans_after_recover": "0", "orphans_end": "0", "lock_after_recover": "free", "lock_end": "free", "leftover_tmp_after_recover": "0",
-        "backups_after_recover": "0", "repair_rc": "0", "repair_bins_same": "yes", "creds_repair": "same", "services_repair": "all-active", "doctor_fails_repair": "0",
+        "backups_after_recover": "3", "backups_baseline": "3", "repair_rc": "0", "repair_bins_same": "yes", "creds_repair": "same", "services_repair": "all-active", "doctor_fails_repair": "0",
         "tmp_leaks_delta": "0", "free_root_mb_end": "20000", "free_tmp_mb_end": "1900"}
 
 FWD = dict(expected_committed="yes", observed_committed="yes", manifest_version_after_kill="v1.3.1", manifest_version_after_recover="v1.3.1",
@@ -70,7 +70,7 @@ class Report(unittest.TestCase):
     def test_rollback_must_restore_the_baseline_manifest(self):
         self.assertEqual(verdict(manifest_version_after_recover="v1.3.1")[0], "FAIL")
     def test_orphans_locks_leftovers_and_backups_fail(self):
-        for k, bad in (("orphans_after_recover", "1"), ("orphans_end", "2"), ("lock_end", "HELD"), ("leftover_tmp_after_recover", "1"), ("backups_after_recover", "1")):
+        for k, bad in (("orphans_after_recover", "1"), ("orphans_end", "2"), ("lock_end", "HELD"), ("leftover_tmp_after_recover", "1"), ("backups_after_recover", "4")):
             self.assertEqual(verdict(**{k: bad})[0], "FAIL", k)
     def test_repair_after_recovery_must_work_and_keep_identity(self):
         for k, bad in (("repair_rc", "1"), ("repair_bins_same", "NO"), ("creds_repair", "CHANGED"), ("doctor_fails_repair", "1")):
