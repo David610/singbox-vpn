@@ -58,3 +58,20 @@ Until C1-C8 pass, Shorts remain `UNVERIFIED`/`BLOCKED` and no user is moved to t
 * Render-level invariants: `crates/compat-config/tests/relay_role_policy.rs` (`exit_hairpin_*`, 13 invariants doc test).
 * Two-hop real-sing-box system tests (loopback dummy interface, S1-S17) including fail-closed and wrong-credential cases.
 * Simulated two-node hairpin test: see `docs/operations/HAIRPIN_SIMULATION.md` (if present) for its status.
+
+## E. Executable form of A1/A2/C1/C2 (prepared 2026-10-21; **not run against any host**)
+`deploy/lib/hairpin_target_suitability.py` (13 hermetic tests, mutation-checked) implements exactly the read-only steps above:
+
+    python3 deploy/lib/hairpin_target_suitability.py plan      --target root@HOST       # prints every command, executes nothing
+    python3 deploy/lib/hairpin_target_suitability.py inspect   --target root@HOST --authorized-by-owner --out inspect.json   # A1 (11 fixed read-only commands)
+    python3 deploy/lib/hairpin_target_suitability.py probe     --target root@HOST --authorized-by-owner --out run1.json      # A2 + same-run control
+    python3 deploy/lib/hairpin_target_suitability.py aggregate run1.json run2.json run3.json                                # C1 needs 3 runs >= 1 h apart
+
+* Refuses to touch a host without `--authorized-by-owner`; the remote commands are constants checked against a deny-list of
+  mutating verbs; the tunnel step uses `ssh -N` (no remote command); strict host keys, BatchMode, no forwarding except the one SOCKS.
+* Reports: egress IPv4/IPv6 as the world sees them (through the tunnel and for the control), ICMP latency, sshd posture
+  (password login is flagged), firewall/listeners, restart hazards (INV-10), doctor FAIL/WARN, capacity, logging level, and per-class Shorts results.
+* A target pass is only trusted if the SAME run's control (the refused staging path) fails; a normal-video pass never substitutes for Shorts;
+  a single run is never "suitable". The tool explicitly lists C3-C8 as NOT covered (they stay UNVERIFIED).
+* Minimum owner decision if the historical Selectel node is unsuitable: authorize ONE existing, owner-controlled node whose IPv4
+  (and, only if the hairpin will use it, IPv6) passes C1/C2 - no new third-party service, WARP or residential proxy (INV-7).
