@@ -28,3 +28,12 @@ client closed before Finished (`readClientFinished() err: EOF`), and sing-box re
 own relay succeeding, so this does not look like a REALITY/decoy interoperability defect - but that is a reading of one trace.
 Next evidence step: the failure message now classifies each such line, so the next occurrence says whether it was a client-abandoned
 authenticated handshake or something else. Status stays FLAKY until the exit rule is met.
+
+**I-75 update (2026-10-21, later).** Exit rule 1 met: the mechanism is reproduced deterministically (a healthy unit whose `is-active` takes 150 ms
+was declared failed because the verify budget was a wall-clock deadline the subprocess latency consumed). Rule 2 met: the budget is now a count
+of observations, with a test that fails on the old logic and 3 neighbours pinning the bound. Rule 3 NOT yet met (three clean qualification
+runs on distinct revisions), so the state stays FLAKY and the gate stays FLAKY.
+
+**I-71 update.** Five reproduction conditions tried, none produced the failure; the client log and host load are now in the failure message.
+The decoy test's assertion is intentionally unchanged: ignoring "authenticated, then the client closed" could hide a client that rejects the
+12 KB certificate flight, which is exactly the historical defect class.

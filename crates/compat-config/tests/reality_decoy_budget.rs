@@ -69,6 +69,15 @@ fn generate_reality_keypair(sb: &common::SingBox) -> (String, String) {
     )
 }
 
+/// `loadavg` and CPU count at the moment of the failure: contention is the first thing to rule in or out for a timing-shaped flake.
+fn host_load() -> String {
+    let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_else(|_| "(unavailable)".into());
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    format!("{} cpus={cpus}", load.trim())
+}
+
 /// Diagnostic only (the assertions are unchanged): for every `processed invalid connection`, say what that
 /// connection did, so a failure classifies itself instead of needing the whole trace read by hand.
 /// sing-box reports ANY handshake that does not complete that way -- a client that authenticated, received the
@@ -200,6 +209,9 @@ fn historically_oversized_decoy_certificate_remains_usable() {
     client_cfg["inbounds"] = serde_json::json!([{
         "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": mixed_port,
     }]);
+    // Diagnostic only: the client's own trace log goes into the failure message, so "the client closed before Finished"
+    // (I-71) can be explained from the client's side instead of guessed from the server's.
+    client_cfg["log"] = serde_json::json!({ "level": "trace", "timestamp": true });
     let probe_url = format!("http://127.0.0.1:{}/", target.port);
     for ob in client_cfg["outbounds"].as_array_mut().unwrap() {
         if ob["type"] == "urltest" {
@@ -267,7 +279,10 @@ fn historically_oversized_decoy_certificate_remains_usable() {
     assert!(
         !saw_invalid,
         "the historically over-budget decoy unexpectedly produced \
-         `processed invalid connection` again.\n--- diagnosis ---\n{}\n--- server log ---\n{server_log_text}",
-        diagnose_invalid_connections(&server_log_text)
+         `processed invalid connection` again.\n--- diagnosis ---\n{}\n--- host load (loadavg, cpus) ---\n{}\n\
+         --- client log ---\n{}\n--- server log ---\n{server_log_text}",
+        diagnose_invalid_connections(&server_log_text),
+        host_load(),
+        common::read_log(&client_log)
     );
 }
