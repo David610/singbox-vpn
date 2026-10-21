@@ -23,6 +23,43 @@ STATE_JS = """() => {const v=[...document.querySelectorAll('video')].find(x=>x.r
   unavailable:(document.body.innerText||'').toLowerCase().includes('unavailable')}}"""
 
 
+import re
+
+SHORT_PATH = re.compile(r"^/shorts/([A-Za-z0-9_-]{11})$")
+
+
+def extract_short_id(path: str) -> str | None:
+    """The id of a genuine Shorts feed position, from location.pathname; anything else (watch pages, redirects) is None."""
+    m = SHORT_PATH.match(path or "")
+    return m.group(1) if m else None
+
+
+def discover(ctx, n: int, max_steps: int = 40) -> list[str]:
+    """Collect n distinct genuine Shorts ids by walking the Shorts feed of THIS egress path. No static id list to rot.
+    The feed is a plain page load: it works even from an address YouTube refuses media to, so discovery never decides a verdict."""
+    ids: list[str] = []
+    if n <= 0:
+        return ids
+    page = ctx.new_page()
+    try:
+        page.goto("https://m.youtube.com/shorts", wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(3000)
+        for _ in range(max_steps):
+            sid = extract_short_id(page.evaluate("location.pathname"))
+            if sid and sid not in ids:
+                ids.append(sid)
+            if len(ids) >= n:
+                break
+            page.mouse.wheel(0, 900)
+            page.keyboard.press("ArrowDown")
+            page.wait_for_timeout(1800)
+    except Exception:  # noqa: BLE001 - discovery is best effort; the caller falls back to the corpus
+        pass
+    finally:
+        page.close()
+    return ids
+
+
 def one(ctx, url: str) -> dict:
     page = ctx.new_page()
     media = {"responses": 0, "bytes": 0, "status": {}}
@@ -58,6 +95,7 @@ def main() -> int:
     ap.add_argument("--label", required=True, help="path label, e.g. direct-ipv4-domain")
     ap.add_argument("--shorts", nargs="*", default=["sAcElROnYIE", "NlHemkN8xq4", "GJVO2DrTqUY"])
     ap.add_argument("--videos", nargs="*", default=["jNQXAC9IpQU", "aqz-KE-bpKQ"])
+    ap.add_argument("--discover", type=int, default=0, help="also walk the Shorts feed and test this many discovered ids")
     ap.add_argument("--trials", type=int, default=1)
     ap.add_argument("--out")
     ap.add_argument("--channel", default="chromium")
@@ -70,7 +108,8 @@ def main() -> int:
         for trial in range(1, a.trials + 1):
             ctx = br.new_context(**p.devices["iPhone 13"], locale="en-US", timezone_id="Europe/Berlin")
             ctx.add_cookies([CONSENT])
-            for s in a.shorts:
+            found = discover(ctx, a.discover)
+            for s in list(dict.fromkeys([*a.shorts, *found])):
                 rows.append({"kind": "short", "trial": trial, **one(ctx, f"https://m.youtube.com/shorts/{s}")})
             for v in a.videos:
                 rows.append({"kind": "video", "trial": trial, **one(ctx, f"https://m.youtube.com/watch?v={v}")})
