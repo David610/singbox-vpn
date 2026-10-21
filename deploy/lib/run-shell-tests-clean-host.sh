@@ -38,6 +38,8 @@ for parent in "${!UPPER[@]}"; do
   mount -t overlay overlay -o "lowerdir=$parent,upperdir=$up,workdir=${up/up/wk}" "$parent"
 done
 cd "$REPO_ROOT"
+# shellcheck source=deploy/lib/test-failure-summary.sh
+. "$REPO_ROOT/deploy/lib/test-failure-summary.sh"
 if [ "$#" -gt 0 ]; then tests=("$@"); else tests=(deploy/lib/tests/*.sh); fi
 fails=0; flaky=0
 FLAKE_LOG="${FLAKE_LOG:-/tmp/singbox-vpn-shell-flakes.log}"
@@ -50,7 +52,7 @@ for t in "${tests[@]}"; do
     { echo "=== $(date -u +%FT%TZ) $t"; printf '%s\n' "$out"; } >>"$FLAKE_LOG"
     flaky=$((flaky + 1))
   else
-    echo "FAIL $t"; grep -E 'FAIL|UNEXPECTED|rror' <<<"$out2" | head -8 | sed 's/^/    | /' || true; fails=$((fails + 1))
+    echo "FAIL $t"; test_failure_reason "$out2" | sed 's/^/    | /'; fails=$((fails + 1))
   fi
 done
 echo "clean-host shell test failures: $fails of ${#tests[@]} (flaky, passed on retry: $flaky)"

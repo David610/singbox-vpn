@@ -2,7 +2,7 @@
 """Build docs/handoffs/2026-10-20/issue-registry.{json,md} from the 2026-10-15
 audit (carried issues, history preserved there) plus this session's issues
 (NEW below). States: CONFIRMED_OPEN IN_PROGRESS FIXED_IN_BRANCH CI_VERIFIED
-SERVER_VERIFIED DEVICE_VERIFIED PRODUCTION_VERIFIED BLOCKED UNVERIFIED.
+SERVER_VERIFIED DEVICE_VERIFIED PRODUCTION_VERIFIED BLOCKED UNVERIFIED FLAKY.
 A carried issue keeps its audit status text; it is NOT promoted here."""
 import json
 import sys
@@ -163,9 +163,40 @@ NEW = [
       "deploy/lib/hairpin_simulation.py: real vpn-admin renderer + real sing-box in a throwaway netns; 22 checks (whole domain set via the target, lookalikes stay direct, target down fails closed with no direct fallback, recovery, wrong credential) and two mutations that must fail; wired into CI",
       "evidence/hairpin/clean-22-of-22.json; mutation-*-must-fail.json", "yes",
       "SIMULATED: proves routing and fail-closed only, nothing about any real address's YouTube acceptance (C1-C8 in HAIRPIN_TARGET_QUALIFICATION.md). Verified by local runs (22/22; both mutations fail); the CI job was added but has NOT executed yet (nothing is pushed)"),
+    n("I-69", "high", "Shorts monitor state machine (shorts_health.py)", "FIXED_IN_BRANCH",
+      "one shared streak counter was advanced by runs that produced NO media evidence (probe could not start, too few Shorts, path down) as well as by real refusals: a broken probe followed by the first real refusal read as streak 2 and went straight to DEGRADED (policy: consecutive MEDIA failures), and a HARNESS alert at a level suppressed the egress alert at the same level",
+      "separate media and no-evidence streaks (a run without evidence leaves the media streak untouched; a media failure ends the other streak; OK clears both), per-class alert dedup, media streak expires after 3 h",
+      "deploy/lib/tests/test_shorts_health.py: 8 new tests red before / green after; 3 mutations (class collapse, shared dedup, no expiry) each fail them; the old test that asserted the mixed count was wrong and was replaced", "no",
+      "found live on staging (probe had no playwright: UNVERIFIED then a real refusal -> DEGRADED at the first refusal); the fix is committed but the installed staging tree still runs the previous monitor until the next verified rebuild; recovery to HEALTHY with a real good egress remains unverified",
+      "docs/handoffs/2026-10-21/evidence/monitor-live-*.jsonl; shorts-health.jsonl on staging"),
+    n("I-70", "medium", "Shorts monitor lifecycle", "CONFIRMED_OPEN",
+      "the monitor is opt-in and nothing in install/update/repair deploys, refreshes or checks it: on staging its unit had been hand-edited to run from a scratch checkout (/root/monitor-src/<old commit>) and the probe's playwright/browser prerequisite was undocumented, so it ran as UNVERIFIED/HARNESS (exit 3, visibly, never HEALTHY)",
+      "docs: prerequisite env file and the rule that the unit must point at the installed tree; staging unit reinstalled from /opt/singbox-vpn with /etc/vpn/shorts-health.env",
+      "", "no",
+      "no automated check that the monitor timer is active, that its last run is recent, or that its unit matches the shipped one; an update can leave an old monitor in place. Needs an owner decision on whether the installer should deploy it",
+      "this session's staging restore; deploy/lib/monitoring/README.md"),
+    n("I-71", "medium", "crates/compat-config tests/reality_decoy_budget.rs", "FLAKY",
+      "historically_oversized_decoy_certificate_remains_usable failed once in the pre-install test phase of a staging --dev-rebuild (2026-10-21 10:40:53Z): the server logged `processed invalid connection` for one connection",
+      "no product change: the saved trace shows connection 49610 AUTHENTICATED, the server sent the whole certificate flight, then `readClientFinished() err: EOF` - the client closed before Finished (a probe/urltest connection abandoned 5 ms in) while the test's own relay connection succeeded. The test's assertion treats any such line as a decoy-budget regression, which is a likely false assumption, but the reason the client abandoned it is NOT established. Added diagnosis to the failure message (assertions unchanged) so a recurrence classifies itself",
+      "reality_decoy_budget.rs::diagnosis_recognises_a_client_abandoned_authenticated_handshake (diagnostic only)", "no",
+      "not reproduced: 25/25 isolated, 30/30 under CPU load, 6/6 full compat-config suite runs, and the same suite passed in the 268808d qualification. Release policy: docs/handoffs/2026-10-21/FLAKY-POLICY.md",
+      "docs/handoffs/2026-10-21/evidence/staging-268808d/candidate-268808d-devrebuild.log (first failure, kept)"),
+    n("I-72", "low", "admin/doctor", "FIXED_IN_BRANCH",
+      "doctor WARNed about systemd-networkd's DHCPv4 client socket (UDP 68 bound to the interface address) as an unexpected public listener",
+      "narrow INFO case: UDP, port 68, owner systemd-network, interface-bound address (addr%ifname); every other unexpected listener still WARNs",
+      "apps/admin public_surface_tests::dhcpv4_client_socket_* and udp_68_is_only_benign_*: 2 mutations (exemption removed, owner check dropped) each fail them", "no",
+      "the installed staging binary predates this change, so the live doctor still shows the WARN until the next rebuild", "ss output on staging; netplan DHCP=ipv4"),
+    n("I-73", "medium", "process discovery/termination in scripts", "FIXED_IN_BRANCH",
+      "command-line-substring process matching (pgrep -f) can return the calling shell, a watcher or an unrelated process: the benchmark re-found the client it had itself started, uninstall decided CRITICAL residue from an unanchored match, and in this work a watcher loop reported a finished run as running",
+      "deploy/lib/proc-safe.sh (anchored full-argv match, never the caller/ancestors/PID 1, identity-verified kill); benchmark uses the PID it started; uninstall uses the helper; the existing no-broad-kill guard now also rejects unanchored pgrep -f",
+      "deploy/lib/tests/test-proc-safe.sh (protected-PID checks run in a disposable tree) and test-no-broad-process-kills.sh; mutations: substring match, removed self-guard, reintroduced pgrep -f", "no",
+      "the interruption-matrix harness already tracked exact PIDs and was not changed; operator-side ad-hoc commands are outside the repo", ""),
+    n("I-74", "low", "shell fixture tests (temp hygiene)", "CONFIRMED_OPEN",
+      "a clean-host shell qualification run left 92 mktemp directories (91 empty) in /tmp; the test that creates them is not identified",
+      "", "", "no", "tmpfs only (7 MB), cleared at reboot; harmless but unbounded growth across runs would not be", "ls /tmp after the 268808d qualification"),
     n("I-51", "high", "Hiddify iOS (client)", "UNVERIFIED",
       "profile JSON missing from Library/Caches/Working/configs (carried as I-08); upstream hiddify-app#2372 open, no fix",
-      "upstream proposal in docs/clients/HIDDIFY_IOS.md; server cannot fix", "", "yes",
+      "upstream proposal in docs/clients/HIDDIFY_IOS.md; server cannot fix. Control experiment added (iPhone procedure step 7b) to locate the failure boundary between an app-wide fault and a profile-specific one", "", "yes",
       "trigger on the owner's iPhone unconfirmed"),
 ]
 
@@ -197,7 +228,7 @@ def main():
     reg = {"schema_version": 1, "generated_for": "2026-10-20 staging remediation", "new": NEW, "carried": carried}
     json.dump(reg, open(OUT + ".json", "w"), indent=1)
     md = ["# Issue registry (generated from issue-registry.json — do not edit by hand)\n",
-          "States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFIED, DEVICE_VERIFIED, PRODUCTION_VERIFIED, BLOCKED, UNVERIFIED.\n",
+          "States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFIED, DEVICE_VERIFIED, PRODUCTION_VERIFIED, BLOCKED, UNVERIFIED, FLAKY (a failure that was observed and not reproduced stays FLAKY; a clean retry never erases it, see docs/handoffs/2026-10-21/FLAKY-POLICY.md).\n",
           "## New / re-assessed this session\n", "| ID | Sev | Component | State | Title | Regression test | Device | Remaining risk |", "|---|---|---|---|---|---|---|---|"]
     for r in NEW:
         md.append(f"| {r['id']} | {r['severity']} | {r['component']} | {r['state']} | {r['title']} | {r['regression_test'] or '-'} | {r['device_required']} | {r['remaining_risk'] or '-'} |")
