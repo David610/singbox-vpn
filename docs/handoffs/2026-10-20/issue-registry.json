@@ -510,6 +510,19 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-75",
+   "severity": "medium",
+   "component": "apps/admin service.rs tests",
+   "state": "FLAKY",
+   "title": "a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit failed once, in the pre-install test phase of a staging --dev-rebuild (2026-10-21, reload 15 of 20): the updater correctly installed nothing",
+   "fix": "no product change. Hypothesis (from code reading, NOT reproduced): reload_and_verify needs 3 consecutive is-active spawns within settle*10 (200 ms at the test's 20 ms settle); each spawn is a real fork/exec of a bash script, so one iteration can miss the window on a loaded host - the sibling test's comment records the same effect. The failure message previously dropped the underlying error; it now includes it, so a recurrence says whether it was the verify window ('did not remain active') or the start limiter ('repeated too quickly', a product defect)",
+   "regression_test": "the test itself (message instrumentation only; assertion unchanged)",
+   "device_required": "no",
+   "remaining_risk": "not reproduced: 15/15 idle, 30/30 under 6 CPU burners, 10/10 full admin-suite runs under 4 burners, and the same test passed in the 625a34f/3570927 qualifications. Release policy: docs/handoffs/2026-10-21/FLAKY-POLICY.md",
+   "evidence": "docs/handoffs/2026-10-21/evidence/staging-3570927/devrebuild-attempt1-FAILED.log (first failure, kept)",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-51",
    "severity": "high",
    "component": "Hiddify iOS (client)",

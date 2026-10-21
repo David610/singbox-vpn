@@ -390,9 +390,14 @@ exit 1
             .with_systemctl_binary(systemctl)
             .with_settle(Duration::from_millis(20));
         for i in 1..=20 {
+            // Report WHY, not just that: "Start request repeated too quickly" is the limiter (a product defect);
+            // "did not remain active" is the verify window (3 consecutive is-active spawns within settle*10) being
+            // missed on a loaded host (test timing).
+            let r = mgr.reload_and_verify();
             assert!(
-                mgr.reload_and_verify().is_ok(),
-                "reload {i} of a rapid burst was refused by the start-rate limiter"
+                r.is_ok(),
+                "reload {i} of a rapid burst was refused by the start-rate limiter (error: {:?})",
+                r.err()
             );
         }
     }
