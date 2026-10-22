@@ -110,3 +110,9 @@ evidence only. It says nothing about a deployed host, a device or Shorts.
 | Backup destination and dedicated backup recipient | NOT MET (owner) |
 | Owner authorization to install and provision 3 new identities | NOT GIVEN |
 | DNS for fin1.xn----8sba1cvaif4e.com points at this host | to be checked immediately before install |
+
+## Session 4 (2026-10-22): pre-install review
+- `cad9f64`: backup hardening. It refuses a writable env file, validates the sftp target, and adds `prune`, `run`, and systemd timer and path units. 30/30 on fin1.
+- `92ba6a4`: I-81 guard on the installer and updater source builds. **CI 22/22 green, run 39812810442.**
+- `PRE-INSTALL-CHECKLIST.md`: owner actions A1–A7, the install-source review, the identity plan (secrets suppressed during install; owner-run commands deliver the links) and the production-readiness gates.
+- Security observation: 5 successful root **password** logins since the rebuild, from 78.109.69.17 and 185.194.184.53. The owner has been asked to confirm (A3).
