@@ -640,6 +640,19 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-93",
+   "severity": "critical",
+   "component": "host trust tooling (issue #167 / I-86)",
+   "state": "BLOCKED",
+   "title": "no tested way existed for the owner to collect and read sshd authentication evidence privately, flag guessing/root-password patterns, or record a host-trust decision that is checked for self-consistency",
+   "fix": "deploy/lib/ssh-auth-evidence.sh (read-only; raw data in a new 0700 dir; redacted stdout), ssh_auth_summary.py (S1.. labels, anomaly hints), host_trust_decision.py (TRUSTED refused if any session is NOT_OWNER/UNKNOWN or no snapshot), docs/qualification/2026-10-22/HOST-TRUST-DECISION.md",
+   "regression_test": "deploy/lib/tests/test_ssh_auth_summary.py, test-ssh-auth-evidence.sh, test_host_trust_decision.py (synthetic documentation-range logs only; the IPv6 matcher bug the tests found is fixed)",
+   "device_required": "no",
+   "remaining_risk": "BLOCKED on the owner: five historical root-password logins unconfirmed; host trust UNKNOWN; the tools have never run against a real host; no host was accessed or changed",
+   "evidence": "tests only",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-92",
    "severity": "high",
    "component": "CI required-check semantics (issue #170)",
