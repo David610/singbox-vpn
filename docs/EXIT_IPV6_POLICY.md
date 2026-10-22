@@ -60,6 +60,9 @@ the section. An existing `deployment.toml` is never rewritten, so a repair or an
 update keeps whatever the host already declares, and a host installed before
 v1.3.1 keeps its policy (an absent section still means `allow`): run
 `vpn-admin egress set reject_google` on such a host if Shorts do not play.
+`vpn-admin doctor` reports such an exit (public IPv6 present, no `[egress]` section) as a
+`WARN` in layer L2 and changes nothing; it never applies the policy by itself, because
+a policy change alters live egress and needs a deliberate, authorized decision.
 
 ```toml
 [egress]

@@ -3217,6 +3217,159 @@ fn doctor_l4_live_check_fails_when_running_subscription_process_is_stale() {
     );
 }
 
+/// I-34: `vpn-subscription` caches its endpoints (including the Hysteria2
+/// port) at startup. After the operator changes `[hysteria2] listen_port` and
+/// runs `render-config`, sing-box is restarted onto the new port but the
+/// still-running subscription service kept advertising the old one.
+#[cfg(unix)]
+struct SubscriptionRefreshHarness {
+    dir: tempfile::TempDir,
+    cfg_path: std::path::PathBuf,
+    sub_port: u16,
+    log: std::path::PathBuf,
+    systemctl: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl SubscriptionRefreshHarness {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let singbox = fake_singbox(dir.path(), false);
+        let sub_port = free_port();
+        let cfg_path =
+            write_deployment_toml_with_singbox_and_sub_port(dir.path(), &singbox, sub_port);
+        let systemctl = fake_systemctl(dir.path());
+        let log = dir.path().join("systemctl.log");
+        let this = Self {
+            dir,
+            cfg_path,
+            sub_port,
+            log,
+            systemctl,
+        };
+        this.admin().arg("init").assert().success();
+        this.admin().arg("render-config").assert().success();
+        std::fs::write(&this.log, b"").unwrap();
+        this
+    }
+
+    fn admin(&self) -> Command {
+        let mut cmd = admin(self.dir.path(), &self.cfg_path);
+        cmd.env("SINGBOX_VPN_SYSTEMCTL", &self.systemctl)
+            .env("SYSTEMCTL_LOG", &self.log);
+        cmd
+    }
+
+    fn start_subscription(&self) -> KillOnDrop {
+        let child = spawn_subscription_binary(&self.cfg_path);
+        let guard = KillOnDrop(child);
+        assert!(
+            wait_for_local_port(self.sub_port, std::time::Duration::from_secs(5)),
+            "real subscription binary never bound 127.0.0.1:{}",
+            self.sub_port
+        );
+        guard
+    }
+
+    fn change_hysteria2_port(&self, port: u16) {
+        let text = std::fs::read_to_string(&self.cfg_path).unwrap();
+        std::fs::write(
+            &self.cfg_path,
+            text.replace(
+                "[hysteria2]\nlisten_port = 443",
+                &format!("[hysteria2]\nlisten_port = {port}"),
+            ),
+        )
+        .unwrap();
+    }
+
+    fn systemctl_calls(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn render_config_restarts_a_running_subscription_service_that_advertises_a_stale_port() {
+    let h = SubscriptionRefreshHarness::new();
+    let _running = h.start_subscription();
+    h.change_hysteria2_port(4443);
+
+    let out = h.admin().arg("render-config").assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    let calls = h.systemctl_calls();
+    assert!(
+        calls.contains("reload-or-restart vpn-subscription"),
+        "a stale subscription service must be restarted after render-config; systemctl calls:\n{calls}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        calls.contains("reload-or-restart sing-box"),
+        "sing-box is still restarted onto the new config:\n{calls}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn render_config_leaves_a_current_subscription_service_alone() {
+    let h = SubscriptionRefreshHarness::new();
+    let _running = h.start_subscription();
+
+    h.admin().arg("render-config").assert().success();
+    let calls = h.systemctl_calls();
+    assert!(
+        !calls.contains("vpn-subscription"),
+        "no restart when the running service already matches (no needless churn):\n{calls}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn render_config_does_not_restart_the_subscription_service_repeatedly_for_the_same_state() {
+    let h = SubscriptionRefreshHarness::new();
+    let _running = h.start_subscription();
+    h.change_hysteria2_port(4443);
+
+    // The fake systemctl does not really restart the process, so it stays
+    // stale: exactly the "restart did not help" situation a timer would loop on.
+    h.admin().arg("render-config").assert().success();
+    let first = h
+        .systemctl_calls()
+        .matches("reload-or-restart vpn-subscription")
+        .count();
+    assert_eq!(first, 1);
+    for _ in 0..3 {
+        let out = h.admin().arg("render-config").assert().success();
+        let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(
+            stderr.contains("not restarting it again"),
+            "the operator must be told why, loudly:\n{stderr}"
+        );
+    }
+    assert_eq!(
+        h.systemctl_calls()
+            .matches("reload-or-restart vpn-subscription")
+            .count(),
+        1,
+        "a restart that does not fix the mismatch must not be repeated on every reconcile"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn render_config_does_not_fail_or_restart_when_the_subscription_service_is_unreachable() {
+    let h = SubscriptionRefreshHarness::new();
+    // Nothing is listening on the subscription port.
+    h.change_hysteria2_port(4443);
+
+    h.admin().arg("render-config").assert().success();
+    let calls = h.systemctl_calls();
+    assert!(
+        !calls.contains("vpn-subscription"),
+        "an unreachable service cannot be proven stale, so it is not restarted:\n{calls}"
+    );
+}
+
 /// `public_host` in the default test fixture (`vpn.example.com`) does
 /// not resolve — this is deterministic in both a networked and a fully
 /// offline sandbox (either NXDOMAIN or "no network"), and either way it

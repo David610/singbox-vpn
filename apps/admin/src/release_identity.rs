@@ -95,7 +95,11 @@ fn source_identity(manifest: &Value, tag: &str) -> String {
             .filter(|v| !v.is_empty())
             .map(|v| v.chars().take(len).collect::<String>())
     };
-    match (short("source_commit", 12), short("source_tree_sha256", 12)) {
+    // A local-tree install records HEAD, but a tree with uncommitted changes
+    // is not that commit: say so rather than overstate the provenance (I-49).
+    let dirty = manifest["source_tree_dirty"].as_str() == Some("true");
+    let commit = short("source_commit", 12).map(|c| if dirty { format!("{c}+dirty") } else { c });
+    match (commit, short("source_tree_sha256", 12)) {
         (Some(commit), Some(tree)) => format!("{base} @ {commit} (source tree {tree})"),
         (Some(commit), None) => format!("{base} @ {commit}"),
         (None, Some(tree)) => format!("{base} (source tree {tree})"),
@@ -502,6 +506,34 @@ mod tests {
         assert!(
             !msg.contains("0123456789abcdef0123"),
             "only a short commit is shown: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_dirty_local_tree_install_is_marked_so_the_commit_is_not_overstated() {
+        let mut m: Value =
+            serde_json::from_str(&manifest("main", Some(H_ADMIN), Some(H_SUB))).unwrap();
+        m["source_commit"] = "0123456789abcdef0123456789abcdef01234567".into();
+        m["source_tree_dirty"] = "true".into();
+        let (_, msg) = evaluate(
+            Some(&m.to_string()),
+            "1.3.1",
+            installed(H_ADMIN, H_SUB),
+            &running(H_ADMIN),
+            false,
+        );
+        assert!(msg.contains("main @ 0123456789ab+dirty"), "{msg}");
+        m["source_tree_dirty"] = "false".into();
+        let (_, msg) = evaluate(
+            Some(&m.to_string()),
+            "1.3.1",
+            installed(H_ADMIN, H_SUB),
+            &running(H_ADMIN),
+            false,
+        );
+        assert!(
+            msg.contains("main @ 0123456789ab") && !msg.contains("+dirty"),
+            "{msg}"
         );
     }
 

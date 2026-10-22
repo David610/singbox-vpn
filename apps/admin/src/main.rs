@@ -2437,6 +2437,9 @@ fn regenerate_singbox_config(cfg: &DeploymentConfig, require_live_apply: bool) -
 /// that does with this distinction.
 fn cmd_render_config(cfg: &DeploymentConfig, require_applied: bool) -> Result<()> {
     let applied = regenerate_singbox_config(cfg, false)?;
+    if applied {
+        refresh_stale_subscription_service(cfg);
+    }
     if !applied && require_applied {
         bail!(
             "reconciliation was attempted (the rendered sing-box config differs from what's \
@@ -2447,6 +2450,97 @@ fn cmd_render_config(cfg: &DeploymentConfig, require_applied: bool) -> Result<()
         );
     }
     Ok(())
+}
+
+/// What the RUNNING `vpn-subscription` process serves compared with what the
+/// current files and `deployment.toml` would make a fresh one serve.
+#[derive(Debug, PartialEq, Eq)]
+enum SubscriptionFreshness {
+    Current,
+    /// The live fingerprint differs from a fresh render.
+    Stale {
+        expected: String,
+    },
+    /// Could not be observed (service down, unexpected reply, missing keys).
+    /// Not proof of staleness, so nothing is restarted.
+    Unverifiable,
+}
+
+fn classify_subscription_freshness(
+    live: Option<&str>,
+    expected: Option<String>,
+) -> SubscriptionFreshness {
+    match (live, expected) {
+        (Some(live), Some(expected)) if live == expected => SubscriptionFreshness::Current,
+        (Some(_), Some(expected)) => SubscriptionFreshness::Stale { expected },
+        _ => SubscriptionFreshness::Unverifiable,
+    }
+}
+
+fn subscription_freshness(cfg: &DeploymentConfig) -> SubscriptionFreshness {
+    let expected = load_reality_params(cfg).ok().and_then(|reality| {
+        let hysteria = load_hysteria_params(cfg);
+        served_endpoints(
+            cfg,
+            &reality,
+            hysteria.obfs_password.as_ref().map(|s| s.expose()),
+        )
+        .ok()
+        .map(|endpoints| compat_config::render::endpoints_fingerprint(&endpoints))
+    });
+    let live = http_get_local_json(
+        cfg.subscription.listen_port,
+        "/internal/state-fingerprint",
+        std::time::Duration::from_millis(800),
+    )
+    .ok()
+    .and_then(|json| {
+        json["endpoints_fingerprint_sha256"]
+            .as_str()
+            .map(str::to_string)
+    });
+    classify_subscription_freshness(live.as_deref(), expected)
+}
+
+/// I-34: `vpn-subscription` reads its endpoints (REALITY key, Hysteria2 port,
+/// ...) once at startup. `render-config` restarts sing-box onto changed
+/// settings, so without this the subscription service keeps advertising the old
+/// port or key until someone restarts it (`doctor` L4 reports it, but nothing
+/// fixed it). Restarting it drops no VPN connection. Only a service that the
+/// process itself proves stale is restarted, and at most once per distinct
+/// target state: if a restart does not make the fingerprints agree (e.g. a
+/// version skew), a timer-driven `render-config` must not restart it forever.
+/// Best effort; never fails `render-config`.
+fn refresh_stale_subscription_service(cfg: &DeploymentConfig) {
+    let SubscriptionFreshness::Stale { expected } = subscription_freshness(cfg) else {
+        return;
+    };
+    let stamp = cfg.state_dir.join("subscription-restarted-for.sha256");
+    if std::fs::read_to_string(&stamp).is_ok_and(|done| done.trim() == expected) {
+        eprintln!(
+            "warning: vpn-subscription is still serving state that differs from the current              deployment after a restart for this same state; not restarting it again.              Run `vpn-admin doctor` (L4) and check that vpn-admin and vpn-subscription-svc              are the same release."
+        );
+        return;
+    }
+    let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
+    if !sub_mgr.is_available() || !sub_mgr.is_unit_installed() {
+        eprintln!(
+            "warning: the running vpn-subscription advertises stale endpoints but 
+             vpn-subscription.service cannot be controlled here; restart it manually."
+        );
+        return;
+    }
+    eprintln!(
+        "vpn-subscription is serving stale endpoints; restarting it (no VPN connection is          dropped by this)."
+    );
+    match sub_mgr.reload_and_verify() {
+        Ok(()) => {
+            if let Err(e) = write_secret_file(&stamp, &expected) {
+                eprintln!("warning: could not record the subscription restart: {e}");
+            }
+        }
+        Err(e) => eprintln!("warning: restarting vpn-subscription failed: {e}"),
+    }
 }
 
 /// Read-only report of `deployment.toml`/`users.json`'s on-disk schema
@@ -4453,6 +4547,24 @@ fn print_node_identity(cfg: &DeploymentConfig) {
     }
 }
 
+/// I-19: an exit whose `deployment.toml` predates v1.3.1 has no `[egress]`
+/// section, which means `allow`: literal IPv6 destinations leave over IPv6,
+/// unlike a fresh install (`reject_google`). The installer deliberately never
+/// rewrites an existing deployment.toml, so nothing else tells the operator the
+/// two differ. Report it; never change the policy automatically (see
+/// docs/EXIT_IPV6_POLICY.md: a policy change is a controlled, authorized step).
+fn undeclared_ipv6_policy_notice(cfg: &DeploymentConfig) -> Option<String> {
+    use compat_config::deployment::NodeRole;
+    let has_ipv6 = cfg.public_ipv6.as_deref().is_some_and(|ip| !ip.is_empty());
+    (cfg.role == NodeRole::Exit && cfg.egress.is_none() && has_ipv6).then(|| {
+        "exit has a public IPv6 address but declares no [egress] ipv6_literal policy, which \
+         means `allow`: literal-IPv6 destinations leave over IPv6. Fresh v1.3.1 installs \
+         declare `reject_google`. Nothing was changed. If Shorts fail on this node, review \
+         docs/EXIT_IPV6_POLICY.md and decide whether to run `vpn-admin egress set reject_google`"
+            .to_string()
+    })
+}
+
 /// `doctor`'s relay policy check: proves the document this node renders
 /// (and therefore what `render-config` would apply) forwards only to the
 /// declared exits and ends in a reject. Reports aggregate counts only.
@@ -4468,6 +4580,9 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
             if !compat_config::server::exit_egress_policy_matches(cfg, doc) {
                 report_check(CheckStatus::Fail, "L2", "exit egress policy mismatch: missing, duplicated, shadowed or reordered C-16/IPv6/hairpin rules");
                 *failures += 1;
+            }
+            if let Some(notice) = undeclared_ipv6_policy_notice(cfg) {
+                report_check(CheckStatus::Warn, "L2", notice);
             }
             if let Some(egress) = &cfg.egress {
                 report_check(CheckStatus::Info, "L2", format!("exit ipv6_literal={}: rejection is a proxy close, not proof of native IPv4 retry{}", egress.ipv6_literal.as_str(),
@@ -10167,6 +10282,74 @@ mod ipv6_posture_tests {
 /// pin the bounded-retry policy against an injected resolver so a
 /// regression here fails deterministically, without depending on real
 /// DNS or real wall-clock sleeps.
+#[cfg(test)]
+mod undeclared_ipv6_policy_tests {
+    use super::*;
+
+    fn exit_cfg(extra: &str) -> DeploymentConfig {
+        let text = format!(
+            "schema_version = 2\nnode_id = \"de1\"\nrole = \"exit\"\npublic_host = \"de1.example.test\"\n\
+             subscription_host = \"de1.example.test\"\n{extra}\n[reality]\nlisten_port = 443\n\
+             handshake_server = \"www.example.com\"\n\n[hysteria2]\nlisten_port = 443\n\n\
+             [subscription]\nlisten_port = 9100\n"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        std::fs::write(&path, text).unwrap();
+        DeploymentConfig::load(&path).unwrap()
+    }
+
+    #[test]
+    fn an_exit_with_public_ipv6_and_no_declared_policy_is_flagged_not_changed() {
+        let cfg = exit_cfg("public_ipv6 = \"2001:db8::1\"");
+        assert!(cfg.egress.is_none());
+        let notice = undeclared_ipv6_policy_notice(&cfg).expect("must warn");
+        assert!(
+            notice.contains("vpn-admin egress set reject_google"),
+            "{notice}"
+        );
+        assert!(cfg.egress.is_none(), "doctor must never rewrite the policy");
+    }
+
+    #[test]
+    fn declared_policy_ipv4_only_exit_and_relay_are_not_flagged() {
+        assert!(undeclared_ipv6_policy_notice(&exit_cfg(
+            "public_ipv6 = \"2001:db8::1\"\n[egress]\nipv6_literal = \"reject_google\""
+        ))
+        .is_none());
+        assert!(undeclared_ipv6_policy_notice(&exit_cfg("public_ipv4 = \"192.0.2.1\"")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod subscription_freshness_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_proven_mismatch_is_stale() {
+        let e = || Some("aa".to_string());
+        assert_eq!(
+            classify_subscription_freshness(Some("aa"), e()),
+            SubscriptionFreshness::Current
+        );
+        assert_eq!(
+            classify_subscription_freshness(Some("bb"), e()),
+            SubscriptionFreshness::Stale {
+                expected: "aa".into()
+            }
+        );
+        // Unreachable service or unreadable keys is "cannot verify", never stale.
+        assert_eq!(
+            classify_subscription_freshness(None, e()),
+            SubscriptionFreshness::Unverifiable
+        );
+        assert_eq!(
+            classify_subscription_freshness(Some("aa"), None),
+            SubscriptionFreshness::Unverifiable
+        );
+    }
+}
+
 #[cfg(test)]
 mod hostname_resolution_tests {
     use super::*;
