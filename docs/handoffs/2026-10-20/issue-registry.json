@@ -679,6 +679,19 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-95",
+   "severity": "low",
+   "component": "Rust dependency maintenance (issue #166)",
+   "state": "FIXED_IN_BRANCH",
+   "title": "deferred #161 (bulk lockfile update) and #121 (application rand 0.8 -> 0.10) had no recorded decision, and the yanked yoke-derive 0.8.3 warning was open",
+   "fix": "yoke-derive -> 0.8.4 (PR #176, merged); the release SBOM now covers the shipped agent (I-91, PR #177); docs/qualification/2026-10-22/DEPENDENCIES.md records licenses, MSRV, audit, and the justified NOT_PLANNED decisions for the 71-package bulk update and the rand migration",
+   "regression_test": "audit/test/clippy/release-build/singbox-validate jobs on b3061c5 (run 39855914650); test-release-sbom.sh",
+   "device_required": "no",
+   "remaining_risk": "NOT_PLANNED, not implemented: bulk update (no advisory) and rand 0.10 (credential generation, no benefit). GitHub/Dependabot alert inventory is not readable with the available token",
+   "evidence": "docs/qualification/2026-10-22/DEPENDENCIES.md",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-90",
    "severity": "high",
    "component": "interrupted-update cleanup health gate",
