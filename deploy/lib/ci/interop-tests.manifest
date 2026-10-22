@@ -1,0 +1,15 @@
+# Real-sing-box interoperability tests that CI's singbox-validate job must see PASS, exactly once each.
+# Format: <test file under crates/compat-config/tests without .rs>::<test fn>. Change this file in the same
+# commit as the test; deploy/lib/tests/test_check_interop_manifest.py fails if it drifts from the sources.
+reality_interop::reality_handshake_succeeds_with_matched_keypair
+reality_interop::reality_handshake_fails_with_mismatched_public_key
+reality_interop::server_and_client_configs_agree_on_reality_key_material
+reality_decoy_budget::diagnosis_recognises_a_client_abandoned_authenticated_handshake
+reality_decoy_budget::historically_oversized_decoy_certificate_remains_usable
+hysteria2_interop::hysteria2_handshake_succeeds_with_matched_password
+hysteria2_interop::hysteria2_handshake_fails_with_wrong_password
+hysteria2_interop::hysteria2_obfuscated_handshake_succeeds_with_matched_obfs_password
+hysteria2_interop::hysteria2_handshake_fails_with_wrong_obfs_password
+hysteria2_interop::hysteria2_brutal_bandwidth_config_passes_real_sing_box_check
+hysteria2_interop::hysteria2_default_server_still_serves_clients_that_declare_bandwidth
+hysteria2_interop::hysteria2_bandwidth_caps_keep_standard_clients_working

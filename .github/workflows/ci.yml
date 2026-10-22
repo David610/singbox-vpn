@@ -440,8 +440,9 @@ jobs:
       # them):
       #   1. SINGBOX_VPN_REQUIRE_REAL_INTEROP=1 turns every in-test skip into a
       #      hard panic, so a missing binary/openssl fails the job.
-      #   2. The expected pass counts are asserted below, so a test that is
-      #      deleted, renamed, or silently stops running fails the job too.
+      #   2. The exact test inventory (deploy/lib/ci/interop-tests.manifest) is
+      #      asserted below, so a test that is deleted, renamed, ignored or
+      #      silently stops running fails the job too.
       - name: Real VLESS+REALITY and Hysteria2 interoperability tests (real sing-box)
         env:
           SING_BOX_BIN: /usr/local/bin/sing-box
@@ -452,26 +453,12 @@ jobs:
             --test reality_interop --test reality_decoy_budget --test hysteria2_interop \
             -- --nocapture 2>&1 | tee interop.log
 
-          # Assert the exact number of tests that actually executed.
-          # Update this count deliberately when adding a test — never by
-          # pasting whatever the log happened to print.
-          #   3 reality_interop + 1 reality_decoy_budget + 7 hysteria2_interop
-          #   (2 original + 2 added for salamander obfuscation coverage +
-          #   1 for the optional up_mbps/down_mbps caps via `sing-box check`
-          #   + 1 proving a capped server still serves the standard client
-          #   + 1 proving the default (BBR-forcing) server still serves a
-          #   client that declares a bandwidth)
-          expected=11
-          total_ok="$(grep -c "^test .* \.\.\. ok$" interop.log || true)"
-          if [ "$total_ok" != "$expected" ]; then
-            echo "::error::expected $expected real interop tests to run and pass, saw $total_ok"
-            exit 1
-          fi
-          if grep -q "^skipping:" interop.log; then
-            echo "::error::an interop test skipped despite SINGBOX_VPN_REQUIRE_REAL_INTEROP=1"
-            exit 1
-          fi
-          echo "all $total_ok real-binary interop tests executed and passed"
+          # Exact inventory, not a count: every test in deploy/lib/ci/interop-tests.manifest must
+          # pass exactly once in its own suite; a missing, failed, ignored, skipped or unlisted
+          # test fails the job. The manifest is checked against the #[test] functions in the
+          # sources by deploy/lib/tests/test_check_interop_manifest.py (a hard-coded count of 11
+          # silently drifted when reality_decoy_budget gained a 12th test).
+          python3 deploy/lib/ci/check_interop_manifest.py deploy/lib/ci/interop-tests.manifest interop.log
 
       # LOCAL SYSTEM evidence for the two-hop Privacy+ route (S1-S15 plus the
       # relay/exit log privacy check): real sing-box client, relay and exit
