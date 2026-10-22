@@ -32,7 +32,11 @@ done
 l_tmpdir="$(grep -n '^export TMPDIR="\$INSTALL_WORK"' "$INNER" | head -1 | cut -d: -f1)"
 l_first="$(grep -n 'mktemp' "$INNER" | grep -v 'INSTALL_WORK=\|^.*#' | head -1 | cut -d: -f1)"
 [ -n "$l_tmpdir" ] && [ -n "$l_first" ] && [ "$l_tmpdir" -lt "$l_first" ] && ok "TMPDIR=workspace is set before the first mktemp" || bad "TMPDIR workspace not set before the first mktemp ($l_tmpdir vs $l_first)"
-grep -q '^trap cleanup_scratch EXIT' "$INNER" && ok "EXIT trap removes the workspace" || bad "no EXIT trap for the workspace"
+# (I-74: installed via install_scratch_exit_trap, which keeps a sourcing caller's own EXIT trap;
+# behaviour is covered by test-installer-sourcing-keeps-exit-trap.sh)
+grep -q '^install_scratch_exit_trap$' "$INNER" && grep -q '    trap cleanup_scratch EXIT' "$INNER" \
+  && grep -q 'trap "cleanup_scratch; \$prev" EXIT' "$INNER" \
+  && ok "EXIT trap removes the workspace" || bad "no EXIT trap for the workspace"
 grep -n 'mktemp' "$INNER" | grep -E 'mktemp[^)]*/tmp/' | grep -v 'singbox-vpn-inner' && bad "a mktemp bypasses the workspace" || ok "no mktemp bypasses the workspace"
 
 # behaviour: the EXIT trap really removes the workspace (success and failure) -- run the same two lines in a subshell
@@ -44,7 +48,7 @@ done
 # cosign hand-over: reuse only when the digest matches THIS script's pin; otherwise fall back to a download
 ec="$(fn_of "$INNER" ensure_cosign)"; [ -n "$ec" ] || bad "ensure_cosign missing"
 run_ec() { # $1 = handed file content ; prints "reused" | "download"
-  ( cd "$T" && INSTALL_WORK="$(mktemp -d "$T/iw.XXXX")" && ARCH=amd64 COSIGN_VERSION=0 CURL_NET_FLAGS=() COSIGN_BIN="" COSIGN_SHA256_AMD64="$2"
+  ( cd "$T" && INSTALL_WORK="$(mktemp -d "$T/iw.XXXX")" && export TMPDIR="$INSTALL_WORK" && ARCH=amd64 COSIGN_VERSION=0 CURL_NET_FLAGS=() COSIGN_BIN="" COSIGN_SHA256_AMD64="$2"
     log() { :; }; warn() { :; }; die() { echo "download"; exit 0; }
     command() { return 1; }; curl() { echo download; exit 0; }
     printf '%s' "$1" >"$T/handed"; chmod 700 "$T/handed"; SINGBOX_VPN_COSIGN_BIN="$T/handed"
