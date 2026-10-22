@@ -80,3 +80,16 @@ None of the reconstructions needs the VPN. Next is owner input: SSH key, backup 
 - 20 jobs succeeded, including `shell` (shellcheck and all `deploy/lib/tests/*.sh`), `test`, `fmt`, `clippy`, `release-build` and every os-matrix job. `offline-full-verdict` was skipped.
 - 2 jobs failed: `audit` (the "Run cargo audit" step) and `singbox-validate` (the "Real VLESS+REALITY and Hysteria2 interoperability tests" step). Both **also fail on the untouched baseline `df47737`**, so they are not caused by the reconstructions.
 - These are the "two failing jobs" whose fixes were reportedly in the MISSING `e93f29d`. They are the next engineering item, after which the restoration plan proceeds (`RESTORATION-PLAN.md`).
+
+## Session 3 (2026-10-22): CI repair, I-83 review, backup tooling
+| # | Work | Commit | Evidence |
+|---|---|---|---|
+| 4 | `audit`: lock bumps rustls-webpki 0.103.15→0.103.16 (RUSTSEC-2026-0382) and webpki-roots 1.0.9→1.0.10 (RUSTSEC-2026-0381). Both are transitive via reqwest's rustls in the provisioning agent; no ignores added. | `da68f9b9a5570f81f5d970cf8f4379a7d6d19cd3` | CI `audit` succeeded on runs 39807126424, 39807318906 and 39807978407 |
+| 5 | `singbox-validate` step 10: an exact interop manifest (12 tests) replaces `expected=11`. | `da68f9b` and `d850d81` (ANSI fix) | Unit tests 13/13. CI run 39807978407: step 10 passed. Step 12 then failed; see below. |
+| 6 | I-83 review: the explanation `EGRESS_REFUSED` becomes `EGRESS_DEPENDENT_FAILURE`, never emitted as a refusal. | `2d0da8dd47754cd6fdd3be6085d370d88089facb` | `test_shorts_health` 42/42; the monitor installer test passes |
+| 7 | Encrypted off-host state backup (`deploy/lib/backup/state-backup.sh`, `BACKUP.md`) | `3df309c9248517f17769625a9797f5be71568f2c` | `test-state-backup.sh` 20/20 on fin1 with real age 1.0.0; CI `shell` succeeded on run 39807978407 |
+
+**Masked failure found:** `singbox-validate` step 12, the simulated two-node Google hairpin, fails at `vpn-admin init` for node T
+(`AssertionError: init T`). It never ran while step 10 was failing, so it is pre-existing and not caused by these commits.
+The next commit makes the assertion report init's stderr, so CI shows the cause.
+

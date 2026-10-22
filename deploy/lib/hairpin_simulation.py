@@ -150,7 +150,8 @@ public_port = 8443
             return subprocess.run([a.vpn_admin, "--config", f"{W}/{node}/deployment.toml", *args], input=stdin, capture_output=True, text=True, env=env)
 
         for n in ("T", "E"):
-            assert admin(n, "init").returncode == 0, f"init {n}"
+            r = admin(n, "init")
+            assert r.returncode == 0, f"init {n}: rc={r.returncode} stderr={r.stderr[-800:]!r} stdout={r.stdout[-400:]!r}"
         for n, user in (("T", "hairpin-e"), ("E", "alice")):
             r = admin(n, "user", "create", "--name", user, "--json")
             assert r.returncode == 0, f"user create {n}: {r.stderr[-200:]}"
