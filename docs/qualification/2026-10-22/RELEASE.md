@@ -10,9 +10,11 @@ Additional I-90 correction: the standalone interrupted-update leftover-cleanup
 helper ignored health-command exit status if no `[FAIL]` line was printed.
 A fixture health command exiting 7 reproduced deletion of the marker/backup.
 It now fails closed and retains both; the new regression fails against the
-old implementation and passes after the fix. This changes the candidate after
-`fcd711a4` passed CI/Security, so a fresh exact-final-commit run is mandatory.
-Those earlier green results are historical and cannot qualify this fix.
+old implementation and passes after the fix. This changed the candidate after
+`fcd711a4` passed CI/Security. The corrected source `ca4e34fa5bbd340490b678d7146c20e3f0516fab`
+subsequently passed [full CI](https://github.com/David610/singbox-vpn/actions/runs/39828809922) and [Security](https://github.com/David610/singbox-vpn/actions/runs/39828809935).
+The earlier fcd711a results are historical and do not qualify this fix.
+Later commits and the actual main merge require separate exact-commit checks.
 
 The latest release API lists v1.3.1-rc.2; stable remains v1.3.0. The rc.3
 ref lookup returns 404 and workspace/package core version is 1.3.1.
@@ -32,7 +34,7 @@ No corrected artifact can be installed or accepted from this session yet.
 | Shorts monitor installer fixture | PASS: historical wrong classifier reproduced; 17 installer checks pass; a stubbed installation is not live monitoring |
 | Actual binary reproducibility | UNVERIFIED: the similarly named shell test proves source/pin/installer contracts, not a double binary build |
 | Local Rust fmt/clippy/tests/audit and interoperability | BLOCKED: cargo/rustc/sing-box unavailable; shell HTTPS proxy refuses connection |
-| Full integration CI and Security | UNVERIFIED until fresh exact-commit runs complete; old PR/base results are not substituted |
+| Full integration CI and Security | PASS on `ca4e34fa5bbd340490b678d7146c20e3f0516fab`: [CI 22/22](https://github.com/David610/singbox-vpn/actions/runs/39828809922), [Security 2/2](https://github.com/David610/singbox-vpn/actions/runs/39828809935); later commits/main merge must pass independently |
 | Artifact runtime/ABI/attestation | BLOCKED: no authorized corrected release artifact |
 | Clean install / upgrade / repair / downgrade refusal / rollback / interrupted update / reboot | BLOCKED for exact RC: no trusted accessible disposable host/artifact; historical results are retained only as history |
 | TLS issuance and actual renewal | BLOCKED: no accessible authorized deployment; zero-attempt dry-run is not PASS |
