@@ -13,6 +13,7 @@ import os
 import re
 import sys
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")   # CI runs with CARGO_TERM_COLOR=always
 _RUNNING = re.compile(r"^\s*Running (?:\S*/)?(\w+)\.rs\b")
 _RESULT = re.compile(r"^test (\S+) \.\.\. (\w+)\s*$")
 _TEST_FN = re.compile(r"#\[(?:tokio::)?test(?:\([^)]*\))?\]\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)")
@@ -48,7 +49,7 @@ def source_inventory(root: str, suites) -> set[tuple[str, str]]:
 
 def results(log: str) -> list[tuple[str | None, str, str]]:
     out, suite = [], None
-    for line in log.splitlines():
+    for line in _ANSI.sub("", log).splitlines():
         m = _RUNNING.match(line)
         if m:
             suite = m.group(1)
@@ -78,7 +79,7 @@ def check(log: str, manifest: list[tuple[str, str]]) -> list[str]:
             errs.append(f"{s}::{n} ({r}) is not in the manifest")
         elif r != "ok":
             errs.append(f"{s}::{n} result {r}")
-    if any(line.startswith("skipping:") for line in log.splitlines()):
+    if any(line.startswith("skipping:") for line in _ANSI.sub("", log).splitlines()):
         errs.append("a test printed 'skipping:' despite SINGBOX_VPN_REQUIRE_REAL_INTEROP=1")
     return errs
 

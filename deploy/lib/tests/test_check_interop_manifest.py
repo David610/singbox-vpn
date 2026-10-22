@@ -68,6 +68,15 @@ class Check(unittest.TestCase):
     def test_a_duplicate_pass_fails(self):
         self.assertTrue(cim.check(log(all_ok(self.m) + [all_ok(self.m)[-1]]), self.m))
 
+    def test_coloured_cargo_output_is_parsed(self):
+        # CI sets CARGO_TERM_COLOR=always: cargo colours "Running" (and the ok/FAILED words). Run 39807318906 failed every
+        # entry because the uncoloured regex never matched a suite header.
+        coloured = log(all_ok(self.m)).replace("     Running", "\x1b[1m\x1b[32m     Running\x1b[0m").replace(
+            "... ok", "... \x1b[32mok\x1b[0m")
+        self.assertEqual(cim.check(coloured, self.m), [])
+        bad = coloured.replace(f"test {self.m[0][1]} ... \x1b[32mok\x1b[0m", f"test {self.m[0][1]} ... \x1b[31mFAILED\x1b[0m")
+        self.assertTrue(cim.check(bad, self.m))
+
     def test_an_empty_log_fails(self):
         self.assertTrue(cim.check("", self.m))
 
