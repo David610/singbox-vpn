@@ -3376,7 +3376,7 @@ fn render_config_does_not_fail_or_restart_when_the_subscription_service_is_unrea
 #[cfg(unix)]
 fn assert_hairpin_invariants(config: &serde_json::Value, context: &str) {
     let rules = config["route"]["rules"].as_array().expect("route.rules");
-    let position = |pred: &dyn Fn(&serde_json::Value) -> bool| rules.iter().position(|r| pred(r));
+    let position = |pred: &dyn Fn(&serde_json::Value) -> bool| rules.iter().position(pred);
     let sniff = position(&|r| r["action"] == "sniff" && r.get("inbound").is_none())
         .unwrap_or_else(|| panic!("{context}: no bare sniff rule"));
     let reject6 = position(&|r| {
