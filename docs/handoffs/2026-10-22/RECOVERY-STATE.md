@@ -60,7 +60,7 @@ Retest after restoration. A 155-byte UMP response from automated Chromium does n
 - Backups: no encrypted off-host backup exists for deployment state. GitHub holds source only.
 
 ## Next safe operation
-Reconstruct `af_capture.py` from fixtures, test-first. No live capture yet.
+None of the reconstructions needs the VPN. Next is owner input: SSH key, backup destination, and approval to install and provision identities. See the plan in this commit's report.
 
 ## Milestones
 | # | Work | Origin | SHA | Tests |
@@ -68,3 +68,10 @@ Reconstruct `af_capture.py` from fixtures, test-first. No live capture yet.
 | 0 | Checkpoint | — | `dd22c7492bfe501221b02cb51d4f066890f5784e` | — |
 | 1 | I-81 disk/inode build budget, shared Cargo target, scoped prune (`deploy/lib/preflight.sh`, `qualify-local.sh`) | RECONSTRUCTED (original `3d7c005` MISSING) | see `git log` | `bash deploy/lib/tests/test-preflight-build-budget.sh`: 19/19 ok on fin1, 2026-10-22. Regression: test-preflight-curl-retry and test-installer-hardening pass. shellcheck is not installed (UNVERIFIED). |
 | 2 | I-83: outcome `MEDIA_PLAYBACK_FAILED` and a separate `explanation` field (default `UNKNOWN`), plus `failure_mode` and `context`. Fields are in `deploy/lib/monitoring/shorts_health.py`. Install and `--check` refuse a reverted classifier. | RECONSTRUCTED (originals `016f682`/`7e822e8` MISSING) | see `git log` | `python3 -m unittest test_shorts_health` (in `deploy/lib/tests`): 40/40 OK. It fails against the `df47737` classifier (1 failure, 9 errors). `test-shorts-monitor-install.sh` PASS (17 checks). Not deployed: no VPN install exists. |
+| 3 | `deploy/lib/diagnostics/af_capture.py`, with `capture`, `status` and `analyze` subcommands. It counts IPv4/IPv6 TCP and UDP for tunnel ingress and Google egress in 5 s bins, stores aggregates only, and writes no pcap. The capture expires automatically, with a 1800 s cap and a 256-byte snap length, and uses `-e` frame lengths. It returns `VALID_OVERLAP` or `NO_OVERLAP_INCONCLUSIVE` with a reason. | RECONSTRUCTED (corrected original MISSING) | see `git log` | `python3 -m unittest test_af_capture` (in `deploy/lib/tests`): 15/15 OK on recorded line shapes. Mutation checks against reintroduced defects all fail the suite: dropping `[|tcp]`, removing 2a00:1450::/32, and accepting a 1-bin overlap. No live capture was run, because the VPN is not restored. |
+
+### Differences from the historical description (reconstructions)
+- I-81: the exact original thresholds are unknown. The defaults are a 10 GiB reserve and an 8 GiB build estimate, both overridable. They are not yet measured on this host; `qualify-local.sh` records `target_dir_mib` after each run. Disposable output must carry a marker file (`.singbox-vpn-disposable`), so unmarked old dirs are never deleted.
+- I-83: the explanation evidence is new interface. It is a `reference` result in the probe output plus `--native-evidence`, and the probe does not produce `reference` yet. Until it does, failures stay UNKNOWN, which is the conservative behaviour. Before the change, causes were `EGRESS_REFUSED`/`PLAYBACK_STALLED`/`MIXED`; now the cause is `MEDIA_PLAYBACK_FAILED` and the detail is in `failure_mode`.
+- af_capture: the original CLI, file format and live status layout are unknown, so these are new. The canary windows are supplied by the operator, because packets cannot distinguish the agent's canaries from the phone. Bins are in UTC unix seconds.
+- If the original session exports arrive, diff them against these files first and keep any tested behaviour the originals had that these lack.
