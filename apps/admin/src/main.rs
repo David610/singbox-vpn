@@ -2437,6 +2437,9 @@ fn regenerate_singbox_config(cfg: &DeploymentConfig, require_live_apply: bool) -
 /// that does with this distinction.
 fn cmd_render_config(cfg: &DeploymentConfig, require_applied: bool) -> Result<()> {
     let applied = regenerate_singbox_config(cfg, false)?;
+    if applied {
+        refresh_stale_subscription_service(cfg);
+    }
     if !applied && require_applied {
         bail!(
             "reconciliation was attempted (the rendered sing-box config differs from what's \
@@ -2447,6 +2450,97 @@ fn cmd_render_config(cfg: &DeploymentConfig, require_applied: bool) -> Result<()
         );
     }
     Ok(())
+}
+
+/// What the RUNNING `vpn-subscription` process serves compared with what the
+/// current files and `deployment.toml` would make a fresh one serve.
+#[derive(Debug, PartialEq, Eq)]
+enum SubscriptionFreshness {
+    Current,
+    /// The live fingerprint differs from a fresh render.
+    Stale {
+        expected: String,
+    },
+    /// Could not be observed (service down, unexpected reply, missing keys).
+    /// Not proof of staleness, so nothing is restarted.
+    Unverifiable,
+}
+
+fn classify_subscription_freshness(
+    live: Option<&str>,
+    expected: Option<String>,
+) -> SubscriptionFreshness {
+    match (live, expected) {
+        (Some(live), Some(expected)) if live == expected => SubscriptionFreshness::Current,
+        (Some(_), Some(expected)) => SubscriptionFreshness::Stale { expected },
+        _ => SubscriptionFreshness::Unverifiable,
+    }
+}
+
+fn subscription_freshness(cfg: &DeploymentConfig) -> SubscriptionFreshness {
+    let expected = load_reality_params(cfg).ok().and_then(|reality| {
+        let hysteria = load_hysteria_params(cfg);
+        served_endpoints(
+            cfg,
+            &reality,
+            hysteria.obfs_password.as_ref().map(|s| s.expose()),
+        )
+        .ok()
+        .map(|endpoints| compat_config::render::endpoints_fingerprint(&endpoints))
+    });
+    let live = http_get_local_json(
+        cfg.subscription.listen_port,
+        "/internal/state-fingerprint",
+        std::time::Duration::from_millis(800),
+    )
+    .ok()
+    .and_then(|json| {
+        json["endpoints_fingerprint_sha256"]
+            .as_str()
+            .map(str::to_string)
+    });
+    classify_subscription_freshness(live.as_deref(), expected)
+}
+
+/// I-34: `vpn-subscription` reads its endpoints (REALITY key, Hysteria2 port,
+/// ...) once at startup. `render-config` restarts sing-box onto changed
+/// settings, so without this the subscription service keeps advertising the old
+/// port or key until someone restarts it (`doctor` L4 reports it, but nothing
+/// fixed it). Restarting it drops no VPN connection. Only a service that the
+/// process itself proves stale is restarted, and at most once per distinct
+/// target state: if a restart does not make the fingerprints agree (e.g. a
+/// version skew), a timer-driven `render-config` must not restart it forever.
+/// Best effort; never fails `render-config`.
+fn refresh_stale_subscription_service(cfg: &DeploymentConfig) {
+    let SubscriptionFreshness::Stale { expected } = subscription_freshness(cfg) else {
+        return;
+    };
+    let stamp = cfg.state_dir.join("subscription-restarted-for.sha256");
+    if std::fs::read_to_string(&stamp).is_ok_and(|done| done.trim() == expected) {
+        eprintln!(
+            "warning: vpn-subscription is still serving state that differs from the current              deployment after a restart for this same state; not restarting it again.              Run `vpn-admin doctor` (L4) and check that vpn-admin and vpn-subscription-svc              are the same release."
+        );
+        return;
+    }
+    let sub_mgr = CompatibilityServiceManager::new("vpn-subscription");
+    if !sub_mgr.is_available() || !sub_mgr.is_unit_installed() {
+        eprintln!(
+            "warning: the running vpn-subscription advertises stale endpoints but 
+             vpn-subscription.service cannot be controlled here; restart it manually."
+        );
+        return;
+    }
+    eprintln!(
+        "vpn-subscription is serving stale endpoints; restarting it (no VPN connection is          dropped by this)."
+    );
+    match sub_mgr.reload_and_verify() {
+        Ok(()) => {
+            if let Err(e) = write_secret_file(&stamp, &expected) {
+                eprintln!("warning: could not record the subscription restart: {e}");
+            }
+        }
+        Err(e) => eprintln!("warning: restarting vpn-subscription failed: {e}"),
+    }
 }
 
 /// Read-only report of `deployment.toml`/`users.json`'s on-disk schema
@@ -10167,6 +10261,35 @@ mod ipv6_posture_tests {
 /// pin the bounded-retry policy against an injected resolver so a
 /// regression here fails deterministically, without depending on real
 /// DNS or real wall-clock sleeps.
+#[cfg(test)]
+mod subscription_freshness_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_proven_mismatch_is_stale() {
+        let e = || Some("aa".to_string());
+        assert_eq!(
+            classify_subscription_freshness(Some("aa"), e()),
+            SubscriptionFreshness::Current
+        );
+        assert_eq!(
+            classify_subscription_freshness(Some("bb"), e()),
+            SubscriptionFreshness::Stale {
+                expected: "aa".into()
+            }
+        );
+        // Unreachable service or unreadable keys is "cannot verify", never stale.
+        assert_eq!(
+            classify_subscription_freshness(None, e()),
+            SubscriptionFreshness::Unverifiable
+        );
+        assert_eq!(
+            classify_subscription_freshness(Some("aa"), None),
+            SubscriptionFreshness::Unverifiable
+        );
+    }
+}
+
 #[cfg(test)]
 mod hostname_resolution_tests {
     use super::*;

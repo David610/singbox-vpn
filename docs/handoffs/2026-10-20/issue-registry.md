@@ -92,6 +92,6 @@ States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFI
 | I-29 | low | informational | UNVERIFIED | 10 pre-existing eslint warnings |
 | I-30 | medium | open | CONFIRMED_OPEN | Interrupted-deployment recovery, disk/memory pressure, DNS-leak, IPv6-leak, kill-switch, token-entropy, secret-logging a |
 | I-32 | medium | fixed-on-main | UNVERIFIED | v1.3.1-rc.1's updater rollback fails ('UPDATE FAILED - ROLLBACK ALSO FAILED') when sing-box restarts are close together: |
-| I-34 | low | open | CONFIRMED_OPEN | After changing [hysteria2] listen_port and running vpn render-config, vpn-subscription keeps advertising the old port un |
+| I-34 | low | open | FIXED_IN_BRANCH | After changing [hysteria2] listen_port and running vpn render-config, vpn-subscription keeps advertising the old port un |
 | I-35 | informational | informational | UNVERIFIED | Intermittent single-probe misses (about 1 in 10 to 1 in 24) with the real REALITY client after the reboot, for both user |
 | I-36 | informational | informational | UNVERIFIED | Let's Encrypt allows 5 certificates per exact hostname per 168 h; repeated fresh installs on one name exhaust it |
