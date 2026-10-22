@@ -640,6 +640,19 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-92",
+   "severity": "high",
+   "component": "CI required-check semantics (issue #170)",
+   "state": "FIXED_IN_BRANCH",
+   "title": "offline-full-verdict needs 15 jobs and has the default `if: success()`: when any needed job fails the verdict job is SKIPPED, and a skipped required check counts as passing, so requiring only the three named checks would not have blocked a merge with a failing test/shell/fmt job",
+   "fix": "the verdict job runs `if: always()` and fails unless every needed job succeeded (deploy/lib/ci-needs-verdict.py); verify-main-protection.py checks the ruleset and emits a no-weakening update body",
+   "regression_test": "deploy/lib/tests/test-ci-verdict-semantics.sh (red before), deploy/lib/tests/test_verify_main_protection.py (live 2026-10-22 snapshot reports NOT ENFORCED)",
+   "device_required": "no",
+   "remaining_risk": "the ruleset itself is NOT changed (needs administration): #170 stays open. GitHub's skipped-counts-as-success behaviour was not re-demonstrated here; step 5 of docs/qualification/2026-10-22/BRANCH-PROTECTION.md does that",
+   "evidence": "live ruleset 22482226 read 2026-10-22: no required_status_checks rule, required_approving_review_count 0",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-90",
    "severity": "high",
    "component": "interrupted-update cleanup health gate",
