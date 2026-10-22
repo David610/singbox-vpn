@@ -533,10 +533,11 @@ fn toml_path(path: &Path) -> String {
 /// for a reason that has nothing to do with what the test is actually
 /// checking.
 ///
-/// This creates both groups once, idempotently, only when running as root,
-/// and never removes them — the same one-time, idempotent step a real
-/// install would perform, not a per-test fixture that needs cleanup. It
-/// does not touch any other host state and does not run when unprivileged
+/// This creates each missing group once, only when running as root, and
+/// removes exactly the groups it created when the test process exits (I-50),
+/// so a root-run suite leaves no system group behind on the node. Groups that
+/// already existed are never touched. It does not touch any other host state
+/// and does not run when unprivileged
 /// (where `apply_restored_file_policy`'s chown branch is skipped
 /// entirely, so neither group is needed).
 #[cfg(unix)]
@@ -558,7 +559,30 @@ fn ensure_vpn_subscription_group_exists_for_root_tests() {
             "test running as root could not create the {group:?} system group needed to \
              exercise the real restore ownership path: {status:?}"
         );
+        created_groups().lock().unwrap().push(group);
+        register_group_cleanup();
     }
+}
+
+#[cfg(unix)]
+fn created_groups() -> &'static std::sync::Mutex<Vec<&'static str>> {
+    static CREATED: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    &CREATED
+}
+
+#[cfg(unix)]
+fn register_group_cleanup() {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    extern "C" fn remove_created_groups() {
+        if let Ok(groups) = created_groups().lock() {
+            for group in groups.iter() {
+                let _ = std::process::Command::new("groupdel").arg(group).status();
+            }
+        }
+    }
+    REGISTERED.call_once(|| unsafe {
+        libc::atexit(remove_created_groups);
+    });
 }
 #[cfg(not(unix))]
 fn ensure_vpn_subscription_group_exists_for_root_tests() {}
