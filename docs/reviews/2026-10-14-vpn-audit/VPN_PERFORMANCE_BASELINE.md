@@ -313,8 +313,22 @@ moving the exit pin to 1.14.3 removes the stall for existing clients.
 
 ### 5.3 Long-running stability (lab soak)
 
-See [results §3.1](VPN_OPTIMIZATION_RESULTS.md) for the 90-minute class-C soak
-(long-lived connections, churn and periodic bulk on both transports).
+90 minutes, class C, 20 ms RTT, both transports under mixed load
+(details: [results §3.1](VPN_OPTIMIZATION_RESULTS.md)): 0 failures across
+4 long-lived connections (~20,700 pings), 17,340 new connections and 180
+bulk downloads; exit RSS 58 → 65.5 MB, level after ~30 min; fds flat at 16.
+The Hysteria2 long-lived ping has a p99 of ~680 ms because the periodic
+download shares its QUIC connection (§3.2); REALITY's p99 is 66–76 ms.
+90 minutes rules out a fast leak only.
+
+### 5.4 Network gaps (lab outage)
+
+80 ms RTT, client↔exit traffic dropped for 5/20/40 s (results §3.2): new
+connections work within 0.4 s after every gap on both transports. Open
+REALITY connections survive but resume ~17–19 s (20 s gap) and ~35 s (40 s
+gap) after the network returns, because of TCP retransmission backoff. Open
+Hysteria2 connections resume at once after gaps up to 20 s and are closed
+after 40 s (30 s idle timeout). Lab Linux TCP on both ends, not an iPhone.
 
 ## 6. Identified bottlenecks, in the order a user meets them
 

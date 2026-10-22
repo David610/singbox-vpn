@@ -1,0 +1,54 @@
+REALITY decoy buffer race (W19, results change 12) — 2026-10-14
+
+Code: metacubex/utls v1.8.7 reality.go (sing-box 1.14.1 and 1.14.3)
+  const realitySize uint16 = 16384
+  each read from the decoy is appended to s2cSaved; complete records are
+  parsed and removed; then
+    if len(s2cSaved) > int(realitySize) { break }      -> connection dropped
+    if handshakeLen > int(realitySize)  { break f }    -> record too long
+  The first check applies to bytes buffered but not yet parsed, so it
+  depends on how the decoy's reply is split across reads.
+
+CI, PR #155, commit bb69b3f, job singbox-validate, run 38602179882 (failed;
+the same commit passed in run 38602187759). Test decoy: 800 SANs. Lines
+from the failing test's server log (REALITY trace; addresses are loopback;
+auth-key bytes and everything else omitted):
+
+  connection 1 (dropped):
+    len(s2cSaved): 4096 Server Hello: 127
+    len(s2cSaved): 3969 Change Cipher Spec: 6
+    len(s2cSaved): 3963 Encrypted Extensions: 28
+    len(s2cSaved): 3935 Certificate: 16048
+    hs.c.isHandshakeComplete.Load(): false
+    TLS handshake: REALITY: processed invalid connection
+  -> 3935 unparsed bytes of the 16048-byte Certificate record; the next
+     read brought the remaining 12113 bytes plus CertificateVerify (286) and
+     Finished (58): 3935 + 12113 + 344 = 16392 > 16384.
+
+  connection 2 (worked):
+    len(s2cSaved): 16209 Server Hello: 127
+    ... Certificate: 16048, Certificate Verify: 286, Finished: 58
+    hs.c.isHandshakeComplete.Load(): true
+
+Fixture after the change: 600 SANs.
+  record sizes (sing-box 1.13.19 trace, 5 runs, 2 connections each, all equal):
+    Server Hello 127, Change Cipher Spec 6, Encrypted Extensions 28,
+    Certificate 12248
+  whole server flight ~12753 bytes (with CertificateVerify 286 and
+  Finished 58 as above) < 16384, so the unparsed buffer cannot exceed the
+  limit however the reads are split.
+
+Runs on the lab VM (itest namespace, SINGBOX_VPN_REQUIRE_REAL_INTEROP=1):
+  reality_decoy_budget, 600 SANs, sing-box 1.14.1 (pinned):   30 pass / 0 fail
+  reality_decoy_budget, 600 SANs, sing-box 1.14.3:             30 pass / 0 fail
+  reality_decoy_budget, 600 SANs, sing-box 1.13.19:             0 pass / 5 fail
+    (expected: authentication succeeds — "hs.c.conn == conn: true" — then
+     "len(s2cSaved): 8031 Certificate: 12248" exceeds that version's
+     8192-byte limit and the connection is dropped; the guard still works)
+  reality_interop (small decoy), sing-box 1.13.19:              3 pass / 0 fail
+  real interop suites (reality_interop, reality_decoy_budget,
+  hysteria2_interop) on 1.14.1 and on 1.14.3:                  11 ok each
+
+sing-box 1.13.19 linux-amd64 tarball SHA-256
+  ef88a9e577d474210867bd708933d042e9b70106529df2656182c9db90106aa1
+  (matches the old pin in deploy/lib/versions.env history)
