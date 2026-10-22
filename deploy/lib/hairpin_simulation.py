@@ -116,7 +116,9 @@ def main():
         stub = f"{W}/fake-systemctl"
         open(stub, "w").write('#!/bin/sh\ncase "$*" in *"-p LoadState"*) echo loaded;; *"-p ActiveState"*) echo active;; *"-p SubState"*) echo running;; *"-p MainPID"*) echo 4242;; *"-p NRestarts"*) echo 0;; *"-p Result"*) echo success;; *"-p InvocationID"*) echo 00000000000000000000000000000001;; *"-p "*"Timestamp"*) echo 123456;; *is-active*) echo active;; esac\nexit 0\n')
         os.chmod(stub, 0o755)
-        env = dict(os.environ, SINGBOX_VPN_SYSTEMCTL=stub)
+        # a private state lock: the host's /run/lock/singbox-vpn.lock belongs to a real install (or, on a CI runner, may already
+        # exist owned by another user, which root cannot open under fs.protected_regular: "init T: Permission denied")
+        env = dict(os.environ, SINGBOX_VPN_SYSTEMCTL=stub, SINGBOX_VPN_LOCK_PATH=f"{W}/state.lock")
         decoy = {}
         sh(f"openssl req -x509 -newkey rsa:2048 -nodes -keyout {W}/k.pem -out {W}/c.pem -days 2 -subj /CN=sim >/dev/null 2>&1")
         for n in ("T", "E"):
