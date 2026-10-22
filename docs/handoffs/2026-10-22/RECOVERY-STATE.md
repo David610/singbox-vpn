@@ -60,10 +60,11 @@ Retest after restoration. A 155-byte UMP response from automated Chromium does n
 - Backups: no encrypted off-host backup exists for deployment state. GitHub holds source only.
 
 ## Next safe operation
-Reconstruct I-83 (monitor classification), test-first.
+Reconstruct `af_capture.py` from fixtures, test-first. No live capture yet.
 
 ## Milestones
 | # | Work | Origin | SHA | Tests |
 |---|---|---|---|---|
 | 0 | Checkpoint | — | `dd22c7492bfe501221b02cb51d4f066890f5784e` | — |
 | 1 | I-81 disk/inode build budget, shared Cargo target, scoped prune (`deploy/lib/preflight.sh`, `qualify-local.sh`) | RECONSTRUCTED (original `3d7c005` MISSING) | see `git log` | `bash deploy/lib/tests/test-preflight-build-budget.sh`: 19/19 ok on fin1, 2026-10-22. Regression: test-preflight-curl-retry and test-installer-hardening pass. shellcheck is not installed (UNVERIFIED). |
+| 2 | I-83: outcome `MEDIA_PLAYBACK_FAILED` and a separate `explanation` field (default `UNKNOWN`), plus `failure_mode` and `context`. Fields are in `deploy/lib/monitoring/shorts_health.py`. Install and `--check` refuse a reverted classifier. | RECONSTRUCTED (originals `016f682`/`7e822e8` MISSING) | see `git log` | `python3 -m unittest test_shorts_health` (in `deploy/lib/tests`): 40/40 OK. It fails against the `df47737` classifier (1 failure, 9 errors). `test-shorts-monitor-install.sh` PASS (17 checks). Not deployed: no VPN install exists. |

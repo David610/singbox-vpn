@@ -19,8 +19,8 @@ def row(play=True, short=True, **kw):
     return r
 
 
-def probe(*rows, videos=()):
-    return {"results": list(rows) + [{"kind": "video", "play": v} for v in videos]}
+def probe(*rows, videos=(), **extra):
+    return {"results": list(rows) + [{"kind": "video", "play": v} for v in videos], **extra}
 
 
 class Classify(unittest.TestCase):
@@ -34,6 +34,66 @@ class Classify(unittest.TestCase):
         self.assertEqual(c(row(play=False, media={"responses": 5})), "STALLED")
         self.assertEqual(c(row(play=False, error="TimeoutError")), "PROBE_TIMEOUT")
         self.assertEqual(c(row(play=False, error="Error")), "PROBE_ERROR")
+
+
+# The real failure signature (fin1 and E1, 2026-10): HTTP 200, application/vnd.yt-ump, 155 bytes, clock never advances,
+# webdriver true, page shows the unavailable indication. None of it proves an IP refusal.
+UMP155 = dict(media={"responses": 1, "bytes": 155, "content_types": ["application/vnd.yt-ump"]}, ui_unavailable=True, webdriver=True)
+
+
+class I83Explanation(unittest.TestCase):
+    """I-83 (RECONSTRUCTED 2026-10-22; original 016f682/7e822e8 MISSING): outcome and explanation are separate."""
+
+    def bad(self, **kw):
+        return probe(*[row(False, **UMP155) for _ in range(3)], **kw)
+
+    def test_155_byte_ump_is_media_playback_failed_unknown(self):
+        e = sh.evaluate(0, self.bad())
+        self.assertEqual((e["cause"], e["explanation"]), ("MEDIA_PLAYBACK_FAILED", "UNKNOWN"))
+        self.assertNotIn("EGRESS_REFUSED", json.dumps(e))
+
+    def test_bot_check_and_playability_refusal_alone_stay_unknown(self):
+        for r in (row(False, bot_wall=True), row(False, playabilityStatus="UNPLAYABLE")):
+            e = sh.evaluate(0, probe(r, r, r))
+            self.assertEqual((e["cause"], e["explanation"]), ("MEDIA_PLAYBACK_FAILED", "UNKNOWN"))
+
+    def test_155_byte_failure_still_escalates_to_critical_and_alerts(self):
+        st, events = {}, []
+        for i in range(sh.CRIT_AFTER):
+            ev = sh.evaluate(sh.effective_media_streak(st, 1000.0 + i), self.bad())
+            st, ev_events = sh.next_state(st, ev, 1000.0 + i)
+            events += ev_events
+        self.assertEqual(ev["status"], "CRITICAL")
+        self.assertEqual([e["event"] for e in events], ["DEGRADED", "CRITICAL"])
+        self.assertEqual(events[-1]["explanation"], "UNKNOWN")
+
+    def test_egress_refused_needs_a_same_harness_reference_that_plays(self):
+        e = sh.evaluate(0, self.bad(reference={"egress": "other-exit", "genuine": 3, "played": 3}))
+        self.assertEqual(e["explanation"], "EGRESS_REFUSED")
+        e = sh.evaluate(0, self.bad(reference={"egress": "other-exit", "genuine": 3, "played": 0}))
+        self.assertEqual(e["explanation"], "UNKNOWN")      # both egresses failing (fin1 and E1) proves nothing about either
+        e = sh.evaluate(0, self.bad(reference={"egress": "other-exit", "genuine": 2, "played": 2}))
+        self.assertEqual(e["explanation"], "UNKNOWN")      # too small a reference sample
+
+    def test_automation_specific_needs_a_native_success_on_the_same_egress(self):
+        e = sh.evaluate(0, self.bad(), native_played=True)
+        self.assertEqual(e["explanation"], "AUTOMATION_SPECIFIC_FAILURE")
+        e = sh.evaluate(0, self.bad(), native_played=False)
+        self.assertEqual(e["explanation"], "UNKNOWN")      # a native failure confirms the outcome, not the cause
+
+    def test_no_evidence_runs_get_their_own_explanations(self):
+        self.assertEqual(sh.evaluate(0, None, path_ok=False)["explanation"], "NETWORK_FAILURE")
+        self.assertEqual(sh.evaluate(0, None)["explanation"], "PROBE_INVALID")
+        self.assertIsNone(sh.evaluate(0, probe(row(), row(), row()))["explanation"])
+
+    def test_native_evidence_file_is_used_only_when_fresh_and_for_this_label(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "native.json")
+            json.dump({"label": "exit-ipv4", "unix": 1000.0, "shorts_played": True, "context": "native-signed-out"}, open(p, "w"))
+            self.assertTrue(sh.load_native_evidence(p, "exit-ipv4", 1000.0 + 60))
+            self.assertIsNone(sh.load_native_evidence(p, "exit-ipv4", 1000.0 + sh.NATIVE_EVIDENCE_MAX_AGE_S + 1))
+            self.assertIsNone(sh.load_native_evidence(p, "other", 1060.0))
+            self.assertIsNone(sh.load_native_evidence(os.path.join(d, "missing.json"), "exit-ipv4", 1060.0))
 
 
 class Evaluate(unittest.TestCase):
@@ -51,9 +111,12 @@ class Evaluate(unittest.TestCase):
         e = self.ev(0, probe(row(), row(), row(short=False)))
         self.assertEqual((e["status"], e["cause"]), ("UNVERIFIED", "HARNESS"))   # 2 genuine < 3: unverified, not OK, not a refusal
 
-    def test_withheld_media_on_a_working_path_is_an_egress_refusal(self):
+    def test_withheld_media_is_a_playback_failure_with_unknown_explanation(self):
+        # I-83: withheld media alone does not prove the egress IP is refused.
         e = self.ev(0, probe(row(False), row(False), row(False)))
-        self.assertEqual((e["status"], e["cause"]), ("SUSPECT", "EGRESS_REFUSED"))
+        self.assertEqual((e["status"], e["cause"], e["explanation"]), ("SUSPECT", "MEDIA_PLAYBACK_FAILED", "UNKNOWN"))
+        self.assertEqual(e["failure_mode"], "WITHHELD")
+        self.assertEqual(e["context"], "synthetic-signed-out-automated")
 
     def test_escalation_hysteresis(self):
         bad = probe(row(False), row(False), row(False))
@@ -77,7 +140,7 @@ class Evaluate(unittest.TestCase):
 
     def test_stalled_playback_is_its_own_cause(self):
         e = self.ev(0, probe(*[row(False, media={"responses": 4}) for _ in range(3)]))
-        self.assertEqual(e["cause"], "PLAYBACK_STALLED")
+        self.assertEqual((e["cause"], e["failure_mode"], e["explanation"]), ("MEDIA_PLAYBACK_FAILED", "STALLED", "UNKNOWN"))
 
     # --- evidence classes (found on the live staging node, 2026-10-21): ONE counter used to be shared by runs that produced
     # no evidence (probe could not start / path down) and runs that produced media evidence. A broken probe followed by the
@@ -94,7 +157,7 @@ class Evaluate(unittest.TestCase):
     def test_first_media_failure_after_a_broken_probe_is_only_suspect(self):
         bad = probe(row(False), row(False), row(False))
         e = self.ev(0, bad, prev_other=1)
-        self.assertEqual((e["status"], e["cause"], e["media_streak"], e["other_streak"]), ("SUSPECT", "EGRESS_REFUSED", 1, 0))
+        self.assertEqual((e["status"], e["cause"], e["media_streak"], e["other_streak"]), ("SUSPECT", "MEDIA_PLAYBACK_FAILED", 1, 0))
 
     def test_harness_failures_escalate_on_their_own_streak_and_say_so(self):
         self.assertEqual(self.ev(0, None, prev_other=3)["status"], "CRITICAL")
@@ -138,7 +201,7 @@ class Path(unittest.TestCase):
 
 
 class Alerts(unittest.TestCase):
-    def step(self, st, status, streak, cause="EGRESS_REFUSED", now=0.0):
+    def step(self, st, status, streak, cause="MEDIA_PLAYBACK_FAILED", now=0.0):
         return sh.next_state(st, {"status": status, "streak": streak, "cause": cause, "reason": "r"}, now)
 
     def test_no_alert_for_the_first_miss(self):
@@ -158,9 +221,9 @@ class Alerts(unittest.TestCase):
     def test_a_harness_alert_does_not_suppress_the_egress_alert(self):
         st, ev = self.step({}, "DEGRADED", 2, cause="HARNESS", now=10)
         self.assertEqual([(e["event"], e["cause"]) for e in ev], [("DEGRADED", "HARNESS")])
-        st, ev = self.step(st, "DEGRADED", 2, cause="EGRESS_REFUSED", now=20)      # different class, same level, inside the cooldown
-        self.assertEqual([(e["event"], e["cause"]) for e in ev], [("DEGRADED", "EGRESS_REFUSED")])
-        st, ev = self.step(st, "DEGRADED", 3, cause="EGRESS_REFUSED", now=30)
+        st, ev = self.step(st, "DEGRADED", 2, cause="MEDIA_PLAYBACK_FAILED", now=20)      # different class, same level, inside the cooldown
+        self.assertEqual([(e["event"], e["cause"]) for e in ev], [("DEGRADED", "MEDIA_PLAYBACK_FAILED")])
+        st, ev = self.step(st, "DEGRADED", 3, cause="MEDIA_PLAYBACK_FAILED", now=30)
         self.assertEqual(ev, [])                                                   # and still deduplicated per class
 
     def test_reminder_after_the_cooldown(self):

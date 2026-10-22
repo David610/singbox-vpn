@@ -15,8 +15,13 @@ Status (exit code 0 only for OK; a failed unit is visible by design):
   PATH_DOWN     the path itself failed its controls (DNS/connect/TLS/timeout): NOT an egress-refusal verdict
   UNVERIFIED    the probe could not run or too few genuine Shorts loaded (a broken harness is not a broken VPN)
 
-`cause` says why a non-OK run happened: PATH_DOWN, EGRESS_REFUSED (media withheld / bot check / playability refusal on a
-working path), PLAYBACK_STALLED, HARNESS, MIXED. Alerts fire on transitions only (with a cooldown) and on recovery, which
+`cause` is the OBSERVED outcome of a non-OK run: PATH_DOWN, HARNESS, or MEDIA_PLAYBACK_FAILED (genuine Shorts did not play on
+a working path; `failure_mode` WITHHELD / STALLED / MIXED keeps the detail). `explanation` is the INFERRED reason, kept
+separate (I-83): UNKNOWN unless stronger evidence exists. A 155-byte application/vnd.yt-ump reply, an "unavailable" page,
+a bot check or zero media through a signed-out automated browser (`context` synthetic-signed-out-automated) do not by
+themselves prove an IP refusal. EGRESS_REFUSED needs the same harness to play every genuine Short through a reference
+egress in the same run; AUTOMATION_SPECIFIC_FAILURE needs a fresh native (non-automated) success on this egress;
+NETWORK_FAILURE and PROBE_INVALID come from the path controls and the harness. Alerts fire on transitions only (with a cooldown) and on recovery, which
 needs RECOVER_AFTER consecutive OK runs (no flapping). There is deliberately NO automatic re-routing here: moving Google
 traffic to another egress is an owner-approved action (docs/operations/YOUTUBE_EGRESS_ARCHITECTURE.md, INV-6/7/8); this
 monitor only detects, classifies, records and alerts. Only public video ids and aggregate counts are stored.
@@ -41,6 +46,8 @@ RECOVER_AFTER = 2
 # A media-failure streak older than this is not "consecutive" with a new failure (probe/host down for hours in between).
 MEDIA_STALE_S = 3 * 3600
 ALERT_COOLDOWN_S = 6 * 3600
+NATIVE_EVIDENCE_MAX_AGE_S = 3600
+SYNTHETIC_CONTEXT = "synthetic-signed-out-automated"
 MIN_INTERVAL_S = 300
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
@@ -114,39 +121,54 @@ def effective_media_streak(prev: dict, now: float) -> int:
     return n if now - float(prev.get("media_last", 0) or 0) <= MEDIA_STALE_S else 0
 
 
-def evaluate(prev_streak: int, probe: dict | None, path_ok: bool = True, path_reason: str = "", prev_other: int = 0) -> dict:
-    """Pure: -> {status, cause, streak, media_streak, other_streak, reason, summary}.
+def explain(s: dict, probe: dict | None, native_played: bool | None) -> str:
+    """Inferred reason for a media playback failure (I-83). Only comparative evidence moves it off UNKNOWN."""
+    ref = (probe or {}).get("reference") or {}
+    if ref.get("genuine", 0) >= MIN_SHORTS and ref.get("played") == ref.get("genuine"):
+        return "EGRESS_REFUSED"            # same harness, same run, only the egress differs
+    if native_played is True:
+        return "AUTOMATION_SPECIFIC_FAILURE"
+    return "UNKNOWN"
+
+
+def evaluate(prev_streak: int, probe: dict | None, path_ok: bool = True, path_reason: str = "", prev_other: int = 0,
+             native_played: bool | None = None) -> dict:
+    """Pure: -> {status, cause, explanation, failure_mode, context, streak, media_streak, other_streak, reason, summary}.
     `prev_streak` is the MEDIA streak, `prev_other` the no-evidence streak. A media failure advances the media streak and clears
     the other one (the probe demonstrably works); a run without evidence advances only the other streak and leaves the media
     streak untouched; OK clears both. `streak` is the streak of this run's own class (it drives the status)."""
     s = summarize(probe)
     if not path_ok:
         # The path is down: the media verdict is meaningless (and must not be blamed on YouTube).
-        return _bad(prev_streak, prev_other, "PATH_DOWN", "PATH_DOWN", path_reason or "path controls failed", s)
+        return _bad(prev_streak, prev_other, "PATH_DOWN", "PATH_DOWN", path_reason or "path controls failed", s, "NETWORK_FAILURE")
     if probe is None:
-        return _bad(prev_streak, prev_other, "UNVERIFIED", "HARNESS", "probe did not run or produced no result", s)
+        return _bad(prev_streak, prev_other, "UNVERIFIED", "HARNESS", "probe did not run or produced no result", s, "PROBE_INVALID")
     if s["genuine"] < MIN_SHORTS:
         return _bad(prev_streak, prev_other, "UNVERIFIED", "HARNESS",
-                    f"only {s['genuine']} genuine Shorts loaded (need {MIN_SHORTS}); non-Shorts are excluded", s)
+                    f"only {s['genuine']} genuine Shorts loaded (need {MIN_SHORTS}); non-Shorts are excluded", s, "PROBE_INVALID")
     if s["played"] == s["genuine"]:
-        return {"status": "OK", "cause": None, "streak": 0, "media_streak": 0, "other_streak": 0,
+        return {"status": "OK", "cause": None, "explanation": None, "failure_mode": None, "context": SYNTHETIC_CONTEXT,
+                "streak": 0, "media_streak": 0, "other_streak": 0,
                 "reason": f"{s['played']}/{s['genuine']} genuine Shorts played", "summary": s}
     failing = {c: n for c, n in s["classes"].items() if c not in ("PLAY", "NOT_SHORT")}
     refused = sum(n for c, n in failing.items() if c in REFUSAL)
     stalled = failing.get("STALLED", 0)
     errors = sum(n for c, n in failing.items() if c.startswith("PROBE_"))
+    reason = f"{s['played']}/{s['genuine']} genuine Shorts played; {failing}"
+    if errors and not refused and not stalled:
+        # only probe errors/timeouts on a path whose controls passed: not evidence against the egress
+        return _bad(prev_streak, prev_other, "FAILING", "HARNESS", reason, s, "PROBE_INVALID")
     if refused and refused >= max(stalled, errors):
-        cause = "EGRESS_REFUSED"
+        mode = "WITHHELD"
     elif stalled > refused and stalled >= errors:
-        cause = "PLAYBACK_STALLED"
-    elif errors and not refused and not stalled:
-        cause = "HARNESS"   # only probe errors/timeouts on a path whose controls passed: not evidence against the egress
+        mode = "STALLED"
     else:
-        cause = "MIXED"
-    return _bad(prev_streak, prev_other, "FAILING", cause, f"{s['played']}/{s['genuine']} genuine Shorts played; {failing}", s)
+        mode = "MIXED"
+    return _bad(prev_streak, prev_other, "FAILING", "MEDIA_PLAYBACK_FAILED", reason, s, explain(s, probe, native_played), mode)
 
 
-def _bad(prev_media: int, prev_other: int, kind: str, cause: str, reason: str, s: dict) -> dict:
+def _bad(prev_media: int, prev_other: int, kind: str, cause: str, reason: str, s: dict, explanation: str = "UNKNOWN",
+         failure_mode: str | None = None) -> dict:
     if klass(cause) == "other":
         media, other = prev_media, prev_other + 1      # no evidence: the media streak is neither advanced nor reset
         n = other
@@ -161,7 +183,8 @@ def _bad(prev_media: int, prev_other: int, kind: str, cause: str, reason: str, s
         status = "DEGRADED"
     else:
         status = "SUSPECT" if kind == "FAILING" else "UNVERIFIED"
-    return {"status": status, "cause": cause, "streak": n, "media_streak": media, "other_streak": other,
+    return {"status": status, "cause": cause, "explanation": explanation, "failure_mode": failure_mode,
+            "context": SYNTHETIC_CONTEXT, "streak": n, "media_streak": media, "other_streak": other,
             "reason": f"{kind}: {reason}", "summary": s}
 
 
@@ -191,7 +214,8 @@ def next_state(prev: dict, ev: dict, now: float) -> tuple[dict, list[dict]]:
             k = klass(ev["cause"])
             last = st.get("alert_times", {}).get(f"{k}:{level}", 0)
             if level > st.get("alerted_levels", {}).get(k, 0) or now - last >= ALERT_COOLDOWN_S:
-                events.append({"event": ev["status"], "cause": ev["cause"], "streak": ev["streak"], "reason": ev["reason"]})
+                events.append({"event": ev["status"], "cause": ev["cause"], "explanation": ev.get("explanation"),
+                               "context": ev.get("context"), "streak": ev["streak"], "reason": ev["reason"]})
                 st.setdefault("alert_times", {})[f"{k}:{level}"] = now
                 st.setdefault("alerted_levels", {})[k] = max(st.get("alerted_levels", {}).get(k, 0), level)
                 st["alerted_level"] = max(st.get("alerted_level", 0), level)
@@ -200,6 +224,22 @@ def next_state(prev: dict, ev: dict, now: float) -> tuple[dict, list[dict]]:
 
 
 EXIT = {"OK": 0, "SUSPECT": 1, "DEGRADED": 1, "CRITICAL": 2, "UNVERIFIED": 3, "PATH_DOWN": 3}
+
+
+def load_native_evidence(path: str | None, label: str, now: float) -> bool | None:
+    """A recorded native (non-automated) observation for this egress: {label, unix, shorts_played, context}. Only a fresh
+    record for this label counts; anything else is no evidence (None). It can refine the explanation, never the status."""
+    if not path:
+        return None
+    try:
+        rec = json.load(open(path))
+    except (OSError, ValueError):
+        return None
+    if rec.get("label") != label or not isinstance(rec.get("shorts_played"), bool):
+        return None
+    if not 0 <= now - float(rec.get("unix", 0) or 0) <= NATIVE_EVIDENCE_MAX_AGE_S:
+        return None
+    return rec["shorts_played"]
 
 
 def load_corpus(path: str | None) -> list[str]:
@@ -283,6 +323,8 @@ def main(argv=None) -> int:
     ap.add_argument("--sample", type=int, default=2, help="ids taken from the corpus per run")
     ap.add_argument("--discover", type=int, default=3, help="ids discovered from the live Shorts feed per run")
     ap.add_argument("--alert-cmd", default=os.environ.get("SHORTS_ALERT_CMD"))
+    ap.add_argument("--native-evidence", default=os.environ.get("SHORTS_NATIVE_EVIDENCE"),
+                    help="JSON record of a recent native-device observation on this egress (refines the explanation only)")
     ap.add_argument("--force", action="store_true", help="ignore the minimum interval between runs")
     a = ap.parse_args(argv)
     if a.proxy is None:
@@ -310,7 +352,8 @@ def main(argv=None) -> int:
     t0 = time.time()
     if path_ok:   # no point (and no load on Google) in driving a browser through a dead path
         probe = run_probe(a, shorts, os.path.join(a.state_dir, f"{a.label}.last-probe.json"))
-    ev = evaluate(effective_media_streak(prev, now), probe, path_ok, path_reason, int(prev.get("other_streak", 0) or 0))
+    ev = evaluate(effective_media_streak(prev, now), probe, path_ok, path_reason, int(prev.get("other_streak", 0) or 0),
+                  load_native_evidence(a.native_evidence, a.label, now))
     st, events = next_state(prev, ev, now)
     st["last_run"] = now
     st["utc"] = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat(timespec="seconds")
@@ -325,7 +368,8 @@ def main(argv=None) -> int:
     with open(state_file + ".tmp", "w") as f:
         json.dump(st, f)
     os.replace(state_file + ".tmp", state_file)
-    line = {"utc": st["utc"], "label": a.label, "status": ev["status"], "cause": ev["cause"], "streak": ev["streak"],
+    line = {"utc": st["utc"], "label": a.label, "status": ev["status"], "cause": ev["cause"],
+            "explanation": ev["explanation"], "failure_mode": ev["failure_mode"], "context": ev["context"], "streak": ev["streak"],
             "media_streak": ev["media_streak"], "other_streak": ev["other_streak"], "reason": ev["reason"], "path": {k: v["class"] for k, v in controls.items()}, "sample": shorts,
             "summary": ev["summary"], "probe_seconds": round(time.time() - t0, 1), "alerts": [e["event"] for e in events],
             "alert_errors": alert_errors}

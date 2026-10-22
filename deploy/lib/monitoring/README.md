@@ -9,11 +9,20 @@ Tunnel health and media health are reported separately, every run:
 * **MEDIA** - genuine Shorts (2 from a corpus + 3 discovered from the live feed, so no static id decides forever) are played in a
   mobile browser; a Short counts only if the page stayed on `/shorts/`, media was delivered and the clock advanced.
   Each failing Short gets one class: `BOT_CHECK`, `REFUSED`, `MEDIA_WITHHELD`, `STALLED`, `PROBE_TIMEOUT`, `PROBE_ERROR`;
-  items that are not Shorts are `NOT_SHORT` and excluded. The run's `cause` is `EGRESS_REFUSED`, `PLAYBACK_STALLED`,
-  `PATH_DOWN`, `HARNESS` (probe broken / too few genuine Shorts: not evidence against the egress) or `MIXED`.
+  items that are not Shorts are `NOT_SHORT` and excluded. The run's `cause` is the observed outcome:
+  `MEDIA_PLAYBACK_FAILED` (with `failure_mode` `WITHHELD`, `STALLED` or `MIXED`), `PATH_DOWN`, or `HARNESS` (probe broken /
+  too few genuine Shorts: not evidence against the egress).
+- **Explanation (I-83)** is a separate field and is `UNKNOWN` unless stronger evidence exists. A 155-byte
+  `application/vnd.yt-ump` reply, an "unavailable" page, a bot check or zero media seen by a signed-out automated browser
+  (`context: synthetic-signed-out-automated`) does not prove an IP refusal. `EGRESS_REFUSED` requires the same harness to
+  play every genuine Short through a reference egress (`reference` in the probe result) in the same run.
+  `AUTOMATION_SPECIFIC_FAILURE` requires a fresh (<1 h) native-device success on this egress (`--native-evidence` /
+  `SHORTS_NATIVE_EVIDENCE`). `NETWORK_FAILURE` and `PROBE_INVALID` come from `PATH_DOWN` and `HARNESS`. The explanation
+  never changes the status or streaks, so a real playback failure still escalates to CRITICAL.
+  `install-shorts-monitor.sh` (install and `--check`) runs the installed classifier against that 155-byte signature, and
+  fails if a repair or downgrade restored the pre-I-83 classifier.
 
-Two streaks, never mixed: a **media** streak (real playback evidence against the egress: `EGRESS_REFUSED`, `PLAYBACK_STALLED`,
-`MIXED`) and a **no-evidence** streak (`HARNESS`, `PATH_DOWN`: the probe could not run, too few genuine Shorts, the path was down).
+Two streaks, never mixed: a **media** streak (real playback evidence on this egress: `MEDIA_PLAYBACK_FAILED`) and a **no-evidence** streak (`HARNESS`, `PATH_DOWN`: the probe could not run, too few genuine Shorts, the path was down).
 A media failure advances the media streak and ends the other; a run without evidence advances only its own streak and leaves the
 media streak as it was; OK clears both. A media streak not refreshed for 3 h is not "consecutive" with a new failure. Alerts are
 deduplicated per class, so "the monitor is blind" can never mask "the egress is refused" (found live: a broken probe followed by the
@@ -25,7 +34,7 @@ always appended to `alerts.jsonl`; an undeliverable alert fails the unit (exit 4
 by a lock, and nice'd; the default schedule is every 30 min.
 
 There is deliberately **no automatic re-routing**. Moving Google traffic to another egress is an owner-approved action
-(`docs/operations/YOUTUBE_EGRESS_ARCHITECTURE.md`, INV-6/7/8); on CRITICAL with cause `EGRESS_REFUSED` follow
+(`docs/operations/YOUTUBE_EGRESS_ARCHITECTURE.md`, INV-6/7/8); on CRITICAL with explanation `EGRESS_REFUSED` follow
 `docs/runbooks` / the architecture record: qualify another target, never fall back to `direct`.
 
 Deploy and verify (source-controlled; the installer/updater do NOT run this, the monitor is opt-in):

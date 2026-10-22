@@ -30,6 +30,15 @@ run() { SHORTS_UNIT_DIR="$T/u" SHORTS_STATE_DIR="$T/st" SHORTS_ENV_FILE="$T/e/en
 now() { date +%s; }
 state() { printf '{"streak": 0, "status": "%s", "last_run": %s}\n' "$1" "$2" >"$T/st/exit-direct.state.json"; }
 
+# I-83: a pre-I-83 classifier (the df47737 one) must make install refuse and --check fail.
+git -C "$ROOT" show df47737:deploy/lib/monitoring/shorts_health.py >"$T/old_classifier.py" 2>/dev/null || cp /dev/null "$T/old_classifier.py"
+mkenv; out="$(SHORTS_CLASSIFIER="$T/old_classifier.py" run --label exit-direct)"; rc=$?
+{ [ $rc -ne 0 ] && [ ! -e "$T/u/vpn-shorts-health@.timer" ] && grep -q 'pre-I-83 classifier' <<<"$out"; } && ok "install refuses a pre-I-83 classifier and installs nothing" || bad "old classifier accepted: rc=$rc $out"
+mkenv; run --label exit-direct >/dev/null; out="$(SHORTS_CLASSIFIER="$T/old_classifier.py" run --check --label exit-direct)"; rc=$?
+{ [ $rc -ne 0 ] && grep -q 'FAIL.*pre-I-83' <<<"$out"; } && ok "--check fails when the installed classifier reverted" || bad "revert not detected: rc=$rc"
+mkenv; out="$(run --check --label exit-direct)"
+grep -q 'PASS  classifier .* (I-83)' <<<"$out" && ok "--check passes the shipped classifier" || bad "shipped classifier not accepted: $out"
+
 mkenv
 out="$(run --check --label exit-direct)"; rc=$?
 { [ $rc -ne 0 ] && grep -q 'FAIL.*not installed' <<<"$out"; } && ok "--check on an empty host fails and says the monitor is not installed" || bad "empty host not reported: rc=$rc $out"

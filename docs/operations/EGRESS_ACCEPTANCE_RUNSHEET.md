@@ -39,7 +39,7 @@ family), key-only ssh, no provisioning agent that can restart sing-box unattende
    throwaway tunnel client (what a user's traffic really takes): put `PROXY_exit_hairpin=socks5://127.0.0.1:<port>` in
    `/etc/vpn/shorts-health.env` for a throwaway sing-box client pointed at the staging REALITY listener, then
    `install-shorts-monitor.sh --label exit-hairpin` and `--check --label exit-hairpin`.
-2. Expected: `exit-direct` stays `CRITICAL/EGRESS_REFUSED` (it is the control), `exit-hairpin` goes OK after the first run, and after two consecutive
+2. Expected: `exit-direct` stays `CRITICAL/MEDIA_PLAYBACK_FAILED` (it is the control; the explanation is `EGRESS_REFUSED` only with a same-run reference that plays, see I-83), `exit-hairpin` goes OK after the first run, and after two consecutive
    OK runs the alert clears with `RECOVERED` (**this is the real recovery evidence EXT-2 needs**; the hermetic tests do not replace it).
 3. C6: REALITY and Hysteria2 clients, 10/10 genuine Shorts each; non-Google traffic exits from the staging IP, the Google set from the target.
 4. C7: update, `--repair` and a reboot leave the hairpin config and the routing fingerprint unchanged.
@@ -48,7 +48,7 @@ family), key-only ssh, no provisioning agent that can restart sing-box unattende
 
 ## Failure handling and failover (design, not implemented)
 * One approved target means **no failover exists**. On target loss the hairpin fails closed and the monitor reports it (`PATH_DOWN` or
-  `EGRESS_REFUSED`); the operator is told, traffic is never silently routed through the refused address or any unapproved one.
+  `MEDIA_PLAYBACK_FAILED`); the operator is told, traffic is never silently routed through the refused address or any unapproved one.
 * A second approved target is the precondition for any failover. It would need its own C1-C8, a bounded switch with hysteresis, and an owner
   decision; none exists, so none is built.
 

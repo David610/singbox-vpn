@@ -10,7 +10,11 @@
 # A CRITICAL/DEGRADED MEDIA verdict is reported (INFO) but is not a deployment failure: it is the monitor doing its job.
 # Install refuses, installing nothing, when the prerequisites do not hold. There is deliberately no automatic re-routing.
 #
-# Test/override environment: SHORTS_UNIT_DIR SHORTS_STATE_DIR SHORTS_ENV_FILE SYSTEMCTL SHORTS_MAX_AGE_S
+# I-83: install and --check also run the classifier that the units will execute against the real 155-byte UMP failure
+# signature. It must answer MEDIA_PLAYBACK_FAILED / UNKNOWN. A repair or downgrade that restored the old classifier, which
+# called that signature EGRESS_REFUSED, therefore fails visibly instead of silently.
+#
+# Test/override environment: SHORTS_UNIT_DIR SHORTS_STATE_DIR SHORTS_ENV_FILE SYSTEMCTL SHORTS_MAX_AGE_S SHORTS_CLASSIFIER
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_DIR="${SHORTS_UNIT_DIR:-/etc/systemd/system}"
@@ -18,6 +22,7 @@ STATE_DIR="${SHORTS_STATE_DIR:-/var/lib/singbox-vpn/shorts-health}"
 ENV_FILE="${SHORTS_ENV_FILE:-/etc/vpn/shorts-health.env}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 MAX_AGE_S="${SHORTS_MAX_AGE_S:-7200}"   # the timer runs every 30 min; 4 missed runs = the monitor has stopped
+CLASSIFIER="${SHORTS_CLASSIFIER:-$HERE/shorts_health.py}"
 UNITS=(vpn-shorts-health@.service vpn-shorts-health@.timer)
 CHECK=0; LABELS=()
 while [ "$#" -gt 0 ]; do case "$1" in
@@ -34,8 +39,23 @@ prereq() { # prints FAIL lines; used by install (refuse) and check
   if [ -n "$br" ] && [ -d "$br" ] && [ -n "$(ls -A "$br" 2>/dev/null)" ]; then pass "PLAYWRIGHT_BROWSERS_PATH present and non-empty"; else fail "PLAYWRIGHT_BROWSERS_PATH ('${br:-unset}') missing or empty: no browser for the probe"; fi
 }
 
+classifier_contract() { # I-83: outcome and explanation are separate; the 155-byte signature alone is not an IP refusal
+  local got
+  got="$(python3 -I - "$CLASSIFIER" 2>/dev/null <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sh", sys.argv[1]); sh = importlib.util.module_from_spec(spec); spec.loader.exec_module(sh)
+r = {"kind": "short", "counts_as_short": True, "play": False, "playabilityStatus": "OK", "ui_unavailable": True,
+     "media": {"responses": 1, "bytes": 155, "content_types": ["application/vnd.yt-ump"]}}
+e = sh.evaluate(0, {"results": [r, r, r]})
+print(e.get("cause"), e.get("explanation"))
+PY
+)" || got=""
+  if [ "$got" = "MEDIA_PLAYBACK_FAILED UNKNOWN" ]; then pass "classifier $CLASSIFIER separates outcome from explanation (I-83)"
+  else fail "classifier $CLASSIFIER answers '${got:-error}' for the 155-byte UMP signature, want 'MEDIA_PLAYBACK_FAILED UNKNOWN': pre-I-83 classifier (repair/downgrade restored it?)"; fi
+}
+
 if [ "$CHECK" -eq 0 ]; then
-  prereq_out="$(prereq)"; if grep -q '^FAIL' <<<"$prereq_out"; then
+  prereq_out="$(prereq; classifier_contract)"; if grep -q '^FAIL' <<<"$prereq_out"; then
     echo "$prereq_out"; echo "REFUSING to install: prerequisites do not hold (nothing was installed)."; exit 1; fi
   for u in "${UNITS[@]}"; do install -m0644 "$HERE/$u" "$UNIT_DIR/$u" || { echo "could not install $u" >&2; exit 1; }; done
   "$SYSTEMCTL" daemon-reload || exit 1
@@ -51,6 +71,7 @@ for u in "${UNITS[@]}"; do
   else fail "$u differs from the shipped unit (edited by hand, or an older release's copy): re-run install-shorts-monitor.sh"; fi
 done
 prereq
+classifier_contract
 now="$(date +%s)"
 for l in "${LABELS[@]}"; do
   t="vpn-shorts-health@$l.timer"
