@@ -1,4 +1,4 @@
-import importlib.util, os, tempfile, unittest
+import importlib.util, os, shutil, tempfile, unittest
 spec = importlib.util.spec_from_file_location("rr", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rc_report.py"))
 rr = importlib.util.module_from_spec(spec); spec.loader.exec_module(rr)
 
@@ -7,7 +7,9 @@ def g(id_, status, mandatory=True, evidence=None, note=""):
 
 class Report(unittest.TestCase):
     def setUp(self):
-        self.d = tempfile.mkdtemp(); open(os.path.join(self.d, "ev.txt"), "w").write("x")
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+        open(os.path.join(self.d, "ev.txt"), "w").write("x")
     def test_pass_without_evidence_is_invalid(self):
         self.assertTrue(any("without evidence" in e for e in rr.validate([g("G1", "PASS")], self.d)))
     def test_pass_with_missing_evidence_file_is_invalid(self):

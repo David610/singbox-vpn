@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import subprocess
+import shutil
 import tempfile
 import unittest
 
@@ -18,6 +19,7 @@ def git(d, *a):
 class Scan(unittest.TestCase):
     def repo(self, content):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         git(d, "init", "-q", "-b", "main")
         open(os.path.join(d, "a.txt"), "w").write("base\n")
         git(d, "add", "-A"); git(d, "commit", "-qm", "base")
@@ -58,7 +60,9 @@ class Scan(unittest.TestCase):
         self.assertEqual(res["k#1"], ["commits HEAD~2..HEAD"])
 
     def test_hex_digests_and_short_values_are_not_treated_as_secrets(self):
-        d = tempfile.mkdtemp(); f = os.path.join(d, "s"); open(f, "w").write("a" * 64)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        f = os.path.join(d, "s"); open(f, "w").write("a" * 64)
         self.assertEqual(sks.collect([f"k={f}"], None, None), {})
         open(f, "w").write("short"); self.assertEqual(sks.collect([f"k={f}"], None, None), {})
 
