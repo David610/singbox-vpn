@@ -432,7 +432,24 @@ INSTALL_WORK="$(mktemp -d /tmp/singbox-vpn-inner.XXXXXXXX)" || die "cannot creat
 echo "$$" >"$INSTALL_WORK/.owner-pid"
 export TMPDIR="$INSTALL_WORK"
 cleanup_scratch() { rm -rf --one-file-system -- "$INSTALL_WORK"; }
-trap cleanup_scratch EXIT
+# I-74: a script that SOURCES this file (the shell tests do) may already have an
+# EXIT trap of its own; replacing it leaked that script's temp directories.
+# Keep it: run our scratch cleanup, then the caller's command unchanged.
+install_scratch_exit_trap() {
+  local saved prev=""
+  saved="$(trap -p EXIT)"
+  if [ -n "$saved" ]; then
+    eval "set -- $saved" # trap -- 'command' EXIT  ->  $3 is the command
+    prev="${3:-}"
+  fi
+  if [ -n "$prev" ]; then
+    # shellcheck disable=SC2064 # expanded now on purpose: $prev is the caller's text
+    trap "cleanup_scratch; $prev" EXIT
+  else
+    trap cleanup_scratch EXIT
+  fi
+}
+install_scratch_exit_trap
 
 # SIGINT/SIGTERM (Ctrl-C, or `systemctl stop`/timeout/orchestration
 # killing this script) previously had NO handler outside the narrow
@@ -605,6 +622,50 @@ source_tree_digest() {
   local dir="${1:?source dir}"
   ( cd "$dir" && find . \( -name target -o -name .git \) -prune -o -type f -print0 \
       | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}' )
+}
+
+# I-49: a local-tree (staging/dev) install has no SINGBOX_VPN_SOURCE_COMMIT, so
+# the manifest recorded only a content digest. When the tree is a git work tree,
+# record its HEAD commit and whether the tree differs from it. Read-only; must
+# run BEFORE persist_source_tree, whose copy excludes .git. `-c safe.directory`
+# keeps root from refusing a checkout owned by another user.
+LOCAL_TREE_GIT_COMMIT=""
+LOCAL_TREE_GIT_DIRTY=""
+capture_local_tree_provenance() {
+  local dir="${1:-$REPO_ROOT}" commit status_out
+  LOCAL_TREE_GIT_COMMIT=""
+  LOCAL_TREE_GIT_DIRTY=""
+  [ -z "${SINGBOX_VPN_SOURCE_COMMIT:-}" ] || return 0
+  [ -e "$dir/.git" ] && command -v git >/dev/null 2>&1 || return 0
+  commit="$(git -c safe.directory="$dir" -C "$dir" rev-parse --verify HEAD 2>/dev/null)" || return 0
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || return 0
+  status_out="$(git -c safe.directory="$dir" -C "$dir" status --porcelain --untracked-files=normal 2>/dev/null)" || status_out="?"
+  LOCAL_TREE_GIT_COMMIT="$commit"
+  if [ -z "$status_out" ]; then LOCAL_TREE_GIT_DIRTY="false"; else LOCAL_TREE_GIT_DIRTY="true"; fi
+  return 0
+}
+
+# Commit/dirty values the manifest records for a local-tree install: this
+# run's git provenance if the tree has .git; otherwise (repair from the
+# persisted copy) the commit already recorded for the SAME tree content. A
+# different tree never inherits an old commit. Sets RESOLVED_SOURCE_*.
+resolve_local_source_provenance() {
+  local manifest="${1:?manifest}" digest="${2:-}" old_digest old_commit
+  RESOLVED_SOURCE_COMMIT=""
+  RESOLVED_SOURCE_DIRTY=""
+  if [ -n "$LOCAL_TREE_GIT_COMMIT" ]; then
+    RESOLVED_SOURCE_COMMIT="$LOCAL_TREE_GIT_COMMIT"
+    RESOLVED_SOURCE_DIRTY="$LOCAL_TREE_GIT_DIRTY"
+    return 0
+  fi
+  [ -n "$digest" ] && [ -f "$manifest" ] || return 0
+  old_digest="$(sed -n 's/^  "source_tree_sha256": "\([0-9a-f]\{64\}\)".*/\1/p' "$manifest")"
+  old_commit="$(sed -n 's/^  "source_commit": "\([0-9a-f]\{40\}\)".*/\1/p' "$manifest")"
+  if [ "$old_digest" = "$digest" ] && [ -n "$old_commit" ]; then
+    RESOLVED_SOURCE_COMMIT="$old_commit"
+    RESOLVED_SOURCE_DIRTY="$(sed -n 's/^  "source_tree_dirty": "\(true\|false\)".*/\1/p' "$manifest")"
+  fi
+  return 0
 }
 
 # An earlier run that was killed between the two renames of a source swap
@@ -840,6 +901,7 @@ preflight_stage() {
   # ---------------------------------------------------------------
   ownership_mark INSTALL_ATTEMPTED
   ownership_set_baseline_once OPT_SINGBOX_VPN_PRE_EXISTED "$OPT_SINGBOX_VPN_PRE_EXISTED"
+  capture_local_tree_provenance "$REPO_ROOT"
   persist_source_tree
   # ---------------------------------------------------------------
   # Collect and validate EVERY required operator input and fatal
@@ -3136,8 +3198,13 @@ write_install_state_manifest() {
   singbox_version="$("$SINGBOX_BIN" version 2>/dev/null | head -n1 | sed 's/"/\\"/g' || echo unknown)"
   local singbox_vpn_version="${SINGBOX_VPN_VERSION:-main}"
   local source_ref="${SINGBOX_VPN_SOURCE_REF:-${SINGBOX_VPN_VERSION:-}}"
-  local source_commit="${SINGBOX_VPN_SOURCE_COMMIT:-}" source_tree_sha256=""
+  local source_commit="${SINGBOX_VPN_SOURCE_COMMIT:-}" source_tree_sha256="" source_tree_dirty=""
   [ -d "$REPO_ROOT" ] && source_tree_sha256="$(source_tree_digest "$REPO_ROOT" 2>/dev/null || true)"
+  if [ -z "$source_commit" ]; then
+    resolve_local_source_provenance "$manifest" "$source_tree_sha256"
+    source_commit="$RESOLVED_SOURCE_COMMIT"
+    source_tree_dirty="$RESOLVED_SOURCE_DIRTY"
+  fi
   # Identity of the executables this installer placed in $BIN_DIR, so
   # `vpn-admin doctor` can tell the recorded release from a development
   # build or a hand-copied binary (both report the same Cargo version).
@@ -3181,6 +3248,7 @@ write_install_state_manifest() {
   "source_ref": "$source_ref",
   "source_commit": "$source_commit",
   "source_tree_sha256": "$source_tree_sha256",
+  "source_tree_dirty": "$source_tree_dirty",
   "acceptance": "$acceptance"
 }
 EOF
