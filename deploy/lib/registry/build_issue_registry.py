@@ -208,6 +208,60 @@ NEW = [
 ]
 
 
+# Recovery findings were previously documented only in the 2026-10-22 handoff.
+# Keep them in this generator so rebuilding the single registry cannot lose them.
+NEW += [
+    n("I-81", "high", "installer/updater build capacity", "CI_VERIFIED",
+      "source builds could exhaust disk/inodes; recovery adds a reserve, estimate, bounded jobs and managed cache",
+      "a0964336d72bf6eb8fd232335712860163cbe210; 92ba6a4201f03f723f92c7553e0ecc16c264177c; merged by #163",
+      "deploy/lib/tests/test-preflight-build-budget.sh", "no",
+      "new-host capacity and real build footprint must be measured again",
+      "docs/handoffs/2026-10-22/RECOVERY-STATE.md; CI 39818433277 on 6825fcf"),
+    n("I-83", "high", "Shorts monitor cause inference", "CI_VERIFIED",
+      "a tiny UMP reply from an automated browser was treated as proof of egress refusal",
+      "f75b863bbe25557a2812362eb12fb34b0f8bd209; 2d0da8dd47754cd6fdd3be6085d370d88089facb; merged by #163",
+      "test_shorts_health.py; test-shorts-monitor-install.sh", "yes",
+      "signed-in/Incognito native differential root cause remains UNKNOWN",
+      "docs/handoffs/2026-10-22/RECOVERY-STATE.md; CI 39818433277 on 6825fcf"),
+    n("I-84", "high", "release evidence acceptance", "FIXED_IN_BRANCH",
+      "validator allowed DEVICE_VERIFIED/PRODUCTION_READY without Incognito, sustained playback or recovery evidence",
+      "require transport/network/session-mode cells, exact runtime hash, YouTube version, 900 seconds, seeking and recovery gates",
+      "test_release_evidence.py: signed-in-only and missing gate mutations fail before the fix", "yes",
+      "validator verifies record completeness, not authenticity of operator-supplied evidence; physical acceptance remains blocked",
+      "docs/qualification/2026-10-22/RELEASE.md"),
+    n("I-85", "high", "GitHub governance", "CONFIRMED_OPEN",
+      "active Protect main ruleset has no required CI/Security checks, contrary to release policy",
+      "owner must require offline-full-verdict, codeql-rust and codeql-actions; inspect classic protection too",
+      "GET rulesets/22482226; no required_status_checks rule", "no",
+      "classic branch protection endpoint returned 403; settings not changed",
+      "docs/qualification/2026-10-22/SECURITY-OPERATIONS.md"),
+    n("I-86", "critical", "fin1 SSH trust", "BLOCKED",
+      "five historical successful root password logins remain owner-unconfirmed; possible compromise",
+      "owner verification and provider-console security response before any host change",
+      "read-only auth-log review required; no SSH access in this environment", "no",
+      "current host state UNKNOWN; do not harden or install on an untrusted host",
+      "docs/handoffs/2026-10-22/PRE-INSTALL-CHECKLIST.md A3"),
+    n("I-87", "medium", "PR #160 event Retry-After", "CONFIRMED_OPEN",
+      "superseded-event delay applies 0.75..1.25 jitter after max(Retry-After, floor), allowing an early retry",
+      "FIX FIRST in separate paired integration; keep the server floor and add positive jitter afterwards",
+      "events.rs run_loop Superseded arm; lower bound is 0.75 times the server delay", "no",
+      "static proof only; Rust execution and mixed-version integration required before adoption",
+      "docs/qualification/2026-10-22/PR-INTEGRATION.md"),
+    n("I-88", "medium", "af_capture test-window coverage", "FIXED_IN_BRANCH",
+      "legacy report with two coincident bins could qualify a much longer A/B window with missing coverage",
+      "require boundary coverage within one aggregate bin; otherwise NO_OVERLAP_INCONCLUSIVE",
+      "test_af_capture.py::Overlap.test_partial_capture_cannot_qualify_a_longer_test_window", "no",
+      "aggregates correlate traffic only; no per-app attribution or media success follows",
+      "docs/qualification/2026-10-22/SHORTS.md"),
+    n("I-89", "medium", "Shorts monitor installer regression fixture", "FIXED_IN_BRANCH",
+      "shallow CI checkout cannot git-show df47737; fallback to an empty classifier tested import failure, not the historical misclassification",
+      "check in historical classifier as inert fixture data and assert it really emits EGRESS_REFUSED before testing installer refusal",
+      "test-shorts-monitor-install.sh with no historical commit object", "no",
+      "fixture intentionally preserves the old wrong classifier and must never be installed",
+      "fixture source: df47737eaca761f9a2a9bb30c91aa7000b98168d"),
+]
+
+
 # Carried audit issues re-assessed this session WITH evidence. Nothing is promoted
 # without a pointer to the evidence that supports the new state.
 UPGRADES = {

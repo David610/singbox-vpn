@@ -1,5 +1,10 @@
 # Production evidence ledger and device acceptance tests
 
+2026-10-22 qualification: no new native PASS is recorded. The rebuilt host
+and proposed rc.3 require the [current signed-in/Incognito procedure](qualification/2026-10-22/RUNBOOK.md).
+Older WARP comparison instructions below are historical and superseded by
+INV-7: do not use WARP or another third-party egress without owner authorization.
+
 This is the **one canonical current evidence ledger** for production and
 device claims. Other audit and investigation documents are historical or
 narrative records and must link here rather than independently upgrading a

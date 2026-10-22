@@ -160,6 +160,14 @@ baseline" section for what the baseline does and does not claim.
 
 ## Allowed changes between accepted RC and stable
 
+Native evidence must distinguish `signed_in` and `incognito` for both transports
+and both networks. The validator also requires the YouTube version, matching
+runtime binary digest, at least 900 seconds continuous playback, long-form
+playback/seek, reconnect, app restart, post-reconciliation playback and intended
+Google egress verification. See the dated
+[executable procedure](qualification/2026-10-22/RUNBOOK.md). A synthetic test
+fixture passing the validator is never device evidence.
+
 The stable tag may differ from the accepted RC only in:
 
 - `README.md` (release-status/documentation wording only);

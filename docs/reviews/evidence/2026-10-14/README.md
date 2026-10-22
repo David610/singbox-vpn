@@ -47,6 +47,9 @@ relay on CPU 3. Lab addresses (11.0.x.x) are not real hosts.
 | `greedy-client-20ms-100m.jsonl` | C: three users share a 20 ms, 100 Mbit/s link; one Hysteria2 user declares 500 Mbit/s. Exit as rendered on `main` vs with `ignore_client_bandwidth` (no caps) |
 | `hy2-bandwidth-caps.txt` | the opt-in Hysteria2 bandwidth caps locked out every client that declares no bandwidth (before this branch) and do not after |
 | `tcpdump-reality-cold.txt`, `tcpdump-hy2-cold.txt` | packet timing of one new proxied request per transport at 80 ms RTT (client side) |
+| `soak-90min-20ms/` | C: 90-minute soak at 20 ms (`soak.sh 5400`): `summary.txt`, exit samples every 10 s (`samples.csv`: RSS kB, fds, threads, CPU ticks at 100 Hz), long-lived pings (`long-*.json`), churn batches (`churn-*.jsonl`), bytes per 10 s bulk run (`bulk-*.txt`). Port 1080 = REALITY, 1081 = Hysteria2 |
+| `outage-80ms.jsonl` | C: `outage.sh` 5/20/40 s full client↔exit outages at 80 ms, 2 rounds each: open-connection survival, longest ping, time to the first working new request |
+| `reality-decoy-buffer-race.txt` | the CI failure behind W19 (trace excerpt, no secrets), record sizes of the resized test decoy, and the 30/30, 30/30 and 1.13.19 guard runs |
 | `upstream-proposal/` | lab-only patches: `sing-quic-close-on-shutdown.patch` + `sing-box-inbound-close-order.patch` (send QUIC `CONNECTION_CLOSE` to established Hysteria2 clients when the server stops; built to confirm the mechanism — sing-box 1.14.3 already does the equivalent through its new lifecycle `Scope`, so there is nothing to send upstream for this one) and `LAB-ONLY-client-fixed-rate-cc-attribution.patch` (attribution of the same-connection delay only, **not** a fix) |
 
 ## Method notes that matter when re-running
@@ -73,8 +76,9 @@ relay on CPU 3. Lab addresses (11.0.x.x) are not real hosts.
   from that host: `sameconn-queue-20ms`, `sameconn-direction-20ms`,
   `sameconn-wire-20ms`, `sameconn-up-only-declaration`,
   `sameconn-client-variants`, `greedy-client-20ms-100m`,
-  `restart-and-sameconn-1.14.3`, `restart-recovery-1.14.3-server-vs-client`
-  and `vpn-benchmark-default-run-lab.json`. The second VM ran Ubuntu 24.04.5
+  `restart-and-sameconn-1.14.3`, `restart-recovery-1.14.3-server-vs-client`,
+  `vpn-benchmark-default-run-lab.json`, `soak-90min-20ms/`, `outage-80ms.jsonl`
+  and the lab runs in `reality-decoy-buffer-race.txt`. The second VM ran Ubuntu 24.04.5
   LTS; the first VM's OS was not recorded. No singbox-vpn install was run on
   either. The 1.14.1 restart stall
   reproduced there unchanged (34.55 s) inside the server-vs-client run. They are

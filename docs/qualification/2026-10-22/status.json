@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "observed_date": "2026-10-22",
+  "base_sha": "6825fcf491fd44e80543edc0b076c5b114cade16",
+  "integration_branch": "integration/2026-10-22-production-qualification",
+  "proposed_release": "v1.3.1-rc.3",
+  "published": false,
+  "decision": "NO-GO",
+  "statuses": [
+    {"id": "baseline_code_qualified", "status": "PASS", "evidence": ["https://github.com/David610/singbox-vpn/actions/runs/39818433277", "https://github.com/David610/singbox-vpn/actions/runs/39818433134"]},
+    {"id": "integration_code_qualified", "status": "UNVERIFIED", "evidence": ["RELEASE.md"], "reason": "Fresh full CI/Security on exact integration commit required"},
+    {"id": "server_qualified", "status": "BLOCKED", "evidence": ["SECURITY-OPERATIONS.md"], "reason": "No host access; SSH trust unresolved; no corrected artifact installed"},
+    {"id": "device_verified", "status": "BLOCKED", "evidence": ["SHORTS.md", "RUNBOOK.md"], "reason": "No exact-artifact native acceptance"},
+    {"id": "standalone_production_ready", "status": "BLOCKED", "evidence": ["RELEASE.md", "SECURITY-OPERATIONS.md"]},
+    {"id": "arcana_commercial_production_ready", "status": "BLOCKED", "evidence": ["PR-INTEGRATION.md", "SECURITY-OPERATIONS.md"]}
+  ],
+  "shorts": {"signed_in": "UNVERIFIED", "incognito": "UNVERIFIED", "root_cause": "UNKNOWN", "device_evidence": "BLOCKED", "routing_fix_implemented": false},
+  "production_mutations": [],
+  "owner_next_action": "Explain the five recorded successful root password logins; establish trusted host and staging/device/backup prerequisites before authorizing installation"
+}

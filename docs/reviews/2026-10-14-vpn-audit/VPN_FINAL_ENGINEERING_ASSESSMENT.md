@@ -178,7 +178,8 @@ country).
 | Can managed configs still produce restart storms? | Bounded but yes: with `lease_pool_size > 0`, at most one rotation (= restart) per batch window (default 600 s) plus one per urgent revocation | `lease_pool.rs`, contract |
 | Do authorized user operations restart the whole data plane? | Yes, every create/disable/enable/remove/rotate/expiry; unchanged renders do not | code; lab |
 | Can restart frequency be reduced without weakening revocation? | Yes: batch non-urgent changes; keep disable/expiry immediate. 1.14.3 makes each restart cheap for Hysteria2 users. sing-box has no live user update | lab |
-| Do long connections survive maintenance? | No: every restart ends every connection (REALITY reconnects in ~1 s; Hysteria2 ~30 s on 1.14.1). The lab soak measured connection survival under steady load without restarts (results §3) | lab |
+| Do long connections survive maintenance? | No: every restart ends every connection (REALITY reconnects in ~1 s; Hysteria2 ~30 s on 1.14.1). Without restarts they do: the 90-min lab soak lost none of 4 long-lived connections, 17,340 new connections or 180 downloads (results §3.1) | lab |
+| Do open connections survive a network gap? | Lab, 80 ms: up to 20 s, yes on both (REALITY resumes ~17–19 s late because of TCP backoff); at 40 s REALITY's survive but resume ~35 s late and Hysteria2's are closed (30 s idle timeout). New connections work within 0.4 s in every case (results §3.2; R19) | lab |
 
 ## Multi-node and two-hop
 

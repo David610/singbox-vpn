@@ -180,7 +180,10 @@ def classify_window(report: dict, a: float, b: float, canary_windows=()) -> dict
     if cap.get("started") is not None:
         covered = cap["started"] <= a and (cap.get("ended") or cap.get("expires") or 0) >= b
     else:
-        covered = first is not None and a < last + BIN_S and b > first
+        # An overlapping fragment cannot establish coverage of the requested
+        # A/B test window. Legacy reports have only observation timestamps;
+        # allow one bin of boundary uncertainty, never minutes of missing data.
+        covered = first is not None and a < b and a <= first < a + BIN_S and last + BIN_S >= b
     if not covered:
         return out("NO_OVERLAP_INCONCLUSIVE", "capture_does_not_cover_window")
     canary = lambda s: any(s < c1 and s + BIN_S > c0 for c0, c1 in canary_windows)   # noqa: E731

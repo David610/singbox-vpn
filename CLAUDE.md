@@ -6,8 +6,10 @@ Shorts can fail because **YouTube refuses to serve Shorts media to some
 egress IPs, independently per address family** (historical measurements,
 2026-10-11/12). The fix routes the
 Google/YouTube domain set out through the other node's IP
-(`google_egress_hairpin`). It is verified on a real iPhone and must not be
-broken.
+(`google_egress_hairpin`). Older iPhone success is USER-REPORTED; it does
+not accept a current release or explain the later signed-in/Incognito
+differential. Preserve the routing invariants. The current differential's
+root cause is UNKNOWN until controlled native evidence identifies it.
 
 Before changing anything that routes, renders, deploys or "improves"
 Google/YouTube traffic (`google_egress_hairpin`, `GOOGLE_EGRESS_DOMAINS`, exit

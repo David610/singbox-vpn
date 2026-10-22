@@ -1,4 +1,11 @@
-# YouTube native-app failure — investigation record (2026-09-08, corrected 2026-09-16, root cause proven 2026-10-11)
+# YouTube native-app failure — historical investigation record
+
+Current qualification note (2026-10-22): the older egress-dependent browser
+measurements below do not establish the cause of the later native signed-in
+versus Incognito differential. Its root cause remains UNKNOWN. A tiny UMP
+reply from automated Chromium is not proof of an IP ban. See
+[current Shorts report](qualification/2026-10-22/SHORTS.md) and the canonical
+[device ledger](DEVICE_ACCEPTANCE_TESTS.md) before interpreting older claims.
 
 > **SUPERSEDED BY §18 (2026-10-11). Read
 > [`YOUTUBE_FIX_INVARIANTS.md`](YOUTUBE_FIX_INVARIANTS.md) first.** The cause
