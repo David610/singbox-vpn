@@ -75,3 +75,8 @@ None of the reconstructions needs the VPN. Next is owner input: SSH key, backup 
 - I-83: the explanation evidence is new interface. It is a `reference` result in the probe output plus `--native-evidence`, and the probe does not produce `reference` yet. Until it does, failures stay UNKNOWN, which is the conservative behaviour. Before the change, causes were `EGRESS_REFUSED`/`PLAYBACK_STALLED`/`MIXED`; now the cause is `MEDIA_PLAYBACK_FAILED` and the detail is in `failure_mode`.
 - af_capture: the original CLI, file format and live status layout are unknown, so these are new. The canary windows are supplied by the operator, because packets cannot distinguish the agent's canaries from the phone. Bins are in UTC unix seconds.
 - If the original session exports arrive, diff them against these files first and keep any tested behaviour the originals had that these lack.
+
+## CI on `85fe2c7` (run 39799935640, 2026-10-22)
+- 20 jobs succeeded, including `shell` (shellcheck and all `deploy/lib/tests/*.sh`), `test`, `fmt`, `clippy`, `release-build` and every os-matrix job. `offline-full-verdict` was skipped.
+- 2 jobs failed: `audit` (the "Run cargo audit" step) and `singbox-validate` (the "Real VLESS+REALITY and Hysteria2 interoperability tests" step). Both **also fail on the untouched baseline `df47737`**, so they are not caused by the reconstructions.
+- These are the "two failing jobs" whose fixes were reportedly in the MISSING `e93f29d`. They are the next engineering item, after which the restoration plan proceeds (`RESTORATION-PLAN.md`).
