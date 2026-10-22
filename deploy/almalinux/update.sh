@@ -739,6 +739,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   # The suite runs on this live host, so it runs isolated from the host's
   # service manager (deploy/lib/test-isolation.sh, defect D6), and what the
   # updater then says about live services is observed, not assumed.
+  preflight_source_build_guard "$REPO_ROOT" || die "not enough free disk/inodes for the test build and rebuild (I-81); nothing was changed"
   log "running tests before touching installed state (isolated: no systemd/D-Bus access, host-control tools guarded)..."
   test_guard_dir="$(mktemp -d /tmp/singbox-vpn-test-isolation.XXXXXX)"
   services_before_tests="$(host_service_fingerprint)"
@@ -763,6 +764,7 @@ if [ "$DEV_REBUILD" -eq 1 ]; then
   # --locked matches every CI build/test job: without it, this could
   # silently resolve a different dependency set than the one committed
   # Cargo.lock records and cargo audit gates in CI.
+  preflight_source_build_guard "$REPO_ROOT" || die "not enough free disk/inodes for a source build (I-81); nothing was changed"
   ( cd "$REPO_ROOT" && cargo build --release --locked -p admin -p subscription -p provisioning-agent )
 
   install -d -m 0700 -o root -g root "$BACKUP_ROOT"

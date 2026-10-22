@@ -45,6 +45,24 @@ expect_rc "unknown free space fails closed" 1 preflight_check_build_budget "$T" 
 FAKE_AVAIL_MIB=30000
 unset -f df
 
+echo "--- installer/updater source-build guard ---"
+FAKE_IFREE=500000; FAKE_AVAIL_MIB=30000
+(
+  df() { case "$1" in -*i*) printf 'F I U %s\n/dev/x 1 1 %s 1%% /\n' x "$FAKE_IFREE" ;; *) printf 'F 1M U A\n/dev/x 40000 1 %s 1%% /\n' "$FAKE_AVAIL_MIB" ;; esac; }
+  unset CARGO_BUILD_JOBS
+  preflight_source_build_guard "$T" && [ "${CARGO_BUILD_JOBS:-0}" -ge 1 ] && [ "$CARGO_BUILD_JOBS" -le "$(nproc)" ]
+) && ok "guard passes with headroom and bounds CARGO_BUILD_JOBS" || bad "guard with headroom"
+(
+  df() { case "$1" in -*i*) printf 'F I U %s\n/dev/x 1 1 %s 1%% /\n' x 500000 ;; *) printf 'F 1M U A\n/dev/x 40000 1 %s 1%% /\n' 9000 ;; esac; }
+  preflight_source_build_guard "$T"
+) >/dev/null 2>&1 && bad "guard allowed a build without headroom" || ok "guard refuses a source build without headroom"
+for f in deploy/almalinux/install.sh deploy/almalinux/update.sh; do
+  src="$(cat "$REPO_ROOT/$f")"
+  n_cargo="$(grep -cE '^[^#]*cargo (build|test) ' <<<"$src" || true)"
+  n_guard="$(grep -cE '^[^#]*preflight_source_build_guard ' <<<"$src" || true)"
+  [ "$n_cargo" -ge 1 ] && [ "$n_guard" -ge "$n_cargo" ] && ok "$f guards each of its $n_cargo cargo build/test call(s)" || bad "$f: $n_cargo cargo call(s), $n_guard guard(s)"
+done
+
 echo "--- cargo env ---"
 (
   SINGBOX_VPN_BUILD_CACHE="$T/cache"

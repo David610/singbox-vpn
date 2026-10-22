@@ -1764,6 +1764,7 @@ build_binaries_from_source() {
   # --locked matches every CI build/test job: without it, this install-time
   # build could silently resolve a different dependency set than the one
   # committed Cargo.lock records and cargo audit gates in CI.
+  preflight_source_build_guard "$REPO_ROOT" || die "not enough free disk/inodes for a source build (I-81); nothing was installed"
   ( cd "$REPO_ROOT" && cargo build --release --locked -p admin -p subscription -p provisioning-agent )
   install -m 0755 "$REPO_ROOT/target/release/vpn-admin" "$BIN_DIR/vpn-admin"
   install -m 0755 "$REPO_ROOT/target/release/vpn" "$BIN_DIR/vpn"

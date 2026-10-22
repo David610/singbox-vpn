@@ -457,6 +457,18 @@ preflight_cargo_build_env() {
   log "cargo: shared target $CARGO_TARGET_DIR, $jobs job(s)"
 }
 
+# Installer/updater source builds (fallback when no release binary is used): they build inside their own per-run scratch
+# workspace, which the installer removes afterwards (I-33), so there is no accumulation. They still need the I-81 budget and
+# bounded parallelism. $1 = the directory the build writes into. Exports CARGO_BUILD_JOBS; does not move the target dir.
+preflight_source_build_guard() {
+  local dir="${1:?build dir}" cpus mem_mib jobs
+  preflight_check_build_budget "$dir" || return 1
+  cpus="$(nproc 2>/dev/null || echo 1)"
+  mem_mib="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+  jobs=$((mem_mib / 1536)); [ "$jobs" -gt "$cpus" ] && jobs="$cpus"; [ "$jobs" -lt 1 ] && jobs=1
+  export CARGO_BUILD_JOBS="$jobs"
+}
+
 # $1 = managed cache root; options: --apply (default is a dry run),
 # --include-shared (also the shared target/, only when no build holds $root/.lock).
 preflight_prune_build_cache() {
