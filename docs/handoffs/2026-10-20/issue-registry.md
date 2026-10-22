@@ -92,7 +92,7 @@ States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFI
 | I-24 | low | fixed-on-branch | UNVERIFIED | README/INSTALLATION listed only Hiddify; no per-app guidance or evidence status |
 | I-25 | informational | informational | UNVERIFIED | `vpn user list` hides the reserved probe user that `vpn status` and doctor count (2 vs 1) |
 | I-26 | low | informational | UNVERIFIED | Install prints the first user's token and QR (and so does any install log) |
-| I-27 | low | environmental | UNVERIFIED | Windows checkouts get CRLF shell scripts (core.autocrlf=true) that fail under bash; one test uses a Windows openssl with |
+| I-27 | low | environmental | FIXED_IN_BRANCH | Windows checkouts get CRLF shell scripts (core.autocrlf=true) that fail under bash; one test uses a Windows openssl with |
 | I-28 | medium | blocked | BLOCKED | Not qualified: no physical-device evidence examined; PR #47 (iOS PacketTunnel) open |
 | I-29 | low | informational | UNVERIFIED | 10 pre-existing eslint warnings |
 | I-30 | medium | open | CONFIRMED_OPEN | Interrupted-deployment recovery, disk/memory pressure, DNS-leak, IPv6-leak, kill-switch, token-entropy, secret-logging a |
