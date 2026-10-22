@@ -640,6 +640,19 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-94",
+   "severity": "high",
+   "component": "Shorts regression protection (issue #169)",
+   "state": "FIXED_IN_BRANCH",
+   "title": "the hairpin invariants were only unit-tested on single renderer inputs, while earlier Shorts fixes were lost through the transitions around the renderer (user churn, the reconcile timer's render-config, repair/re-init, egress policy changes, clear/set); no test walked a real vpn-admin through them",
+   "fix": "apps/admin/tests/cli.rs hairpin_invariants_survive_user_churn_reconcile_repair_and_policy_changes: after every step re-checks sniff -> literal-IPv6 reject (no_drop) -> single route order, C-16 before sniff, the whole domain set against a FROZEN floor, no selector/urltest, final=direct, byte-identical no-op reconcile with no extra sing-box restart, refused `egress set allow`, and that the hairpin UUID is never printed; registered in docs/YOUTUBE_FIX_INVARIANTS.md and guarded by youtube_invariants_doc.rs",
+   "regression_test": "mutation-checked: removing ggpht.com from GOOGLE_EGRESS_DOMAINS and dropping no_drop each fail it; it passes on current code (a regression guard, not a red-before test)",
+   "device_required": "no",
+   "remaining_risk": "does NOT show native Shorts work (#169 stays BLOCKED: signed-in/Incognito root cause UNKNOWN, needs a physical iPhone and an authorized host); the fake systemctl and fake sing-box mean no real restart or traffic is exercised; provisioning-agent lease rotation is not covered here",
+   "evidence": "local run; CI pending",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-93",
    "severity": "critical",
    "component": "host trust tooling (issue #167 / I-86)",
@@ -676,6 +689,19 @@
    "device_required": "no",
    "remaining_risk": "SBOM completeness is checked against the Cargo graph only, not against the files in the release archive; first discovered while reviewing #166 dependency scope",
    "evidence": "local dry run: 193 components, rustls-webpki 0.103.16, webpki-roots 1.0.10 present",
+   "supersedes_audit_entry": false
+  },
+  {
+   "id": "I-95",
+   "severity": "low",
+   "component": "Rust dependency maintenance (issue #166)",
+   "state": "FIXED_IN_BRANCH",
+   "title": "deferred #161 (bulk lockfile update) and #121 (application rand 0.8 -> 0.10) had no recorded decision, and the yanked yoke-derive 0.8.3 warning was open",
+   "fix": "yoke-derive -> 0.8.4 (PR #176, merged); the release SBOM now covers the shipped agent (I-91, PR #177); docs/qualification/2026-10-22/DEPENDENCIES.md records licenses, MSRV, audit, and the justified NOT_PLANNED decisions for the 71-package bulk update and the rand migration",
+   "regression_test": "audit/test/clippy/release-build/singbox-validate jobs on b3061c5 (run 39855914650); test-release-sbom.sh",
+   "device_required": "no",
+   "remaining_risk": "NOT_PLANNED, not implemented: bulk update (no advisory) and rand 0.10 (credential generation, no benefit). GitHub/Dependabot alert inventory is not readable with the available token",
+   "evidence": "docs/qualification/2026-10-22/DEPENDENCIES.md",
    "supersedes_audit_entry": false
   },
   {

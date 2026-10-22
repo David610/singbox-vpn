@@ -3370,6 +3370,275 @@ fn render_config_does_not_fail_or_restart_when_the_subscription_service_is_unrea
     );
 }
 
+/// Shape of the Google-egress hairpin in a rendered sing-box config; the
+/// invariants of docs/YOUTUBE_FIX_INVARIANTS.md (INV-1, 4, 5, 6) checked on the
+/// document a node would actually run, not on the renderer's unit fixtures.
+#[cfg(unix)]
+fn assert_hairpin_invariants(config: &serde_json::Value, context: &str) {
+    let rules = config["route"]["rules"].as_array().expect("route.rules");
+    let position = |pred: &dyn Fn(&serde_json::Value) -> bool| rules.iter().position(pred);
+    let sniff = position(&|r| r["action"] == "sniff" && r.get("inbound").is_none())
+        .unwrap_or_else(|| panic!("{context}: no bare sniff rule"));
+    let reject6 = position(&|r| {
+        r["action"] == "reject" && r["ip_version"] == 6 && r.get("domain_suffix").is_some()
+    })
+    .unwrap_or_else(|| panic!("{context}: no literal-IPv6 Google reject"));
+    let routes: Vec<usize> = rules
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r["outbound"] == "google-egress-hairpin")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        routes.len(),
+        1,
+        "{context}: exactly one hairpin route (INV-6)"
+    );
+    let route = routes[0];
+    assert!(
+        sniff < reject6 && reject6 < route,
+        "{context}: sniff -> reject -> route order (INV-4/5)"
+    );
+    let c16: Vec<usize> = rules
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r["action"] == "reject" && r.get("ip_cidr").is_some())
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        !c16.is_empty() && c16.iter().all(|i| *i < sniff),
+        "{context}: C-16 isolation precedes sniff (INV-4)"
+    );
+    assert_eq!(
+        rules[reject6]["no_drop"], true,
+        "{context}: reject keeps no_drop (INV-5)"
+    );
+    let expected: std::collections::BTreeSet<&str> = compat_config::model::GOOGLE_EGRESS_DOMAINS
+        .iter()
+        .copied()
+        .collect();
+    for index in [reject6, route] {
+        let got: std::collections::BTreeSet<&str> = rules[index]["domain_suffix"]
+            .as_array()
+            .expect("domain_suffix")
+            .iter()
+            .map(|d| d.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            got, expected,
+            "{context}: the rendered set is the configured set"
+        );
+        for required in HAIRPIN_DOMAIN_FLOOR {
+            assert!(
+                got.contains(required),
+                "{context}: {required} missing from the hairpin set (INV-1)"
+            );
+        }
+    }
+    for outbound in config["outbounds"].as_array().unwrap() {
+        assert!(
+            outbound["type"] != "selector" && outbound["type"] != "urltest",
+            "{context}: no selector/urltest fallback (INV-6)"
+        );
+    }
+    assert_eq!(
+        config["route"]["final"], "direct",
+        "{context}: final stays direct for non-Google traffic"
+    );
+    assert!(
+        rules
+            .iter()
+            .all(|r| !(r["outbound"] == "direct" && r.get("domain_suffix").is_some())),
+        "{context}: no rule sends the Google set direct (INV-6)"
+    );
+}
+
+/// Frozen on purpose and NOT derived from `GOOGLE_EGRESS_DOMAINS`: narrowing
+/// that constant (INV-1: "do not optimise it to googlevideo.com only") must fail
+/// a test. Extending the set is allowed; removing one of these is not.
+#[cfg(unix)]
+const HAIRPIN_DOMAIN_FLOOR: &[&str] = &[
+    "youtube.com",
+    "youtubekids.com",
+    "youtu.be",
+    "youtube-nocookie.com",
+    "googlevideo.com",
+    "ytimg.com",
+    "ggpht.com",
+    "googleusercontent.com",
+    "youtubei.googleapis.com",
+    "google.com",
+    "googleapis.com",
+    "gstatic.com",
+];
+
+const HAIRPIN_TEST_UUID: &str = "11111111-1111-4111-8111-111111111111";
+
+/// The renderer's unit tests prove the shape for one input. Fixes to Shorts
+/// were lost before through the transitions around it, so this walks one exit
+/// through the operations that re-render its config (user churn, the reconcile
+/// timer's `render-config`, a repair-style `init`, an egress policy change) and
+/// re-checks the invariants on the file sing-box would load after each.
+#[test]
+#[cfg(unix)]
+fn hairpin_invariants_survive_user_churn_reconcile_repair_and_policy_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log = dir.path().join("systemctl.log");
+    let outputs = std::cell::RefCell::new(String::new());
+    let run = |args: &[&str], stdin: &str| -> assert_cmd::assert::Assert {
+        let mut cmd = admin(dir.path(), &cfg_path);
+        cmd.args(args)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SYSTEMCTL_LOG", &log)
+            .write_stdin(stdin.to_string());
+        let assert = cmd.assert();
+        let o = assert.get_output();
+        outputs
+            .borrow_mut()
+            .push_str(&String::from_utf8_lossy(&o.stdout));
+        outputs
+            .borrow_mut()
+            .push_str(&String::from_utf8_lossy(&o.stderr));
+        assert
+    };
+    let config_path = dir.path().join("state/sing-box/config.json");
+    let load = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap()
+    };
+    let restarts = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .matches("reload-or-restart sing-box")
+            .count()
+    };
+
+    run(&["init"], "").success();
+    run(&["user", "create", "--name", "alice"], "").success();
+    run(
+        &[
+            "google-egress-hairpin",
+            "set",
+            "--relay-host",
+            "relay.example.test",
+            "--relay-port",
+            "443",
+            "--relay-server-name",
+            "www.example.com",
+            "--relay-reality-public-key",
+            REALITY_PUBLIC_B,
+            "--relay-reality-short-id",
+            "0a1b2c3d",
+            "--uuid-stdin",
+        ],
+        &format!("{HAIRPIN_TEST_UUID}\n"),
+    )
+    .success();
+    assert_hairpin_invariants(&load(), "after set");
+
+    run(&["user", "create", "--name", "bob"], "").success();
+    assert_hairpin_invariants(&load(), "after user create");
+    let users = String::from_utf8(
+        run(&["user", "list"], "")
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    let alice_id = users
+        .lines()
+        .find(|l| l.contains("alice"))
+        .and_then(|l| l.split_whitespace().next())
+        .expect("alice in user list")
+        .to_string();
+    run(&["user", "disable", &alice_id], "").success();
+    assert_hairpin_invariants(&load(), "after user disable");
+
+    // The reconcile timer runs `render-config`; with nothing changed it must
+    // neither alter the file nor restart sing-box again.
+    run(&["render-config"], "").success();
+    let settled = std::fs::read(&config_path).unwrap();
+    let before = restarts();
+    for round in 0..3 {
+        run(&["render-config", "--require-applied"], "").success();
+        assert_eq!(
+            std::fs::read(&config_path).unwrap(),
+            settled,
+            "reconcile round {round} rewrote the config"
+        );
+    }
+    assert_eq!(
+        restarts(),
+        before,
+        "no-op reconcile rounds must not restart sing-box"
+    );
+    assert_hairpin_invariants(&load(), "after repeated reconcile");
+
+    // Repair-style re-initialisation must not drop the hairpin.
+    run(&["init"], "").success();
+    run(&["render-config"], "").success();
+    assert_hairpin_invariants(&load(), "after repair-style init + render");
+
+    // Explicitly disabling literal-IPv6 protection on a hairpin exit is refused
+    // and leaves the config exactly as it was (INV-5).
+    let before_policy = std::fs::read(&config_path).unwrap();
+    run(&["egress", "set", "allow"], "").failure();
+    assert_eq!(
+        std::fs::read(&config_path).unwrap(),
+        before_policy,
+        "refused change must not alter the config"
+    );
+    run(&["egress", "set", "reject_all"], "").success();
+    run(&["egress", "clear"], "").success();
+    assert_hairpin_invariants(&load(), "after egress set reject_all + clear");
+
+    // Clearing removes every trace; setting again restores the full shape.
+    run(&["google-egress-hairpin", "clear"], "").success();
+    let cleared = load();
+    assert!(
+        cleared["route"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["outbound"] != "google-egress-hairpin"),
+        "clear left a hairpin route behind"
+    );
+    assert!(cleared["outbounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|o| o["tag"] != "google-egress-hairpin"));
+    run(
+        &[
+            "google-egress-hairpin",
+            "set",
+            "--relay-host",
+            "relay.example.test",
+            "--relay-port",
+            "443",
+            "--relay-server-name",
+            "www.example.com",
+            "--relay-reality-public-key",
+            REALITY_PUBLIC_B,
+            "--relay-reality-short-id",
+            "0a1b2c3d",
+            "--uuid-stdin",
+        ],
+        &format!("{HAIRPIN_TEST_UUID}\n"),
+    )
+    .success();
+    assert_hairpin_invariants(&load(), "after clear + set");
+
+    // INV-9: the hairpin credential never appears in anything the tool printed.
+    assert!(
+        !outputs.borrow().contains(HAIRPIN_TEST_UUID),
+        "the hairpin credential was printed"
+    );
+}
+
 /// `public_host` in the default test fixture (`vpn.example.com`) does
 /// not resolve — this is deterministic in both a networked and a fully
 /// offline sandbox (either NXDOMAIN or "no network"), and either way it
