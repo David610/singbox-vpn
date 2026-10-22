@@ -47,9 +47,11 @@ echo
 echo "--- functional: generator on a fixture metadata graph ---"
 cat >"$WORK/metadata.json" <<'EOF'
 {
-  "workspace_members": ["admin 1.0.0 (path+file:///w/apps/admin)", "subscription 1.0.0 (path+file:///w/services/subscription)", "compat-config 1.0.0 (path+file:///w/crates/compat-config)"],
+  "workspace_members": ["admin 1.0.0 (path+file:///w/apps/admin)", "provisioning-agent 1.0.0 (path+file:///w/apps/provisioning-agent)", "subscription 1.0.0 (path+file:///w/services/subscription)", "compat-config 1.0.0 (path+file:///w/crates/compat-config)"],
   "packages": [
     {"id": "admin 1.0.0 (path+file:///w/apps/admin)", "name": "admin", "version": "1.0.0", "license": "Apache-2.0", "license_file": null, "source": null},
+    {"id": "provisioning-agent 1.0.0 (path+file:///w/apps/provisioning-agent)", "name": "provisioning-agent", "version": "1.0.0", "license": "Apache-2.0", "license_file": null, "source": null},
+    {"id": "rustls-webpki 0.103.16 (registry+https://github.com/rust-lang/crates.io-index)", "name": "rustls-webpki", "version": "0.103.16", "license": "ISC", "license_file": null, "source": "registry+https://github.com/rust-lang/crates.io-index"},
     {"id": "subscription 1.0.0 (path+file:///w/services/subscription)", "name": "subscription", "version": "1.0.0", "license": "Apache-2.0", "license_file": null, "source": null},
     {"id": "compat-config 1.0.0 (path+file:///w/crates/compat-config)", "name": "compat-config", "version": "1.0.0", "license": "Apache-2.0", "license_file": null, "source": null},
     {"id": "serde 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)", "name": "serde", "version": "1.0.0", "license": "MIT OR Apache-2.0", "license_file": null, "source": "registry+https://github.com/rust-lang/crates.io-index"},
@@ -60,6 +62,11 @@ cat >"$WORK/metadata.json" <<'EOF'
       {"pkg": "compat-config 1.0.0 (path+file:///w/crates/compat-config)", "dep_kinds": [{"kind": null}]},
       {"pkg": "tempfile 3.0.0 (registry+https://github.com/rust-lang/crates.io-index)", "dep_kinds": [{"kind": "dev"}]}
     ]},
+    {"id": "provisioning-agent 1.0.0 (path+file:///w/apps/provisioning-agent)", "deps": [
+      {"pkg": "compat-config 1.0.0 (path+file:///w/crates/compat-config)", "dep_kinds": [{"kind": null}]},
+      {"pkg": "rustls-webpki 0.103.16 (registry+https://github.com/rust-lang/crates.io-index)", "dep_kinds": [{"kind": null}]}
+    ]},
+    {"id": "rustls-webpki 0.103.16 (registry+https://github.com/rust-lang/crates.io-index)", "deps": []},
     {"id": "subscription 1.0.0 (path+file:///w/services/subscription)", "deps": [
       {"pkg": "compat-config 1.0.0 (path+file:///w/crates/compat-config)", "dep_kinds": [{"kind": null}]}
     ]},
@@ -93,7 +100,10 @@ assert bom["bomFormat"] == "CycloneDX" and bom["specVersion"] == "1.5"
 assert bom["metadata"]["component"]["version"] == "v9.9.9-test"
 assert bom["metadata"]["timestamp"] == "2023-11-14T22:13:20Z"
 names = sorted(c["name"] for c in bom["components"])
-assert names == ["admin", "compat-config", "serde", "sing-box", "subscription"], names
+assert names == ["admin", "compat-config", "provisioning-agent", "rustls-webpki", "serde", "sing-box", "subscription"], names
+# I-91: the agent is built, packaged and refreshed by the updater; its TLS stack must be inventoried.
+assert any(c["name"] == "rustls-webpki" for c in bom["components"])
+assert lic["scope"].count("provisioning-agent") == 1, lic["scope"]
 assert "tempfile" not in json.dumps(lic), "dev-only dependency leaked into the runtime inventory"
 singbox = next(c for c in bom["components"] if c["name"] == "sing-box")
 assert singbox["hashes"][0]["alg"] == "SHA-256" and len(singbox["hashes"][0]["content"]) == 64
@@ -114,6 +124,21 @@ else
   grep -q 'packages without license metadata: pkg:cargo/serde@1.0.0' "$WORK/c.err" \
     && ok "a runtime dependency without license metadata fails the release closed" \
     || fail "unexpected generator error: $(cat "$WORK/c.err")"
+fi
+
+# I-91: a metadata graph without the shipped agent package must fail closed, not silently shrink the SBOM.
+python3 - "$WORK/metadata.json" "$WORK/no-agent.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+m["workspace_members"] = [w for w in m["workspace_members"] if not w.startswith("provisioning-agent")]
+json.dump(m, open(sys.argv[2], "w"))
+PY
+if bash "$GENERATOR" --version v9.9.9-test --output-dir "$WORK/d" --metadata-json "$WORK/no-agent.json" >/dev/null 2>"$WORK/d.err"; then
+  fail "generator accepted a graph without the shipped provisioning-agent"
+else
+  grep -q 'provisioning-agent' "$WORK/d.err" \
+    && ok "a missing shipped package (provisioning-agent) fails the release closed" \
+    || fail "unexpected generator error: $(cat "$WORK/d.err")"
 fi
 
 echo

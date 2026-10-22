@@ -653,6 +653,19 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-91",
+   "severity": "medium",
+   "component": "release SBOM / license inventory",
+   "state": "FIXED_IN_BRANCH",
+   "title": "generate-sbom.sh described only the runtime graph of vpn-admin and subscription, but build-release-x86_64.sh compiles and release.yml packages vpn-provisioning-agent too (and update.sh refreshes it): the shipped binary with the TLS stack (reqwest, rustls, rustls-webpki, webpki-roots) was missing from the SBOM and license inventory (142 components instead of 193)",
+   "fix": "SHIPPED_PACKAGES now includes provisioning-agent; the generator fails closed if any shipped package is absent; licenses.json scope text updated",
+   "regression_test": "deploy/lib/tests/test-release-sbom.sh (fixture gains the agent and a TLS crate; red before: names list lacked them, and a graph without the agent was accepted)",
+   "device_required": "no",
+   "remaining_risk": "SBOM completeness is checked against the Cargo graph only, not against the files in the release archive; first discovered while reviewing #166 dependency scope",
+   "evidence": "local dry run: 193 components, rustls-webpki 0.103.16, webpki-roots 1.0.10 present",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-90",
    "severity": "high",
    "component": "interrupted-update cleanup health gate",
