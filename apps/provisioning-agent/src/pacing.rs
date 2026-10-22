@@ -36,13 +36,17 @@ pub fn random_unit() -> f64 {
 /// Parses `Retry-After` as delta-seconds or an HTTP-date. Anything else, a
 /// date in the past, or a value above [`MAX_RETRY_AFTER`] is clamped/ignored.
 pub fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
+    parse_retry_after_at(headers, time::OffsetDateTime::now_utc())
+}
+
+fn parse_retry_after_at(headers: &HeaderMap, now: time::OffsetDateTime) -> Option<Duration> {
     let raw = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if let Ok(seconds) = raw.parse::<u64>() {
         return Some(Duration::from_secs(seconds).min(MAX_RETRY_AFTER));
     }
     let when =
         time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc2822).ok()?;
-    let delta = when - time::OffsetDateTime::now_utc();
+    let delta = when - now;
     if delta.is_negative() {
         return None;
     }
@@ -426,13 +430,78 @@ mod tests {
 
     #[test]
     fn http_date_retry_after_rounds_up_never_down() {
-        let when = time::OffsetDateTime::now_utc() + time::Duration::milliseconds(5900);
-        let raw = when
+        let base = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let date = base + time::Duration::seconds(6);
+        let raw = date
             .format(&time::format_description::well_known::Rfc2822)
             .unwrap();
-        // RFC 2822 has whole-second resolution; the parsed wait must not be
-        // shorter than the time remaining to the stated second.
-        let got = parse_retry_after(&headers(&raw)).unwrap();
-        assert!(got >= S(5), "{got:?}");
+        // 5.5 s remain until the stated second: waiting 5 s would be early.
+        let now = base + time::Duration::milliseconds(500);
+        assert_eq!(parse_retry_after_at(&headers(&raw), now), Some(S(6)));
+        // Whole seconds stay exact; a date in the past is ignored.
+        let now = base + time::Duration::seconds(1);
+        assert_eq!(parse_retry_after_at(&headers(&raw), now), Some(S(5)));
+        let now = base + time::Duration::seconds(7);
+        assert_eq!(parse_retry_after_at(&headers(&raw), now), None);
+    }
+
+    #[test]
+    fn server_minimum_survives_every_local_transition() {
+        let gate = ControlPlaneGate::new(S(1), S(60));
+        let now = Instant::now();
+        gate.record_failure_at(now, Some(S(300)), 0.0);
+        // Local backoff failures (timeouts, 5xx without Retry-After), a shorter
+        // Retry-After, and repeated successes cannot end or shorten the wait.
+        gate.record_failure_at(now, None, 0.0);
+        gate.record_failure_at(now, Some(S(2)), 0.0);
+        gate.record_success();
+        gate.record_success();
+        gate.record_failure_at(now, None, 0.0);
+        assert!(gate.check_at(now + S(299)).is_err());
+        assert!(gate.check_at(now + S(301)).is_ok());
+        // After the minimum has passed, a success fully reopens the gate.
+        gate.record_success();
+        assert!(gate.check_at(now + S(301)).is_ok());
+    }
+
+    #[test]
+    fn server_minimum_survives_concurrent_success_and_failure() {
+        let gate = ControlPlaneGate::new(S(1), S(60));
+        let now = Instant::now();
+        gate.record_failure_at(now, Some(S(600)), 0.0);
+        let workers: Vec<_> = (0..8)
+            .map(|i| {
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    for n in 0..500 {
+                        match (i + n) % 3 {
+                            0 => gate.record_success(),
+                            1 => gate.record_failure_at(now, None, 0.0),
+                            _ => gate.record_failure_at(now, Some(S(1)), 0.0),
+                        }
+                        assert!(
+                            gate.check_at(now + S(590)).is_err(),
+                            "minimum shortened mid-race"
+                        );
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(gate.check_at(now + S(590)).is_err());
+    }
+
+    #[test]
+    fn a_process_restart_loses_the_in_memory_minimum_known_limitation() {
+        // Documented limitation: the gate is process-local. After a restart
+        // the first request is sent; a still-limiting server answers 429 again
+        // and re-arms the gate. Bounded by MAX_RETRY_AFTER.
+        let gate = ControlPlaneGate::new(S(1), S(60));
+        gate.record_failure(Some(S(300)));
+        assert!(gate.check().is_err());
+        let restarted = ControlPlaneGate::new(S(1), S(60));
+        assert!(restarted.check().is_ok());
     }
 }
