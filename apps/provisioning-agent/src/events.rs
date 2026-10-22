@@ -147,6 +147,10 @@ pub struct Timing {
     pub superseded_floor: Duration,
     pub error_base: Duration,
     pub error_cap: Duration,
+    /// Floor between two event requests. A well-behaved server holds each one
+    /// open for `wait_secs`; this bounds the rate if answers ever come back
+    /// instantly (a flood of change events, a misbehaving intermediary).
+    pub min_event_interval: Duration,
 }
 
 impl Timing {
@@ -157,6 +161,7 @@ impl Timing {
             superseded_floor: Duration::from_secs(5),
             error_base: Duration::from_secs(2),
             error_cap: Duration::from_secs(60),
+            min_event_interval: Duration::from_secs(1),
         }
     }
 }
@@ -177,10 +182,17 @@ pub async fn run_loop(client: WorkerClient, wake: Arc<Wakeups>, timing: Timing) 
     let mut cursor: Option<String> = None;
     let mut backoff = crate::pacing::Backoff::new(timing.error_base, timing.error_cap);
     loop {
-        match client
+        let asked_at = Instant::now();
+        let outcome = client
             .wait_events(cursor.as_deref(), timing.wait_secs)
-            .await
-        {
+            .await;
+        if matches!(outcome, Ok(EventsOutcome::Event { .. })) {
+            let elapsed = asked_at.elapsed();
+            if elapsed < timing.min_event_interval {
+                tokio::time::sleep(timing.min_event_interval - elapsed).await;
+            }
+        }
+        match outcome {
             Ok(EventsOutcome::Event {
                 reason,
                 changed,
@@ -374,6 +386,7 @@ mod tests {
             superseded_floor: S(3600),
             error_base: S(3600),
             error_cap: S(3600),
+            min_event_interval: Duration::ZERO,
         }
     }
 
@@ -443,5 +456,169 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!wake.healthy());
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_empty_and_incomplete_event_bodies_back_off_and_never_mark_healthy() {
+        for body in ["not json", "", "{}", "{\"reason\":\"\"}", "[1,2,3]"] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/agent/events"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .mount(&server)
+                .await;
+            let wake = Wakeups::new();
+            let task = tokio::spawn(run_loop(client(&server.uri()), wake.clone(), fast()));
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            task.abort();
+            assert!(
+                !wake.healthy(),
+                "body {body:?} must not mark the channel healthy"
+            );
+            assert!(!wake.take_jobs() && !wake.take_authorizations() && !wake.take_leases());
+            let requests = server.received_requests().await.unwrap().len();
+            assert_eq!(
+                requests, 1,
+                "body {body:?}: one request, then a backoff sleep (not a hot loop)"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_or_empty_channel_names_wake_nothing() {
+        let wake = Wakeups::new();
+        wake.mark(&["", "JOBS", "jobs ", "../leases", "unknown"]);
+        assert!(!wake.take_jobs() && !wake.take_authorizations() && !wake.take_leases());
+    }
+
+    #[tokio::test]
+    async fn the_cursor_is_kept_across_empty_cursors_and_replays_are_idempotent() {
+        let server = MockServer::start().await;
+        // First answer names a cursor; every later answer replays the same
+        // event with an EMPTY cursor.
+        Mock::given(method("GET"))
+            .and(path("/api/agent/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "reason": "change", "changed": ["jobs"], "cursor": "c1"
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "reason": "change", "changed": ["jobs"], "cursor": ""
+            })))
+            .mount(&server)
+            .await;
+        let mut timing = fast();
+        timing.error_base = Duration::from_millis(1);
+        let wake = Wakeups::new();
+        let task = tokio::spawn(run_loop(client(&server.uri()), wake.clone(), timing));
+        assert!(eventually(|| wake.healthy()).await);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        task.abort();
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests.len() >= 3, "the channel answered repeatedly");
+        assert!(!requests[0].url.query().unwrap_or("").contains("cursor"));
+        for later in &requests[1..] {
+            assert!(
+                later.url.query().unwrap_or("").contains("cursor=c1"),
+                "an empty cursor from the server must not discard the position: {}",
+                later.url
+            );
+        }
+        // Replayed events only re-set an already-set flag: one wake, one flag.
+        assert!(wake.take_jobs());
+        assert!(!wake.take_jobs());
+    }
+
+    /// Request budget of one agent for one hour of virtual time, using the real
+    /// scheduler. The legacy loop polled three endpoints every iteration; the
+    /// event loop asks per channel only on an event or the reconcile timer, plus
+    /// one long poll per `events_wait_secs`. This counts REQUESTS only, not
+    /// Worker CPU time: it does not by itself prove the CPU quota is met.
+    fn requests_in_one_hour(
+        healthy: bool,
+        poll_secs: u64,
+        reconcile_secs: u64,
+        wait_secs: u64,
+    ) -> (u64, u64) {
+        let wake = Wakeups::new();
+        wake.set_healthy(healthy);
+        let t0 = Instant::now();
+        let mut schedule = Schedule::new(S(reconcile_secs), t0);
+        let mut polled = 0u64;
+        let mut tick = 0;
+        while tick < 3600 {
+            let due = schedule.due(t0 + S(tick), &wake);
+            polled += u64::from(due.claim) + u64::from(due.authorizations) + u64::from(due.leases);
+            tick += poll_secs;
+        }
+        let long_polls = if healthy { 3600 / wait_secs } else { 0 };
+        (polled, long_polls)
+    }
+
+    #[test]
+    fn event_mode_cuts_the_steady_state_request_rate_by_an_order_of_magnitude() {
+        let (poll_calls, _) = requests_in_one_hour(false, 3, 60, 25);
+        let (event_calls, long_polls) = requests_in_one_hour(true, 3, 60, 25);
+        let polling_total = poll_calls;
+        let event_total = event_calls + long_polls;
+        eprintln!(
+            "per agent per hour: polling={polling_total} event_mode={event_total} \
+             (reconcile calls {event_calls} + long polls {long_polls}); fleet of 100: {} vs {}",
+            polling_total * 100,
+            event_total * 100
+        );
+        assert_eq!(polling_total, 3600, "3 endpoints x 1200 iterations");
+        assert!(event_total <= 330, "event mode: {event_total}");
+        assert!(
+            polling_total >= 10 * event_total,
+            "{polling_total} vs {event_total}"
+        );
+    }
+
+    #[test]
+    fn losing_the_channel_returns_to_polling_within_one_iteration() {
+        let wake = Wakeups::new();
+        wake.set_healthy(true);
+        let t0 = Instant::now();
+        let mut schedule = Schedule::new(S(60), t0);
+        schedule.due(t0, &wake);
+        assert_eq!(
+            schedule.due(t0 + S(3), &wake),
+            Due {
+                claim: false,
+                authorizations: false,
+                leases: false
+            }
+        );
+        wake.set_healthy(false);
+        let due = schedule.due(t0 + S(6), &wake);
+        assert!(due.claim && due.authorizations && due.leases, "{due:?}");
+    }
+
+    #[tokio::test]
+    async fn instantly_answered_events_are_rate_limited_not_a_request_storm() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "reason": "change", "changed": [], "cursor": "c"
+            })))
+            .mount(&server)
+            .await;
+        let mut timing = fast();
+        timing.min_event_interval = Duration::from_millis(200);
+        let wake = Wakeups::new();
+        let task = tokio::spawn(run_loop(client(&server.uri()), wake, timing));
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        task.abort();
+        let requests = server.received_requests().await.unwrap().len();
+        assert!(
+            (3..=7).contains(&requests),
+            "about 1 request per 200 ms, not a spin: {requests}"
+        );
     }
 }

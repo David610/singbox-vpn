@@ -83,7 +83,8 @@ pub enum EventsOutcome {
         changed: Vec<String>,
         cursor: String,
     },
-    /// The server has no event channel (501): fall back to polling.
+    /// The server has no event channel (501, or 404/405 from an older control
+    /// plane without the route): fall back to polling.
     Unavailable,
     /// Another connection from this node replaced this one (409).
     Superseded {
@@ -423,11 +424,18 @@ impl WorkerClient {
         };
         let status = res.status();
         if status.is_success() {
-            self.gate.record_success();
             let body: EventsBody = res
                 .json()
                 .await
                 .context("parsing /api/agent/events response body")?;
+            // A real answer always names why it returned ("timeout", "change",
+            // ...). `200 {}` from a broken proxy or error page is not an event:
+            // treating it as one marks the channel healthy and, because it
+            // returns instantly, would have the agent re-ask at network speed.
+            if body.reason.is_empty() {
+                anyhow::bail!("/api/agent/events answered 200 without a reason; not an event");
+            }
+            self.gate.record_success();
             return Ok(EventsOutcome::Event {
                 reason: body.reason,
                 changed: body.changed,
@@ -436,7 +444,8 @@ impl WorkerClient {
         }
         match status.as_u16() {
             // The control plane answered; it just has no event channel. Not a failure.
-            501 => Ok(EventsOutcome::Unavailable),
+            // 404/405: an older control plane that predates the route.
+            501 | 404 | 405 => Ok(EventsOutcome::Unavailable),
             409 => Ok(EventsOutcome::Superseded {
                 retry_after: parse_retry_after(res.headers()),
             }),
@@ -950,6 +959,29 @@ mod pacing_tests {
                 retry_after: Some(Duration::from_secs(5))
             }
         );
+    }
+
+    #[tokio::test]
+    async fn an_old_server_without_the_events_route_does_not_throttle_job_polling() {
+        for status in [404, 405] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/agent/events"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            let client = client(&server.uri());
+            assert_eq!(
+                client.wait_events(None, 25).await.unwrap(),
+                EventsOutcome::Unavailable,
+                "status {status}: an older control plane has no event channel"
+            );
+            assert_eq!(client.gate().consecutive_failures(), 0, "status {status}");
+            assert!(
+                client.gate().check().is_ok(),
+                "status {status}: the shared gate must stay open for claim/authorization polling"
+            );
+        }
     }
 
     #[tokio::test]
