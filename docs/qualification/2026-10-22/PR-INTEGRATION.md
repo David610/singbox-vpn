@@ -71,6 +71,15 @@ rerun here because Cargo/Rust are absent and shell networking is broken.
 No currently demonstrated blocker requires these updates. Rebase/reconstruct
 against current main; never replace main's lockfile with the old PR's lockfile.
 
+Subsequent isolated qualification: reconstructed #161 on current main at
+`0010aadb65815026a9e0cf1d218e53bd3fae88ec` passed the full
+[22-job CI run](https://github.com/David610/singbox-vpn/actions/runs/39827160202),
+including pinned-toolchain fmt/clippy/build/tests/audit and real interoperability.
+This removes the local toolchain execution blocker for that graph. It is still
+optional and excluded from the minimum release; its standalone test branch did
+not trigger a separate exact-commit Security workflow. Preserve that distinction
+before adopting it or updating the original PR.
+
 #121 changes the workspace rand requirement and lockfile without adapting
 call sites using the older API. Its old build, clippy, docs and singbox-validate
 jobs failed. Main already contains transitive rand 0.10 while application

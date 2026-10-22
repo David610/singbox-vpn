@@ -1,0 +1,60 @@
+{
+  "issue": "I-90",
+  "scope": "isolated leftover-cleanup helper fixture; no real host recovery",
+  "before": {
+    "command": "bash deploy/lib/tests/test-recover-interrupted-update.sh against fcd711a implementation",
+    "exit": 1,
+    "failure": "nonzero health command allowed recovery to delete its marker or backup"
+  },
+  "after": {
+    "command": "same regression against corrected helper",
+    "exit": 0,
+    "result": "marker and backup retained when health command exits 7"
+  },
+  "checks_after_fix": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "deploy/lib/tests",
+        "-p",
+        "test_*.py"
+      ],
+      "exit": 0,
+      "log": "i90-final-check-0.log",
+      "sha256": "4d499c30090f58a12dcb14e16eea1467fd154a30892c43a2fc8b648d9adb2053"
+    },
+    {
+      "command": [
+        "bash",
+        "deploy/lib/tests/test-recover-interrupted-update.sh"
+      ],
+      "exit": 0,
+      "log": "i90-final-check-1.log",
+      "sha256": "cf5a7accdeabaf6a6b1ab4bf213e2cce60e9cfeec12f8285adf5a45323af2bfa"
+    },
+    {
+      "command": [
+        "bash",
+        "deploy/lib/tests/test-no-pipefail-sigpipe-race.sh"
+      ],
+      "exit": 0,
+      "log": "i90-final-check-2.log",
+      "sha256": "87f06c9a477cc11426c6a954997c55d32cf56c9b7d70d8c02f45f5385603da1b"
+    },
+    {
+      "command": [
+        "bash",
+        "deploy/lib/check-no-secret-logging.sh"
+      ],
+      "exit": 0,
+      "log": "i90-final-check-3.log",
+      "sha256": "30e6ad01d45618aa0fb33cce0a60d3e834977733899baa6b5152a228c99a3a6d"
+    }
+  ],
+  "prior_candidate": "fcd711a49d12e343af88ac6806f3a2f0aaaa8ca7",
+  "prior_ci_not_carried_forward": true
+}

@@ -29,6 +29,9 @@ considered complete because its report exists.
 
 Local results and refreshed GitHub metadata are retained separately under
 `/workspace/audit-evidence`; private host evidence must stay outside Git.
+I-90 was found after the first integration passed CI/Security. Its nonzero
+health-command cleanup regression and fix require new final-commit checks;
+the earlier candidate's green runs cannot be carried forward.
 
 Next owner action: confirm whether the successful password logins in A3 of the
 [pre-install checklist](../../handoffs/2026-10-22/PRE-INSTALL-CHECKLIST.md)

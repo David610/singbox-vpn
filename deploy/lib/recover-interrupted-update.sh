@@ -86,7 +86,10 @@ mapfile -d '' -t TARGETS <"$LIST"
 for s in $SERVICES; do
   systemctl is-active --quiet "$s" || die "service $s is not active: the host is not healthy. Restore from the marker's backup_dir instead (see update.sh's error text). Nothing was changed."
 done
-fails="$($HEALTH_CMD 2>&1 | grep -c '^\[FAIL\]' || true)"
+health_rc=0
+health_output="$($HEALTH_CMD 2>&1)" || health_rc=$?
+[ "$health_rc" -eq 0 ] || die "health check exited $health_rc: health is unverified. Marker and backups are retained."
+fails="$(grep -c '^\[FAIL\]' <<<"$health_output" || true)"
 [ "$fails" = "0" ] || die "health check reports $fails FAIL line(s): the host is not healthy. Nothing was changed."
 
 log "host is healthy. Would remove: marker $MARKER ${TARGETS[*]:-(no stale directories present)}"

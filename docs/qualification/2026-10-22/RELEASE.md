@@ -6,6 +6,14 @@ integration branch `integration/2026-10-22-production-qualification` adds
 `git rev-parse HEAD`; never bind candidate evidence to the baseline SHA.
 Any remote qualification result must name that exact integration commit.
 
+Additional I-90 correction: the standalone interrupted-update leftover-cleanup
+helper ignored health-command exit status if no `[FAIL]` line was printed.
+A fixture health command exiting 7 reproduced deletion of the marker/backup.
+It now fails closed and retains both; the new regression fails against the
+old implementation and passes after the fix. This changes the candidate after
+`fcd711a4` passed CI/Security, so a fresh exact-final-commit run is mandatory.
+Those earlier green results are historical and cannot qualify this fix.
+
 The latest release API lists v1.3.1-rc.2; stable remains v1.3.0. The rc.3
 ref lookup returns 404 and workspace/package core version is 1.3.1.
 **Next proposed version: v1.3.1-rc.3**, after final checks and authorization.

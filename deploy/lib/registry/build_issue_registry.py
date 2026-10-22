@@ -259,6 +259,12 @@ NEW += [
       "test-shorts-monitor-install.sh with no historical commit object", "no",
       "fixture intentionally preserves the old wrong classifier and must never be installed",
       "fixture source: df47737eaca761f9a2a9bb30c91aa7000b98168d"),
+    n("I-90", "high", "interrupted-update cleanup health gate", "FIXED_IN_BRANCH",
+      "recover-interrupted-update.sh ignored health-command exit status: nonzero with no FAIL line allowed marker/backup deletion",
+      "capture the command status separately and refuse cleanup on any nonzero result; never print raw health output",
+      "test-recover-interrupted-update.sh: health stub exits 7 without FAIL text; fails before, passes after with marker/backup retained", "no",
+      "real interrupted-update lifecycle on exact RC remains required; this is the safe leftover-cleanup helper, not proof of automatic rollback",
+      "docs/qualification/2026-10-22/RELEASE.md; local recovery-health-before/after.log"),
 ]
 
 
