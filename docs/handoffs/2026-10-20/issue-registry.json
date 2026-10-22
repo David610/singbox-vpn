@@ -175,13 +175,13 @@
    "id": "I-50",
    "severity": "low",
    "component": "tests",
-   "state": "CONFIRMED_OPEN",
+   "state": "FIXED_IN_BRANCH",
    "title": "root-run Rust tests create system groups vpn-subscription/sing-box and never remove them",
-   "fix": "I-41 removes the harm; a cleanup would still be cleaner",
-   "regression_test": "",
+   "fix": "apps/admin/tests/support: root_groups removes exactly the groups its own groupadd created, at process exit (atexit); pre-existing groups, groups another process created first, and groups that gained members are never touched; relay_cli no longer relies on cli.rs leaking the groups",
+   "regression_test": "apps/admin/tests/cli.rs root_group_cleanup_tests (success, pre-existing, lost race, members, groupadd failure, real exit handler via child process); as root the full workspace leaves no group behind",
    "device_required": "no",
-   "remaining_risk": "",
-   "evidence": "",
+   "remaining_risk": "a SIGKILL cannot run the exit handler; CI runs unprivileged so the root path is exercised only on a root host",
+   "evidence": "local run as root; workspace 1136 passed",
    "supersedes_audit_entry": false
   },
   {

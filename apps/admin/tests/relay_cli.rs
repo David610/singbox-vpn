@@ -488,6 +488,7 @@ fn restore_refuses_a_backup_from_another_role_or_node_and_changes_nothing() {
 
 #[test]
 fn relay_backup_restores_onto_the_same_relay_and_keeps_its_restrictions() {
+    support::ensure_service_groups_for_root_tests();
     let dir = tempfile::tempdir().unwrap();
     let cfg = write_deployment(dir.path(), Shape::PairedRelay);
     provision(dir.path(), &cfg, Shape::PairedRelay);
