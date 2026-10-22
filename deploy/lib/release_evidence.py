@@ -31,10 +31,20 @@ DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 # Native-device cells that must each be PASS (INV-12 / DEVICE_ACCEPTANCE_TESTS.md).
 REQUIRED_TRANSPORTS = ("reality", "hysteria2")
 REQUIRED_NETWORKS = ("wifi", "cellular")
+REQUIRED_YOUTUBE_MODES = ("signed_in", "incognito")
 REQUIRED_SHORTS_CONSECUTIVE = 10
+REQUIRED_PLAYBACK_SECONDS = 900
+PLAYBACK_GATES = ("long_form_playback", "seeking", "reconnect", "app_restart",
+                  "post_reconcile_playback", "google_egress_verified")
 CELL_FIELDS = ("iphone_model", "ios_version", "hiddify_version", "transport", "network",
                "date", "result", "evidence_ref", "shorts_consecutive_played",
-               "known_failing_short_played", "release_tag", "git_commit")
+               "known_failing_short_played", "release_tag", "git_commit", "youtube_mode",
+               "youtube_version", "binary_sha256")
+
+
+def measured_at_least(value, minimum: int) -> bool:
+    # bool is an int subclass; strings and guessed/coerced measurements are not evidence.
+    return type(value) is int and value >= minimum
 
 
 def compute(doc: dict, tag: str | None, commit: str | None) -> tuple[str, list[str]]:
@@ -83,10 +93,15 @@ def compute(doc: dict, tag: str | None, commit: str | None) -> tuple[str, list[s
         if (cell.get("result") == "PASS" and cell.get("git_commit") == c
                 and cell.get("release_tag") == doc["release_tag"]
                 and all(cell.get(f) not in (None, "") for f in CELL_FIELDS)
-                and cell.get("shorts_consecutive_played", 0) >= REQUIRED_SHORTS_CONSECUTIVE
+                and measured_at_least(cell.get("shorts_consecutive_played"), REQUIRED_SHORTS_CONSECUTIVE)
+                and measured_at_least(cell.get("continuous_playback_seconds"), REQUIRED_PLAYBACK_SECONDS)
+                and all(cell.get(f) is True for f in PLAYBACK_GATES)
+                and DIGEST.fullmatch(str(doc.get("runtime_binary_sha256", "")))
+                and cell.get("binary_sha256") == doc["runtime_binary_sha256"]
                 and cell.get("known_failing_short_played") is True):
-            good[(cell["transport"], cell["network"])] = cell
-    missing = [f"{t}/{n}" for t in REQUIRED_TRANSPORTS for n in REQUIRED_NETWORKS if (t, n) not in good]
+            good[(cell["transport"], cell["network"], cell["youtube_mode"])] = cell
+    missing = [f"{t}/{n}/{m}" for t in REQUIRED_TRANSPORTS for n in REQUIRED_NETWORKS
+               for m in REQUIRED_YOUTUBE_MODES if (t, n, m) not in good]
     if missing:
         errs.append("DEVICE_VERIFIED not met: no complete PASS cell for " + ", ".join(missing)
                     + (" (waived)" if waivers else ""))

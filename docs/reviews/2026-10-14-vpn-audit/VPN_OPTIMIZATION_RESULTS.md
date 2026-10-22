@@ -23,6 +23,7 @@ or external account was touched. Raw data:
 | 9 | Hysteria2 inbound without caps (the default) renders `ignore_client_bandwidth: true`: every client is told to use BBR, so no client can get an uncapped fixed-rate sender | `crates/compat-config/src/server.rs` (+ field docs), `deploy/lab/perf/lab.sh` | unit test (default renders the flag, caps never do); new real-binary interop test `hysteria2_default_server_still_serves_clients_that_declare_bandwidth` (1.14.1 and 1.14.3); CI interop count 10 → 11; lab fairness run (§2.9) | Clients that declare nothing: identical server path. A client that declares a bandwidth now gets BBR instead of uncapped Brutal |
 | 10 | `uninstall.sh` keeps `/usr/local/bin/sing-box` when ownership is unknown (no record); the uninstall idempotency test protects and checks a pre-existing binary and reports its own failures | `deploy/almalinux/uninstall.sh`, `deploy/lib/tests/test-uninstall-idempotency.sh`, `test-f13-binary-ownership-invariant.sh` | idempotency test fails against `main`'s script (binary removed, restored from backup) and passes with the fix; static check | Uninstall on a host singbox-vpn never managed no longer deletes someone else's sing-box |
 | 11 | `Cargo.lock`: rustls 0.23.45 → 0.23.46 (RUSTSEC-2026-0346/0347/0348/0349, published 2026-10-14; one medium, three low) | `Cargo.lock` | `cargo audit` 4 vulnerabilities → 0; workspace build and tests | Provisioning agent only (its HTTPS client); no behaviour change expected |
+| 12 | The REALITY decoy-size regression test uses a 600-SAN certificate (12248-byte Certificate record) instead of 800 SANs (16048 bytes); `vpn-admin doctor --protocol` and its doc comment now name the current limit (REALITY drops a connection when more than 16384 bytes of the decoy's reply are buffered unparsed) instead of the old 8192-byte one | `crates/compat-config/tests/common/mod.rs`, `tests/reality_decoy_budget.rs`, `apps/admin/src/main.rs` | the CI failure's own trace (first read 4096 bytes, then > 16384 unparsed → dropped; the same commit passed in the other run); 30/30 passes on 1.14.1 and on 1.14.3; on 1.13.19 (old pin, checksum-verified) the test still fails 5/5 with the old "too long" rejection while the small-decoy tests pass ([`reality-decoy-buffer-race.txt`](../evidence/2026-10-14/reality-decoy-buffer-race.txt)) | Test and diagnostic text only (W19) |
 
 Not changed, deliberately: no default transport, routing, hairpin, IPv6,
 sniffing, firewall, unit or kernel-tuning change; no new egress; no release.
@@ -205,11 +206,61 @@ with fresh clients: [security audit §2](VPN_SECURITY_PRIVACY_AUDIT.md).
 
 ### 3.1 Lab soak, 90 minutes
 
-Running when this section was committed (90 min, class C, both transports under mixed load); the results replace this line in the next commit.
+Class C, `deploy/lab/perf/soak.sh 5400` on the second VM (Xeon @ 2.10 GHz,
+4 MiB socket-buffer ceilings), 20 ms RTT, 0 % loss, no shaping, sing-box
+1.14.1 on both ends, no exit restart during the run. Per transport: two
+long-lived connections with a 64-byte ping-pong every second, 20 new
+connections every 10 s, and a 10 s bulk download every 60 s (both
+transports' downloads run at the same time, so their rates are not a
+throughput result). Raw data:
+[`soak-90min-20ms/`](../evidence/2026-10-14/soak-90min-20ms/).
+
+| Measure | REALITY | Hysteria2 |
+|---|---|---|
+| Long-lived connections | 2 of 2 survived; 0 failed of 5238 + 5242 pings | 2 of 2 survived; 0 failed of 5134 + 5133 pings |
+| Long-lived ping p50 / p95 / p99 / max | 24.4 / 58 / 66–76 / 304–512 ms | 25.0 / 150–153 / 674–687 / 1077–1092 ms |
+| New connections | 8340, 0 failed; median per-batch p50 79.9 ms | 9000, 0 failed; median per-batch p50 28.9 ms |
+| Bulk downloads | 90, 0 failed; median 49.2 Mbit/s | 90, 0 failed; median 44.0 Mbit/s |
+
+Exit process, sampled every 10 s (539 samples): alive for the whole run;
+RSS 58.1 MB at start, median 63.9 MB in the first 10 min, 64.7 MB at
+10–30 min, 65.3 MB at 30–60 min, 65.5 MB at 60–90 min, max 66.2 MB; open
+fds median 16 (max 22); 6–7 threads; average CPU 4.9 % of one core.
+
+What it shows: in 90 minutes under mixed load nothing failed and nothing
+grew without bound — RSS levels off after ~30 min and fds stay flat. That
+rules out a fast leak, not a slow one; the multi-day proposal in the
+assessment still applies. The Hysteria2 tail is the same-connection delay
+of §2.4: the pings share one QUIC connection with the periodic download,
+which runs one sixth of the time, so p95/p99 land in download windows.
+REALITY's pings use their own TCP connection and are not affected. The
+run had no restarts (§2.3) and no loss (§2.7).
 
 ### 3.2 Network outage
 
-Scheduled after the soak (`deploy/lab/perf/outage.sh`, 5/20/40 s outages); the results replace this line in the next commit.
+Class C, `deploy/lab/perf/outage.sh SECONDS 2` on the same VM, 80 ms RTT,
+0 % loss: every packet between the client and exit networks is dropped for
+5, 20 or 40 s while a proxied connection does a 1 s ping-pong (120 s
+per-ping deadline), then new requests are tried every 0.5 s. Two rounds
+each; both rounds agreed. Raw data:
+[`outage-80ms.jsonl`](../evidence/2026-10-14/outage-80ms.jsonl).
+
+| Outage | REALITY open connection | Hysteria2 open connection | First new request after the outage (REALITY / Hysteria2) |
+|---|---|---|---|
+| 5 s | survived; longest ping 4.9 s | survived; longest ping 4.9–5.0 s | 0.28 s / 0.10 s |
+| 20 s | survived, but its longest ping took 37.4–38.1 s: it resumed ~17–19 s **after** the network was back | survived; longest ping 19.9–20.0 s (resumed at once) | 0.28–0.31 s / 0.10–0.14 s |
+| 40 s | survived, longest ping 74.9–75.5 s: resumed ~35 s after the network was back | **closed** (the 30 s QUIC idle timeout expired during the outage) | 0.27–0.37 s / 0.28–0.35 s |
+
+What it shows: after a gap, **new** connections work within 0.4 s on both
+transports. An **open** REALITY connection survives but stays stuck for a
+while after the network returns, because TCP doubles its retransmission
+timeout during the outage and waits for the next scheduled retransmission.
+An open Hysteria2 connection resumes immediately after gaps shorter than
+its 30 s idle timeout and is closed after longer ones; the next request
+then opens a new QUIC connection in ~0.3 s. Lab Linux TCP on both ends: an
+iPhone's TCP stack schedules client retransmissions differently, so the
+REALITY delay is a lab value, not a device value. Whether a server-side
+retransmission cap shortens the stall for downloads is roadmap R19.
 
 ### 3.3 Tool runs
 
@@ -224,11 +275,12 @@ exact cause; such a test did not pass and is not counted as passing.
 | Unit + integration tests, real binaries required | `ip netns exec itest env SING_BOX_BIN=/usr/local/bin/sing-box SINGBOX_VPN_REQUIRE_REAL_INTEROP=1 cargo test --offline --workspace --locked --no-fail-fast` | **1035 passed, 4 failed.** Env: `real_core_literal_family_and_proxy_recovery_boundaries`, `core_start_failure_stays_visible_with_production_logging`, `s13_relay_reaches_only_the_declared_exit_target` — `EAFNOSUPPORT`, the kernel has no IPv6; `probes_a_real_singbox_direct_outbound_successfully` — needs Internet, which the test namespace has none of (passes in the root namespace: provisioning-agent 126/126) |
 | Why a namespace | same command in the root namespace (before the last fixes) | 1013 passed, 25 failed, all Env: 1 no IPv6; 3 REALITY tests use `localhost` as the decoy and this VM's resolver (8.8.8.8, no systemd-resolved) answers NXDOMAIN; 21 `two_hop_system` tests need a `dummy` link type the kernel lacks. The `itest` namespace adds a resolver answering `localhost` and a `sudo` shim that creates a veth pair where the test asks for `dummy`; no test code or assertion was changed |
 | CI-equivalent real interop | `cargo test -p compat-config --test reality_interop --test reality_decoy_budget --test hysteria2_interop` (namespace, `SINGBOX_VPN_REQUIRE_REAL_INTEROP=1`) | 11 ok = the CI expected count |
+| REALITY decoy guard after the fixture change (change 12) | `reality_decoy_budget` alone, 30 runs each (namespace, `SINGBOX_VPN_REQUIRE_REAL_INTEROP=1`); then against sing-box 1.13.19 | 1.14.1 30/30, 1.14.3 30/30; 1.13.19 0/5 (expected: the guard still catches the old limit; `reality_interop` with the small decoy 3/3 on 1.13.19) |
 | Real-binary suites with sing-box **1.14.3** | reality_interop, reality_decoy_budget, hysteria2_interop, quic_reject_config, two_hop_system | 33 passed, 2 failed (Env: the same two IPv6 binds) |
 | YouTube/IPv6 invariants | the tests named in `YOUTUBE_FIX_INVARIANTS.md` + `youtube_invariants_doc.rs` | all pass (the IPv6 runtime lab is the Env failure above) |
 | sing-box config validation | interop tests run `sing-box check` on rendered configs; every lab config was checked with 1.14.1 (and 1.14.3 where used) | pass |
 | Shell lint | `shellcheck -S warning` on the CI file set, and on `deploy/lab/perf/*.sh`; `bash -n` on every script | pass |
-| Shell regression tests (69) | `bash deploy/lib/tests/*.sh` as root | **69 of 69 exit 0.** Skips found and handled: `idn2`/`tshark` were missing and the checkout was shallow (no historical fixture) — installed/fetched, and `test-idn-punycode`, `test-vpn-investigate` and `test-uninstall-ownership-checkpoint2` re-run with no skip, all pass; `test-uninstall-hardening` still skips one sub-check because this VM's `/dev/tty` node is world-accessible without a controlling terminal (the gate fails closed anyway: the prompt write/read fails and it aborts); `test-uninstall-idempotency` skipped while lab sing-box processes were running — its earlier real run reproduced W5 and is re-run after the soak. The first full run (before the W5 fix) failed that test after it deleted the lab's `/usr/local/bin/sing-box` |
+| Shell regression tests (69) | `bash deploy/lib/tests/*.sh` as root | **69 of 69 exit 0.** Skips found and handled: `idn2`/`tshark` were missing and the checkout was shallow (no historical fixture) — installed/fetched, and `test-idn-punycode`, `test-vpn-investigate` and `test-uninstall-ownership-checkpoint2` re-run with no skip, all pass; `test-uninstall-hardening` still skips one sub-check because this VM's `/dev/tty` node is world-accessible without a controlling terminal (the gate fails closed anyway: the prompt write/read fails and it aborts); `test-uninstall-idempotency` skipped while lab sing-box processes were running and was re-run after the lab was stopped: passes with no skip, and the pre-existing `/usr/local/bin/sing-box` survived both uninstall runs with an unchanged checksum (its earlier run on `main`'s script reproduced W5). The first full run (before the W5 fix) failed that test after it deleted the lab's `/usr/local/bin/sing-box` |
 | Dependency audit | `cargo audit` (cargo-audit installed for this run) | before: 4 vulnerabilities (rustls 0.23.45, published 2026-10-14) → after the lockfile bump: 0; one existing "yanked" warning (yoke-derive 0.8.3), allowed |
 | Benchmark tests | `test-vpn-benchmark-safety.sh`, `test-vpn-benchmark-set-e-regression.sh`; one real run of the new default `vpn-benchmark` in the lab | pass |
 | Not available | IPv6, a VPS, an iPhone, a real mobile network, Hiddify's core | not run — see the assessment's test plan |

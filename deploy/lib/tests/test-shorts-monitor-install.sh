@@ -31,7 +31,21 @@ now() { date +%s; }
 state() { printf '{"streak": 0, "status": "%s", "last_run": %s}\n' "$1" "$2" >"$T/st/exit-direct.state.json"; }
 
 # I-83: a pre-I-83 classifier (the df47737 one) must make install refuse and --check fail.
-git -C "$ROOT" show df47737:deploy/lib/monitoring/shorts_health.py >"$T/old_classifier.py" 2>/dev/null || cp /dev/null "$T/old_classifier.py"
+# A shallow CI checkout has no df47737 object. Falling back to an empty file
+# tested only import failure, never the actual wrong EGRESS_REFUSED classifier.
+# Preserve the real historical source as data, independent of Git history.
+cp "$ROOT/deploy/lib/tests/fixtures/shorts-health-pre-i83.py.txt" "$T/old_classifier.py"
+old_cause="$(python3 -I - "$T/old_classifier.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("old_shorts", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+r = {"kind": "short", "counts_as_short": True, "play": False, "playabilityStatus": "OK", "ui_unavailable": True,
+     "media": {"responses": 1, "bytes": 155, "content_types": ["application/vnd.yt-ump"]}}
+print(m.evaluate(0, {"results": [r, r, r]}).get("cause"))
+PY
+)"
+[ "$old_cause" = EGRESS_REFUSED ] || { echo "FAIL: historical classifier did not reproduce EGRESS_REFUSED: $old_cause"; exit 1; }
 mkenv; out="$(SHORTS_CLASSIFIER="$T/old_classifier.py" run --label exit-direct)"; rc=$?
 { [ $rc -ne 0 ] && [ ! -e "$T/u/vpn-shorts-health@.timer" ] && grep -q 'pre-I-83 classifier' <<<"$out"; } && ok "install refuses a pre-I-83 classifier and installs nothing" || bad "old classifier accepted: rc=$rc $out"
 mkenv; run --label exit-direct >/dev/null; out="$(SHORTS_CLASSIFIER="$T/old_classifier.py" run --check --label exit-direct)"; rc=$?

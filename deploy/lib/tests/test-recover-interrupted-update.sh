@@ -39,6 +39,14 @@ bash "$R" --yes >/dev/null 2>&1; { [ $? -eq 0 ] && [ ! -e "$RECOVER_MARKER" ]; }
 reset; marker "\"$P\"" "\"\""; mkdir -p "$P"
 printf '#!/bin/sh\necho "[FAIL] x"\n' >"$T/bin/badhealth"; chmod +x "$T/bin/badhealth"
 RECOVER_HEALTH_CMD="$T/bin/badhealth" bash "$R" --yes >/dev/null 2>&1; { [ $? -ne 0 ] && [ -e "$RECOVER_MARKER" ] && [ -d "$P" ]; } && ok "doctor FAIL: refused" || bad "ran despite doctor FAIL"
+# A crashed/missing doctor can return nonzero without printing a [FAIL] line.
+# Recovery must not discard the backup/marker just because grep counted zero.
+printf '#!/bin/sh\necho "doctor could not initialize" >&2\nexit 7\n' >"$T/bin/badhealth"
+RECOVER_HEALTH_CMD="$T/bin/badhealth" bash "$R" --yes >/dev/null 2>&1; rc=$?
+{ [ "$rc" -ne 0 ] && [ -e "$RECOVER_MARKER" ] && [ -d "$P" ]; } \
+  && ok "health command nonzero without FAIL text: refused, marker and backup kept" \
+  || bad "nonzero health command allowed recovery to delete its marker or backup"
+reset; marker "\"$P\"" "\"\""; mkdir -p "$P"
 printf '#!/bin/sh\n[ "$3" = sing-box ] && exit 3 || exit 0\n' >"$T/bin/systemctl"
 bash "$R" --yes >/dev/null 2>&1; { [ $? -ne 0 ] && [ -e "$RECOVER_MARKER" ] && [ -d "$P" ]; } && ok "inactive service: refused" || bad "ran despite inactive service"
 printf '#!/bin/sh\nexit 0\n' >"$T/bin/systemctl"

@@ -120,6 +120,14 @@ class Overlap(unittest.TestCase):
         r = self.window(agg, T0 + 600, T0 + 660)
         self.assertEqual((r["verdict"], r["reason"]), ("NO_OVERLAP_INCONCLUSIVE", "capture_does_not_cover_window"))
 
+    def test_partial_capture_cannot_qualify_a_longer_test_window(self):
+        agg = run(sum((phone_and_google(T0 + 5 * i, 6) for i in range(6)), []))
+        for a, b in ((T0 - 300, T0 + 30), (T0, T0 + 300), (T0 - 300, T0 + 300)):
+            with self.subTest(window=(a, b)):
+                r = self.window(agg, a, b)
+                self.assertEqual((r["verdict"], r["reason"]),
+                                 ("NO_OVERLAP_INCONCLUSIVE", "capture_does_not_cover_window"))
+
     def test_no_phone_activity_is_inconclusive(self):
         agg = run([l6udp(T0 + 5 * i, f"{SRV6}.40001", "2a00:1450:4001:82b::200e.443", 1350) for i in range(6)])
         r = self.window(agg, T0, T0 + 30)
@@ -139,7 +147,7 @@ class Overlap(unittest.TestCase):
 
     def test_single_coincident_bin_is_not_enough(self):
         lines = phone_and_google(T0, 6) + [l4tcp(T0 + 20, f"{PHONE4}.51000", f"{SRV4}.443", 1400)]
-        r = self.window(run(lines), T0, T0 + 30)
+        r = self.window(run(lines), T0, T0 + 25)
         self.assertEqual((r["verdict"], r["reason"]), ("NO_OVERLAP_INCONCLUSIVE", "too_few_coincident_bins"))
 
 

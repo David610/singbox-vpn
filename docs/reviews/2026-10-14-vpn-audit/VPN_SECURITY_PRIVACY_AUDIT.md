@@ -131,6 +131,7 @@ agent is installed, which a standalone install does not do.
 | W16 | Medium (availability) | After every sing-box restart (each user change, expiry, rotation, update), a Hysteria2 client that was idle while the server was down stalls for **~30 s** from its first request; REALITY recovers in ~1 s. The stopping process sends no QUIC `CONNECTION_CLOSE` and the new one cannot send a valid stateless reset (random key per process; disabled with Salamander) | every Hysteria2 user, at every authorization change | lab C (`restart-recovery-*.jsonl`): 34.6 s with or without Salamander; a **1.14.3 exit**: 4.3 s with unchanged clients | Open on the 1.14.1 pin; **fixed by moving the exit to 1.14.3** (roadmap R8); operator message and `ALMALINUX_DEPLOYMENT.md` corrected (this branch) |
 | W17 | Low (performance, privacy-neutral) | While one app saturates the link through Hysteria2, other requests on the same QUIC connection wait ~0.5 s (client-side sing-quic BBR) | every Hysteria2 user during bulk downloads | lab C, attributed with a lab client build | Open — upstream; roadmap R4 |
 | W18 | Medium (availability) | With no bandwidth caps (the default), sing-quic honoured any receive rate a client declared and sent to it with an **uncapped** fixed-rate (Brutal) controller that ignores loss; one authenticated user (or anyone with one leaked credential) could take nearly the whole link of the node | any user who edits their client's Hysteria2 `down_mbps`; impact: every other user of the node, both transports | lab C ([`greedy-client-20ms-100m.jsonl`](../evidence/2026-10-14/greedy-client-20ms-100m.jsonl)): greedy 88.5–88.8 of 100 Mbit/s, others 0.1–16; after the fix 27–30 vs 28–37 | **Fixed** (this branch): no caps → `ignore_client_bandwidth: true`; test `hysteria_default_has_no_caps_and_forces_bbr_for_every_client`, interop `hysteria2_default_server_still_serves_clients_that_declare_bandwidth` |
+| W19 | Low (availability) | REALITY (metacubex/utls v1.8.7, used by 1.14.1 and 1.14.3) drops a connection after successful authentication when more than 16384 bytes of the `handshake_server`'s reply are buffered before they can be parsed. Whether that happens depends on how the reply is split across reads, so a decoy whose Certificate record is close to 16 KB fails **intermittently** for every user. The `doctor --protocol` text still blamed an 8192-byte limit (the old 1.13.x pin's) | needs a decoy with an unusually large certificate chain; the operator chooses the decoy | code; CI 2026-10-14: the 800-SAN test decoy (16048-byte record) failed once and passed on the same commit; the failing trace shows a 4096-byte first read, then the drop | Open (upstream design); doctor text corrected and the regression test kept clear of the race (this branch). Operator: prefer a decoy with an ordinary-size chain. Proposal: have `doctor` measure the decoy's flight size and warn above ~12 KB |
 
 ## 4. Privacy
 
@@ -173,6 +174,7 @@ The product is a circumvention VPN, not an anonymity system.
 | Uninstall keeps a foreign sing-box (W5 fix) | `test-f13-binary-ownership-invariant.sh` (static), `test-uninstall-idempotency.sh` (real script, root) | yes |
 | YouTube/IPv6 invariants | the tests named in `YOUTUBE_FIX_INVARIANTS.md`, `youtube_invariants_doc.rs` | yes (IPv6 lab part needs IPv6) |
 | No credentials in logs | `two_hop_system.rs` log tests, `test-privacy-logging-hardening.sh` | yes |
+| Large-decoy regression from the 1.13.x pin; W19 race kept out of the test | `historically_oversized_decoy_certificate_remains_usable` (real binary, 12248-byte Certificate record; fails on 1.13.19 as intended) | yes (interop job) |
 | Hysteria2 restart stall (W16) | none automated; lab `restart-recovery.sh` | no — add to the 1.14.3 candidate checklist |
 | Same-connection latency (W17) | none automated; lab `loaded-latency.sh` | no |
 
@@ -192,7 +194,8 @@ scrubbed).
 
 - Nothing here is server- or device-verified. IPv6 C-16 behaviour, IPv6 client
   paths and the exit IPv6 policy were not exercised (no IPv6 in the lab kernel).
-- REALITY depends at runtime on the decoy and DNS (SVPN-F12): unchanged.
+- REALITY depends at runtime on the decoy and DNS (SVPN-F12): unchanged. A
+  decoy with a ~16 KB certificate flight fails intermittently (W19).
 - Every authorization change restarts sing-box for everyone (SVPN-F11):
   unchanged; revocation stays immediate (§2.2), and Hysteria2 users pay up to
   ~30 s per restart until the exit runs sing-box 1.14.3 (W16).

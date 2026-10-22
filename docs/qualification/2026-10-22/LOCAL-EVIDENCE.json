@@ -1,0 +1,145 @@
+{
+  "baseline_python_tests": 176,
+  "integration_python_tests": 183,
+  "baseline_source_sha": "6825fcf491fd44e80543edc0b076c5b114cade16",
+  "scope": "local unprivileged fixtures; no native/server acceptance",
+  "final_checks": [
+    {
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "deploy/lib/tests",
+        "-p",
+        "test_*.py"
+      ],
+      "exit": 0,
+      "log": "final-check-0.log",
+      "sha256": "f346dfb29012c5ee34b9397a09b5313bcaf7d4b7e270025522648746a3cd143e"
+    },
+    {
+      "command": [
+        "bash",
+        "deploy/lib/tests/test-shorts-monitor-install.sh"
+      ],
+      "exit": 0,
+      "log": "final-check-1.log",
+      "sha256": "0138d18cfdd5d0d0330dc38c508e5691e5afacd7e4d86c73428be4ee0eb910b9"
+    },
+    {
+      "command": [
+        "bash",
+        "deploy/lib/check-no-secret-logging.sh"
+      ],
+      "exit": 0,
+      "log": "final-check-2.log",
+      "sha256": "30e6ad01d45618aa0fb33cce0a60d3e834977733899baa6b5152a228c99a3a6d"
+    },
+    {
+      "command": [
+        "bash",
+        "deploy/lib/tests/test-offline-full-ci-equivalence.sh"
+      ],
+      "exit": 0,
+      "log": "final-check-3.log",
+      "sha256": "7e7fea87db635f61c511edc9181ab84cf9f00d600e04f23334713d36712cec7f"
+    },
+    {
+      "command": [
+        "bash",
+        "deploy/lib/tests/test-no-pipefail-sigpipe-race.sh"
+      ],
+      "exit": 0,
+      "log": "final-check-4.log",
+      "sha256": "87f06c9a477cc11426c6a954997c55d32cf56c9b7d70d8c02f45f5385603da1b"
+    }
+  ],
+  "shell_checks": [
+    {
+      "test": "test-preflight-build-budget",
+      "exit": 0
+    },
+    {
+      "test": "test-update-backfills-own-address",
+      "exit": 0
+    },
+    {
+      "test": "test-recover-interrupted-update",
+      "exit": 0
+    },
+    {
+      "test": "test-no-pipefail-sigpipe-race",
+      "exit": 0
+    },
+    {
+      "test": "test-release-version-contract",
+      "exit": 0
+    },
+    {
+      "test": "test-release-archive-contract",
+      "exit": 0
+    },
+    {
+      "test": "test-release-sbom",
+      "exit": 0
+    },
+    {
+      "test": "test-release-reproducibility",
+      "exit": 0
+    },
+    {
+      "test": "test-release-stability-regressions",
+      "exit": 0
+    }
+  ],
+  "secret_scan": {
+    "scope": "complete proposed changed files including PR162 evidence; generic patterns only",
+    "files_scanned": 47,
+    "findings": [],
+    "known_live_secret_scan": "UNVERIFIED: no live credentials available; none read"
+  },
+  "pr162_recomputed": {
+    "1080": {
+      "churn_batches": 417,
+      "churn_connections": 8340,
+      "churn_failures": 0,
+      "bulk_runs": 90,
+      "nonpositive_bulk_results": 0
+    },
+    "1081": {
+      "churn_batches": 450,
+      "churn_connections": 9000,
+      "churn_failures": 0,
+      "bulk_runs": 90,
+      "nonpositive_bulk_results": 0
+    },
+    "long": {
+      "connections": 4,
+      "samples": 20747,
+      "failures": 0
+    },
+    "sampler": {
+      "rows": 539,
+      "span_seconds": 5390,
+      "rss_kb_start": "58072",
+      "rss_kb_end": "64812",
+      "rss_kb_max": 66160,
+      "fds_start": "10",
+      "fds_end": "16",
+      "fds_max": 22
+    }
+  },
+  "red_before": {
+    "release_evidence": "18 tests; 22 assertion/subtest failures against old validator",
+    "af_capture": "16 tests; 3 longer-window subtest failures against old coverage logic"
+  },
+  "blocked": [
+    "local Rust toolchain absent",
+    "shell proxy unavailable",
+    "no SSH/TCP grants or host credentials",
+    "no physical device",
+    "no authorized immutable release artifact"
+  ]
+}

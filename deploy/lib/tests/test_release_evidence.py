@@ -113,6 +113,43 @@ class ReleaseEvidence(unittest.TestCase):
     def test_manual_pass_text_is_not_evidence(self):
         self.assertEqual(run({"schema_version": 1, "release_tag": "v1", "device_acceptance": "PASS"})[0], 1)
 
+    def test_signed_in_success_cannot_substitute_for_incognito(self):
+        d = self.base()
+        d["device_matrix"] = [c for c in d["device_matrix"] if c.get("youtube_mode") != "incognito"]
+        rc, lvl, out = run(d, "--require", "DEVICE_VERIFIED")
+        self.assertEqual((rc, lvl), (1, "SERVER_QUALIFIED"), out)
+        self.assertIn("incognito", out)
+
+    def test_legacy_cells_without_session_mode_do_not_qualify(self):
+        d = self.base()
+        for c in d["device_matrix"]:
+            c.pop("youtube_mode", None)
+        self.assertEqual(run(d, "--require", "DEVICE_VERIFIED")[:2], (1, "SERVER_QUALIFIED"))
+
+    def test_every_playback_and_recovery_gate_is_mandatory(self):
+        for field, value in (("continuous_playback_seconds", 899), ("long_form_playback", False),
+                             ("seeking", False), ("reconnect", False), ("app_restart", False),
+                             ("post_reconcile_playback", False), ("google_egress_verified", False),
+                             ("youtube_version", ""), ("binary_sha256", "sha256:" + "0" * 64)):
+            with self.subTest(field=field):
+                d = self.base()
+                d["device_matrix"][0][field] = value
+                self.assertEqual(run(d, "--require", "DEVICE_VERIFIED")[:2], (1, "SERVER_QUALIFIED"))
+
+    def test_invalid_counts_cannot_qualify_or_crash_the_validator(self):
+        for field in ("shorts_consecutive_played", "continuous_playback_seconds"):
+            for value in (True, "1000", None, -1):
+                with self.subTest(field=field, value=value):
+                    d = self.base()
+                    d["device_matrix"][0][field] = value
+                    rc, lvl, out = run(d, "--require", "DEVICE_VERIFIED")
+                    self.assertEqual((rc, lvl), (1, "SERVER_QUALIFIED"), out)
+
+    def test_boolean_gates_require_true_not_a_truthy_string(self):
+        d = self.base()
+        d["device_matrix"][0]["post_reconcile_playback"] = "PASS"
+        self.assertEqual(run(d, "--require", "DEVICE_VERIFIED")[:2], (1, "SERVER_QUALIFIED"))
+
 
 if __name__ == "__main__":
     unittest.main()

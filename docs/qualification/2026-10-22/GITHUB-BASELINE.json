@@ -1,0 +1,467 @@
+{
+  "observed_date": "2026-10-22",
+  "main": "6825fcf491fd44e80543edc0b076c5b114cade16",
+  "prs": [
+    {
+      "number": 162,
+      "title": "docs(review): 90-min lab soak, network-outage runs and the REALITY decoy race",
+      "head_sha": "03ffb69810c7d355f422c014bdb93ef319d91821",
+      "behind": 111,
+      "changed_files": [
+        "docs/reviews/2026-10-14-vpn-audit/VPN_FINAL_ENGINEERING_ASSESSMENT.md",
+        "docs/reviews/2026-10-14-vpn-audit/VPN_OPTIMIZATION_RESULTS.md",
+        "docs/reviews/2026-10-14-vpn-audit/VPN_OPTIMIZATION_ROADMAP.md",
+        "docs/reviews/2026-10-14-vpn-audit/VPN_PERFORMANCE_BASELINE.md",
+        "docs/reviews/2026-10-14-vpn-audit/VPN_SECURITY_PRIVACY_AUDIT.md",
+        "docs/reviews/evidence/2026-10-14/README.md",
+        "docs/reviews/evidence/2026-10-14/outage-80ms.jsonl",
+        "docs/reviews/evidence/2026-10-14/reality-decoy-buffer-race.txt",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/bulk-1080.txt",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/bulk-1081.txt",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/churn-1080.jsonl",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/churn-1081.jsonl",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/long-1080-1.json",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/long-1080-2.json",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/long-1081-1.json",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/long-1081-2.json",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/long.json",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/samples.csv",
+        "docs/reviews/evidence/2026-10-14/soak-90min-20ms/summary.txt"
+      ],
+      "reviews": 0,
+      "inline_comments": 0,
+      "issue_comments": 0,
+      "runs": [
+        {
+          "id": 39787701454,
+          "name": "Security",
+          "conclusion": "success",
+          "sha": "03ffb69810c7d355f422c014bdb93ef319d91821",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/39787701454"
+        },
+        {
+          "id": 39787701523,
+          "name": "CI",
+          "conclusion": "failure",
+          "sha": "03ffb69810c7d355f422c014bdb93ef319d91821",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/39787701523"
+        },
+        {
+          "id": 39786120012,
+          "name": "CI",
+          "conclusion": "failure",
+          "sha": "03ffb69810c7d355f422c014bdb93ef319d91821",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/39786120012"
+        }
+      ]
+    },
+    {
+      "number": 161,
+      "title": "deps: bump the rust-minor-patch group across 1 directory with 6 updates",
+      "head_sha": "fbcbc75f132a762f4e73bf63c28513b8ff91d607",
+      "behind": 111,
+      "changed_files": [
+        "Cargo.lock"
+      ],
+      "reviews": 0,
+      "inline_comments": 0,
+      "issue_comments": 0,
+      "runs": [
+        {
+          "id": 39190759809,
+          "name": "CI",
+          "conclusion": "success",
+          "sha": "fbcbc75f132a762f4e73bf63c28513b8ff91d607",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/39190759809"
+        },
+        {
+          "id": 39190759807,
+          "name": "Security",
+          "conclusion": "success",
+          "sha": "fbcbc75f132a762f4e73bf63c28513b8ff91d607",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/39190759807"
+        },
+        {
+          "id": 39190755021,
+          "name": "CI",
+          "conclusion": "success",
+          "sha": "fbcbc75f132a762f4e73bf63c28513b8ff91d607",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/39190755021"
+        }
+      ]
+    },
+    {
+      "number": 160,
+      "title": "Agent: circuit breaker, Retry-After, ETag, event-driven wake-ups (Cloudflare quota incident)",
+      "head_sha": "ead10c8c77b8760e289bae2010b8722d604fbe93",
+      "behind": 111,
+      "changed_files": [
+        "apps/provisioning-agent/src/config.rs",
+        "apps/provisioning-agent/src/events.rs",
+        "apps/provisioning-agent/src/external_authorization.rs",
+        "apps/provisioning-agent/src/lease_pool.rs",
+        "apps/provisioning-agent/src/main.rs",
+        "apps/provisioning-agent/src/pacing.rs",
+        "apps/provisioning-agent/src/report_queue.rs",
+        "apps/provisioning-agent/src/worker_client.rs"
+      ],
+      "reviews": 0,
+      "inline_comments": 0,
+      "issue_comments": 0,
+      "runs": [
+        {
+          "id": 38972010741,
+          "name": "Security",
+          "conclusion": "success",
+          "sha": "ead10c8c77b8760e289bae2010b8722d604fbe93",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/38972010741"
+        },
+        {
+          "id": 38972010722,
+          "name": "CI",
+          "conclusion": "success",
+          "sha": "ead10c8c77b8760e289bae2010b8722d604fbe93",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/38972010722"
+        },
+        {
+          "id": 38972006473,
+          "name": "CI",
+          "conclusion": "success",
+          "sha": "ead10c8c77b8760e289bae2010b8722d604fbe93",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/38972006473"
+        }
+      ]
+    },
+    {
+      "number": 148,
+      "title": "ci: bump the actions-minor-patch group across 1 directory with 3 updates",
+      "head_sha": "cd4cfce3c40ab5150c5a5d3af8f96c775fd873af",
+      "behind": 111,
+      "changed_files": [
+        ".github/workflows/release.yml",
+        ".github/workflows/security.yml",
+        ".github/workflows/vps-acceptance.yml"
+      ],
+      "reviews": 0,
+      "inline_comments": 0,
+      "issue_comments": 0,
+      "runs": [
+        {
+          "id": 39191700691,
+          "name": "Security",
+          "conclusion": "success",
+          "sha": "cd4cfce3c40ab5150c5a5d3af8f96c775fd873af",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/39191700691"
+        },
+        {
+          "id": 39191700707,
+          "name": "CI",
+          "conclusion": "success",
+          "sha": "cd4cfce3c40ab5150c5a5d3af8f96c775fd873af",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/39191700707"
+        },
+        {
+          "id": 39191696052,
+          "name": "CI",
+          "conclusion": "success",
+          "sha": "cd4cfce3c40ab5150c5a5d3af8f96c775fd873af",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/39191696052"
+        }
+      ]
+    },
+    {
+      "number": 121,
+      "title": "deps: bump rand from 0.8.7 to 0.10.3",
+      "head_sha": "c403a69aab9cf831ea5229ff110a2fa4446c265d",
+      "behind": 322,
+      "changed_files": [
+        "Cargo.lock",
+        "Cargo.toml"
+      ],
+      "reviews": 0,
+      "inline_comments": 0,
+      "issue_comments": 0,
+      "runs": [
+        {
+          "id": 36370449859,
+          "name": "Security",
+          "conclusion": "success",
+          "sha": "c403a69aab9cf831ea5229ff110a2fa4446c265d",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/36370449859"
+        },
+        {
+          "id": 36370449838,
+          "name": "CI",
+          "conclusion": "failure",
+          "sha": "c403a69aab9cf831ea5229ff110a2fa4446c265d",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/36370449838"
+        },
+        {
+          "id": 36370447355,
+          "name": "CI",
+          "conclusion": "failure",
+          "sha": "c403a69aab9cf831ea5229ff110a2fa4446c265d",
+          "url": "https://github.com/David610/singbox-vpn/actions/runs/36370447355"
+        }
+      ]
+    }
+  ],
+  "main_ci": [
+    {
+      "name": "docs",
+      "id": 119962950189,
+      "conclusion": "success"
+    },
+    {
+      "name": "release-container-smoke",
+      "id": 119962950543,
+      "conclusion": "success"
+    },
+    {
+      "name": "no-legacy-identity-check",
+      "id": 119962950563,
+      "conclusion": "success"
+    },
+    {
+      "name": "test",
+      "id": 119962950564,
+      "conclusion": "success"
+    },
+    {
+      "name": "workspace-version-consistency-check",
+      "id": 119962950657,
+      "conclusion": "success"
+    },
+    {
+      "name": "offline-node-contract",
+      "id": 119962950669,
+      "conclusion": "success"
+    },
+    {
+      "name": "clippy",
+      "id": 119962950687,
+      "conclusion": "success"
+    },
+    {
+      "name": "license-check",
+      "id": 119962950695,
+      "conclusion": "success"
+    },
+    {
+      "name": "fmt",
+      "id": 119962950759,
+      "conclusion": "success"
+    },
+    {
+      "name": "os-matrix (ubuntu:24.04, ubuntu)",
+      "id": 119962950771,
+      "conclusion": "success"
+    },
+    {
+      "name": "audit",
+      "id": 119962950772,
+      "conclusion": "success"
+    },
+    {
+      "name": "os-matrix (ubuntu:22.04, ubuntu)",
+      "id": 119962950789,
+      "conclusion": "success"
+    },
+    {
+      "name": "os-matrix (debian:12, debian)",
+      "id": 119962950816,
+      "conclusion": "success"
+    },
+    {
+      "name": "os-matrix (amazonlinux:2023, amzn)",
+      "id": 119962950819,
+      "conclusion": "success"
+    },
+    {
+      "name": "release-build",
+      "id": 119962950847,
+      "conclusion": "success"
+    },
+    {
+      "name": "secret-logging-check",
+      "id": 119962950856,
+      "conclusion": "success"
+    },
+    {
+      "name": "singbox-validate",
+      "id": 119962950872,
+      "conclusion": "success"
+    },
+    {
+      "name": "shell",
+      "id": 119962950892,
+      "conclusion": "success"
+    },
+    {
+      "name": "os-matrix (almalinux:9, almalinux)",
+      "id": 119962950998,
+      "conclusion": "success"
+    },
+    {
+      "name": "os-matrix (debian:13, debian)",
+      "id": 119962951078,
+      "conclusion": "success"
+    },
+    {
+      "name": "os-matrix (rockylinux:9, rocky)",
+      "id": 119962951124,
+      "conclusion": "success"
+    },
+    {
+      "name": "offline-full-verdict",
+      "id": 119965566955,
+      "conclusion": "success"
+    }
+  ],
+  "main_security": [
+    {
+      "name": "codeql-rust",
+      "id": 119962950732,
+      "conclusion": "success"
+    },
+    {
+      "name": "codeql-actions",
+      "id": 119962950933,
+      "conclusion": "success"
+    }
+  ],
+  "rulesets": [
+    {
+      "id": 22482226,
+      "name": "Protect main",
+      "target": "branch",
+      "source_type": "Repository",
+      "source": "David610/singbox-vpn",
+      "enforcement": "active",
+      "conditions": {
+        "ref_name": {
+          "exclude": [],
+          "include": [
+            "~DEFAULT_BRANCH"
+          ]
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews_on_push": false,
+            "required_reviewers": [],
+            "require_code_owner_review": false,
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": false,
+            "require_extra_approval_for_unattributed_changes": true,
+            "allowed_merge_methods": [
+              "merge",
+              "squash",
+              "rebase"
+            ]
+          }
+        }
+      ],
+      "node_id": "RRS_lACqUmVwb3NpdG9yec5PmCvvzgFXDTI",
+      "created_at": "2026-09-08T00:38:11.591+04:00",
+      "updated_at": "2026-09-08T00:38:11.631+04:00",
+      "bypass_actors": [],
+      "current_user_can_bypass": "never",
+      "_links": {
+        "self": {
+          "href": "https://api.github.com/repos/David610/singbox-vpn/rulesets/22482226"
+        },
+        "html": {
+          "href": "https://github.com/David610/singbox-vpn/rules/22482226"
+        }
+      }
+    },
+    {
+      "id": 22482307,
+      "name": "Protect release tags",
+      "target": "tag",
+      "source_type": "Repository",
+      "source": "David610/singbox-vpn",
+      "enforcement": "active",
+      "conditions": {
+        "ref_name": {
+          "exclude": [],
+          "include": [
+            "refs/tags/v*"
+          ]
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "type": "update"
+        }
+      ],
+      "node_id": "RRS_lACqUmVwb3NpdG9yec5PmCvvzgFXDYM",
+      "created_at": "2026-09-08T00:39:49.303+04:00",
+      "updated_at": "2026-09-08T00:39:49.323+04:00",
+      "bypass_actors": [],
+      "current_user_can_bypass": "never",
+      "_links": {
+        "self": {
+          "href": "https://api.github.com/repos/David610/singbox-vpn/rulesets/22482307"
+        },
+        "html": {
+          "href": "https://github.com/David610/singbox-vpn/rules/22482307"
+        }
+      }
+    }
+  ],
+  "classic_branch_protection": "403 Resource not accessible by integration",
+  "web84": {
+    "head": "bc278b7178b13fd1d6317cf2ee8c5d84423e99d0",
+    "state": "open",
+    "production_deployment": "UNVERIFIED",
+    "checks": [
+      {
+        "name": "SQL tests on replayed migrations (Postgres 16)",
+        "conclusion": "success",
+        "sha": "bc278b7178b13fd1d6317cf2ee8c5d84423e99d0"
+      },
+      {
+        "name": "Supabase migration smoke",
+        "conclusion": "success",
+        "sha": "bc278b7178b13fd1d6317cf2ee8c5d84423e99d0"
+      },
+      {
+        "name": "Lint, test, build",
+        "conclusion": "success",
+        "sha": "bc278b7178b13fd1d6317cf2ee8c5d84423e99d0"
+      },
+      {
+        "name": "Lint, test, build",
+        "conclusion": "success",
+        "sha": "bc278b7178b13fd1d6317cf2ee8c5d84423e99d0"
+      },
+      {
+        "name": "SQL tests on replayed migrations (Postgres 16)",
+        "conclusion": "success",
+        "sha": "bc278b7178b13fd1d6317cf2ee8c5d84423e99d0"
+      },
+      {
+        "name": "Supabase migration smoke",
+        "conclusion": "success",
+        "sha": "bc278b7178b13fd1d6317cf2ee8c5d84423e99d0"
+      }
+    ]
+  }
+}

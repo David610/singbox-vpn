@@ -1,0 +1,12 @@
+{"transport":"reality","outage_s":5,"round":1,"open_connection_survived":true,"open_connection_samples":28,"open_connection_max_ms":4917,"first_new_request_success_s_after_outage":0.28}
+{"transport":"hy2","outage_s":5,"round":1,"open_connection_survived":true,"open_connection_samples":28,"open_connection_max_ms":4959,"first_new_request_success_s_after_outage":0.1}
+{"transport":"reality","outage_s":5,"round":2,"open_connection_survived":true,"open_connection_samples":28,"open_connection_max_ms":4875,"first_new_request_success_s_after_outage":0.28}
+{"transport":"hy2","outage_s":5,"round":2,"open_connection_survived":true,"open_connection_samples":28,"open_connection_max_ms":4940,"first_new_request_success_s_after_outage":0.1}
+{"transport":"reality","outage_s":20,"round":1,"open_connection_survived":true,"open_connection_samples":12,"open_connection_max_ms":37358,"first_new_request_success_s_after_outage":0.28}
+{"transport":"hy2","outage_s":20,"round":1,"open_connection_survived":true,"open_connection_samples":28,"open_connection_max_ms":19949,"first_new_request_success_s_after_outage":0.1}
+{"transport":"reality","outage_s":20,"round":2,"open_connection_survived":true,"open_connection_samples":12,"open_connection_max_ms":38080,"first_new_request_success_s_after_outage":0.31}
+{"transport":"hy2","outage_s":20,"round":2,"open_connection_survived":true,"open_connection_samples":28,"open_connection_max_ms":19988,"first_new_request_success_s_after_outage":0.14}
+{"transport":"reality","outage_s":40,"round":1,"open_connection_survived":true,"open_connection_samples":4,"open_connection_max_ms":74936,"first_new_request_success_s_after_outage":0.27}
+{"transport":"hy2","outage_s":40,"round":1,"open_connection_survived":false,"open_connection_samples":3,"open_connection_max_ms":92,"first_new_request_success_s_after_outage":0.35}
+{"transport":"reality","outage_s":40,"round":2,"open_connection_survived":true,"open_connection_samples":4,"open_connection_max_ms":75464,"first_new_request_success_s_after_outage":0.37}
+{"transport":"hy2","outage_s":40,"round":2,"open_connection_survived":false,"open_connection_samples":3,"open_connection_max_ms":88,"first_new_request_success_s_after_outage":0.28}

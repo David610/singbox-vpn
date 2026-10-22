@@ -43,6 +43,11 @@ evade scoped matching. No ECH or native-device recovery PASS is claimed.
 
 ## Configuration and defaults
 
+Evidence boundary (2026-10-22): the installer default described below is an
+implemented policy, not proof that IPv6 causes the native Incognito failure
+or that rejecting it makes a native client retry IPv4. Do not apply a policy
+change as incident remediation without a controlled, authorized experiment.
+
 **Fresh installs (v1.3.1 and later) declare `reject_google`.** On a standalone
 exit with a working IPv6 address the native YouTube app sends literal-IPv6 Google
 destinations that YouTube refuses for that address, so Shorts never play unless
