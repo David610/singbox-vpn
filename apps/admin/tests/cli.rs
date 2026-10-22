@@ -533,33 +533,192 @@ fn toml_path(path: &Path) -> String {
 /// for a reason that has nothing to do with what the test is actually
 /// checking.
 ///
-/// This creates both groups once, idempotently, only when running as root,
-/// and never removes them — the same one-time, idempotent step a real
-/// install would perform, not a per-test fixture that needs cleanup. It
-/// does not touch any other host state and does not run when unprivileged
+/// This creates each missing group once, only when running as root, and
+/// removes exactly the groups it created when the test process exits (I-50),
+/// so a root-run suite leaves no system group behind on the node. Groups that
+/// already existed are never touched. It does not touch any other host state
+/// and does not run when unprivileged
 /// (where `apply_restored_file_policy`'s chown branch is skipped
 /// entirely, so neither group is needed).
 #[cfg(unix)]
 fn ensure_vpn_subscription_group_exists_for_root_tests() {
-    if unsafe { libc::geteuid() } != 0 {
-        return;
+    support::ensure_service_groups_for_root_tests();
+}
+
+#[cfg(all(test, unix))]
+mod root_group_cleanup_tests {
+    use crate::support::root_groups::{ensure, remove_created, Registry, Tools, REAL};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    /// Fake groupadd/groupdel over a directory registry; every call is logged.
+    struct Fake {
+        dir: PathBuf,
+        tools: Tools,
     }
-    for group in ["vpn-subscription", "sing-box"] {
-        let name = std::ffi::CString::new(group).unwrap();
-        let exists = unsafe { libc::getgrnam(name.as_ptr()) };
-        if !exists.is_null() {
-            continue;
+
+    impl Fake {
+        fn new(label: &str, groupadd_exit: i32) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "singbox-vpn-group-cleanup-{label}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("registry")).unwrap();
+            let script = |name: &str, body: &str| {
+                let path = dir.join(name);
+                std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                path.display().to_string()
+            };
+            let registry = dir.join("registry").display().to_string();
+            let log = dir.join("calls.log").display().to_string();
+            let groupadd = script(
+                "groupadd",
+                &format!(
+                    "echo \"groupadd $*\" >> {log}; [ {groupadd_exit} -eq 0 ] && touch {registry}/$2; exit {groupadd_exit}"
+                ),
+            );
+            let groupdel = script(
+                "groupdel",
+                &format!("echo \"groupdel $*\" >> {log}; rm -f {registry}/$1"),
+            );
+            Self {
+                dir,
+                tools: Tools { groupadd, groupdel },
+            }
         }
-        let status = std::process::Command::new("groupadd")
-            .args(["--system", group])
-            .status();
-        assert!(
-            matches!(status, Ok(s) if s.success()),
-            "test running as root could not create the {group:?} system group needed to \
-             exercise the real restore ownership path: {status:?}"
+
+        fn exists(&self) -> impl Fn(&str) -> bool + '_ {
+            |g| self.dir.join("registry").join(g).exists()
+        }
+
+        fn calls(&self) -> String {
+            std::fs::read_to_string(self.dir.join("calls.log")).unwrap_or_default()
+        }
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    // The cleanup state is process-global, so these cases run in one test.
+    #[test]
+    fn only_groups_this_process_created_are_removed() {
+        // Success path: a missing group is created and then removed.
+        let reg = Registry::new();
+        let fake = Fake::new("ok", 0);
+        ensure(&reg, &fake.tools, &fake.exists(), &["vpn-test-new"]);
+        assert!(fake.exists()("vpn-test-new"));
+        remove_created(&reg, &|_| false);
+        assert!(!fake.exists()("vpn-test-new"), "{}", fake.calls());
+
+        // Pre-existing group: never created, never removed.
+        let reg = Registry::new();
+        let fake = Fake::new("pre", 0);
+        std::fs::write(fake.dir.join("registry/vpn-test-old"), b"").unwrap();
+        ensure(&reg, &fake.tools, &fake.exists(), &["vpn-test-old"]);
+        remove_created(&reg, &|_| false);
+        assert!(fake.exists()("vpn-test-old"));
+        assert_eq!(
+            fake.calls(),
+            "",
+            "no groupadd/groupdel for a pre-existing group"
         );
+
+        // Lost race: groupadd fails because another process created the group.
+        let reg = Registry::new();
+        let fake = Fake::new("race", 9);
+        let racer = fake.dir.join("registry/vpn-test-race");
+        let exists = |g: &str| fake.dir.join("registry").join(g).exists();
+        // The racer appears after the first existence check.
+        let first = std::cell::Cell::new(true);
+        let racing = |g: &str| {
+            if first.replace(false) {
+                return false;
+            }
+            std::fs::write(&racer, b"").unwrap();
+            exists(g)
+        };
+        ensure(&reg, &fake.tools, &racing, &["vpn-test-race"]);
+        remove_created(&reg, &|_| false);
+        assert!(
+            exists("vpn-test-race"),
+            "a group made by another process survives"
+        );
+        assert!(!fake.calls().contains("groupdel"));
+
+        // A group that gained members is left in place.
+        let reg = Registry::new();
+        let fake = Fake::new("members", 0);
+        ensure(&reg, &fake.tools, &fake.exists(), &["vpn-test-used"]);
+        remove_created(&reg, &|_| true);
+        assert!(fake.exists()("vpn-test-used"));
+        remove_created(&reg, &|_| false); // nothing left to remove: created list was drained
+        assert!(fake.exists()("vpn-test-used"));
+    }
+
+    #[test]
+    #[should_panic(expected = "could not create")]
+    fn groupadd_failure_is_an_error_and_records_nothing() {
+        let reg = Registry::new();
+        let fake = Fake::new("err", 1);
+        let result = std::panic::catch_unwind(|| {
+            ensure(&reg, &fake.tools, &fake.exists(), &["vpn-test-fail"]);
+        });
+        assert!(!fake.exists()("vpn-test-fail"));
+        assert!(!fake.calls().contains("groupdel"));
+        remove_created(&reg, &|_| false);
+        assert!(
+            !fake.calls().contains("groupdel"),
+            "failed create was recorded"
+        );
+        std::panic::resume_unwind(result.unwrap_err());
+    }
+
+    /// Interrupted path: the real process-exit handler removes the group the
+    /// child created. The parent re-runs this test binary as the child.
+    #[test]
+    fn exit_handler_removes_group_created_before_process_exit() {
+        if let Ok(dir) = std::env::var("SINGBOX_GROUP_CLEANUP_CHILD") {
+            let dir = Path::new(&dir);
+            let tools = Tools {
+                groupadd: dir.join("groupadd").display().to_string(),
+                groupdel: dir.join("groupdel").display().to_string(),
+            };
+            let registry = dir.join("registry");
+            ensure(
+                &REAL,
+                &tools,
+                &|g| registry.join(g).exists(),
+                &["vpn-test-exit"],
+            );
+            assert!(registry.join("vpn-test-exit").exists());
+            std::process::exit(0); // runs atexit handlers, like a normal test exit
+        }
+        let fake = Fake::new("exit", 0);
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "root_group_cleanup_tests::exit_handler_removes_group_created_before_process_exit",
+                "--test-threads=1",
+            ])
+            .env("SINGBOX_GROUP_CLEANUP_CHILD", &fake.dir)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(fake.calls().contains("groupadd --system vpn-test-exit"));
+        assert!(
+            fake.calls().contains("groupdel vpn-test-exit"),
+            "{}",
+            fake.calls()
+        );
+        assert!(!fake.exists()("vpn-test-exit"));
     }
 }
+
 #[cfg(not(unix))]
 fn ensure_vpn_subscription_group_exists_for_root_tests() {}
 
