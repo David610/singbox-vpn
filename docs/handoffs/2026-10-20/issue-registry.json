@@ -705,6 +705,19 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-96",
+   "severity": "low",
+   "component": "CI os-matrix (almalinux:9) install step",
+   "state": "FLAKY",
+   "title": "on main 357707c the os-matrix almalinux:9 job spent 15 min 39 s in 'Install git' (a slow package mirror) and was cancelled by its 20-minute limit before the OS check started; offline-full-verdict then correctly FAILED the run ('required jobs did not succeed')",
+   "fix": "no product change. Infrastructure only: the job never reached the check. The single permitted re-run of the failed job passed all 22 jobs",
+   "regression_test": "none (an infrastructure flake: a retry-pass is evidence to keep, not a clean pass; the first-attempt failure is recorded here)",
+   "device_required": "no",
+   "remaining_risk": "the 20-minute job limit leaves no slack for a slow dnf mirror; if it recurs, raise the limit or retry the install step rather than loosen the check. Not yet reproduced a second time",
+   "evidence": "https://github.com/David610/singbox-vpn/actions/runs/39864089422 (attempt 1: os-matrix almalinux:9 cancelled, offline-full-verdict failure; attempt 2: success)",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-90",
    "severity": "high",
    "component": "interrupted-update cleanup health gate",
