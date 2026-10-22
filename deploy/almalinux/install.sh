@@ -437,10 +437,11 @@ cleanup_scratch() { rm -rf --one-file-system -- "$INSTALL_WORK"; }
 # Keep it: run our scratch cleanup, then the caller's command unchanged.
 install_scratch_exit_trap() {
   local saved prev=""
+  local -a saved_words=()
   saved="$(trap -p EXIT)"
   if [ -n "$saved" ]; then
-    eval "set -- $saved" # trap -- 'command' EXIT  ->  $3 is the command
-    prev="${3:-}"
+    eval "saved_words=($saved)" # trap -- 'command' EXIT  ->  word 2 is the command
+    prev="${saved_words[2]:-}"
   fi
   if [ -n "$prev" ]; then
     # shellcheck disable=SC2064 # expanded now on purpose: $prev is the caller's text
