@@ -284,6 +284,7 @@ mod tests {
             rotation_batch_interval_secs: 60,
             heartbeat_interval_secs: 60,
             protocol_probe: None,
+            control_plane: Default::default(),
         };
         WorkerClient::new(&cfg)
     }
