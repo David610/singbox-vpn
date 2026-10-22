@@ -8,8 +8,10 @@
 #   DIR/singbox-vpn-sbom.cdx.json      CycloneDX 1.5 JSON
 #   DIR/singbox-vpn-licenses.json      per-package license inventory
 #
-# Scope: every crate in the RUNTIME dependency graph of the two shipped
-# binaries (vpn-admin from the `admin` package, `subscription`), resolved
+# Scope: every crate in the RUNTIME dependency graph of the three shipped
+# binaries (vpn-admin from the `admin` package, `subscription`, and
+# vpn-provisioning-agent from the `provisioning-agent` package, which
+# build-release-x86_64.sh compiles and release.yml packages; I-91), resolved
 # for x86_64-unknown-linux-gnu with `cargo metadata --locked` so it can only
 # describe the committed Cargo.lock. Crate hashes are the registry SHA-256
 # checksums recorded in Cargo.lock. The pinned upstream sing-box binary the
@@ -79,9 +81,14 @@ packages = {p["id"]: p for p in metadata["packages"]}
 nodes = {n["id"]: n for n in metadata["resolve"]["nodes"]}
 workspace = set(metadata["workspace_members"])
 
-shipped = [pid for pid in workspace if packages[pid]["name"] in ("admin", "subscription")]
-if len(shipped) != 2:
-    sys.exit("generate-sbom: could not find both shipped packages (admin, subscription)")
+SHIPPED_PACKAGES = ("admin", "subscription", "provisioning-agent")
+shipped = [pid for pid in workspace if packages[pid]["name"] in SHIPPED_PACKAGES]
+if len(shipped) != len(SHIPPED_PACKAGES):
+    found = sorted(packages[pid]["name"] for pid in shipped)
+    sys.exit(
+        "generate-sbom: could not find every shipped package "
+        f"({', '.join(SHIPPED_PACKAGES)}); found: {', '.join(found) or 'none'}"
+    )
 
 runtime, stack, edges = set(), list(shipped), {}
 while stack:
@@ -193,7 +200,7 @@ licenses = {
     "release": version,
     "commit": commit,
     "cargo_lock_sha256": bom["metadata"]["properties"][1]["value"],
-    "scope": "runtime dependency graph of vpn-admin and subscription (x86_64-unknown-linux-gnu)",
+    "scope": "runtime dependency graph of vpn-admin, subscription and provisioning-agent (x86_64-unknown-linux-gnu)",
     "packages": inventory,
     "external_components": [{"name": "sing-box", "version": singbox_version, "license": "GPL-3.0-or-later", "sha256": singbox_sha256}],
     "license_summary": dict(sorted(summary.items())),

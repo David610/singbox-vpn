@@ -140,3 +140,134 @@ pub fn guarded_process(program: impl Into<PathBuf>) -> std::process::Command {
     }
     cmd
 }
+
+/// Creates the system groups a root-run test needs and removes exactly the
+/// ones this process created when it exits (I-50). A group is "ours" only if
+/// our own `groupadd` succeeded; a group that already existed, or that another
+/// process created first (our `groupadd` loses the race), is never removed.
+/// A group that has gained members since is left in place too. A SIGKILL
+/// cannot run the exit handler; that residue is what I-41 tolerates.
+#[cfg(unix)]
+pub mod root_groups {
+    use std::sync::Mutex;
+
+    #[derive(Clone)]
+    pub struct Tools {
+        pub groupadd: String,
+        pub groupdel: String,
+    }
+
+    impl Tools {
+        pub fn real() -> Self {
+            Self {
+                groupadd: "groupadd".into(),
+                groupdel: "groupdel".into(),
+            }
+        }
+    }
+
+    struct State {
+        tools: Option<Tools>,
+        created: Vec<String>,
+    }
+
+    /// Groups created by one owner. The process-wide `REAL` registry is the
+    /// only one wired to the exit handler; tests use their own instances.
+    pub struct Registry(Mutex<State>);
+
+    impl Registry {
+        pub const fn new() -> Self {
+            Self(Mutex::new(State {
+                tools: None,
+                created: Vec::new(),
+            }))
+        }
+    }
+
+    pub static REAL: Registry = Registry::new();
+
+    pub fn real_group_exists(group: &str) -> bool {
+        let name = std::ffi::CString::new(group).unwrap();
+        !unsafe { libc::getgrnam(name.as_ptr()) }.is_null()
+    }
+
+    fn real_group_has_members(group: &str) -> bool {
+        let name = std::ffi::CString::new(group).unwrap();
+        let entry = unsafe { libc::getgrnam(name.as_ptr()) };
+        !entry.is_null() && unsafe { !(*(*entry).gr_mem).is_null() }
+    }
+
+    pub fn ensure(reg: &Registry, tools: &Tools, exists: &dyn Fn(&str) -> bool, groups: &[&str]) {
+        for group in groups {
+            if exists(group) {
+                continue;
+            }
+            let status = std::process::Command::new(&tools.groupadd)
+                .args(["--system", group])
+                .status();
+            if matches!(status, Ok(s) if s.success()) {
+                let mut state = reg.0.lock().unwrap();
+                state.tools = Some(tools.clone());
+                state.created.push((*group).to_string());
+                drop(state);
+                if std::ptr::eq(reg, &REAL) {
+                    register_exit_cleanup();
+                }
+            } else if exists(group) {
+                // Another process created it between our check and groupadd:
+                // it is not ours to remove.
+                continue;
+            } else {
+                panic!(
+                    "test running as root could not create the {group:?} system group needed \
+                     to exercise the real restore ownership path: {status:?}"
+                );
+            }
+        }
+    }
+
+    pub fn register_exit_cleanup() {
+        static REGISTERED: std::sync::Once = std::sync::Once::new();
+        extern "C" fn at_exit() {
+            remove_created(&REAL, &real_group_has_members);
+        }
+        REGISTERED.call_once(|| unsafe {
+            libc::atexit(at_exit);
+        });
+    }
+
+    pub fn remove_created(reg: &Registry, has_members: &dyn Fn(&str) -> bool) {
+        let Ok(mut state) = reg.0.lock() else { return };
+        let Some(tools) = state.tools.clone() else {
+            return;
+        };
+        for group in std::mem::take(&mut state.created) {
+            if has_members(&group) {
+                continue;
+            }
+            let _ = std::process::Command::new(&tools.groupdel)
+                .arg(&group)
+                .status();
+        }
+    }
+}
+
+/// Root-run suites need the `vpn-subscription` and `sing-box` system groups
+/// for the real restore ownership path. Every test binary that restores
+/// calls this itself: relying on another binary to have left the groups
+/// behind (the I-50 leak) made `relay_cli` pass only by accident.
+#[cfg(unix)]
+pub fn ensure_service_groups_for_root_tests() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let tools = root_groups::Tools::real();
+    root_groups::ensure(
+        &root_groups::REAL,
+        &tools,
+        &root_groups::real_group_exists,
+        &["vpn-subscription", "sing-box"],
+    );
+}
+#[cfg(not(unix))]
+pub fn ensure_service_groups_for_root_tests() {}

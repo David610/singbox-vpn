@@ -533,33 +533,192 @@ fn toml_path(path: &Path) -> String {
 /// for a reason that has nothing to do with what the test is actually
 /// checking.
 ///
-/// This creates both groups once, idempotently, only when running as root,
-/// and never removes them — the same one-time, idempotent step a real
-/// install would perform, not a per-test fixture that needs cleanup. It
-/// does not touch any other host state and does not run when unprivileged
+/// This creates each missing group once, only when running as root, and
+/// removes exactly the groups it created when the test process exits (I-50),
+/// so a root-run suite leaves no system group behind on the node. Groups that
+/// already existed are never touched. It does not touch any other host state
+/// and does not run when unprivileged
 /// (where `apply_restored_file_policy`'s chown branch is skipped
 /// entirely, so neither group is needed).
 #[cfg(unix)]
 fn ensure_vpn_subscription_group_exists_for_root_tests() {
-    if unsafe { libc::geteuid() } != 0 {
-        return;
+    support::ensure_service_groups_for_root_tests();
+}
+
+#[cfg(all(test, unix))]
+mod root_group_cleanup_tests {
+    use crate::support::root_groups::{ensure, remove_created, Registry, Tools, REAL};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    /// Fake groupadd/groupdel over a directory registry; every call is logged.
+    struct Fake {
+        dir: PathBuf,
+        tools: Tools,
     }
-    for group in ["vpn-subscription", "sing-box"] {
-        let name = std::ffi::CString::new(group).unwrap();
-        let exists = unsafe { libc::getgrnam(name.as_ptr()) };
-        if !exists.is_null() {
-            continue;
+
+    impl Fake {
+        fn new(label: &str, groupadd_exit: i32) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "singbox-vpn-group-cleanup-{label}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("registry")).unwrap();
+            let script = |name: &str, body: &str| {
+                let path = dir.join(name);
+                std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                path.display().to_string()
+            };
+            let registry = dir.join("registry").display().to_string();
+            let log = dir.join("calls.log").display().to_string();
+            let groupadd = script(
+                "groupadd",
+                &format!(
+                    "echo \"groupadd $*\" >> {log}; [ {groupadd_exit} -eq 0 ] && touch {registry}/$2; exit {groupadd_exit}"
+                ),
+            );
+            let groupdel = script(
+                "groupdel",
+                &format!("echo \"groupdel $*\" >> {log}; rm -f {registry}/$1"),
+            );
+            Self {
+                dir,
+                tools: Tools { groupadd, groupdel },
+            }
         }
-        let status = std::process::Command::new("groupadd")
-            .args(["--system", group])
-            .status();
-        assert!(
-            matches!(status, Ok(s) if s.success()),
-            "test running as root could not create the {group:?} system group needed to \
-             exercise the real restore ownership path: {status:?}"
+
+        fn exists(&self) -> impl Fn(&str) -> bool + '_ {
+            |g| self.dir.join("registry").join(g).exists()
+        }
+
+        fn calls(&self) -> String {
+            std::fs::read_to_string(self.dir.join("calls.log")).unwrap_or_default()
+        }
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    // The cleanup state is process-global, so these cases run in one test.
+    #[test]
+    fn only_groups_this_process_created_are_removed() {
+        // Success path: a missing group is created and then removed.
+        let reg = Registry::new();
+        let fake = Fake::new("ok", 0);
+        ensure(&reg, &fake.tools, &fake.exists(), &["vpn-test-new"]);
+        assert!(fake.exists()("vpn-test-new"));
+        remove_created(&reg, &|_| false);
+        assert!(!fake.exists()("vpn-test-new"), "{}", fake.calls());
+
+        // Pre-existing group: never created, never removed.
+        let reg = Registry::new();
+        let fake = Fake::new("pre", 0);
+        std::fs::write(fake.dir.join("registry/vpn-test-old"), b"").unwrap();
+        ensure(&reg, &fake.tools, &fake.exists(), &["vpn-test-old"]);
+        remove_created(&reg, &|_| false);
+        assert!(fake.exists()("vpn-test-old"));
+        assert_eq!(
+            fake.calls(),
+            "",
+            "no groupadd/groupdel for a pre-existing group"
         );
+
+        // Lost race: groupadd fails because another process created the group.
+        let reg = Registry::new();
+        let fake = Fake::new("race", 9);
+        let racer = fake.dir.join("registry/vpn-test-race");
+        let exists = |g: &str| fake.dir.join("registry").join(g).exists();
+        // The racer appears after the first existence check.
+        let first = std::cell::Cell::new(true);
+        let racing = |g: &str| {
+            if first.replace(false) {
+                return false;
+            }
+            std::fs::write(&racer, b"").unwrap();
+            exists(g)
+        };
+        ensure(&reg, &fake.tools, &racing, &["vpn-test-race"]);
+        remove_created(&reg, &|_| false);
+        assert!(
+            exists("vpn-test-race"),
+            "a group made by another process survives"
+        );
+        assert!(!fake.calls().contains("groupdel"));
+
+        // A group that gained members is left in place.
+        let reg = Registry::new();
+        let fake = Fake::new("members", 0);
+        ensure(&reg, &fake.tools, &fake.exists(), &["vpn-test-used"]);
+        remove_created(&reg, &|_| true);
+        assert!(fake.exists()("vpn-test-used"));
+        remove_created(&reg, &|_| false); // nothing left to remove: created list was drained
+        assert!(fake.exists()("vpn-test-used"));
+    }
+
+    #[test]
+    #[should_panic(expected = "could not create")]
+    fn groupadd_failure_is_an_error_and_records_nothing() {
+        let reg = Registry::new();
+        let fake = Fake::new("err", 1);
+        let result = std::panic::catch_unwind(|| {
+            ensure(&reg, &fake.tools, &fake.exists(), &["vpn-test-fail"]);
+        });
+        assert!(!fake.exists()("vpn-test-fail"));
+        assert!(!fake.calls().contains("groupdel"));
+        remove_created(&reg, &|_| false);
+        assert!(
+            !fake.calls().contains("groupdel"),
+            "failed create was recorded"
+        );
+        std::panic::resume_unwind(result.unwrap_err());
+    }
+
+    /// Interrupted path: the real process-exit handler removes the group the
+    /// child created. The parent re-runs this test binary as the child.
+    #[test]
+    fn exit_handler_removes_group_created_before_process_exit() {
+        if let Ok(dir) = std::env::var("SINGBOX_GROUP_CLEANUP_CHILD") {
+            let dir = Path::new(&dir);
+            let tools = Tools {
+                groupadd: dir.join("groupadd").display().to_string(),
+                groupdel: dir.join("groupdel").display().to_string(),
+            };
+            let registry = dir.join("registry");
+            ensure(
+                &REAL,
+                &tools,
+                &|g| registry.join(g).exists(),
+                &["vpn-test-exit"],
+            );
+            assert!(registry.join("vpn-test-exit").exists());
+            std::process::exit(0); // runs atexit handlers, like a normal test exit
+        }
+        let fake = Fake::new("exit", 0);
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "root_group_cleanup_tests::exit_handler_removes_group_created_before_process_exit",
+                "--test-threads=1",
+            ])
+            .env("SINGBOX_GROUP_CLEANUP_CHILD", &fake.dir)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(fake.calls().contains("groupadd --system vpn-test-exit"));
+        assert!(
+            fake.calls().contains("groupdel vpn-test-exit"),
+            "{}",
+            fake.calls()
+        );
+        assert!(!fake.exists()("vpn-test-exit"));
     }
 }
+
 #[cfg(not(unix))]
 fn ensure_vpn_subscription_group_exists_for_root_tests() {}
 
@@ -3055,6 +3214,159 @@ fn doctor_l4_live_check_fails_when_running_subscription_process_is_stale() {
         stdout.contains("RUNNING vpn-subscription process is serving STALE state"),
         "doctor's live L4 check must FAIL once the on-disk keys diverge from what the still-\
          running subscription process was started with:\n{stdout}"
+    );
+}
+
+/// I-34: `vpn-subscription` caches its endpoints (including the Hysteria2
+/// port) at startup. After the operator changes `[hysteria2] listen_port` and
+/// runs `render-config`, sing-box is restarted onto the new port but the
+/// still-running subscription service kept advertising the old one.
+#[cfg(unix)]
+struct SubscriptionRefreshHarness {
+    dir: tempfile::TempDir,
+    cfg_path: std::path::PathBuf,
+    sub_port: u16,
+    log: std::path::PathBuf,
+    systemctl: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl SubscriptionRefreshHarness {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let singbox = fake_singbox(dir.path(), false);
+        let sub_port = free_port();
+        let cfg_path =
+            write_deployment_toml_with_singbox_and_sub_port(dir.path(), &singbox, sub_port);
+        let systemctl = fake_systemctl(dir.path());
+        let log = dir.path().join("systemctl.log");
+        let this = Self {
+            dir,
+            cfg_path,
+            sub_port,
+            log,
+            systemctl,
+        };
+        this.admin().arg("init").assert().success();
+        this.admin().arg("render-config").assert().success();
+        std::fs::write(&this.log, b"").unwrap();
+        this
+    }
+
+    fn admin(&self) -> Command {
+        let mut cmd = admin(self.dir.path(), &self.cfg_path);
+        cmd.env("SINGBOX_VPN_SYSTEMCTL", &self.systemctl)
+            .env("SYSTEMCTL_LOG", &self.log);
+        cmd
+    }
+
+    fn start_subscription(&self) -> KillOnDrop {
+        let child = spawn_subscription_binary(&self.cfg_path);
+        let guard = KillOnDrop(child);
+        assert!(
+            wait_for_local_port(self.sub_port, std::time::Duration::from_secs(5)),
+            "real subscription binary never bound 127.0.0.1:{}",
+            self.sub_port
+        );
+        guard
+    }
+
+    fn change_hysteria2_port(&self, port: u16) {
+        let text = std::fs::read_to_string(&self.cfg_path).unwrap();
+        std::fs::write(
+            &self.cfg_path,
+            text.replace(
+                "[hysteria2]\nlisten_port = 443",
+                &format!("[hysteria2]\nlisten_port = {port}"),
+            ),
+        )
+        .unwrap();
+    }
+
+    fn systemctl_calls(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn render_config_restarts_a_running_subscription_service_that_advertises_a_stale_port() {
+    let h = SubscriptionRefreshHarness::new();
+    let _running = h.start_subscription();
+    h.change_hysteria2_port(4443);
+
+    let out = h.admin().arg("render-config").assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    let calls = h.systemctl_calls();
+    assert!(
+        calls.contains("reload-or-restart vpn-subscription"),
+        "a stale subscription service must be restarted after render-config; systemctl calls:\n{calls}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        calls.contains("reload-or-restart sing-box"),
+        "sing-box is still restarted onto the new config:\n{calls}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn render_config_leaves_a_current_subscription_service_alone() {
+    let h = SubscriptionRefreshHarness::new();
+    let _running = h.start_subscription();
+
+    h.admin().arg("render-config").assert().success();
+    let calls = h.systemctl_calls();
+    assert!(
+        !calls.contains("vpn-subscription"),
+        "no restart when the running service already matches (no needless churn):\n{calls}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn render_config_does_not_restart_the_subscription_service_repeatedly_for_the_same_state() {
+    let h = SubscriptionRefreshHarness::new();
+    let _running = h.start_subscription();
+    h.change_hysteria2_port(4443);
+
+    // The fake systemctl does not really restart the process, so it stays
+    // stale: exactly the "restart did not help" situation a timer would loop on.
+    h.admin().arg("render-config").assert().success();
+    let first = h
+        .systemctl_calls()
+        .matches("reload-or-restart vpn-subscription")
+        .count();
+    assert_eq!(first, 1);
+    for _ in 0..3 {
+        let out = h.admin().arg("render-config").assert().success();
+        let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(
+            stderr.contains("not restarting it again"),
+            "the operator must be told why, loudly:\n{stderr}"
+        );
+    }
+    assert_eq!(
+        h.systemctl_calls()
+            .matches("reload-or-restart vpn-subscription")
+            .count(),
+        1,
+        "a restart that does not fix the mismatch must not be repeated on every reconcile"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn render_config_does_not_fail_or_restart_when_the_subscription_service_is_unreachable() {
+    let h = SubscriptionRefreshHarness::new();
+    // Nothing is listening on the subscription port.
+    h.change_hysteria2_port(4443);
+
+    h.admin().arg("render-config").assert().success();
+    let calls = h.systemctl_calls();
+    assert!(
+        !calls.contains("vpn-subscription"),
+        "an unreachable service cannot be proven stale, so it is not restarted:\n{calls}"
     );
 }
 
