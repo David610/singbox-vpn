@@ -320,6 +320,42 @@ UPGRADES = {
 }
 
 
+# CI_VERIFIED means: the fix is on main and the regression test ran green in
+# GitHub CI on that exact commit. It says nothing about a server, a device or
+# production. Each entry names what CI did NOT prove. An id may be promoted only
+# from FIXED_IN_BRANCH or UNVERIFIED; anything else fails the build.
+CI_MAIN_SHA = "11af71e7d22f672c2713d65f42aac035e431010c"
+CI_RUN_URL = "https://github.com/David610/singbox-vpn/actions/runs/39862513265"
+SECURITY_RUN_URL = "https://github.com/David610/singbox-vpn/actions/runs/39862513405"
+CI_PROMOTE = {
+    "I-11": "service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit passes; removing the reset-failed call makes it fail at reload 9 ('Start request repeated too quickly'). Simulated start limit with a fake systemctl: no real systemd, no real sing-box",
+    "I-19": "doctor WARN unit tests pass. Visibility only: the pre-v1.3.1 default is unchanged by design and no native Shorts claim is made",
+    "I-27": "test-line-endings.sh passes in the CI shell job (autocrlf clone has no CRLF, install.sh parses). Simulated on Linux; no real Windows host",
+    "I-34": "the four render_config_* subscription tests pass with the real subscription binary. systemctl is faked: no real systemd restart",
+    "I-49": "test-local-tree-provenance.sh and the release_identity test pass. Temp git repos only: no real install was run on a host",
+    "I-50": "root_group_cleanup_tests pass (fake groupadd/groupdel, child-process exit handler). CI runs unprivileged, so the real root path was exercised only by a local root run",
+    "I-74": "test-installer-sourcing-keeps-exit-trap.sh passes in the CI shell job. The clean-host runner's LEAK detector itself is not part of CI, only run locally",
+    "I-91": "test-release-sbom.sh and the CI SBOM dry run pass. The SBOM is checked against the Cargo graph, not the files in a release archive",
+    "I-92": "test-ci-verdict-semantics.sh and test_verify_main_protection.py pass, and offline-full-verdict ran green under the new always() rule. Blocking of a failing PR is NOT demonstrated and the ruleset is unchanged: issue #170 stays open",
+    "I-94": "the hairpin transition test and youtube_invariants_doc pass. A regression guard (passes on current code, mutation-checked); no native Shorts claim and no real restart or traffic",
+}
+
+
+def apply_ci_promotions(new, carried):
+    index = {row["id"]: row for row in list(new) + list(carried)}
+    for issue_id, caveat in CI_PROMOTE.items():
+        row = index.get(issue_id)
+        if row is None:
+            sys.exit(f"CI_PROMOTE names unknown issue {issue_id}")
+        if row["state"] not in ("FIXED_IN_BRANCH", "UNVERIFIED"):
+            sys.exit(f"CI_PROMOTE: {issue_id} is {row['state']}, only FIXED_IN_BRANCH/UNVERIFIED may be promoted")
+        row["state"] = "CI_VERIFIED"
+        proof = (f"CI success on main {CI_MAIN_SHA[:7]} (CI {CI_RUN_URL}; Security {SECURITY_RUN_URL}). "
+                 f"Scope: {caveat}")
+        key = "evidence" if "evidence" in row else "evidence_2026_10_20"
+        row[key] = (row.get(key) + " | " if row.get(key) else "") + proof
+
+
 def main():
     audit = json.load(open(AUDIT))
     items = audit if isinstance(audit, list) else list(audit.values()) if "id" not in audit else [audit]
@@ -332,6 +368,7 @@ def main():
     for x in NEW:
         x["supersedes_audit_entry"] = x["id"] in {c["id"] for c in carried}
     carried = [c for c in carried if c["id"] not in newids]
+    apply_ci_promotions(NEW, carried)
     reg = {"schema_version": 1, "generated_for": "2026-10-20 staging remediation", "new": NEW, "carried": carried}
     json.dump(reg, open(OUT + ".json", "w"), indent=1)
     md = ["# Issue registry (generated from issue-registry.json — do not edit by hand)\n",
