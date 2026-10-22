@@ -14,8 +14,9 @@ Tunnel health and media health are reported separately, every run:
   too few genuine Shorts: not evidence against the egress).
 - **Explanation (I-83)** is a separate field and is `UNKNOWN` unless stronger evidence exists. A 155-byte
   `application/vnd.yt-ump` reply, an "unavailable" page, a bot check or zero media seen by a signed-out automated browser
-  (`context: synthetic-signed-out-automated`) does not prove an IP refusal. `EGRESS_REFUSED` requires the same harness to
-  play every genuine Short through a reference egress (`reference` in the probe result) in the same run.
+  (`context: synthetic-signed-out-automated`) does not prove an IP refusal. `EGRESS_DEPENDENT_FAILURE` requires the same
+  harness to play every genuine Short through a reference egress (`reference` in the probe result) in the same run. It
+  proves the failure depends on the egress, not that YouTube refused it, so the monitor never emits `EGRESS_REFUSED`.
   `AUTOMATION_SPECIFIC_FAILURE` requires a fresh (<1 h) native-device success on this egress (`--native-evidence` /
   `SHORTS_NATIVE_EVIDENCE`). `NETWORK_FAILURE` and `PROBE_INVALID` come from `PATH_DOWN` and `HARNESS`. The explanation
   never changes the status or streaks, so a real playback failure still escalates to CRITICAL.
@@ -34,7 +35,7 @@ always appended to `alerts.jsonl`; an undeliverable alert fails the unit (exit 4
 by a lock, and nice'd; the default schedule is every 30 min.
 
 There is deliberately **no automatic re-routing**. Moving Google traffic to another egress is an owner-approved action
-(`docs/operations/YOUTUBE_EGRESS_ARCHITECTURE.md`, INV-6/7/8); on CRITICAL with explanation `EGRESS_REFUSED` follow
+(`docs/operations/YOUTUBE_EGRESS_ARCHITECTURE.md`, INV-6/7/8); on CRITICAL with explanation `EGRESS_DEPENDENT_FAILURE` follow
 `docs/runbooks` / the architecture record: qualify another target, never fall back to `direct`.
 
 Deploy and verify (source-controlled; the installer/updater do NOT run this, the monitor is opt-in):

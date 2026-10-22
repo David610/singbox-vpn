@@ -67,9 +67,11 @@ class I83Explanation(unittest.TestCase):
         self.assertEqual([e["event"] for e in events], ["DEGRADED", "CRITICAL"])
         self.assertEqual(events[-1]["explanation"], "UNKNOWN")
 
-    def test_egress_refused_needs_a_same_harness_reference_that_plays(self):
+    def test_egress_dependence_needs_a_same_harness_reference_that_plays(self):
+        # A reference egress that plays proves the failure depends on the egress, not that YouTube refused it.
         e = sh.evaluate(0, self.bad(reference={"egress": "other-exit", "genuine": 3, "played": 3}))
-        self.assertEqual(e["explanation"], "EGRESS_REFUSED")
+        self.assertEqual(e["explanation"], "EGRESS_DEPENDENT_FAILURE")
+        self.assertEqual((e["cause"], e["status"]), ("MEDIA_PLAYBACK_FAILED", "SUSPECT"))
         e = sh.evaluate(0, self.bad(reference={"egress": "other-exit", "genuine": 3, "played": 0}))
         self.assertEqual(e["explanation"], "UNKNOWN")      # both egresses failing (fin1 and E1) proves nothing about either
         e = sh.evaluate(0, self.bad(reference={"egress": "other-exit", "genuine": 2, "played": 2}))
@@ -80,6 +82,21 @@ class I83Explanation(unittest.TestCase):
         self.assertEqual(e["explanation"], "AUTOMATION_SPECIFIC_FAILURE")
         e = sh.evaluate(0, self.bad(), native_played=False)
         self.assertEqual(e["explanation"], "UNKNOWN")      # a native failure confirms the outcome, not the cause
+
+    def test_no_observable_evidence_ever_yields_egress_refused(self):
+        refs = (None, {"genuine": 3, "played": 3}, {"genuine": 5, "played": 5}, {"genuine": 3, "played": 0})
+        rows = (row(False, **UMP155), row(False, bot_wall=True), row(False, playabilityStatus="UNPLAYABLE"),
+                row(False), row(False, media={"responses": 4}))
+        for ref in refs:
+            for r in rows:
+                for native in (None, True, False):
+                    p = probe(r, r, r, **({"reference": ref} if ref else {}))
+                    self.assertNotEqual(sh.evaluate(0, p, native_played=native)["explanation"], "EGRESS_REFUSED")
+        self.assertNotIn("EGRESS_REFUSED", sh.EXPLANATIONS)
+
+    def test_explanations_are_a_closed_documented_set(self):
+        self.assertEqual(set(sh.EXPLANATIONS), {"UNKNOWN", "EGRESS_DEPENDENT_FAILURE", "AUTOMATION_SPECIFIC_FAILURE",
+                                                "NETWORK_FAILURE", "PROBE_INVALID"})
 
     def test_no_evidence_runs_get_their_own_explanations(self):
         self.assertEqual(sh.evaluate(0, None, path_ok=False)["explanation"], "NETWORK_FAILURE")

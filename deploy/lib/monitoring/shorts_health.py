@@ -19,8 +19,10 @@ Status (exit code 0 only for OK; a failed unit is visible by design):
 a working path; `failure_mode` WITHHELD / STALLED / MIXED keeps the detail). `explanation` is the INFERRED reason, kept
 separate (I-83): UNKNOWN unless stronger evidence exists. A 155-byte application/vnd.yt-ump reply, an "unavailable" page,
 a bot check or zero media through a signed-out automated browser (`context` synthetic-signed-out-automated) do not by
-themselves prove an IP refusal. EGRESS_REFUSED needs the same harness to play every genuine Short through a reference
-egress in the same run; AUTOMATION_SPECIFIC_FAILURE needs a fresh native (non-automated) success on this egress;
+themselves prove an IP refusal. EGRESS_DEPENDENT_FAILURE needs the same harness to play every genuine Short through a
+reference egress in the same run: that proves the failure depends on the egress, NOT that YouTube refused it (routing,
+CDN, address family or session trust may differ). No probe observation proves an explicit refusal, so this monitor never
+emits EGRESS_REFUSED. AUTOMATION_SPECIFIC_FAILURE needs a fresh native (non-automated) success on this egress;
 NETWORK_FAILURE and PROBE_INVALID come from the path controls and the harness. Alerts fire on transitions only (with a cooldown) and on recovery, which
 needs RECOVER_AFTER consecutive OK runs (no flapping). There is deliberately NO automatic re-routing here: moving Google
 traffic to another egress is an owner-approved action (docs/operations/YOUTUBE_EGRESS_ARCHITECTURE.md, INV-6/7/8); this
@@ -48,6 +50,8 @@ MEDIA_STALE_S = 3 * 3600
 ALERT_COOLDOWN_S = 6 * 3600
 NATIVE_EVIDENCE_MAX_AGE_S = 3600
 SYNTHETIC_CONTEXT = "synthetic-signed-out-automated"
+# Inferred explanations (I-83). Closed set; EGRESS_REFUSED is deliberately absent (see the module docstring).
+EXPLANATIONS = ("UNKNOWN", "EGRESS_DEPENDENT_FAILURE", "AUTOMATION_SPECIFIC_FAILURE", "NETWORK_FAILURE", "PROBE_INVALID")
 MIN_INTERVAL_S = 300
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
@@ -125,7 +129,7 @@ def explain(s: dict, probe: dict | None, native_played: bool | None) -> str:
     """Inferred reason for a media playback failure (I-83). Only comparative evidence moves it off UNKNOWN."""
     ref = (probe or {}).get("reference") or {}
     if ref.get("genuine", 0) >= MIN_SHORTS and ref.get("played") == ref.get("genuine"):
-        return "EGRESS_REFUSED"            # same harness, same run, only the egress differs
+        return "EGRESS_DEPENDENT_FAILURE"  # same harness, same run, only the egress differs: dependence, not refusal
     if native_played is True:
         return "AUTOMATION_SPECIFIC_FAILURE"
     return "UNKNOWN"
