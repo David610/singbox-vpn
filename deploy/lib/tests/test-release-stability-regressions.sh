@@ -50,8 +50,8 @@ else
 fi
 
 # A freshly rendered config must be current to the same binary that created it.
-rust_schema="$(sed -nE 's/^pub const DEPLOYMENT_SCHEMA_VERSION: u32 = ([0-9]+);/\1/p' "$DEPLOYMENT_RS" | head -1)"
-template_schema="$(sed -nE 's/^schema_version[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' "$TEMPLATE" | head -1)"
+rust_schema="$(sed -nE 's/^pub const DEPLOYMENT_SCHEMA_VERSION: u32 = ([0-9]+);/\1/p' "$DEPLOYMENT_RS" | head -1 || true)"
+template_schema="$(sed -nE 's/^schema_version[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' "$TEMPLATE" | head -1 || true)"
 if [ -n "$rust_schema" ] && [ "$template_schema" = "$rust_schema" ]; then
   ok "fresh deployment.toml template schema matches DeploymentConfig schema ($rust_schema)"
 else

@@ -28,9 +28,9 @@ fail() { echo "FAIL: $*"; failures=$((failures + 1)); }
 
 echo "--- static: main() calls check_state_schema after binaries_stage, before reality_keys_stage ---"
 main_body="$(sed -n '/^main() {/,/^}/p' "$INSTALL_SH")"
-binaries_line="$(echo "$main_body" | grep -n '^\s*binaries_stage$' | head -n1 | cut -d: -f1)"
-schema_line="$(echo "$main_body" | grep -n '^\s*check_state_schema$' | head -n1 | cut -d: -f1)"
-reality_line="$(echo "$main_body" | grep -n '^\s*reality_keys_stage$' | head -n1 | cut -d: -f1)"
+binaries_line="$(grep -n '^\s*binaries_stage$' <<<"$main_body" | head -n1 | cut -d: -f1)"
+schema_line="$(grep -n '^\s*check_state_schema$' <<<"$main_body" | head -n1 | cut -d: -f1)"
+reality_line="$(grep -n '^\s*reality_keys_stage$' <<<"$main_body" | head -n1 | cut -d: -f1)"
 if [ -n "$binaries_line" ] && [ -n "$schema_line" ] && [ -n "$reality_line" ] \
     && [ "$binaries_line" -lt "$schema_line" ] && [ "$schema_line" -lt "$reality_line" ]; then
   ok "check_state_schema runs strictly between binaries_stage and reality_keys_stage"
@@ -47,7 +47,7 @@ echo "--- static: shared deploy/lib/state-schema.sh does the actual validate/mig
 # call site's now-thin wrapper.
 state_schema_body="$(cat "$STATE_SCHEMA_SH")"
 for marker in 'MIGRATION REQUIRED' 'config migrate' 'config validate'; do
-  if echo "$state_schema_body" | grep -qF "$marker"; then
+  if grep -qF "$marker" <<<"$state_schema_body"; then
     ok "deploy/lib/state-schema.sh mentions '$marker'"
   else
     fail "deploy/lib/state-schema.sh does not mention '$marker'"
@@ -58,23 +58,23 @@ echo
 echo "--- static: check_state_schema() reports every required mode, delegates to the shared function, and fails closed ---"
 schema_body="$(sed -n '/^check_state_schema() {/,/^}/p' "$INSTALL_SH")"
 for marker in 'FRESH' 'REPAIR' 'UPGRADE'; do
-  if echo "$schema_body" | grep -qF "$marker"; then
+  if grep -qF "$marker" <<<"$schema_body"; then
     ok "check_state_schema() reports '$marker'"
   else
     fail "check_state_schema() does not mention '$marker'"
   fi
 done
-if echo "$schema_body" | grep -q 'state_schema_validate_and_migrate'; then
+if grep -q 'state_schema_validate_and_migrate' <<<"$schema_body"; then
   ok "check_state_schema() delegates to the shared state_schema_validate_and_migrate()"
 else
   fail "check_state_schema() does not call state_schema_validate_and_migrate -- has the shared extraction been bypassed?"
 fi
-if echo "$schema_body" | grep -q 'die "persistent state is INVALID'; then
+if grep -q 'die "persistent state is INVALID' <<<"$schema_body"; then
   ok "check_state_schema() dies (non-zero, no further mutation) on an INVALID/unsupported schema"
 else
   fail "check_state_schema() does not fail closed on an unsupported schema"
 fi
-if echo "$schema_body" | grep -q 'die "persistent state migration failed'; then
+if grep -q 'die "persistent state migration failed' <<<"$schema_body"; then
   ok "check_state_schema() dies on a migration failure (schema_rc=3), not just an invalid schema"
 else
   fail "check_state_schema() does not handle a migration failure (schema_rc=3) distinctly"
@@ -99,22 +99,22 @@ echo "--- static: update.sh's production path also validates/migrates state and 
 # through the same shared state_schema_validate_and_migrate()) and is
 # not re-checked here.
 update_body="$(sed -n '/^log "install mode: UPDATE/,/^log "rendering current authoritative/p' "$UPDATE_SH")"
-if echo "$update_body" | grep -q 'state_schema_validate_and_migrate'; then
+if grep -q 'state_schema_validate_and_migrate' <<<"$update_body"; then
   ok "update.sh's production path delegates to the shared state_schema_validate_and_migrate()"
 else
   fail "update.sh's production path does not call state_schema_validate_and_migrate"
 fi
-if echo "$update_body" | grep -q 'die "persistent state is INVALID'; then
+if grep -q 'die "persistent state is INVALID' <<<"$update_body"; then
   ok "update.sh dies closed on an INVALID/unsupported schema (rollback fires via the existing trap)"
 else
   fail "update.sh does not fail closed on an unsupported schema"
 fi
-if echo "$update_body" | grep -q 'die "persistent state migration failed'; then
+if grep -q 'die "persistent state migration failed' <<<"$update_body"; then
   ok "update.sh's production path dies on a migration failure (schema_rc=3) distinctly"
 else
   fail "update.sh's production path does not handle a migration failure (schema_rc=3) distinctly"
 fi
-if echo "$update_body" | grep -q 'lifecycle_gate_abort_hook after_migration'; then
+if grep -q 'lifecycle_gate_abort_hook after_migration' <<<"$update_body"; then
   ok "update.sh's production path still fires the after_migration lifecycle-gate hook only on an actual migration (schema_rc=2)"
 else
   fail "update.sh's production path lost its after_migration lifecycle-gate hook"
@@ -257,17 +257,17 @@ else
   fail "the pre-switch schema compatibility check is missing, or does not run before SWITCH (precheck_line=$precheck_line switch_line=$switch_line)"
 fi
 precheck_body="$(sed -n '/reject an impossible state-schema transition before ANY/,/^fi$/p' "$UPDATE_SH")"
-if echo "$precheck_body" | grep -q '"\$STAGED_BIN_DIR/vpn-admin" --config "\$DEPLOYMENT_TOML" config validate'; then
+if grep -q '"\$STAGED_BIN_DIR/vpn-admin" --config "\$DEPLOYMENT_TOML" config validate' <<<"$precheck_body"; then
   ok "the pre-switch check validates against the STAGED target vpn-admin, not the currently-installed one"
 else
   fail "the pre-switch check does not use \$STAGED_BIN_DIR/vpn-admin -- it would be validating with the OLD binary, proving nothing about the target's compatibility"
 fi
-if echo "$precheck_body" | grep -q 'Nothing live has been changed'; then
+if grep -q 'Nothing live has been changed' <<<"$precheck_body"; then
   ok "the pre-switch check's failure message confirms zero live mutation"
 else
   fail "the pre-switch check's failure message does not state that nothing live was changed"
 fi
-if echo "$precheck_body" | grep -qE '0 \| 2\)'; then
+if grep -qE '0 \| 2\)' <<<"$precheck_body"; then
   ok "the pre-switch check treats both 'current' (0) and 'migration required' (2) as compatible -- migration itself still happens post-SWITCH with the live binary"
 else
   fail "the pre-switch check does not accept the MIGRATION_REQUIRED (2) status as compatible"

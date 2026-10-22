@@ -61,6 +61,8 @@ set -Eeuo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=deploy/lib/vpn-benchmark-lib.sh
 . "$LIB_DIR/vpn-benchmark-lib.sh"
+# shellcheck source=deploy/lib/proc-safe.sh
+. "$LIB_DIR/proc-safe.sh"
 
 CONFIG="/etc/vpn/deployment.toml"
 RUNS=3
@@ -257,9 +259,9 @@ sample_min_median_max() {
   sorted="$(printf '%s\n' "${values[@]}" | sort -n)"
   local n=${#values[@]}
   local min max median
-  min="$(echo "$sorted" | head -1)"
+  min="$(echo "$sorted" | head -1 || true)"
   max="$(echo "$sorted" | tail -1)"
-  median="$(echo "$sorted" | awk -v n="$n" 'NR==int((n+1)/2){print; exit}')"
+  median="$(echo "$sorted" | awk -v n="$n" 'NR==int((n+1)/2){print; exit}' || true)"
   if [ -n "$key_prefix" ]; then
     json_add "${key_prefix}_min" "$min"
     json_add "${key_prefix}_median" "$median"
@@ -821,7 +823,10 @@ tunnel_benchmark() {
   # CLIENT-side (this throwaway benchmark process) CPU cost of one
   # transfer.
   local sb_pid
-  sb_pid="$(pgrep -f "sing-box run -c $client_cfg" | head -1 || true)"
+  # The throwaway client was started by this script (`... &`), so its PID is known exactly: no command-line search that
+  # could pick up another process (or this shell) that merely mentions the config path.
+  sb_pid="${SINGBOX_CLIENT_PID:-}"
+  kill -0 "$sb_pid" 2>/dev/null || sb_pid=""
 
   # SERVER-side (the real production sing-box, distinct from the
   # throwaway client above) CPU/RSS cost of the same transfer — this is
@@ -837,7 +842,7 @@ tunnel_benchmark() {
     [ "$server_pid" = "0" ] && server_pid=""
   fi
   if [ -z "$server_pid" ]; then
-    server_pid="$(pgrep -f 'sing-box run -c /etc/vpn/compat/sing-box/config.json' | head -1 || true)"
+    server_pid="$(proc_pids_exact '[^ ]*/sing-box run -c /etc/vpn/compat/sing-box/config.json' | head -1 || true)"
   fi
 
   local ct1="" ct2="" st1="" st2=""

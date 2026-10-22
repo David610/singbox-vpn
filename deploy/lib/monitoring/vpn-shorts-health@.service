@@ -1,0 +1,26 @@
+[Unit]
+Description=singbox-vpn Shorts media-health probe (egress path %i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# %i is the path label. /etc/vpn/shorts-health.env (root:root 0600) may set, per path:
+#   PROXY_<label with - as _>=socks5://127.0.0.1:PORT   the user-path SOCKS (a throwaway tunnel client); unset = this host's direct path
+#   PROBE_PYTHON=/path/to/python-with-playwright        interpreter for the browser probe
+#   PLAYWRIGHT_BROWSERS_PATH=/path/to/browsers
+#   SHORTS_CORPUS=/etc/vpn/shorts-corpus.txt            optional extra public Short ids, one per line
+#   SHORTS_ALERT_CMD='...'                              receives ONE JSON event per line on stdin (DEGRADED, CRITICAL, RECOVERED)
+EnvironmentFile=-/etc/vpn/shorts-health.env
+Environment=HOME=/var/lib/singbox-vpn/shorts-health
+ExecStart=/usr/bin/python3 /opt/singbox-vpn/deploy/lib/monitoring/shorts_health.py --label %i
+# Exit 1 (suspect/degraded), 2 (critical), 3 (unverified/path down), 4 (alert undeliverable) all show as a failed unit.
+# Do not mask them.
+SuccessExitStatus=0
+TimeoutStartSec=15min
+Nice=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/singbox-vpn
+PrivateTmp=true

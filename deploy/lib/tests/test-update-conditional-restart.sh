@@ -43,7 +43,7 @@ all_after_health_check_ok=1
 while IFS= read -r doctor_line; do
   [ -z "$doctor_line" ] && continue
   # nearest committed=1 AFTER this doctor call
-  next_committed="$(echo "$committed_lines" | awk -v d="$doctor_line" '$1 > d {print; exit}')"
+  next_committed="$(echo "$committed_lines" | awk -v d="$doctor_line" '$1 > d {print; exit}' || true)"
   [ -n "$next_committed" ] || { all_before_committed_ok=0; continue; }
   # nearest health-check line BEFORE this doctor call
   prev_health="$(echo "$health_check_lines" | awk -v d="$doctor_line" '$1 < d {v=$1} END{print v}')"
@@ -68,7 +68,7 @@ die_after_every_doctor_call=1
 while IFS= read -r doctor_line; do
   [ -z "$doctor_line" ] && continue
   doctor_block="$(sed -n "${doctor_line},+6p" "$UPDATE_SH" 2>/dev/null || true)"
-  echo "$doctor_block" | grep -q 'die "post-update protocol acceptance' || die_after_every_doctor_call=0
+  grep -q 'die "post-update protocol acceptance' <<<"$doctor_block" || die_after_every_doctor_call=0
 done <<EOF
 $doctor_lines
 EOF
@@ -97,7 +97,7 @@ while IFS= read -r lineno; do
       # rollback path's own restart (rollback must unconditionally
       # restore the working config regardless of what changed).
       context="$(sed -n "$((lineno > 5 ? lineno - 5 : 1)),${lineno}p" "$UPDATE_SH")"
-      if ! echo "$context" | grep -q 'rollback_update'; then
+      if ! grep -q 'rollback_update' <<<"$context"; then
         unguarded_restart=1
       fi
       ;;

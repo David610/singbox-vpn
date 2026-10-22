@@ -192,6 +192,9 @@ vpn-admin google-egress-hairpin set --relay-host <host> --relay-port 443 \
 vpn-admin doctor --protocol
 ```
 
+Write the key as `--relay-reality-public-key=<public.key>`: a base64url key can start with `-`, which older
+`vpn-admin` builds read as a flag (I-61).
+
 Roll back: `vpn-admin google-egress-hairpin clear` on the exit (every user is
 affected immediately; Shorts return to failing). Pre-change backups of
 2026-10-11 are in `/root/arcana-backup-20261011-*` on both nodes.

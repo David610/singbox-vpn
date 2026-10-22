@@ -1,0 +1,14 @@
+[10:31:38] real update v1.3.0 -> v1.3.1-rc.2: exit 0
+[10:31:38] version: vpn-admin 1.3.1
+[10:31:39] preserved: /etc/vpn/compat/users/users.json
+[10:31:39] preserved: /etc/vpn/compat/reality/private.key
+[10:31:39] preserved: /etc/vpn/compat/reality/short_id.txt
+[10:31:39] preserved: /etc/vpn/compat/hysteria/cert.pem
+[10:31:39] health: doctor rc=0 FAILS=0 WARNS=3
+[10:31:39] I-31 check: public_ipv4 in deployment.toml after update: 0; doctor C-16 lines: 1 [WARN] [L2  ] C-16: no own-public-address deny rule — deployment.toml records no public IP (`public_ipv4`/`public_ipv6`, or an IP-literal `public_host`), so a t
+[10:31:39] I-19 check: [egress] ipv6_literal after update:  route reject-google rule present: False
+[10:31:41] doctor --protocol --require-protocol rc=0
+[update] net.core.wmem_max effective value confirmed: 16777216
+[update] TCP bbr congestion control enabled and confirmed active for the REALITY/TCP data plane.
+[update] UPDATE COMPLETE: v1.3.0 -> v1.3.1-rc.2. sing-box: 1.14.1. User credentials and REALITY/Hysteria2 material were preserved.
+[10:31:41] DONE-C

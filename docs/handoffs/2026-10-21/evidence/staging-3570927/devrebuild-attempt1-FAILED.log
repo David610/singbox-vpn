@@ -1,0 +1,196 @@
+[update] DEV-REBUILD mode (SINGBOX_VPN_CHANNEL=dev / --dev-rebuild): rebuilding from the source currently at /opt/singbox-vpn via Cargo. This is NOT the production update path — see --help.
+[update] running tests before touching installed state (isolated: no systemd/D-Bus access, host-control tools guarded)...
+warning: /opt/singbox-vpn/apps/admin/Cargo.toml: file `/opt/singbox-vpn/apps/admin/src/main.rs` found to be present in multiple build targets:
+  * `bin` target `vpn`
+  * `bin` target `vpn-admin`
+   Compiling provisioning-contract v1.3.1 (/opt/singbox-vpn/crates/provisioning-contract)
+   Compiling common v1.3.1 (/opt/singbox-vpn/crates/common)
+   Compiling compat-config v1.3.1 (/opt/singbox-vpn/crates/compat-config)
+   Compiling subscription v1.3.1 (/opt/singbox-vpn/services/subscription)
+   Compiling admin v1.3.1 (/opt/singbox-vpn/apps/admin)
+   Compiling provisioning-agent v1.3.1 (/opt/singbox-vpn/apps/provisioning-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.44s
+     Running unittests src/main.rs (target/debug/deps/vpn-d743bad45853718e)
+
+running 161 tests
+test doctor_coverage_tests::l1_l4_failed_l5_l6_failed_both_shown ... ok
+test doctor_coverage_tests::a_partial_result_is_never_described_as_a_full_pass ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_inconclusive_still_reports_both_independently ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_not_run ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_passed_does_not_imply_l1_l4_ok ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_failed ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_inconclusive_is_never_reported_as_passed_or_not_run ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_not_run ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_passed_is_the_only_full_health_claim ... ok
+test doctor_coverage_tests::protocol_check_result_label_is_exhaustively_defined ... ok
+test egress_probe_selection_tests::mutations_prefer_the_confined_protocol_probe ... ok
+test external_authorization::tests::omission_and_revocation_fail_closed_without_touching_native ... ok
+test external_authorization::tests::rejects_credential_id_and_uuid_collisions_across_owners ... ok
+test external_authorization::tests::replaces_only_external_ownership_and_supports_ab_rotation ... ok
+test hostname_resolution_tests::all_attempts_fail_is_unresolved_with_bounded_attempt_count ... ok
+test external_authorization::tests::ab_removal_restart_and_revocation_cannot_resurrect_a ... ok
+test hostname_resolution_tests::first_attempt_fails_second_succeeds_reports_transient_recovery ... ok
+test hostname_resolution_tests::persistent_failure_increments_failures_exactly_once ... ok
+test hostname_resolution_tests::resolved_addresses_still_classify_v4_and_v6_families_correctly ... ok
+test hostname_resolution_tests::retry_attempts_are_bounded_never_unbounded ... ok
+test hostname_resolution_tests::succeeds_on_first_attempt ... ok
+test hostname_resolution_tests::zero_addresses_after_retry_is_unresolved ... ok
+test hysteria2_selftest_tests::a_definitive_failure_of_either_transport_wins ... ok
+test hysteria2_selftest_tests::a_reality_pass_alone_is_never_a_full_pass ... ok
+test hysteria2_selftest_tests::classifier_separates_pass_rejection_unreachable_and_inconclusive ... ok
+test hysteria2_selftest_tests::untested_transports_stay_below_passed ... ok
+test hysteria2_selftest_tests::client_config_matches_what_a_subscription_hands_a_real_client ... ok
+test ipv6_posture_tests::aaaa_present_and_egress_confirmed_broken_is_fatal ... ok
+test ipv6_posture_tests::aaaa_present_and_egress_confirmed_working_is_ok_and_non_fatal ... ok
+test ipv6_posture_tests::aaaa_present_but_probe_unavailable_is_inconclusive_not_fatal ... ok
+test ipv6_posture_tests::ipv4_only_host_no_aaaa_is_never_fatal_regardless_of_probe_outcome ... ok
+test ipv6_posture_tests::reality_pass_is_not_undermined_by_ipv4_only_ipv6_diagnostic ... ok
+test lease_pool::tests::authorization_metadata_projects_into_the_authoritative_user_store ... ok
+test lease_pool::tests::creates_pseudonymous_expiring_slot_users_and_keeps_others ... ok
+test lease_pool::tests::rejects_malformed_duplicate_or_colliding_input ... ok
+test lease_pool::tests::rotation_replaces_secret_and_is_idempotent ... ok
+test lease_pool::tests::compatibility_overlap_and_revocation_project_fail_closed ... ok
+test lease_pool::tests::shrinking_the_pool_removes_slot_users_only ... ok
+test lock::tests::second_acquire_blocks_until_first_is_dropped ... ok
+test own_address_egress_rule_tests::domain_only_exit_warns_without_printing_an_address ... ok
+test own_address_egress_rule_tests::recorded_addresses_are_reported_by_field_name_only ... ok
+test own_address_egress_rule_tests::relays_are_not_checked ... ok
+test peer_credential_cli_tests::a_malformed_uuid_is_refused_with_an_actionable_message ... ok
+test peer_credential_cli_tests::a_new_operator_user_is_not_locked_out_after_the_native_lease ... ok
+test peer_credential_cli_tests::a_new_operator_user_is_served_the_credentials_it_is_given ... ok
+test peer_credential_cli_tests::a_password_for_a_vless_reality_peer_is_refused_not_coerced ... ok
+test peer_credential_cli_tests::a_uuid_for_a_hysteria2_peer_is_refused ... ok
+test peer_credential_cli_tests::a_uuid_is_accepted_for_a_vless_reality_peer ... ok
+test peer_credential_cli_tests::an_empty_hysteria2_password_is_refused ... ok
+test peer_credential_cli_tests::rotating_a_new_operator_users_credentials_changes_what_the_server_renders ... ok
+test peer_credential_cli_tests::supplying_no_credential_names_the_flag_the_operator_needs ... ok
+test peer_credential_cli_tests::uuid_shape_check_accepts_a_real_uuid_and_rejects_pasted_junk ... ok
+test pressure_diagnostics_tests::conntrack_at_threshold_warns ... ok
+test pressure_diagnostics_tests::conntrack_high_utilization_warns_never_fails ... ok
+test pressure_diagnostics_tests::conntrack_just_below_threshold_is_still_ok ... ok
+test pressure_diagnostics_tests::conntrack_low_utilization_is_ok ... ok
+test pressure_diagnostics_tests::conntrack_pct_handles_zero_max_without_dividing_by_zero ... ok
+test pressure_diagnostics_tests::format_thousands_groups_correctly ... ok
+test pressure_diagnostics_tests::udp_memory_high_pressure_warns_never_fails ... ok
+test pressure_diagnostics_tests::udp_memory_low_pressure_is_ok ... ok
+test pressure_diagnostics_tests::udp_memory_pct_handles_zero_pressure_threshold_without_dividing_by_zero ... ok
+test public_surface_tests::a_configured_inbound_on_an_ephemeral_port_is_still_fail ... ok
+test public_surface_tests::a_wildcard_listener_is_flagged_without_claiming_internet_reachability ... ok
+test public_surface_tests::dhcpv4_client_socket_of_systemd_networkd_is_info_not_a_warning ... ok
+test public_surface_tests::declared_inbounds_reads_transport_per_inbound_type ... ok
+test public_surface_tests::egress_isolation_table_with_a_negated_uid_match_is_a_failure ... ok
+test public_surface_tests::egress_isolation_table_with_positive_uid_scoping_is_ok ... ok
+test public_surface_tests::empty_and_malformed_lines_are_skipped_without_panicking ... ok
+test public_surface_tests::ephemeral_own_process_udp_is_never_info_without_a_readable_config ... ok
+test public_surface_tests::ephemeral_range_parser_reads_proc_format_and_rejects_garbage ... ok
+test public_surface_tests::expected_listener_with_unknown_process_is_still_ok ... ok
+test public_surface_tests::expected_singbox_vpn_listener_is_ok ... ok
+test public_surface_tests::expected_ssh_listener_is_ok ... ok
+test public_surface_tests::firewall_ownership_none_when_file_missing ... ok
+test public_surface_tests::firewall_ownership_parses_key_value_env_file ... ok
+test public_surface_tests::firewall_report_follows_the_recorded_backend ... ok
+test public_surface_tests::host_ipv6_failed_gateway_neighbour_is_a_warning_not_ok ... ok
+test public_surface_tests::host_ipv6_healthy_missing_or_not_applicable_states ... ok
+test public_surface_tests::internal_singbox_vpn_process_on_an_unexpected_public_port_is_fail ... ok
+test public_surface_tests::is_singbox_vpn_process_matches_truncated_comm_names ... ok
+test public_surface_tests::loopback_only_unrelated_listener_is_not_reported_at_all ... ok
+test public_surface_tests::missing_firewall_cmd_on_a_ufw_host_is_not_a_warning ... ok
+test public_surface_tests::missing_or_unrecognised_egress_isolation_table_is_not_ok ... ok
+test public_surface_tests::never_closes_or_mutates_anything_by_construction ... ok
+test public_surface_tests::own_process_outbound_udp_flow_sockets_are_info_when_no_inbound_declares_them ... ok
+test public_surface_tests::own_process_tcp_listener_on_an_ephemeral_port_is_still_fail ... ok
+test public_surface_tests::own_process_udp_on_a_non_ephemeral_unexpected_port_is_fail_declared_or_not ... ok
+test public_surface_tests::parses_bracketed_ipv6_addresses_and_strips_brackets ... ok
+test public_surface_tests::parses_real_shaped_tcp_ss_output_including_process_name ... ok
+test public_surface_tests::parses_udp_output_without_a_users_field_when_not_root ... ok
+test public_surface_tests::port_conflict_expected_port_served_by_wrong_process_is_fail ... ok
+test public_surface_tests::sshd_port_directive_none_when_absent ... ok
+test public_surface_tests::sshd_port_directive_parses_first_match_case_insensitively ... ok
+test public_surface_tests::subscription_backend_exposed_publicly_is_fail ... ok
+test public_surface_tests::subscription_backend_on_loopback_is_ok ... ok
+test public_surface_tests::hairpin_set_accepts_a_reality_public_key_that_starts_with_a_hyphen ... ok
+test public_surface_tests::udp_68_is_only_benign_for_the_dhcp_client_bound_to_an_interface ... ok
+test public_surface_tests::unidentified_process_on_a_non_loopback_port_is_warn_never_fail ... ok
+test public_surface_tests::unrelated_process_on_a_non_loopback_port_is_warn_not_fail ... ok
+test reality_selftest_classification_tests::a_real_key_mismatch_does_not_reliably_produce_either_client_side_string ... ok
+test public_surface_tests::zone_suffixed_loopback_stub_resolver_is_not_a_public_listener ... ok
+test reality_selftest_classification_tests::client_side_rejection_strings_are_still_detected ... ok
+test reality_selftest_classification_tests::empty_client_stderr_and_no_journal_hit_stays_inconclusive ... ok
+test reality_selftest_classification_tests::fenced_loopback_rejection_is_still_detected ... ok
+test reality_selftest_classification_tests::unrelated_public_scanner_rejection_is_not_attributed_to_selftest ... ok
+test release_identity::tests::a_development_binary_run_by_path_is_not_reported_as_the_installed_release ... ok
+test release_identity::tests::a_development_install_reports_the_exact_source_it_was_built_from ... ok
+test release_identity::tests::a_hand_replaced_vpn_is_still_detected_when_it_has_its_own_hash ... ok
+test release_identity::tests::a_running_binary_matching_neither_recorded_hash_is_reported ... ok
+test release_identity::tests::a_source_build_with_separately_linked_vpn_and_vpn_admin_is_consistent ... ok
+test release_identity::tests::an_install_without_recorded_source_keeps_the_plain_label ... ok
+test release_identity::tests::classifies_release_tags ... ok
+test release_identity::tests::an_unreadable_running_executable_does_not_invent_a_mismatch ... ok
+test release_identity::tests::development_channel_checks_hashes_but_not_the_version_core ... ok
+test release_identity::tests::manual_binary_swap_on_the_same_version_is_detected ... ok
+test release_identity::tests::hashing_matches_known_vector ... ok
+test release_identity::tests::matching_stable_install_is_ok_without_claiming_provenance ... ok
+test release_identity::tests::missing_executable_is_a_problem ... ok
+test release_identity::tests::missing_or_corrupt_manifest_is_unknown ... ok
+test release_identity::tests::release_candidate_is_labelled_as_such ... ok
+test release_identity::tests::repair_advice_never_recommends_repair_toward_an_older_release ... ok
+test release_identity::tests::unrecorded_hashes_are_unknown_not_a_match ... ok
+test release_identity::tests::update_in_progress_is_informational_only ... ok
+test release_identity::tests::version_core_mismatch_is_detected_even_when_hashes_agree ... ok
+test service::tests::is_available_is_false_for_nonexistent_binary ... ok
+test service::tests::is_failed_false_when_systemctl_reports_not_failed ... ok
+test service::tests::is_failed_true_when_systemctl_reports_failed ... ok
+test service::tests::is_unit_installed_false_when_systemctl_binary_missing ... ok
+test service::tests::is_unit_installed_still_appends_service_for_a_bare_name ... ok
+test service::tests::is_unit_installed_true_when_systemctl_reports_loaded ... ok
+test service::tests::is_unit_installed_uses_a_dotted_unit_name_verbatim_for_a_timer ... ok
+test service::tests::last_result_is_none_when_the_value_is_empty ... ok
+test service::tests::last_result_returns_the_raw_systemd_result_keyword ... ok
+test service::tests::override_names_the_exact_service_manager_and_never_falls_back_to_path ... ok
+test service::tests::reload_and_verify_fails_when_reload_command_fails ... ok
+test service::tests::reload_and_verify_fails_when_service_not_active_after_reload ... ok
+test service::tests::reload_and_verify_succeeds_when_service_comes_up_healthy ... ok
+test service::tests::restart_count_is_none_when_systemctl_is_unavailable ... ok
+test service::tests::restart_count_parses_nrestarts ... ok
+test service::tests::timer_next_elapse_returns_systemds_own_formatted_timestamp ... ok
+test service::tests::unit_tests_never_default_to_the_host_systemctl ... ok
+test udp_probe_tests::build_dns_query_contains_labels ... ok
+test udp_probe_tests::cert_expiry_days_reports_negative_days_for_an_already_expired_cert ... ok
+...+.....+.......+.....+....+.....+......+............+...+....+.....+....+++++++++++++++++++++++++++++++++++++++*..+++++++++++++++++++++++++++++++++++++++*......+.................+....+...+.....+.+......+...............+...+..+.+............+..+.+.....+...+......+.....................+............+.............++++++
+...+............+...................+.....+......+.+++++++++++++++++++++++++++++++++++++++*.+.............+..+....+......+.....+......+....+......+...+..+...+.........+.......+.....+.........+....+++++++++++++++++++++++++++++++++++++++*......+.........+..+....+.........+.....+.............+.........+........+......+.+........+.......+.........+..+.......+.....++++++
+-----
+test udp_probe_tests::cert_expiry_days_reports_positive_days_for_a_freshly_issued_cert ... ok
+test udp_probe_tests::cert_expiry_days_returns_none_for_missing_file ... ok
+test udp_probe_tests::probe_singbox_binary_versions_skips_nonexistent_paths_and_dedupes ... ok
+test udp_probe_tests::redact_secrets_hides_a_base64url_style_token ... ok
+test udp_probe_tests::redact_secrets_hides_a_long_hex_key_or_hash ... ok
+test udp_probe_tests::redact_secrets_hides_a_vless_uuid ... ok
+test udp_probe_tests::redact_secrets_leaves_ordinary_log_text_and_short_words_untouched ... ok
+test udp_probe_tests::redact_secrets_preserves_non_ascii_text_around_a_redacted_token ... ok
+test udp_probe_tests::run_udp_probe_candidates_with_probe_logic ... ok
+test udp_probe_tests::singbox_version_consistency_ok_when_versions_match ... ok
+test udp_probe_tests::singbox_version_consistency_silent_on_single_binary ... ok
+test udp_probe_tests::singbox_version_consistency_warns_and_names_configured_binary_when_versions_differ ... ok
+test user_selector_tests::a_unique_name_resolves_to_that_account ... ok
+test user_selector_tests::an_ambiguous_name_is_rejected_and_lists_the_ids ... ok
+test user_selector_tests::an_unknown_selector_is_an_error ... ok
+test user_selector_tests::reserved_probe_principals_are_reachable_by_id_only ... ok
+test user_selector_tests::the_stable_id_always_wins_over_a_name ... ok
+test service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit ... FAILED
+
+failures:
+
+---- service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit stdout ----
+
+thread 'service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit' (1901785) panicked at apps/admin/src/service.rs:393:13:
+reload 15 of a rapid burst was refused by the start-rate limiter
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit
+
+test result: FAILED. 160 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.32s
+
+error: test failed, to rerun pass `-p admin --bin vpn`
+[update] ERROR: tests failed (exit 101). Nothing was installed — binaries, systemd units and config are unchanged — and live services were not restarted (identical MainPID/NRestarts before and after the test phase).

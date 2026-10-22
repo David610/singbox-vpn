@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "_comment": "Non-secret production configuration contract. UNDECIDED means the owner has not decided/approved the value yet; it is reported, never silently accepted. Differences are reported, never auto-corrected.",
+  "target": {
+    "node_id": "fin1",
+    "role": "exit",
+    "public_ipv4": "62.238.46.190",
+    "public_ipv6": "2a01:4f9:c014:13bd::1",
+    "public_host": "fin1.xn----8sba1cvaif4e.com",
+    "subscription_host": "fin1.xn----8sba1cvaif4e.com",
+    "provider": "UNDECIDED",
+    "operating_system": "UNDECIDED"
+  },
+  "protocols": { "reality": true, "hysteria2": true },
+  "subscription": { "expected_public_port": 8443 },
+  "dns": { "aaaa_published": false },
+  "youtube": {
+    "required": true,
+    "egress_mode": "UNDECIDED",
+    "approved_hairpin_target": "UNDECIDED"
+  },
+  "routing": { "fingerprint": "UNDECIDED" },
+  "security": {
+    "ssh_password_authentication": false,
+    "ssh_permit_root_login": "prohibit-password",
+    "singbox_log_level": "fatal"
+  },
+  "release": { "approved_tag": "UNDECIDED", "approved_commit": "UNDECIDED" }
+}

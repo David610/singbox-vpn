@@ -212,7 +212,23 @@ fi
 # ---------------------------------------------------------------------
 # secure temp workspace, always cleaned up
 # ---------------------------------------------------------------------
+# SIGKILL/host crash cannot run the EXIT trap, so a later run removes workspaces whose owning process is gone (I-33:
+# the pinned cosign download alone is ~135 MB and had exhausted /tmp). Only root-owned real directories matching the
+# pattern, older than 10 minutes, with a recorded owner pid that is no longer alive, are touched.
+sweep_stale_scratch() { # $1=parent dir  $2=name glob
+  local d pid
+  for d in "$1"/$2; do
+    [ -d "$d" ] && [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] || continue
+    [ -n "$(find "$d" -maxdepth 0 -mmin +10 2>/dev/null)" ] || continue
+    pid="$(cat "$d/.owner-pid" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    kill -0 "$pid" 2>/dev/null && continue
+    rm -rf --one-file-system -- "$d"
+  done
+}
+sweep_stale_scratch /tmp 'singbox-vpn-install.*'
 TMPDIR="$(mktemp -d /tmp/singbox-vpn-install.XXXXXXXX)" || die "mktemp failed"
+echo "$$" >"$TMPDIR/.owner-pid"
 cleanup() {
   local rc=$?
   rm -rf "$TMPDIR"
@@ -387,12 +403,15 @@ download_source() {
   fi
   [ -z "$SOURCE_COMMIT" ] || log "source archive commit: $SOURCE_COMMIT"
   log "extracting..."
-  tar -xzf "$tarball" -C "$TMPDIR" || die "failed to extract downloaded source archive."
+  # Extract into its own directory: the source tree is then the ONLY directory there, whatever else (cosign, the
+  # tarball) the workspace holds, so it can never be mistaken for the source.
+  mkdir "$TMPDIR/extract" || die "cannot create the extraction directory."
+  tar -xzf "$tarball" -C "$TMPDIR/extract" || die "failed to extract downloaded source archive."
   # Both archive shapes (codeload's "<repo>-<ref>", and release.yml's
   # "singbox-vpn-src/") extract to a single top-level directory — find it
   # rather than hardcoding either name.
   local extracted
-  extracted="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  extracted="$(find "$TMPDIR/extract" -mindepth 1 -maxdepth 1 -type d | head -n1 || true)"
   [ -n "$extracted" ] || die "extracted archive did not contain the expected repository directory."
   if [ -n "$SINGBOX_VPN_VERSION" ]; then
     local expected_package_version="${SINGBOX_VPN_VERSION#v}"
@@ -470,7 +489,8 @@ echo
 # and the exact exit code of the real installer — never mask a failure.
 source_ref="${SINGBOX_VPN_VERSION:-$SINGBOX_VPN_REF}"
 set +e
-SINGBOX_VPN_RELEASE_REPO="$SINGBOX_VPN_REPO" SINGBOX_VPN_VERSION="$SINGBOX_VPN_VERSION" \
+SINGBOX_VPN_COSIGN_BIN="$([ -n "$COSIGN_BIN" ] && [ "${COSIGN_BIN#"$TMPDIR"/}" != "$COSIGN_BIN" ] && echo "$COSIGN_BIN" || true)" \
+  SINGBOX_VPN_RELEASE_REPO="$SINGBOX_VPN_REPO" SINGBOX_VPN_VERSION="$SINGBOX_VPN_VERSION" \
   SINGBOX_VPN_SOURCE_COMMIT="$SOURCE_COMMIT" \
   SINGBOX_VPN_SOURCE_REF="$source_ref" \
   bash "$SRC_DIR/deploy/almalinux/install.sh" "${PASSTHROUGH_ARGS[@]}"

@@ -182,6 +182,29 @@ jobs:
             exit 1
           fi
 
+          # Machine-readable evidence (I-46). The exact-line text above is
+          # necessary but NOT sufficient: "Device acceptance: PASS" is only
+          # believed when the evidence file, bound to this tag and the accepted
+          # RC commit, supports PRODUCTION_READY (CI + VPS lifecycle + complete
+          # native-device matrix + deployed-config fingerprint + security gates,
+          # no waivers). A waiver is a limited-risk decision and cannot raise a
+          # level. Releases that predate this gate are exempt by name.
+          case "$RELEASE_TAG" in
+            v1.0.0|v1.1.0|v1.2.0|v1.3.0)
+              echo "::warning::$RELEASE_TAG predates machine-readable release evidence; exempt (its device evidence was user-reported/waived)." ;;
+            *)
+              evidence_json="docs/release-acceptance/${RELEASE_TAG}.evidence.json"
+              if [ ! -f "$evidence_json" ]; then
+                echo "::error::missing machine-readable evidence: $evidence_json"
+                exit 1
+              fi
+              python3 -I deploy/lib/release_evidence.py "$evidence_json" \
+                --require PRODUCTION_READY --tag "$RELEASE_TAG" --commit "$actual_rc_commit" || {
+                echo "::error::$evidence_json does not support PRODUCTION_READY for $RELEASE_TAG at $actual_rc_commit"
+                exit 1
+              } ;;
+          esac
+
           # After real-world RC acceptance, production implementation is
           # frozen on the path to stable. Only release-status/evidence
           # documentation is permitted. Any other change requires a new RC
@@ -190,7 +213,7 @@ jobs:
           while IFS= read -r path; do
             [ -n "$path" ] || continue
             case "$path" in
-              README.md|docs/DEVICE_ACCEPTANCE_TESTS.md|"docs/release-acceptance/${RELEASE_TAG}.md")
+              README.md|docs/DEVICE_ACCEPTANCE_TESTS.md|"docs/release-acceptance/${RELEASE_TAG}.md"|"docs/release-acceptance/${RELEASE_TAG}.evidence.json")
                 echo "allowed RC -> stable change: $path" ;;
               *)
                 echo "::error::implementation/workflow change after accepted RC requires a new RC: $path"

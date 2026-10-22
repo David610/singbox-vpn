@@ -1,0 +1,10 @@
+HEAD 439f26bca7809db762b07701e6c8ac714e3ab370
+clippy rc=0
+shell rc=0
+shellcheck rc=0
+fmt rc=0
+test rc=0
+rust workspace: 1084 passed, 0 failed (YOUTUBE_TEST_PYTHON=venv with aioquic)
+shell rc=0
+evidence class: unit/integration + hermetic shell on the staging host; NOT external or device evidence
+note: two single, non-reproducible shell-suite failures were seen earlier in the session (I-53)

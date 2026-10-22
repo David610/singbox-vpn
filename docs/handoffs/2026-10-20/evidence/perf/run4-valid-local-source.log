@@ -1,0 +1,15 @@
+direct: {'mbps_runs': [7482.5, 10223.9, 12782.0, 7845.9, 11802.9], 'mbps_median': 10223.9, 'connect_ms_median': 3.8, 'connect_ms_p95': 5.0}
+Reality: {"transfer_failures": 0, "source_limited": 0, "mbps_runs": [1031.0, 1409.7, 1262.3, 1324.4, 1280.4], "mbps_median": 1280.4, "ratio_vs_direct": 0.13, "connect_ms_median": 64.6, "connect_ms_p95": 68.6, "connect_failures": 0, "added_ms_median": 60.8, "concurrency": {"1": {"failed": 0, "source_limited": 0, "aggregate_mbps": 1090.6}, "4": {"failed": 0, "source_limited": 0, "aggregate_mbps": 1913.6}, "8": {"failed": 0, "source_limited": 0, "aggregate_mbps": 1947.0}}, "soak": {"seconds": 600, "ok": 116, "failed": 0, "success_rate": 1.0, "max_gap_s": 6.5}, "restart_recovery_s": {"samples": [0.7, 0.7, 0.7, 0.7, 0.7], "never_recovered": 0, "max": 0.7, "median": 0.7}}
+Hysteria2: {"transfer_failures": 0, "source_limited": 0, "mbps_runs": [192.2, 132.1, 139.9, 156.4, 146.8], "mbps_median": 146.8, "ratio_vs_direct": 0.01, "connect_ms_median": 5.7, "connect_ms_p95": 7.0, "connect_failures": 0, "added_ms_median": 1.9, "concurrency": {"1": {"failed": 0, "source_limited": 0, "aggregate_mbps": 153.9}, "4": {"failed": 0, "source_limited": 0, "aggregate_mbps": 160.0}, "8": {"failed": 0, "source_limited": 0, "aggregate_mbps": 198.0}}, "soak": {"seconds": 600, "ok": 96, "failed": 0, "success_rate": 1.0, "max_gap_s": 6.7}, "restart_recovery_s": {"samples": [1.5, 1.4, 1.8, 1.7, 1.8], "never_recovered": 0, "max": 1.8, "median": 1.7}}
+PASS Reality: no failed transfers and the source did not rate-limit  (failed 0, source_limited 0, connects 0)
+PASS Reality: capacity floor: median >= 200.0 Mbps  (1280.4 Mbps (direct 10223.9; ratio 0.13 is informational))
+FAIL Reality: added connect latency <= 40.0 ms  (60.8 ms (median))
+PASS Reality: concurrency: 0 failed and 0 source-limited transfers  ({"1": {"failed": 0, "source_limited": 0, "aggregate_mbps": 1090.6}, "4": {"failed": 0, "source_limited": 0, "a)
+PASS Reality: recovers after a server restart within 10.0 s (5/5)  ({"samples": [0.7, 0.7, 0.7, 0.7, 0.7], "never_recovered": 0, "max": 0.7, "median": 0.7})
+PASS Reality: soak success >= 0.99  ({"seconds": 600, "ok": 116, "failed": 0, "success_rate": 1.0, "max_gap_s": 6.5})
+PASS Hysteria2: no failed transfers and the source did not rate-limit  (failed 0, source_limited 0, connects 0)
+PASS Hysteria2: capacity floor: median >= 100.0 Mbps  (146.8 Mbps (direct 10223.9; ratio 0.01 is informational))
+PASS Hysteria2: added connect latency <= 40.0 ms  (1.9 ms (median))
+PASS Hysteria2: concurrency: 0 failed and 0 source-limited transfers  ({"1": {"failed": 0, "source_limited": 0, "aggregate_mbps": 153.9}, "4": {"failed": 0, "source_limited": 0, "ag)
+PASS Hysteria2: recovers after a server restart within 35.0 s (5/5)  ({"samples": [1.5, 1.4, 1.8, 1.7, 1.8], "never_recovered": 0, "max": 1.8, "median": 1.7})
+PASS Hysteria2: soak success >= 0.99  ({"seconds": 600, "ok": 96, "failed": 0, "success_rate": 1.0, "max_gap_s": 6.7})

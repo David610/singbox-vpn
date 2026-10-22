@@ -230,7 +230,7 @@ run_install_dependencies_rhel() {
 }
 
 out_with_curl="$(run_install_dependencies_rhel yes)"
-if echo "$out_with_curl" | grep -qw 'curl'; then
+if grep -qw 'curl' <<<"$out_with_curl"; then
   echo "FAIL: install_dependencies_rhel still requests 'curl' package when a usable curl is already present:"
   echo "  $out_with_curl"
   failures=$((failures + 1))
@@ -239,7 +239,7 @@ else
 fi
 
 out_without_curl="$(run_install_dependencies_rhel no)"
-if echo "$out_without_curl" | grep -qw 'curl'; then
+if grep -qw 'curl' <<<"$out_without_curl"; then
   echo "ok: install_dependencies_rhel still requests 'curl' when no usable curl binary exists at all"
 else
   echo "FAIL: install_dependencies_rhel does not request 'curl' even when none is present:"

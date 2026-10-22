@@ -84,11 +84,15 @@ table inet arcana_egress_isolation {
     # host's own control-plane traffic (vpn-admin, vpn-subscription,
     # provisioning-agent, certbot, sshd, the agent heartbeat) runs as
     # different OS users and is untouched by this chain.
-    meta skuid != $SING_BOX_UID accept
-
-    ip daddr { $IPV4_DENY } reject
-    ip6 daddr { $IPV6_DENY } reject
-    tcp dport 25 reject
+    # Every reject is scoped with a POSITIVE uid match. The previous form
+    # (\`meta skuid != UID accept\` first) does not accept packets that have no
+    # socket owner, e.g. kernel-originated IPv6 neighbour discovery to
+    # fe80::/10 and ff00::/8, which then hit the rejects below and took the
+    # whole host's IPv6 down (I-54). A socketless packet now matches nothing
+    # here and falls to the chain policy (accept).
+    meta skuid $SING_BOX_UID ip daddr { $IPV4_DENY } counter reject
+    meta skuid $SING_BOX_UID ip6 daddr { $IPV6_DENY } counter reject
+    meta skuid $SING_BOX_UID tcp dport 25 counter reject
   }
 }
 EOF

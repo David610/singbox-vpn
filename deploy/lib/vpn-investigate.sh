@@ -335,7 +335,7 @@ udp_egress_verdict() {
   fi
 
   local tcp_first tcp_last
-  tcp_first=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | head -1)
+  tcp_first=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | head -1 || true)
   tcp_last=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | tail -1)
   echo "FACT: ${tcp_count} TCP/443 packets to/from ${client_ip} observed — the REALITY tunnel was"
   echo "  active during this capture."
@@ -377,12 +377,12 @@ udp_egress_verdict() {
   echo "  own comment for why this proxy is used instead of per-flow NAT-table correlation."
   if [[ "$udp_out" -gt 0 ]]; then
     local udp_out_first
-    udp_out_first=$(tshark -n -r "$input" -Y "$udp_out_filter" -T fields -e frame.time_epoch 2>/dev/null | head -1)
+    udp_out_first=$(tshark -n -r "$input" -Y "$udp_out_filter" -T fields -e frame.time_epoch 2>/dev/null | head -1 || true)
     echo "FACT: first outbound UDP/443 packet (UTC): $(date -u -d "@${udp_out_first%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
   fi
   if [[ "$udp_in" -gt 0 ]]; then
     local udp_in_first
-    udp_in_first=$(tshark -n -r "$input" -Y "$udp_in_filter" -T fields -e frame.time_epoch 2>/dev/null | head -1)
+    udp_in_first=$(tshark -n -r "$input" -Y "$udp_in_filter" -T fields -e frame.time_epoch 2>/dev/null | head -1 || true)
     echo "FACT: first inbound UDP/443 reply (UTC): $(date -u -d "@${udp_in_first%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
   fi
   echo
@@ -453,7 +453,7 @@ client() {
     else
       echo "FACT: vpn-admin doctor --protocol exited non-zero."
     fi
-    echo "$OUT" | grep -Ei 'reality|hysteria|PASS|FAIL|INCONCLUSIVE' | sed 's/^/FACT (doctor output): /' || true
+    grep -Ei 'reality|hysteria|PASS|FAIL|INCONCLUSIVE' <<<"$OUT" | sed 's/^/FACT (doctor output): /' || true
     echo "INFERENCE: this proves the server's own REALITY/Hysteria2 stack is (or is not)"
     echo "  self-consistent from THIS host, dialing itself. It does NOT prove any"
     echo "  specific remote client (including $ip) can complete the same handshake —"
@@ -845,7 +845,7 @@ session_verdict() {
   fi
 
   local first_ts last_ts
-  first_ts=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | head -1)
+  first_ts=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | head -1 || true)
   last_ts=$(tshark -n -r "$input" -Y "ip.addr==${client_ip} and tcp.port==443" -T fields -e frame.time_epoch 2>/dev/null | tail -1)
   echo "FACT: ${tcp_count} TCP/443 packets to/from ${client_ip} observed."
   echo "FACT: first packet (UTC): $(date -u -d "@${first_ts%.*}" '+%Y-%m-%dT%H:%M:%SZ')"
@@ -1256,7 +1256,7 @@ youtube_tcp() {
 youtube_quic() {
   local host=$1
   command -v curl >/dev/null || { echo "[INFO] $host QUIC/UDP/443: curl unavailable"; return; }
-  if ! curl --version 2>/dev/null | head -1 | grep -qi 'HTTP3'; then
+  if ! grep -qi 'HTTP3' <<<"$(curl --version 2>/dev/null | head -1 || true)"; then
     echo "[INFO] $host QUIC/UDP/443: not tested — this host's curl build has no HTTP/3 support, so there is no standards-compliant QUIC client available here. This is a tooling gap, not a network result."
     return
   fi
@@ -1350,7 +1350,7 @@ tiktok_tcp() {
 tiktok_quic() {
   local host=$1
   command -v curl >/dev/null || { echo "[INFO] $host QUIC/UDP/443: curl unavailable"; return; }
-  if ! curl --version 2>/dev/null | head -1 | grep -qi 'HTTP3'; then
+  if ! grep -qi 'HTTP3' <<<"$(curl --version 2>/dev/null | head -1 || true)"; then
     echo "[INFO] $host QUIC/UDP/443: not tested — this host's curl build has no HTTP/3 support, so there is no standards-compliant QUIC client available here. This is a tooling gap, not a network result."
     return
   fi

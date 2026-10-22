@@ -78,12 +78,12 @@ echo "--- functional: attestation is required for every release, with no version
 updater_verify_fn="$(sed -n '/^verify_release_attestation() {/,/^}/p' "$UPDATE_SH")"
 installer_verify_fn="$(sed -n '/^verify_release_attestation() {/,/^}/p' "$REPO_ROOT/deploy/almalinux/install.sh")"
 if [ -n "$updater_verify_fn" ] && [ -n "$installer_verify_fn" ]; then
-  if printf '%s' "$updater_verify_fn" | grep -qE 'return 0|HISTORICAL RELEASE|release_version_at_least'; then
+  if grep -qE 'return 0|HISTORICAL RELEASE|release_version_at_least' <<<"$updater_verify_fn"; then
     fail "update.sh's verify_release_attestation still contains a version-gated fallback"
   else
     ok "update.sh's verify_release_attestation has no version-gated fallback"
   fi
-  if printf '%s' "$installer_verify_fn" | grep -qE 'return 0|HISTORICAL RELEASE|release_version_at_least'; then
+  if grep -qE 'return 0|HISTORICAL RELEASE|release_version_at_least' <<<"$installer_verify_fn"; then
     fail "install.sh's verify_release_attestation still contains a version-gated fallback"
   else
     ok "install.sh's verify_release_attestation has no version-gated fallback"
@@ -146,8 +146,8 @@ echo "--- static: target release material is verified (checksum) before ANY live
 # Every STAGE-phase die() must say so, so an operator reading the error
 # knows nothing was touched yet.
 stage_body="$(awk '/^STAGING_ROOT=/{flag=1} /^STAGE_OK=1/{print; flag=0} flag{print}' "$UPDATE_SH")"
-stage_die_count="$(echo "$stage_body" | grep -c 'die ')"
-stage_unchanged_count="$(echo "$stage_body" | grep -c 'Nothing live has been changed')"
+stage_die_count="$(grep -c 'die ' <<<"$stage_body")"
+stage_unchanged_count="$(grep -c 'Nothing live has been changed' <<<"$stage_body")"
 if [ "$stage_die_count" -gt 0 ] && [ "$stage_unchanged_count" -ge "$((stage_die_count - 2))" ]; then
   ok "STAGE-phase failures consistently state that nothing live has been changed yet ($stage_unchanged_count of $stage_die_count die() calls)"
 else
@@ -187,24 +187,27 @@ fi
 
 echo
 echo "--- static: rollback restores the previous /opt/singbox-vpn source tree, not only binaries ---"
-rollback_body="$(sed -n '/^rollback_update() {/,/^}/p' "$UPDATE_SH")"
-if echo "$rollback_body" | grep -q 'PREV_OPT_DIR' && echo "$rollback_body" | grep -q 'mv -f "\$PREV_OPT_DIR" /opt/singbox-vpn'; then
+# The restoration steps live in perform_rollback_from_backup (shared with --recover); the in-process
+# rollback is rollback_update (which delegates to it). Assert over both, so a step moved out of one
+# cannot silently disappear from the rollback.
+rollback_body="$(sed -n '/^rollback_update() {/,/^}/p;/^perform_rollback_from_backup() {/,/^}/p' "$UPDATE_SH")"
+if grep -q 'PREV_OPT_DIR' <<<"$rollback_body" && grep -q 'mv -f "\$PREV_OPT_DIR" /opt/singbox-vpn' <<<"$rollback_body"; then
   ok "rollback_update() restores the previous /opt/singbox-vpn source tree from PREV_OPT_DIR"
 else
   fail "rollback_update() does not restore the previous /opt/singbox-vpn source tree"
 fi
-if echo "$rollback_body" | grep -q 'BACKUP_DIR/sing-box'; then
+if grep -q 'BACKUP_DIR/sing-box' <<<"$rollback_body"; then
   ok "rollback_update() restores the previous sing-box binary if it was changed"
 else
   fail "rollback_update() does not restore a changed sing-box binary"
 fi
-if echo "$rollback_body" | grep -q 'render-config' && echo "$rollback_body" | grep -qv 'rm -rf.*users.json'; then
+if grep -q 'render-config' <<<"$rollback_body" && grep -qv 'rm -rf.*users.json' <<<"$rollback_body"; then
   ok "rollback_update() re-renders (never rewinds) users.json/REALITY material with the restored tooling"
 else
   fail "rollback_update() does not clearly avoid rewinding authoritative user/REALITY state"
 fi
-if echo "$rollback_body" | grep -q 'UPDATE FAILED — PREVIOUS RELEASE RESTORED AND VERIFIED' \
-    && echo "$rollback_body" | grep -q 'UPDATE FAILED — ROLLBACK ALSO FAILED'; then
+if grep -q 'UPDATE FAILED — PREVIOUS RELEASE RESTORED AND VERIFIED' <<<"$rollback_body" \
+    && grep -q 'UPDATE FAILED — ROLLBACK ALSO FAILED' <<<"$rollback_body"; then
   ok "rollback_update() reports exactly the two required distinct outcomes"
 else
   fail "rollback_update() does not report both required distinct outcomes"
@@ -217,7 +220,7 @@ if grep -q 'TRANSACTION_MARKER' "$UPDATE_SH" && grep -q 'did not finish cleanly'
 else
   fail "update.sh does not detect an interrupted prior transaction"
 fi
-marker_check_line="$(grep -n 'if \[ -e "\$TRANSACTION_MARKER" \]; then' "$UPDATE_SH" | head -1 | cut -d: -f1)"
+marker_check_line="$(grep -n 'if \[ -e "\$TRANSACTION_MARKER" \]; then' "$UPDATE_SH" | head -1 | cut -d: -f1 || true)"
 flock_line="$(grep -n '^flock -x 200$' "$UPDATE_SH" | head -1 | cut -d: -f1)"
 if [ -n "$marker_check_line" ] && [ -n "$flock_line" ] && [ "$marker_check_line" -lt "$flock_line" ]; then
   ok "the stale-transaction check runs before the installer lock is even acquired"

@@ -19,9 +19,9 @@ else
   fail "--dry-run flag parsing not found in install.sh"
 fi
 main_body="$(sed -n '/^main() {/,/^}/p' "$INSTALL_SH")"
-if echo "$main_body" | grep -q 'if \[ "\$DRY_RUN" -eq 1 \]; then'; then
-  dry_run_line="$(echo "$main_body" | grep -n 'DRY_RUN.*-eq 1' | head -n1 | cut -d: -f1)"
-  preflight_line="$(echo "$main_body" | grep -n '^\s*preflight_stage$' | head -n1 | cut -d: -f1)"
+if grep -q 'if \[ "\$DRY_RUN" -eq 1 \]; then' <<<"$main_body"; then
+  dry_run_line="$(grep -n 'DRY_RUN.*-eq 1' <<<"$main_body" | head -n1 | cut -d: -f1)"
+  preflight_line="$(grep -n '^\s*preflight_stage$' <<<"$main_body" | head -n1 | cut -d: -f1)"
   if [ -n "$dry_run_line" ] && [ -n "$preflight_line" ] && [ "$dry_run_line" -lt "$preflight_line" ]; then
     ok "main() checks DRY_RUN before calling preflight_stage (the first mutating stage)"
   else
@@ -36,7 +36,7 @@ echo "--- static: dry_run_report() never calls preflight_stage() (which mutates:
 dry_run_body="$(sed -n '/^dry_run_report() {/,/^}/p' "$INSTALL_SH")"
 if [ -z "$dry_run_body" ]; then
   fail "dry_run_report() function not found"
-elif echo "$dry_run_body" | grep -qE 'preflight_stage|packages_stage|persist_source_tree|install_idn_support|write_install_state_manifest'; then
+elif grep -qE 'preflight_stage|packages_stage|persist_source_tree|install_idn_support|write_install_state_manifest' <<<"$dry_run_body"; then
   fail "dry_run_report() calls a mutating stage/helper — this would make --dry-run not a dry run"
 else
   ok "dry_run_report() only calls read-only detection/validation helpers"

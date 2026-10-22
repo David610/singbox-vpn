@@ -186,7 +186,7 @@ main() {
   # printing it — if RELEASE_BUILD_IMAGE ever drifts to a newer AlmaLinux
   # digest with a newer glibc, this must fail immediately, not silently
   # ship a binary with a higher ABI requirement than declared.
-  container_glibc="$(printf '%s\n' "$check_out" | grep -m1 -oE '[0-9]+\.[0-9]+$' || true)"
+  container_glibc="$(grep -m1 -oE '[0-9]+\.[0-9]+$' <<<"$check_out" || true)"
   if [ -z "$container_glibc" ]; then
     echo "::error::could not determine build container glibc version from ldd --version output" >&2
     exit 1

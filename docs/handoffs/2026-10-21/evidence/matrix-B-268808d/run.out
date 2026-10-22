@@ -1,0 +1,33 @@
+revision=268808d51493321c86dea16328ba72a39a2b9120 harness=d57dcd618f3e600e updater_sha=4795a61ea5f45114 tree=/root/run-matrix.RODrAv
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1673481 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 1 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1676272 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 2 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 204: 1679215 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 3 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1682215 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 4 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1685493 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 5 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1688917 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 6 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1692435 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 7 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1696051 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 8 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1699670 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 9 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1703371 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 10 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1707222 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 11 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1711809 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 12 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1714694 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 13 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1718531 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 14 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 206: 1726294 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 15 branch tree PASS []
+/root/run-matrix.RODrAv/deploy/lib/interrupt_matrix.sh: line 204: 1729207 Killed                     SINGBOX_VPN_TEST_CHECKPOINT="$M" SINGBOX_VPN_TEST_CHECKPOINT_DIR="$CPD" setsid bash "$SCRIPT" --version "$TARGET" > "$LOG" 2>&1
+stage 16 branch tree PASS []

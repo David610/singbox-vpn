@@ -258,11 +258,14 @@ device (`docs/DEVICE_ACCEPTANCE_TESTS.md`).
 
 ### Hiddify on iOS: "open .../Working/configs/<id>.json: no such file or directory"
 
-This error is raised by the app, not by the server. Hiddify keeps each profile's
-JSON in the app group's `Library/Caches/Working/configs/` directory (a cache
-iOS may purge) while the profile list itself is stored elsewhere, and it does
-not re-create a missing file before connecting. No server change can cause or
-cure it. Delete the profile in Hiddify and add the subscription again.
+The message comes from the app's own file access, and an upstream report (hiddify-app#2372) describes
+the same dialog with servers that logged no connection attempt at all. Its hypothesis: Hiddify keeps each
+profile's JSON in the app group's `Library/Caches/Working/configs/` directory (a cache iOS may purge) while
+the profile list is stored elsewhere, and it does not re-create a missing file before connecting. This is the
+best explanation so far, **not yet confirmed on the owner's iPhone** (`docs/clients/HIDDIFY_IOS.md`, I-08);
+nothing in the subscription is known to cause it. Step 7b of `docs/operations/IPHONE_ACCEPTANCE_PROCEDURE.md`
+is the control experiment that tells an app-wide fault from a profile-specific one. Until that is recorded,
+delete the profile in Hiddify and add the subscription again; if that does not help, delete and reinstall the app.
 
 ### User changes restart the data plane
 

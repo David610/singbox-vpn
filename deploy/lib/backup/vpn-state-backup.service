@@ -1,0 +1,15 @@
+[Unit]
+Description=singbox-vpn encrypted off-host deployment-state backup
+Documentation=file:///opt/singbox-vpn/docs/handoffs/2026-10-22/BACKUP.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/singbox-vpn/deploy/lib/backup/state-backup.sh run
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+PrivateTmp=true
+ProtectHome=read-only
+NoNewPrivileges=true

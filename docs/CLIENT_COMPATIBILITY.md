@@ -156,3 +156,23 @@ Notes (any MagicOS-specific settings changed to make this work):
 
 No entries exist yet for either template — this section documents the
 *procedure*, not a result.
+
+## 2026-10-20 update (staging remediation) — what was and was not exercised
+
+Machine-readable: `docs/handoffs/2026-10-20/client-matrix.json`.
+
+- **Verified (server verified, not a native app):** the pinned real sing-box 1.14.1
+  core, run as a client from the *served* subscription (`format=singbox`, the
+  default, and `compat=hiddify-pinned`), carries traffic over VLESS+REALITY and
+  over Hysteria2 (the pinned format is REALITY-only by design), with certificate
+  verification on and SNI equal to the public host; it also works against the
+  server's IPv6 literal (local, not external reachability). Tool:
+  `deploy/lib/subscription_acceptance.py`.
+- **Every native client row stays UNVERIFIED:** Hiddify (all platforms),
+  Shadowrocket, INCY, v2rayNG, NekoBox, Streisand. No parser-level or server-side
+  result promotes them. Each needs the nine-item device test list recorded in the
+  JSON before any cell is marked PASS.
+- **Known client-side defect:** Hiddify iOS "no such file" (hiddify-app#2372) —
+  see `docs/clients/HIDDIFY_IOS.md`; not fixable from the server.
+- **Shorts through any client** cannot pass on the staging IP (source-IP refusal,
+  I-38) regardless of client; it needs the hairpin decision first.

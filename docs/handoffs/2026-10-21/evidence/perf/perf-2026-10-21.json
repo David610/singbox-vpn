@@ -1,0 +1,204 @@
+{
+ "schema": 1,
+ "utc": "2026-10-21T08:13:32+00:00",
+ "evidence_class": "server-verified, loopback client (shares host CPU); NOT a real client network path",
+ "download": "http://192.88.99.5:8099/payload.bin",
+ "download_range_bytes": 25000000,
+ "runs": 5,
+ "thresholds": {
+  "min_ratio_gate": 0.0,
+  "min_mbps_reality": 200.0,
+  "min_mbps_hy2": 100.0,
+  "max_added_ms": 40.0,
+  "min_soak_success": 0.99
+ },
+ "direct": {
+  "mbps_runs": [
+   6532.1,
+   15484.7,
+   13897.6,
+   11958.1,
+   11913.3
+  ],
+  "mbps_median": 11958.1,
+  "connect_ms_median": 3.6,
+  "connect_ms_p95": 4.5
+ },
+ "tunnels": {
+  "Reality": {
+   "transfer_failures": 0,
+   "source_limited": 0,
+   "mbps_runs": [
+    1085.6,
+    1468.9,
+    1162.5,
+    1281.0,
+    1168.3
+   ],
+   "mbps_median": 1168.3,
+   "ratio_vs_direct": 0.1,
+   "connect_ms_median": 65.5,
+   "connect_ms_p95": 68.1,
+   "connect_failures": 0,
+   "added_ms_median": 61.9,
+   "concurrency": {
+    "1": {
+     "failed": 0,
+     "source_limited": 0,
+     "aggregate_mbps": 1066.2
+    },
+    "4": {
+     "failed": 0,
+     "source_limited": 0,
+     "aggregate_mbps": 1879.1
+    },
+    "8": {
+     "failed": 0,
+     "source_limited": 0,
+     "aggregate_mbps": 1685.6
+    }
+   },
+   "soak": {
+    "seconds": 300,
+    "ok": 58,
+    "failed": 0,
+    "success_rate": 1.0,
+    "max_gap_s": 5.3
+   },
+   "restart_recovery_s": {
+    "samples": [
+     0.7,
+     0.7
+    ],
+    "never_recovered": 0,
+    "max": 0.7,
+    "median": 0.7
+   }
+  },
+  "Hysteria2": {
+   "transfer_failures": 0,
+   "source_limited": 0,
+   "mbps_runs": [
+    159.7,
+    232.8,
+    192.5,
+    146.1,
+    149.5
+   ],
+   "mbps_median": 159.7,
+   "ratio_vs_direct": 0.01,
+   "connect_ms_median": 6.2,
+   "connect_ms_p95": 7.4,
+   "connect_failures": 0,
+   "added_ms_median": 2.6,
+   "concurrency": {
+    "1": {
+     "failed": 0,
+     "source_limited": 0,
+     "aggregate_mbps": 139.4
+    },
+    "4": {
+     "failed": 0,
+     "source_limited": 0,
+     "aggregate_mbps": 189.4
+    },
+    "8": {
+     "failed": 0,
+     "source_limited": 0,
+     "aggregate_mbps": 213.9
+    }
+   },
+   "soak": {
+    "seconds": 300,
+    "ok": 48,
+    "failed": 0,
+    "success_rate": 1.0,
+    "max_gap_s": 6.7
+   },
+   "restart_recovery_s": {
+    "samples": [
+     1.7,
+     2.0
+    ],
+    "never_recovered": 0,
+    "max": 2.0,
+    "median": 1.9
+   }
+  }
+ },
+ "verdicts": [
+  {
+   "check": "Reality: no failed transfers and the source did not rate-limit",
+   "pass": true,
+   "detail": "failed 0, source_limited 0, connects 0"
+  },
+  {
+   "check": "Reality: capacity floor: median >= 200.0 Mbps",
+   "pass": true,
+   "detail": "1168.3 Mbps (direct 11958.1; ratio 0.1 is informational)"
+  },
+  {
+   "check": "Reality: added connect latency <= 40.0 ms",
+   "pass": false,
+   "detail": "61.9 ms (median)"
+  },
+  {
+   "check": "Reality: concurrency: 0 failed and 0 source-limited transfers",
+   "pass": true,
+   "detail": "{\"1\": {\"failed\": 0, \"source_limited\": 0, \"aggregate_mbps\": 1066.2}, \"4\": {\"failed\": 0, \"source_limited\": 0, \"aggregate_mbps\": 1879.1}, \"8\": {\"failed\": 0, \"source_limited\": 0, \"aggregate_mbps\": 1685.6}}"
+  },
+  {
+   "check": "Reality: recovers after a server restart within 10.0 s (2/2)",
+   "pass": true,
+   "detail": "{\"samples\": [0.7, 0.7], \"never_recovered\": 0, \"max\": 0.7, \"median\": 0.7}"
+  },
+  {
+   "check": "Reality: soak success >= 0.99",
+   "pass": true,
+   "detail": "{\"seconds\": 300, \"ok\": 58, \"failed\": 0, \"success_rate\": 1.0, \"max_gap_s\": 5.3}"
+  },
+  {
+   "check": "Hysteria2: no failed transfers and the source did not rate-limit",
+   "pass": true,
+   "detail": "failed 0, source_limited 0, connects 0"
+  },
+  {
+   "check": "Hysteria2: capacity floor: median >= 100.0 Mbps",
+   "pass": true,
+   "detail": "159.7 Mbps (direct 11958.1; ratio 0.01 is informational)"
+  },
+  {
+   "check": "Hysteria2: added connect latency <= 40.0 ms",
+   "pass": true,
+   "detail": "2.6 ms (median)"
+  },
+  {
+   "check": "Hysteria2: concurrency: 0 failed and 0 source-limited transfers",
+   "pass": true,
+   "detail": "{\"1\": {\"failed\": 0, \"source_limited\": 0, \"aggregate_mbps\": 139.4}, \"4\": {\"failed\": 0, \"source_limited\": 0, \"aggregate_mbps\": 189.4}, \"8\": {\"failed\": 0, \"source_limited\": 0, \"aggregate_mbps\": 213.9}}"
+  },
+  {
+   "check": "Hysteria2: recovers after a server restart within 35.0 s (2/2)",
+   "pass": true,
+   "detail": "{\"samples\": [1.7, 2.0], \"never_recovered\": 0, \"max\": 2.0, \"median\": 1.9}"
+  },
+  {
+   "check": "Hysteria2: soak success >= 0.99",
+   "pass": true,
+   "detail": "{\"seconds\": 300, \"ok\": 48, \"failed\": 0, \"success_rate\": 1.0, \"max_gap_s\": 6.7}"
+  }
+ ],
+ "direct_source_limited": 0,
+ "source": "local temporary destination 192.88.99.5 (dummy interface, removed after the run)",
+ "method_notes": [
+  "latency = median end-to-end time_total of http://1.1.1.1/ via tunnel minus direct (first versions of this tool timed the local SOCKS connect and under-reported it)",
+  "restart recovery on LOOPBACK understates Hysteria2: a closed local UDP socket returns ICMP port-unreachable at once; a real network does not (I-22: ~30 s stalls). Real-network recovery is UNVERIFIED",
+  "the throughput gate was changed from a tunnel/direct ratio (>= 0.70) to capacity floors AFTER the first run, because client and server share two vCPUs; the first run's ratios were 0.66 (REALITY) and 0.10 (Hysteria2) and are kept in the evidence"
+ ],
+ "not_measured": [
+  "real client access network",
+  "carrier NAT / UDP filtering",
+  "phone CPU/battery",
+  "24 h soak (unless --soak-seconds >= 86400)"
+ ]
+}

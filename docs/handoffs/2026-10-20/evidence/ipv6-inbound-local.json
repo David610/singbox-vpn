@@ -1,0 +1,13 @@
+{
+ "check": "client_to_vpn_ipv6_inbound_loopback",
+ "server": "[ipv6 of node]",
+ "results": {
+  "Reality": true,
+  "Hysteria2": true
+ },
+ "egress_ipv4_seen": {
+  "Reality": "62.238.46.190",
+  "Hysteria2": "62.238.46.190"
+ },
+ "evidence_class": "server-verified (local; NOT external reachability)"
+}

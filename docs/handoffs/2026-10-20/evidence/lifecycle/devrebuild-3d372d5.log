@@ -1,0 +1,1581 @@
+[update] DEV-REBUILD mode (SINGBOX_VPN_CHANNEL=dev / --dev-rebuild): rebuilding from the source currently at /opt/singbox-vpn via Cargo. This is NOT the production update path — see --help.
+[update] running tests before touching installed state (isolated: no systemd/D-Bus access, host-control tools guarded)...
+warning: /opt/singbox-vpn/apps/admin/Cargo.toml: file `/opt/singbox-vpn/apps/admin/src/main.rs` found to be present in multiple build targets:
+  * `bin` target `vpn`
+  * `bin` target `vpn-admin`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+     Running unittests src/main.rs (target/debug/deps/vpn-d743bad45853718e)
+
+running 159 tests
+test doctor_coverage_tests::a_partial_result_is_never_described_as_a_full_pass ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_failed_both_shown ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_inconclusive_still_reports_both_independently ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_not_run ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_passed_does_not_imply_l1_l4_ok ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_failed ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_inconclusive_is_never_reported_as_passed_or_not_run ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_not_run ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_passed_is_the_only_full_health_claim ... ok
+test doctor_coverage_tests::protocol_check_result_label_is_exhaustively_defined ... ok
+test egress_probe_selection_tests::mutations_prefer_the_confined_protocol_probe ... ok
+test external_authorization::tests::omission_and_revocation_fail_closed_without_touching_native ... ok
+test external_authorization::tests::rejects_credential_id_and_uuid_collisions_across_owners ... ok
+test external_authorization::tests::ab_removal_restart_and_revocation_cannot_resurrect_a ... ok
+test hostname_resolution_tests::all_attempts_fail_is_unresolved_with_bounded_attempt_count ... ok
+test hostname_resolution_tests::first_attempt_fails_second_succeeds_reports_transient_recovery ... ok
+test hostname_resolution_tests::persistent_failure_increments_failures_exactly_once ... ok
+test external_authorization::tests::replaces_only_external_ownership_and_supports_ab_rotation ... ok
+test hostname_resolution_tests::resolved_addresses_still_classify_v4_and_v6_families_correctly ... ok
+test hostname_resolution_tests::retry_attempts_are_bounded_never_unbounded ... ok
+test hostname_resolution_tests::succeeds_on_first_attempt ... ok
+test hostname_resolution_tests::zero_addresses_after_retry_is_unresolved ... ok
+test hysteria2_selftest_tests::a_definitive_failure_of_either_transport_wins ... ok
+test hysteria2_selftest_tests::a_reality_pass_alone_is_never_a_full_pass ... ok
+test hysteria2_selftest_tests::classifier_separates_pass_rejection_unreachable_and_inconclusive ... ok
+test hysteria2_selftest_tests::client_config_matches_what_a_subscription_hands_a_real_client ... ok
+test hysteria2_selftest_tests::untested_transports_stay_below_passed ... ok
+test ipv6_posture_tests::aaaa_present_and_egress_confirmed_broken_is_fatal ... ok
+test ipv6_posture_tests::aaaa_present_and_egress_confirmed_working_is_ok_and_non_fatal ... ok
+test ipv6_posture_tests::aaaa_present_but_probe_unavailable_is_inconclusive_not_fatal ... ok
+test ipv6_posture_tests::ipv4_only_host_no_aaaa_is_never_fatal_regardless_of_probe_outcome ... ok
+test ipv6_posture_tests::reality_pass_is_not_undermined_by_ipv4_only_ipv6_diagnostic ... ok
+test lease_pool::tests::authorization_metadata_projects_into_the_authoritative_user_store ... ok
+test lease_pool::tests::compatibility_overlap_and_revocation_project_fail_closed ... ok
+test lease_pool::tests::creates_pseudonymous_expiring_slot_users_and_keeps_others ... ok
+test lease_pool::tests::rotation_replaces_secret_and_is_idempotent ... ok
+test lease_pool::tests::rejects_malformed_duplicate_or_colliding_input ... ok
+test lock::tests::second_acquire_blocks_until_first_is_dropped ... ok
+test lease_pool::tests::shrinking_the_pool_removes_slot_users_only ... ok
+test own_address_egress_rule_tests::domain_only_exit_warns_without_printing_an_address ... ok
+test own_address_egress_rule_tests::recorded_addresses_are_reported_by_field_name_only ... ok
+test own_address_egress_rule_tests::relays_are_not_checked ... ok
+test peer_credential_cli_tests::a_malformed_uuid_is_refused_with_an_actionable_message ... ok
+test peer_credential_cli_tests::a_new_operator_user_is_not_locked_out_after_the_native_lease ... ok
+test peer_credential_cli_tests::a_new_operator_user_is_served_the_credentials_it_is_given ... ok
+test peer_credential_cli_tests::a_password_for_a_vless_reality_peer_is_refused_not_coerced ... ok
+test peer_credential_cli_tests::a_uuid_for_a_hysteria2_peer_is_refused ... ok
+test peer_credential_cli_tests::a_uuid_is_accepted_for_a_vless_reality_peer ... ok
+test peer_credential_cli_tests::an_empty_hysteria2_password_is_refused ... ok
+test peer_credential_cli_tests::supplying_no_credential_names_the_flag_the_operator_needs ... ok
+test peer_credential_cli_tests::rotating_a_new_operator_users_credentials_changes_what_the_server_renders ... ok
+test peer_credential_cli_tests::uuid_shape_check_accepts_a_real_uuid_and_rejects_pasted_junk ... ok
+test pressure_diagnostics_tests::conntrack_at_threshold_warns ... ok
+test pressure_diagnostics_tests::conntrack_high_utilization_warns_never_fails ... ok
+test pressure_diagnostics_tests::conntrack_just_below_threshold_is_still_ok ... ok
+test pressure_diagnostics_tests::conntrack_low_utilization_is_ok ... ok
+test pressure_diagnostics_tests::conntrack_pct_handles_zero_max_without_dividing_by_zero ... ok
+test pressure_diagnostics_tests::format_thousands_groups_correctly ... ok
+test pressure_diagnostics_tests::udp_memory_low_pressure_is_ok ... ok
+test pressure_diagnostics_tests::udp_memory_high_pressure_warns_never_fails ... ok
+test pressure_diagnostics_tests::udp_memory_pct_handles_zero_pressure_threshold_without_dividing_by_zero ... ok
+test public_surface_tests::a_configured_inbound_on_an_ephemeral_port_is_still_fail ... ok
+test public_surface_tests::declared_inbounds_reads_transport_per_inbound_type ... ok
+test public_surface_tests::a_wildcard_listener_is_flagged_without_claiming_internet_reachability ... ok
+test public_surface_tests::egress_isolation_table_with_a_negated_uid_match_is_a_failure ... ok
+test public_surface_tests::egress_isolation_table_with_positive_uid_scoping_is_ok ... ok
+test public_surface_tests::empty_and_malformed_lines_are_skipped_without_panicking ... ok
+test public_surface_tests::ephemeral_own_process_udp_is_never_info_without_a_readable_config ... ok
+test public_surface_tests::ephemeral_range_parser_reads_proc_format_and_rejects_garbage ... ok
+test public_surface_tests::expected_listener_with_unknown_process_is_still_ok ... ok
+test public_surface_tests::expected_singbox_vpn_listener_is_ok ... ok
+test public_surface_tests::expected_ssh_listener_is_ok ... ok
+test public_surface_tests::firewall_ownership_none_when_file_missing ... ok
+test public_surface_tests::firewall_ownership_parses_key_value_env_file ... ok
+test public_surface_tests::firewall_report_follows_the_recorded_backend ... ok
+test public_surface_tests::host_ipv6_failed_gateway_neighbour_is_a_warning_not_ok ... ok
+test public_surface_tests::host_ipv6_healthy_missing_or_not_applicable_states ... ok
+test public_surface_tests::internal_singbox_vpn_process_on_an_unexpected_public_port_is_fail ... ok
+test public_surface_tests::is_singbox_vpn_process_matches_truncated_comm_names ... ok
+test public_surface_tests::loopback_only_unrelated_listener_is_not_reported_at_all ... ok
+test public_surface_tests::missing_firewall_cmd_on_a_ufw_host_is_not_a_warning ... ok
+test public_surface_tests::missing_or_unrecognised_egress_isolation_table_is_not_ok ... ok
+test public_surface_tests::never_closes_or_mutates_anything_by_construction ... ok
+test public_surface_tests::own_process_outbound_udp_flow_sockets_are_info_when_no_inbound_declares_them ... ok
+test public_surface_tests::hairpin_set_accepts_a_reality_public_key_that_starts_with_a_hyphen ... ok
+test public_surface_tests::own_process_tcp_listener_on_an_ephemeral_port_is_still_fail ... ok
+test public_surface_tests::own_process_udp_on_a_non_ephemeral_unexpected_port_is_fail_declared_or_not ... ok
+test public_surface_tests::parses_bracketed_ipv6_addresses_and_strips_brackets ... ok
+test public_surface_tests::parses_real_shaped_tcp_ss_output_including_process_name ... ok
+test public_surface_tests::parses_udp_output_without_a_users_field_when_not_root ... ok
+test public_surface_tests::port_conflict_expected_port_served_by_wrong_process_is_fail ... ok
+test public_surface_tests::sshd_port_directive_none_when_absent ... ok
+test public_surface_tests::sshd_port_directive_parses_first_match_case_insensitively ... ok
+test public_surface_tests::subscription_backend_exposed_publicly_is_fail ... ok
+test public_surface_tests::subscription_backend_on_loopback_is_ok ... ok
+test public_surface_tests::unidentified_process_on_a_non_loopback_port_is_warn_never_fail ... ok
+test public_surface_tests::unrelated_process_on_a_non_loopback_port_is_warn_not_fail ... ok
+test public_surface_tests::zone_suffixed_loopback_stub_resolver_is_not_a_public_listener ... ok
+test reality_selftest_classification_tests::a_real_key_mismatch_does_not_reliably_produce_either_client_side_string ... ok
+test reality_selftest_classification_tests::client_side_rejection_strings_are_still_detected ... ok
+test reality_selftest_classification_tests::empty_client_stderr_and_no_journal_hit_stays_inconclusive ... ok
+test reality_selftest_classification_tests::fenced_loopback_rejection_is_still_detected ... ok
+test reality_selftest_classification_tests::unrelated_public_scanner_rejection_is_not_attributed_to_selftest ... ok
+test release_identity::tests::a_development_binary_run_by_path_is_not_reported_as_the_installed_release ... ok
+test release_identity::tests::a_hand_replaced_vpn_is_still_detected_when_it_has_its_own_hash ... ok
+test release_identity::tests::a_development_install_reports_the_exact_source_it_was_built_from ... ok
+test release_identity::tests::a_source_build_with_separately_linked_vpn_and_vpn_admin_is_consistent ... ok
+test release_identity::tests::a_running_binary_matching_neither_recorded_hash_is_reported ... ok
+test release_identity::tests::an_install_without_recorded_source_keeps_the_plain_label ... ok
+test release_identity::tests::classifies_release_tags ... ok
+test release_identity::tests::an_unreadable_running_executable_does_not_invent_a_mismatch ... ok
+test release_identity::tests::development_channel_checks_hashes_but_not_the_version_core ... ok
+test release_identity::tests::hashing_matches_known_vector ... ok
+test release_identity::tests::manual_binary_swap_on_the_same_version_is_detected ... ok
+test release_identity::tests::matching_stable_install_is_ok_without_claiming_provenance ... ok
+test release_identity::tests::missing_executable_is_a_problem ... ok
+test release_identity::tests::missing_or_corrupt_manifest_is_unknown ... ok
+test release_identity::tests::release_candidate_is_labelled_as_such ... ok
+test release_identity::tests::repair_advice_never_recommends_repair_toward_an_older_release ... ok
+test release_identity::tests::unrecorded_hashes_are_unknown_not_a_match ... ok
+test release_identity::tests::update_in_progress_is_informational_only ... ok
+test release_identity::tests::version_core_mismatch_is_detected_even_when_hashes_agree ... ok
+test service::tests::is_available_is_false_for_nonexistent_binary ... ok
+test service::tests::is_failed_false_when_systemctl_reports_not_failed ... ok
+test service::tests::is_failed_true_when_systemctl_reports_failed ... ok
+test service::tests::is_unit_installed_false_when_systemctl_binary_missing ... ok
+test service::tests::is_unit_installed_still_appends_service_for_a_bare_name ... ok
+test service::tests::is_unit_installed_true_when_systemctl_reports_loaded ... ok
+test service::tests::is_unit_installed_uses_a_dotted_unit_name_verbatim_for_a_timer ... ok
+test service::tests::last_result_is_none_when_the_value_is_empty ... ok
+test service::tests::last_result_returns_the_raw_systemd_result_keyword ... ok
+test service::tests::override_names_the_exact_service_manager_and_never_falls_back_to_path ... ok
+test service::tests::reload_and_verify_fails_when_reload_command_fails ... ok
+test service::tests::reload_and_verify_fails_when_service_not_active_after_reload ... ok
+test service::tests::reload_and_verify_succeeds_when_service_comes_up_healthy ... ok
+test service::tests::restart_count_is_none_when_systemctl_is_unavailable ... ok
+test service::tests::restart_count_parses_nrestarts ... ok
+test service::tests::timer_next_elapse_returns_systemds_own_formatted_timestamp ... ok
+test service::tests::unit_tests_never_default_to_the_host_systemctl ... ok
+test udp_probe_tests::build_dns_query_contains_labels ... ok
+test udp_probe_tests::cert_expiry_days_reports_negative_days_for_an_already_expired_cert ... ok
+..+.+.....+...+......+.+......+.....+............+.......+........+..........+++++++++++++++++++++++++++++++++++++++*.....+...+....+...+..+...+......+....+.....+......+..........+++++++++++++++++++++++++++++++++++++++*.+..........+.....+.+....................+......+.........+....+...............+.....+.........+.++++++
+......+....+...........+.......+++++++++++++++++++++++++++++++++++++++*..+..+....+..............+.+...........+.......+..+.+..+.+......+...+........+...+++++++++++++++++++++++++++++++++++++++*..........+.....+.+..+.......++++++
+-----
+test udp_probe_tests::cert_expiry_days_reports_positive_days_for_a_freshly_issued_cert ... ok
+test udp_probe_tests::cert_expiry_days_returns_none_for_missing_file ... ok
+test udp_probe_tests::probe_singbox_binary_versions_skips_nonexistent_paths_and_dedupes ... ok
+test udp_probe_tests::redact_secrets_hides_a_base64url_style_token ... ok
+test udp_probe_tests::redact_secrets_hides_a_long_hex_key_or_hash ... ok
+test udp_probe_tests::redact_secrets_hides_a_vless_uuid ... ok
+test udp_probe_tests::redact_secrets_leaves_ordinary_log_text_and_short_words_untouched ... ok
+test udp_probe_tests::redact_secrets_preserves_non_ascii_text_around_a_redacted_token ... ok
+test udp_probe_tests::run_udp_probe_candidates_with_probe_logic ... ok
+test udp_probe_tests::singbox_version_consistency_ok_when_versions_match ... ok
+test udp_probe_tests::singbox_version_consistency_silent_on_single_binary ... ok
+test udp_probe_tests::singbox_version_consistency_warns_and_names_configured_binary_when_versions_differ ... ok
+test user_selector_tests::a_unique_name_resolves_to_that_account ... ok
+test user_selector_tests::an_ambiguous_name_is_rejected_and_lists_the_ids ... ok
+test user_selector_tests::an_unknown_selector_is_an_error ... ok
+test user_selector_tests::reserved_probe_principals_are_reachable_by_id_only ... ok
+test user_selector_tests::the_stable_id_always_wins_over_a_name ... ok
+test service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit ... ok
+
+test result: ok. 159 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.28s
+
+     Running unittests src/main.rs (target/debug/deps/vpn_admin-bda8dc71d78f95d3)
+
+running 159 tests
+test doctor_coverage_tests::a_partial_result_is_never_described_as_a_full_pass ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_failed_both_shown ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_inconclusive_still_reports_both_independently ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_not_run ... ok
+test doctor_coverage_tests::l1_l4_failed_l5_l6_passed_does_not_imply_l1_l4_ok ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_failed ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_not_run ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_passed_is_the_only_full_health_claim ... ok
+test doctor_coverage_tests::protocol_check_result_label_is_exhaustively_defined ... ok
+test egress_probe_selection_tests::mutations_prefer_the_confined_protocol_probe ... ok
+test doctor_coverage_tests::l1_l4_passed_l5_l6_inconclusive_is_never_reported_as_passed_or_not_run ... ok
+test external_authorization::tests::omission_and_revocation_fail_closed_without_touching_native ... ok
+test external_authorization::tests::ab_removal_restart_and_revocation_cannot_resurrect_a ... ok
+test external_authorization::tests::rejects_credential_id_and_uuid_collisions_across_owners ... ok
+test external_authorization::tests::replaces_only_external_ownership_and_supports_ab_rotation ... ok
+test hostname_resolution_tests::all_attempts_fail_is_unresolved_with_bounded_attempt_count ... ok
+test hostname_resolution_tests::first_attempt_fails_second_succeeds_reports_transient_recovery ... ok
+test hostname_resolution_tests::persistent_failure_increments_failures_exactly_once ... ok
+test hostname_resolution_tests::resolved_addresses_still_classify_v4_and_v6_families_correctly ... ok
+test hostname_resolution_tests::retry_attempts_are_bounded_never_unbounded ... ok
+test hostname_resolution_tests::succeeds_on_first_attempt ... ok
+test hostname_resolution_tests::zero_addresses_after_retry_is_unresolved ... ok
+test hysteria2_selftest_tests::a_definitive_failure_of_either_transport_wins ... ok
+test hysteria2_selftest_tests::a_reality_pass_alone_is_never_a_full_pass ... ok
+test hysteria2_selftest_tests::classifier_separates_pass_rejection_unreachable_and_inconclusive ... ok
+test hysteria2_selftest_tests::untested_transports_stay_below_passed ... ok
+test ipv6_posture_tests::aaaa_present_and_egress_confirmed_broken_is_fatal ... ok
+test ipv6_posture_tests::aaaa_present_and_egress_confirmed_working_is_ok_and_non_fatal ... ok
+test ipv6_posture_tests::aaaa_present_but_probe_unavailable_is_inconclusive_not_fatal ... ok
+test ipv6_posture_tests::ipv4_only_host_no_aaaa_is_never_fatal_regardless_of_probe_outcome ... ok
+test ipv6_posture_tests::reality_pass_is_not_undermined_by_ipv4_only_ipv6_diagnostic ... ok
+test hysteria2_selftest_tests::client_config_matches_what_a_subscription_hands_a_real_client ... ok
+test lease_pool::tests::authorization_metadata_projects_into_the_authoritative_user_store ... ok
+test lease_pool::tests::creates_pseudonymous_expiring_slot_users_and_keeps_others ... ok
+test lease_pool::tests::compatibility_overlap_and_revocation_project_fail_closed ... ok
+test lease_pool::tests::rejects_malformed_duplicate_or_colliding_input ... ok
+test lease_pool::tests::rotation_replaces_secret_and_is_idempotent ... ok
+test lease_pool::tests::shrinking_the_pool_removes_slot_users_only ... ok
+test lock::tests::second_acquire_blocks_until_first_is_dropped ... ok
+test own_address_egress_rule_tests::domain_only_exit_warns_without_printing_an_address ... ok
+test own_address_egress_rule_tests::relays_are_not_checked ... ok
+test own_address_egress_rule_tests::recorded_addresses_are_reported_by_field_name_only ... ok
+test peer_credential_cli_tests::a_malformed_uuid_is_refused_with_an_actionable_message ... ok
+test peer_credential_cli_tests::a_new_operator_user_is_not_locked_out_after_the_native_lease ... ok
+test peer_credential_cli_tests::a_new_operator_user_is_served_the_credentials_it_is_given ... ok
+test peer_credential_cli_tests::a_password_for_a_vless_reality_peer_is_refused_not_coerced ... ok
+test peer_credential_cli_tests::a_uuid_for_a_hysteria2_peer_is_refused ... ok
+test peer_credential_cli_tests::a_uuid_is_accepted_for_a_vless_reality_peer ... ok
+test peer_credential_cli_tests::an_empty_hysteria2_password_is_refused ... ok
+test peer_credential_cli_tests::supplying_no_credential_names_the_flag_the_operator_needs ... ok
+test peer_credential_cli_tests::uuid_shape_check_accepts_a_real_uuid_and_rejects_pasted_junk ... ok
+test pressure_diagnostics_tests::conntrack_at_threshold_warns ... ok
+test pressure_diagnostics_tests::conntrack_high_utilization_warns_never_fails ... ok
+test peer_credential_cli_tests::rotating_a_new_operator_users_credentials_changes_what_the_server_renders ... ok
+test pressure_diagnostics_tests::conntrack_just_below_threshold_is_still_ok ... ok
+test pressure_diagnostics_tests::conntrack_low_utilization_is_ok ... ok
+test pressure_diagnostics_tests::conntrack_pct_handles_zero_max_without_dividing_by_zero ... ok
+test pressure_diagnostics_tests::udp_memory_high_pressure_warns_never_fails ... ok
+test pressure_diagnostics_tests::udp_memory_low_pressure_is_ok ... ok
+test pressure_diagnostics_tests::udp_memory_pct_handles_zero_pressure_threshold_without_dividing_by_zero ... ok
+test public_surface_tests::a_configured_inbound_on_an_ephemeral_port_is_still_fail ... ok
+test public_surface_tests::a_wildcard_listener_is_flagged_without_claiming_internet_reachability ... ok
+test public_surface_tests::declared_inbounds_reads_transport_per_inbound_type ... ok
+test public_surface_tests::egress_isolation_table_with_a_negated_uid_match_is_a_failure ... ok
+test public_surface_tests::egress_isolation_table_with_positive_uid_scoping_is_ok ... ok
+test public_surface_tests::empty_and_malformed_lines_are_skipped_without_panicking ... ok
+test public_surface_tests::ephemeral_own_process_udp_is_never_info_without_a_readable_config ... ok
+test pressure_diagnostics_tests::format_thousands_groups_correctly ... ok
+test public_surface_tests::ephemeral_range_parser_reads_proc_format_and_rejects_garbage ... ok
+test public_surface_tests::expected_singbox_vpn_listener_is_ok ... ok
+test public_surface_tests::expected_ssh_listener_is_ok ... ok
+test public_surface_tests::firewall_ownership_none_when_file_missing ... ok
+test public_surface_tests::firewall_ownership_parses_key_value_env_file ... ok
+test public_surface_tests::expected_listener_with_unknown_process_is_still_ok ... ok
+test public_surface_tests::firewall_report_follows_the_recorded_backend ... ok
+test public_surface_tests::host_ipv6_failed_gateway_neighbour_is_a_warning_not_ok ... ok
+test public_surface_tests::host_ipv6_healthy_missing_or_not_applicable_states ... ok
+test public_surface_tests::internal_singbox_vpn_process_on_an_unexpected_public_port_is_fail ... ok
+test public_surface_tests::is_singbox_vpn_process_matches_truncated_comm_names ... ok
+test public_surface_tests::loopback_only_unrelated_listener_is_not_reported_at_all ... ok
+test public_surface_tests::missing_firewall_cmd_on_a_ufw_host_is_not_a_warning ... ok
+test public_surface_tests::missing_or_unrecognised_egress_isolation_table_is_not_ok ... ok
+test public_surface_tests::never_closes_or_mutates_anything_by_construction ... ok
+test public_surface_tests::own_process_outbound_udp_flow_sockets_are_info_when_no_inbound_declares_them ... ok
+test public_surface_tests::own_process_tcp_listener_on_an_ephemeral_port_is_still_fail ... ok
+test public_surface_tests::own_process_udp_on_a_non_ephemeral_unexpected_port_is_fail_declared_or_not ... ok
+test public_surface_tests::parses_bracketed_ipv6_addresses_and_strips_brackets ... ok
+test public_surface_tests::parses_real_shaped_tcp_ss_output_including_process_name ... ok
+test public_surface_tests::parses_udp_output_without_a_users_field_when_not_root ... ok
+test public_surface_tests::port_conflict_expected_port_served_by_wrong_process_is_fail ... ok
+test public_surface_tests::sshd_port_directive_none_when_absent ... ok
+test public_surface_tests::sshd_port_directive_parses_first_match_case_insensitively ... ok
+test public_surface_tests::subscription_backend_exposed_publicly_is_fail ... ok
+test public_surface_tests::subscription_backend_on_loopback_is_ok ... ok
+test public_surface_tests::unidentified_process_on_a_non_loopback_port_is_warn_never_fail ... ok
+test public_surface_tests::unrelated_process_on_a_non_loopback_port_is_warn_not_fail ... ok
+test public_surface_tests::zone_suffixed_loopback_stub_resolver_is_not_a_public_listener ... ok
+test reality_selftest_classification_tests::a_real_key_mismatch_does_not_reliably_produce_either_client_side_string ... ok
+test reality_selftest_classification_tests::client_side_rejection_strings_are_still_detected ... ok
+test reality_selftest_classification_tests::empty_client_stderr_and_no_journal_hit_stays_inconclusive ... ok
+test reality_selftest_classification_tests::fenced_loopback_rejection_is_still_detected ... ok
+test reality_selftest_classification_tests::unrelated_public_scanner_rejection_is_not_attributed_to_selftest ... ok
+test release_identity::tests::a_development_binary_run_by_path_is_not_reported_as_the_installed_release ... ok
+test release_identity::tests::a_development_install_reports_the_exact_source_it_was_built_from ... ok
+test release_identity::tests::a_hand_replaced_vpn_is_still_detected_when_it_has_its_own_hash ... ok
+test release_identity::tests::a_running_binary_matching_neither_recorded_hash_is_reported ... ok
+test release_identity::tests::a_source_build_with_separately_linked_vpn_and_vpn_admin_is_consistent ... ok
+test release_identity::tests::an_install_without_recorded_source_keeps_the_plain_label ... ok
+test release_identity::tests::an_unreadable_running_executable_does_not_invent_a_mismatch ... ok
+test public_surface_tests::hairpin_set_accepts_a_reality_public_key_that_starts_with_a_hyphen ... ok
+test release_identity::tests::classifies_release_tags ... ok
+test release_identity::tests::hashing_matches_known_vector ... ok
+test release_identity::tests::manual_binary_swap_on_the_same_version_is_detected ... ok
+test release_identity::tests::matching_stable_install_is_ok_without_claiming_provenance ... ok
+test release_identity::tests::development_channel_checks_hashes_but_not_the_version_core ... ok
+test release_identity::tests::missing_executable_is_a_problem ... ok
+test release_identity::tests::release_candidate_is_labelled_as_such ... ok
+test release_identity::tests::repair_advice_never_recommends_repair_toward_an_older_release ... ok
+test release_identity::tests::unrecorded_hashes_are_unknown_not_a_match ... ok
+test release_identity::tests::update_in_progress_is_informational_only ... ok
+test release_identity::tests::version_core_mismatch_is_detected_even_when_hashes_agree ... ok
+test release_identity::tests::missing_or_corrupt_manifest_is_unknown ... ok
+test service::tests::is_available_is_false_for_nonexistent_binary ... ok
+test service::tests::is_failed_false_when_systemctl_reports_not_failed ... ok
+test service::tests::is_failed_true_when_systemctl_reports_failed ... ok
+test service::tests::is_unit_installed_false_when_systemctl_binary_missing ... ok
+test service::tests::is_unit_installed_still_appends_service_for_a_bare_name ... ok
+test service::tests::is_unit_installed_true_when_systemctl_reports_loaded ... ok
+test service::tests::is_unit_installed_uses_a_dotted_unit_name_verbatim_for_a_timer ... ok
+test service::tests::last_result_is_none_when_the_value_is_empty ... ok
+test service::tests::last_result_returns_the_raw_systemd_result_keyword ... ok
+test service::tests::override_names_the_exact_service_manager_and_never_falls_back_to_path ... ok
+test service::tests::reload_and_verify_fails_when_reload_command_fails ... ok
+test service::tests::reload_and_verify_fails_when_service_not_active_after_reload ... ok
+test service::tests::reload_and_verify_succeeds_when_service_comes_up_healthy ... ok
+test service::tests::restart_count_is_none_when_systemctl_is_unavailable ... ok
+test service::tests::restart_count_parses_nrestarts ... ok
+test service::tests::timer_next_elapse_returns_systemds_own_formatted_timestamp ... ok
+test service::tests::unit_tests_never_default_to_the_host_systemctl ... ok
+test udp_probe_tests::build_dns_query_contains_labels ... ok
+test udp_probe_tests::cert_expiry_days_reports_negative_days_for_an_already_expired_cert ... ok
+..+..........+...........+.........+...+.+.........+..+......+....+........+...+++++++++++++++++++++++++++++++++++++++*.......+...+.......+++++++++++++++++++++++++++++++++++++++*..+............+...++++++
+...+........+...+.+...+..+.+.........+....................+.+..+...+++++++++++++++++++++++++++++++++++++++*..........+..+.+...+++++++++++++++++++++++++++++++++++++++*....+.............+.........+..+.+..+...+.........+.........+....+...+........+......+...+.............+..+.+.....+.+...+...........+....+...........+.......+..+.......+...+.....+...+....+......+.....+.......+......+.....+.+......+..+.+..+..........+.........+...+...+.....+............+...+.........+......+...+.+.....................+...+.....+.......+.....+...+...................+...........+......+.+............+.....+..........+...+...+.....+.+......+..+......+......................+.....+....+...+..+....+...........+......+............+...+...+....+...+..+......+.+...+......+.....................+.....+.........+....+...............+..+.+...+.................+............+.+..+...+..........+......+.....+......+...+.+......+.....+.......+...+...+.....+....+.....+...+.......+......+..+..........+..+...+...+....+.....+.+......+.........+.....+.......+..+...+....+...+......+.....+.........+.......+........++++++
+-----
+test udp_probe_tests::cert_expiry_days_reports_positive_days_for_a_freshly_issued_cert ... ok
+test udp_probe_tests::cert_expiry_days_returns_none_for_missing_file ... ok
+test udp_probe_tests::probe_singbox_binary_versions_skips_nonexistent_paths_and_dedupes ... ok
+test udp_probe_tests::redact_secrets_hides_a_base64url_style_token ... ok
+test udp_probe_tests::redact_secrets_hides_a_long_hex_key_or_hash ... ok
+test udp_probe_tests::redact_secrets_hides_a_vless_uuid ... ok
+test udp_probe_tests::redact_secrets_leaves_ordinary_log_text_and_short_words_untouched ... ok
+test udp_probe_tests::redact_secrets_preserves_non_ascii_text_around_a_redacted_token ... ok
+test udp_probe_tests::run_udp_probe_candidates_with_probe_logic ... ok
+test udp_probe_tests::singbox_version_consistency_ok_when_versions_match ... ok
+test udp_probe_tests::singbox_version_consistency_silent_on_single_binary ... ok
+test udp_probe_tests::singbox_version_consistency_warns_and_names_configured_binary_when_versions_differ ... ok
+test user_selector_tests::a_unique_name_resolves_to_that_account ... ok
+test user_selector_tests::an_ambiguous_name_is_rejected_and_lists_the_ids ... ok
+test user_selector_tests::an_unknown_selector_is_an_error ... ok
+test user_selector_tests::reserved_probe_principals_are_reachable_by_id_only ... ok
+test user_selector_tests::the_stable_id_always_wins_over_a_name ... ok
+test service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit ... ok
+
+test result: ok. 159 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.22s
+
+     Running tests/cli.rs (target/debug/deps/cli-1325c3bec49741fd)
+
+running 103 tests
+test a_missing_fake_systemctl_fails_closed_instead_of_using_path ... ok
+test apply_revision_end_to_end_applies_config_and_stamps_revision ... ok
+test apply_revision_preserves_all_dynamic_state_types_simultaneously_static_config_untouched ... ok
+test apply_revision_rejects_a_malformed_document ... ok
+test apply_revision_preserves_reserved_probe_confinement_and_c16_policy_across_reapply ... ok
+test apply_revision_reload_failure_rolls_back_config_users_and_stamp ... ok
+test apply_revision_reload_failure_rolls_back_full_dynamic_state_mix ... ok
+test apply_revision_skips_a_stale_or_duplicate_revision_number ... ok
+test authorization_mutation_is_fail_closed_without_live_singbox ... ok
+test authorization_backed_native_lease_renewal_uses_live_path_without_restart ... ok
+test backup_refuses_to_clobber_a_preexisting_destination ... ok
+test backup_then_restore_round_trips_hysteria2_obfuscation_password ... ok
+test backup_then_restore_round_trips_the_current_versioned_users_envelope ... ok
+test backup_then_restore_round_trips_users ... ok
+test cli_tests_cannot_reach_the_hosts_systemctl ... ok
+test command_mutates_state_check_does_not_block_config_validate_concurrently ... ok
+test concurrent_user_creates_do_not_lose_an_update ... ok
+test config_migrate_is_idempotent_and_validate_reports_ok_afterward ... ok
+test config_migrate_preserves_existing_users_and_backs_up_users_json ... ok
+test config_migrate_refuses_corrupted_users_json_and_leaves_it_untouched ... ok
+test config_validate_declares_exit_egress_policy_support ... ok
+test closed_stdout_pipe_exits_quietly_without_a_panic ... ok
+test config_validate_reports_invalid_on_corrupted_users_json ... ok
+test config_validate_reports_invalid_on_future_users_schema ... ok
+test config_validate_reports_migration_required_on_fresh_legacy_deployment_toml ... ok
+test config_validate_reports_invalid_on_future_deployment_toml_schema ... ok
+test credential_mutation_does_not_claim_blast_radius_when_not_reloaded_live ... ok
+test doctor_always_prints_urltest_scope_disclaimer ... ok
+test doctor_client_and_telegram_never_claim_server_is_healthy_when_checks_failed ... ok
+test doctor_client_prints_interactive_checklist_and_never_claims_to_probe_the_device ... ok
+test doctor_coverage_line_distinguishes_not_run_from_failed_from_passed ... ok
+test doctor_fails_on_unresolvable_public_hostname ... ok
+test doctor_json_rejects_combination_with_prose_only_output_modes ... ok
+test doctor_json_emits_one_valid_json_object_with_stable_fields ... ok
+test doctor_l4_coherence_passes_after_init_and_render ... ok
+test doctor_l4_detects_on_disk_config_drift_from_current_key_files ... ok
+test doctor_l4_live_check_fails_when_running_subscription_process_is_stale ... ok
+test doctor_l4_live_check_passes_when_subscription_process_is_freshly_started ... ok
+test doctor_report_output_writes_mode_0600_file ... ok
+test doctor_report_redacts_secrets_and_includes_expected_sections ... ok
+test doctor_rejects_wrong_reality_public_key_install_policy ... ok
+test doctor_reports_ipv4_only_hostname_as_info_not_a_failure ... ok
+test doctor_reports_missing_singbox_binary_as_failure ... ok
+test doctor_telegram_prints_disclaimer_and_never_claims_russian_verification ... ok
+test egress_policy_changes_never_touch_credentials ... ok
+test every_binary_invocation_is_guarded ... ok
+test every_toml_spelling_of_the_egress_table_is_detected ... ok
+test exit_egress_cli_converges_reconciles_and_rolls_back_validation_failure ... ok
+test exit_egress_cli_restart_failure_restores_desired_and_runtime_config ... ok
+test failing_mutation_still_fails_and_rolls_back_with_closed_output ... ok
+test each_credential_mutation_states_its_own_blast_radius ... ok
+test full_user_lifecycle ... ok
+test init_rerun_without_rotate_preserves_existing_reality_key ... ok
+test init_without_singbox_binary_fails_clearly ... ok
+test future_expiry_extension_does_not_restart_but_expiry_revocation_does ... ok
+test real_failures_still_exit_nonzero_with_the_error_message ... ok
+test reality_rotate_replaces_public_key_and_succeeds ... ok
+test reality_rotate_reports_not_run_when_no_active_user_exists ... ok
+test reality_rotate_rolls_back_key_material_on_validation_failure ... ok
+test reality_rotate_scopes_blast_radius_to_reality_only ... ok
+test release_binary_exposes_package_version ... ok
+test render_config_applies_and_restarts_when_a_user_actually_changed ... ok
+test render_config_never_claims_handshake_passed_when_selftest_could_not_run ... ok
+test render_config_noop_reconcile_does_not_restart_singbox ... ok
+test render_config_repeated_timer_execution_is_idempotent ... ok
+test render_config_require_applied_fails_when_reconciliation_could_not_be_applied ... ok
+test render_config_require_applied_succeeds_on_true_noop ... ok
+test repair_fails_clearly_when_no_persistent_install_exists ... ok
+test repair_propagates_a_nonzero_exit_from_update_sh ... ok
+test repair_runs_the_located_update_script_with_repair_flag_and_propagates_success ... ok
+test restore_never_widens_permissions_on_restored_secrets ... ok
+test restore_of_differing_reality_key_restarts_subscription_service_too ... ok
+test restore_rejects_a_fifo_entry_without_hanging ... ok
+test restore_rejects_a_partial_reality_keyset ... ok
+test restore_rejects_archive_containing_a_symlink ... ok
+test restore_rejects_cryptographically_mismatched_reality_keys ... ok
+test rotate_token_does_not_claim_already_imported_profile_stops_connecting ... ok
+test static_revision_forbidden_role_change_is_rejected_fail_closed ... ok
+test mutation_completes_when_output_streams_are_closed ... ok
+test static_revision_is_idempotent ... ok
+test static_revision_preserves_all_dynamic_state_and_applies_new_static_values ... ok
+test static_revision_recovers_an_interrupted_apply_first ... ok
+test static_revision_rejected_by_singbox_check_leaves_everything_unchanged ... ok
+test static_revision_service_failure_rolls_back_static_and_runtime_config ... ok
+test static_revision_stale_revision_is_not_applied ... ok
+test static_revision_unknown_field_or_invalid_value_rejects_entire_revision ... ok
+test user_create_json_output_carries_the_experimental_vision_off_link_additively ... ok
+test user_create_json_output_has_no_server_secrets ... ok
+test status_reports_user_counts_without_secrets ... ok
+test user_create_json_output_is_unaffected_by_suppression ... ok
+test user_create_offers_a_base64_link_for_shadowrocket_without_a_second_credential ... ok
+test user_create_json_stdout_is_one_document_and_progress_goes_to_stderr ... ok
+test user_create_qr_prints_a_qr_code ... ok
+test user_create_qr_shows_the_real_credential_when_not_suppressed ... ok
+test user_create_qr_suppresses_the_credential_when_env_var_set ... ok
+test user_create_reload_failure_restores_previous_working_config ... ok
+test user_create_rejects_control_characters_and_overlong_names ... ok
+test user_links_prints_raw_uris_independent_of_subscription_host ... ok
+test user_qr_rotates_token_and_warns_it_is_new ... ok
+test user_rotate_token_qr_suppresses_the_credential_when_env_var_set ... ok
+test user_vision_off_experiment_toggles_only_that_users_flow ... ok
+test version_prints_own_version ... ok
+test user_creation_with_closed_output_keeps_credentials_consistent_with_the_node ... ok
+
+test result: ok. 103 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 236.12s
+
+     Running tests/relay_cli.rs (target/debug/deps/relay_cli-6b6e83c1c12bd25e)
+
+running 15 tests
+test exit_user_links_are_unchanged_by_relay_support ... ok
+test invalid_role_fails_every_command_clearly ... ok
+test legacy_uuid_argument_still_works_and_warns_about_exposure ... ok
+test exit_render_is_unchanged_across_migration_to_explicit_identity ... ok
+test peer_credential_from_stdin_never_appears_in_the_process_arguments ... ok
+test production_code_never_bypasses_the_role_aware_renderer ... ok
+test peer_credential_rotation_accepts_stdin_and_refuses_empty_or_invalid_input_without_echo ... ok
+test relay_backup_restores_onto_the_same_relay_and_keeps_its_restrictions ... ok
+test relay_render_config_applies_a_fail_closed_document ... ok
+test restore_refuses_a_backup_from_another_role_or_node_and_changes_nothing ... ok
+test schema_v1_is_migration_required_and_migration_keeps_the_relay_role ... ok
+test status_reports_identity_role_and_pairing_without_secrets ... ok
+test read_only_commands_never_print_either_credential_scope ... ok
+test user_links_on_a_relay_never_emit_the_first_hop_or_downgrade_a_relay_route ... ok
+test unpaired_relay_renders_reject_all_and_doctor_says_so ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.02s
+
+     Running unittests src/lib.rs (target/debug/deps/common-c7a5adc9a592b8d1)
+
+running 8 tests
+test framing::tests::async_write_read_roundtrip ... ok
+test framing::tests::decode_rejects_oversized_host_len ... ok
+test framing::tests::decode_rejects_unsupported_version ... ok
+test framing::tests::decode_truncated_buffer_returns_none_not_panic ... ok
+test framing::tests::encode_decode_roundtrip ... ok
+test tests::duration_bucket_boundaries ... ok
+test tests::unix_seconds_monotonic_add ... ok
+test framing::tests::decode_never_panics_on_arbitrary_bytes ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/compat_config-e86298224b177102)
+
+running 184 tests
+test authorization::tests::clock_edges_use_closed_open_intervals ... ok
+test authorization::tests::identifiers_are_typed_and_class_compatible ... ok
+test authorization::tests::duplicate_and_unbounded_overlap_are_rejected ... ok
+test authorization::tests::native_renewal_preserves_secret_and_extends_only_expiry ... ok
+test authorization::tests::native_renewal_rejects_expiry_revocation_boundary_and_overflow ... ok
+test authorization::tests::restart_view_never_restores_expired_state ... ok
+test authorization::tests::rotation_boundaries_and_revocation_are_fail_closed ... ok
+test authorization::tests::sweep_line_accepts_sequential_rotation_and_rejects_true_triple_overlap ... ok
+test authorization::tests::native_can_renew_for_days_without_extending_the_horizon ... ok
+test contract::tests::a_transport_with_no_endpoint_is_not_advertised ... ok
+test contract::tests::a_zero_peer_document_embeds_a_config_whose_selector_matches_its_catalog ... ok
+test contract::tests::document_advertises_exactly_the_configured_transports ... ok
+test contract::tests::embedded_core_config_is_audited_structurally_not_by_substring ... ok
+test contract::tests::experimental_capabilities_never_leak_into_production_capabilities ... ok
+test contract::tests::generated_document_never_carries_server_private_material ... ok
+test contract::tests::vision_off_endpoint_has_no_flow_and_production_endpoint_has_vision ... ok
+test contract::tests::obfs_password_is_carried_only_when_configured ... ok
+test contract::tests::vision_off_is_only_advertised_when_the_per_user_opt_in_is_on ... ok
+test credential_policy::tests::a_clock_behind_the_authority_still_honours_a_just_opened_window ... ok
+test credential_policy::tests::a_grant_that_ends_before_it_starts_is_refused ... ok
+test credential_policy::tests::a_grant_whose_window_closed_before_revocation_stays_revoked ... ok
+test credential_policy::tests::a_rotation_overlapping_by_exactly_the_bound_is_accepted ... ok
+test credential_policy::tests::a_rotation_overlapping_by_more_than_the_bound_is_refused ... ok
+test credential_policy::tests::classes_do_not_interfere_with_each_others_overlap_budget ... ok
+test credential_policy::tests::an_already_expired_grant_cannot_contribute_to_a_new_overlap ... ok
+test credential_policy::tests::compat_lifetime_is_clamped_to_the_documented_policy ... ok
+test credential_policy::tests::overlap_counts_the_shared_window_exactly ... ok
+test credential_policy::tests::overlap_of_disjoint_windows_is_zero ... ok
+test credential_policy::tests::revocation_is_unconditional_inside_the_window ... ok
+test credential_policy::tests::principals_are_class_prefixed_and_opaque ... ok
+test credential_policy::tests::the_legacy_secret_helper_is_unused_but_kept_for_the_secret_type ... ok
+test credential_policy::tests::secrets_are_never_rendered_by_the_debug_representation_of_a_grant ... ok
+test credential_policy::tests::the_skew_tolerance_never_extends_a_credential_past_valid_until ... ok
+test credential_policy::tests::three_simultaneously_live_grants_are_refused ... ok
+test credential_policy::tests::validity_window_is_half_open_at_valid_until ... ok
+test credentials::tests::generated_values_are_not_trivially_repeated ... ok
+test credentials::tests::public_key_shape_validation_accepts_a_real_key_and_rejects_bad_ones ... ok
+test credentials::tests::reality_keypair_validation_rejects_mismatch_and_malformed_keys ... ok
+test credentials::tests::reality_public_key_is_derived_from_the_private_key ... ok
+test credentials::tests::short_id_validation_accepts_generated_ids_and_rejects_bad_ones ... ok
+test credentials::tests::subscription_token_has_adequate_entropy_and_charset ... ok
+test credentials::tests::token_hash_verifies_correct_token_only ... ok
+test credentials::tests::user_id_has_expected_shape_and_128_bits_of_entropy_source ... ok
+test credentials::tests::short_id_is_never_an_obvious_pattern ... ok
+test credentials::tests::uuid_v4_has_expected_shape ... ok
+test credentials::tests::verify_token_rejects_mismatched_length_hash ... ok
+test deployment::tests::apply_google_egress_hairpin_toml_clear_backs_up_and_commits ... ok
+test deployment::tests::apply_google_egress_hairpin_toml_refuses_an_invalid_section ... ok
+test deployment::tests::apply_google_egress_hairpin_toml_refuses_corrupted_input_and_leaves_it_untouched ... ok
+test deployment::tests::apply_google_egress_hairpin_toml_set_backs_up_and_commits ... ok
+test deployment::tests::clear_google_egress_hairpin_toml_text_is_a_noop_when_absent ... ok
+test deployment::tests::clear_google_egress_hairpin_toml_text_removes_an_existing_section ... ok
+test deployment::tests::explicit_current_schema_version_loads ... ok
+test deployment::tests::future_schema_version_is_refused ... ok
+test deployment::tests::hysteria2_bandwidth_defaults_to_unset ... ok
+test deployment::tests::hysteria2_bandwidth_set_alone_fails_validation ... ok
+test deployment::tests::hysteria2_bandwidth_set_together_is_valid ... ok
+test deployment::tests::invalid_profile_titles_are_refused_at_validation ... ok
+test deployment::tests::migrate_deployment_toml_backup_is_mode_0600 ... ok
+test deployment::tests::migrate_deployment_toml_end_to_end_backs_up_migrates_preserves_values ... ok
+test deployment::tests::migrate_deployment_toml_missing_file_is_not_an_error ... ok
+test deployment::tests::migrate_deployment_toml_refuses_corrupted_input_and_leaves_it_untouched ... ok
+test deployment::tests::migrate_deployment_toml_refuses_future_schema_and_leaves_it_untouched ... ok
+test deployment::tests::migrate_text_inserts_marker_once_and_is_idempotent ... ok
+test deployment::tests::minimal_toml_parses_with_defaults ... ok
+test deployment::tests::missing_schema_version_defaults_to_zero_and_still_loads ... ok
+test deployment::tests::profile_title_can_be_configured ... ok
+test deployment::tests::profile_title_defaults_to_arcana_vpn_when_absent ... ok
+test deployment::tests::set_google_egress_hairpin_toml_text_appends_when_absent ... ok
+test deployment::tests::set_google_egress_hairpin_toml_text_replaces_existing_section_in_place ... ok
+test deployment::tests::udp_probe_section_parses_and_defaults_apply ... ok
+test migrate::tests::atomic_write_leaves_no_tmp_file_behind ... ok
+test migrate::tests::backup_is_mode_0600_regardless_of_source_mode ... ok
+test ownership::tests::existing_target_ownership_is_reapplied_to_tmp_file ... ok
+test ownership::tests::no_prior_target_falls_back_to_parent_group_without_error ... ok
+test render::tests::auto_profile_defaults_selector_to_urltest_group ... ok
+test render::tests::client_subscription_has_no_dns_block_and_no_inbounds ... ok
+test render::tests::client_subscription_never_emits_route_rules ... ok
+test render::tests::client_subscription_profile_shape_is_explicit_and_minimal ... ok
+test render::tests::compatibility_mode_parse_accepts_vision_off_and_still_rejects_unknown_values ... ok
+test render::tests::compatibility_mode_parse_rejects_unknown_values ... ok
+test render::tests::endpoints_fingerprint_is_deterministic_and_sensitive_to_key_material ... ok
+test render::tests::every_subscription_mode_omits_client_owned_policy ... ok
+test render::tests::hysteria2_unavailable_reality_only_profile_remains_fully_usable ... ok
+test render::tests::hysteria2_uri_contains_password_and_sni ... ok
+test render::tests::label_with_spaces_is_percent_encoded ... ok
+test render::tests::normal_mode_keeps_vless_and_hysteria2_and_no_network_field ... ok
+test render::tests::normal_mode_output_is_byte_for_byte_unchanged_by_the_vision_off_mode_existing ... ok
+test render::tests::normal_mode_via_with_options_is_identical_to_existing_renderer ... ok
+test render::tests::normal_uri_list_is_unchanged_and_still_requests_vision ... ok
+test render::tests::only_quic_reject_and_youtube_direct_emit_route_rules ... ok
+test render::tests::performance_profile_defaults_selector_to_hysteria2 ... ok
+test render::tests::quic_reject_emits_exactly_one_udp_443_reject_rule_with_every_required_field ... ok
+test render::tests::quic_reject_keeps_hysteria2_and_vision ... ok
+test render::tests::quic_reject_leaves_every_credential_and_endpoint_identical_to_normal ... ok
+test render::tests::quic_reject_parses_and_normal_mode_is_still_the_default ... ok
+test render::tests::quic_reject_rule_does_not_target_the_server_or_leak_credentials ... ok
+test render::tests::quic_reject_survives_a_reality_only_deployment ... ok
+test render::tests::reliability_profile_matches_default_profile_behavior ... ok
+test render::tests::rendering_wrong_transport_for_endpoint_errors ... ok
+test render::tests::route_final_points_at_manual_selector_not_urltest ... ok
+test render::tests::selection_profile_parse_rejects_unknown_values ... ok
+test render::tests::selector_default_falls_back_to_first_endpoint_when_no_reality_endpoint_present ... ok
+test render::tests::selector_default_is_reality_and_lists_hysteria2_and_auto ... ok
+test render::tests::singbox_subscription_has_both_outbounds_and_urltest_selector ... ok
+test render::tests::standard_endpoints_produces_reality_and_hysteria2 ... ok
+test render::tests::standard_endpoints_threads_hysteria2_obfs_password_into_uri_and_native_json ... ok
+test render::tests::tcp_only_mode_does_not_add_packet_encoding_xudp ... ok
+test render::tests::tcp_only_mode_emits_no_dns_block_or_tun_inbound ... ok
+test render::tests::tcp_only_mode_leaks_no_private_reality_material ... ok
+test render::tests::tcp_only_mode_reality_only_deployment_still_produces_valid_profile ... ok
+test render::tests::tcp_only_mode_route_final_is_valid_and_emits_no_route_rules ... ok
+test render::tests::tcp_only_mode_selector_lists_only_remaining_tags_and_defaults_to_reality ... ok
+test render::tests::tcp_only_mode_sets_vless_network_tcp_and_drops_hysteria2 ... ok
+test render::tests::to_base64_subscription_of_empty_string_is_empty ... ok
+test render::tests::to_base64_subscription_round_trips_and_matches_known_vector ... ok
+test render::tests::uri_list_contains_both_transports ... ok
+test render::tests::vision_off_mode_adds_no_route_rules_dns_inbounds_or_client_owned_fields ... ok
+test render::tests::vision_off_mode_keeps_hysteria2_and_udp_capability_unlike_tcp_only ... ok
+test render::tests::vision_off_mode_leaks_no_private_reality_material ... ok
+test render::tests::vision_off_mode_omits_flow_and_changes_nothing_else_about_the_reality_outbound ... ok
+test render::tests::vision_off_mode_selector_and_urltest_reference_the_labeled_reality_tag ... ok
+test render::tests::vision_off_uri_list_labels_only_reality_endpoints_and_leaves_hysteria2_unchanged ... ok
+test render::tests::vision_off_uri_omits_flow_and_keeps_every_other_parameter_identical ... ok
+test render::tests::vision_off_uri_rejects_wrong_transport ... ok
+test render::tests::vless_uri_contains_required_reality_fields_and_no_private_key ... ok
+test render::tests::youtube_direct_emits_exactly_one_domain_direct_rule_with_the_full_domain_set ... ok
+test render::tests::youtube_direct_keeps_every_credential_endpoint_and_selector_identical_to_normal ... ok
+test render::tests::youtube_direct_parses_and_stays_opt_in ... ok
+test render::tests::youtube_direct_rule_is_not_a_credential_state_or_dns_claim ... ok
+test render::tests::youtube_direct_survives_a_reality_only_deployment_and_vice_versa ... ok
+test secret::tests::debug_never_prints_value ... ok
+test secret::tests::serialize_round_trips_plain_value ... ok
+test server::tests::applied_config_and_backup_are_never_world_or_group_writable_and_are_0640 ... ok
+test server::tests::apply_atomically_backs_up_and_swaps_on_valid_config ... ok
+test server::tests::apply_atomically_rejects_invalid_config_and_leaves_existing_file_untouched ... ok
+test server::tests::apply_atomically_succeeds_with_no_prior_config ... ok
+test server::tests::both_inbounds_bind_the_dual_stack_wildcard_address ... ok
+test server::tests::disabled_and_expired_users_are_excluded_from_rendered_config ... ok
+test server::tests::every_user_keeps_the_vision_flow_by_default ... ok
+test server::tests::hysteria_bandwidth_caps_never_lock_out_bbr_clients ... ok
+test server::tests::hysteria_default_has_no_caps_and_forces_bbr_for_every_client ... ok
+test server::tests::hysteria_masquerade_is_set_when_configured ... ok
+test server::tests::hysteria_masquerade_omitted_when_not_configured ... ok
+test server::tests::rendered_config_never_contains_private_key_string ... ok
+test server::tests::renders_five_hundred_active_users_without_truncation ... ok
+test server::tests::repeated_applies_preserve_group_ownership_across_mutations ... ok
+test credentials::tests::user_ids_do_not_collide_across_ten_thousand_generations ... ok
+test server::tests::server_documents_emit_no_per_connection_core_log_lines ... ok
+test server::tests::vision_off_experiment_empties_only_that_users_flow ... ok
+test static_revision::tests::accepts_every_allowlisted_field ... ok
+test static_revision::tests::plan_changes_only_allowlisted_fields_and_preserves_role_and_identity ... ok
+test static_revision::tests::plan_clears_hysteria2_bandwidth_with_nulls ... ok
+
+running 1 test
+test server::tests::secret_file_modes_do_not_depend_on_the_process_umask ... test static_revision::tests::plan_is_unchanged_when_values_already_match ... ok
+test static_revision::tests::plan_refuses_an_invalid_current_file ... ok
+test static_revision::tests::reality_answers_reject_any_unsafe_or_mixed_resolution ... ok
+test static_revision::tests::rejects_deferred_port_fields ... ok
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 183 filtered out; finished in 0.00s
+
+test static_revision::tests::rejects_every_forbidden_field ... ok
+test server::tests::secret_file_modes_do_not_depend_on_the_process_umask ... ok
+test static_revision::tests::rejects_unknown_or_missing_schema_and_oversized_documents ... ok
+test static_revision::tests::unknown_field_rejects_the_whole_document_not_just_the_field ... ok
+test static_revision::tests::rejects_invalid_values ... ok
+test static_revision::tests::users_document_is_not_routed_as_static ... ok
+test store::tests::detect_schema_corrupted ... ok
+test store::tests::detect_schema_current_after_save ... ok
+test store::tests::detect_schema_future_version ... ok
+test store::tests::detect_schema_legacy_bare_array ... ok
+test store::tests::detect_schema_missing_file ... ok
+test store::tests::load_users_reads_legacy_bare_array_transparently ... ok
+test store::tests::load_users_refuses_corrupted_json ... ok
+test store::tests::load_users_refuses_future_schema_version ... ok
+test store::tests::migrate_already_current_is_a_noop ... ok
+test store::tests::migrate_backup_is_mode_0600_at_least_as_strict_as_live_file ... ok
+test store::tests::migrate_missing_file_is_not_an_error ... ok
+test store::tests::migrate_legacy_bare_array_end_to_end_preserves_users_and_backs_up ... ok
+test store::tests::migrate_refuses_corrupted_input_and_leaves_it_untouched ... ok
+test store::tests::migrate_refuses_future_schema_and_leaves_it_untouched ... ok
+test store::tests::missing_file_loads_as_empty ... ok
+test store::tests::repeated_saves_preserve_group_ownership_across_mutations ... ok
+test store::tests::save_is_atomic_no_partial_file_left_on_success ... ok
+test store::tests::save_then_load_round_trips ... ok
+test store::tests::save_writes_the_versioned_envelope_shape ... ok
+test store::tests::saved_file_is_owner_read_write_group_read_only ... ok
+test store::tests::vision_off_experiment_flag_is_absent_on_disk_unless_set_and_defaults_to_false ... ok
+
+test result: ok. 184 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/access_paths.rs (target/debug/deps/access_paths-33d37a2b718af92a)
+
+running 6 tests
+test absent_access_paths_keep_existing_deployment_compatible ... ok
+test credential_shaped_access_path_keys_fail_closed ... ok
+test duplicate_path_ids_are_rejected ... ok
+test legacy_opaque_peer_path_without_access_paths_still_loads ... ok
+test relay_metadata_maps_to_non_secret_contract_type ... ok
+test opted_in_path_set_rejects_unknown_peer_path ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/c16_host_policy_contract.rs (target/debug/deps/c16_host_policy_contract-3a604f774b1d065e)
+
+running 1 test
+test host_policy_matches_authoritative_c16_minus_only_loopback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/contract_fixtures.rs (target/debug/deps/contract_fixtures-5d6ee378ce49d685)
+
+running 16 tests
+test fixture_10_never_contains_a_private_key_despite_carrying_a_full_config ... ok
+test fixture_10_shows_the_complete_document_including_embedded_config ... ok
+test every_generated_fixture_parses_and_validates ... ok
+test fixture_both_transports_matches_generated_document ... ok
+test fixture_diagnostic_tcp_only_matches_generated_document ... ok
+test fixture_diagnostic_vision_off_matches_generated_document ... ok
+test fixture_hysteria2_only_matches_generated_document ... ok
+test fixture_malformed_document_is_rejected_with_the_documented_error ... ok
+test fixture_hysteria2_salamander_obfs_matches_generated_document ... ok
+test fixture_reality_only_matches_generated_document ... ok
+test fixture_two_independent_endpoints_matches_generated_document ... ok
+test fixture_unsupported_schema_version_error_matches_the_served_body ... ok
+test fixtures_use_the_documented_fake_credentials ... ok
+test the_published_fixture_set_is_exactly_the_documented_one ... ok
+test two_independent_endpoints_share_no_credential_or_key_material ... ok
+test no_fixture_contains_anything_that_could_be_a_real_secret ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/egress_family_interop.rs (target/debug/deps/egress_family_interop-c34b9a35e5025bff)
+
+running 1 test
+test real_core_literal_family_and_proxy_recovery_boundaries ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.47s
+
+     Running tests/hiddify_relay_udp.rs (target/debug/deps/hiddify_relay_udp-71565b691923a1b3)
+
+running 2 tests
+test normal_relay_profile_is_unchanged_by_the_hiddify_specific_fix ... ok
+test hiddify_pinned_relay_keeps_xudp_available_to_application_udp ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/hiddify_runtime_contract.rs (target/debug/deps/hiddify_runtime_contract-f835d37b13814493)
+
+running 8 tests
+test hiddify_pinned_direct_profile_gives_hiddify_exactly_one_route ... ok
+test hiddify_pinned_keeps_the_route_the_normal_profile_already_defaulted_to ... ok
+test hiddify_pinned_leaves_the_surviving_outbound_byte_identical_to_normal ... ok
+test hiddify_pinned_privacy_plus_keeps_only_the_relayed_exit ... ok
+test normal_profile_is_round_robin_balanced_by_current_hiddify ... ok
+test dump_pinned_profiles ... ok
+test privacy_plus_normal_profile_lets_hiddify_balance_onto_a_direct_exit ... ok
+test quic_reject_route_rule_never_reaches_the_hiddify_runtime ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/hysteria2_interop.rs (target/debug/deps/hysteria2_interop-8432c088b4559a9e)
+
+running 7 tests
+-----
+-----
+test hysteria2_brutal_bandwidth_config_passes_real_sing_box_check ... ok
+-----
+test hysteria2_bandwidth_caps_keep_standard_clients_working ... ok
+-----
+test hysteria2_default_server_still_serves_clients_that_declare_bandwidth ... ok
+-----
+test hysteria2_handshake_fails_with_wrong_password ... ok
+-----
+test hysteria2_handshake_succeeds_with_matched_password ... ok
+-----
+test hysteria2_obfuscated_handshake_succeeds_with_matched_obfs_password ... ok
+test hysteria2_handshake_fails_with_wrong_obfs_password ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.33s
+
+     Running tests/peer_document_assembly.rs (target/debug/deps/peer_document_assembly-f7cce9597dbf6250)
+
+running 10 tests
+test a_credential_is_never_coerced_across_transports ... ok
+test a_document_with_a_peer_embeds_a_config_that_can_actually_select_it ... ok
+test a_local_only_document_is_unchanged_by_the_peer_feature_existing ... ok
+test a_local_credential_is_never_used_as_a_fallback_on_a_peer ... ok
+test a_peer_and_a_local_endpoint_share_no_credential_material ... ok
+test a_peer_is_omitted_for_a_user_with_no_credential_for_it ... ok
+test diagnostic_modes_still_behave_with_a_peer_present ... ok
+test a_peer_appears_once_the_operator_sets_that_users_credential ... ok
+test the_peers_own_outbound_carries_the_peers_host_and_key_not_this_servers ... ok
+test two_users_receive_independent_peer_credentials ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/peer_endpoints.rs (target/debug/deps/peer_endpoints-bf9f6ef3694a33f3)
+
+running 9 tests
+test a_malformed_reality_public_key_is_rejected ... ok
+test a_deployment_with_no_peer_endpoints_loads_exactly_as_before ... ok
+test a_peer_id_colliding_with_a_local_endpoint_is_rejected ... ok
+test a_peer_endpoint_becomes_a_compat_endpoint_marked_as_a_peer ... ok
+test a_user_with_no_peer_credentials_round_trips_byte_identically ... ok
+test a_peer_private_key_is_refused_rather_than_silently_ignored ... ok
+test debug_of_a_peer_credential_never_prints_the_secret ... ok
+test peer_credentials_round_trip_and_are_looked_up_by_endpoint_id ... ok
+test two_peers_sharing_an_id_are_rejected ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/profile_title.rs (target/debug/deps/profile_title-fe77399d3f50b8ff)
+
+running 4 tests
+test a_title_that_looks_like_the_base64_marker_is_still_encoded ... ok
+test every_header_value_is_a_valid_http_header ... ok
+test non_ascii_titles_are_base64_encoded_in_the_form_importers_decode ... ok
+test the_default_title_is_the_product_name_and_is_sent_verbatim ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/quic_reject_config.rs (target/debug/deps/quic_reject_config-ca3bfcccf2f3a6e7)
+
+running 2 tests
+test quic_reject_rule_fields_survive_a_real_sing_box_parse ... ok
+test every_compatibility_mode_renders_a_config_real_sing_box_accepts ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+     Running tests/reality_decoy_budget.rs (target/debug/deps/reality_decoy_budget-cd29cfb8aeea3a76)
+
+running 1 test
+test historically_oversized_decoy_certificate_remains_usable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.66s
+
+     Running tests/reality_interop.rs (target/debug/deps/reality_interop-23d912b2a8ea6826)
+
+running 3 tests
+test reality_handshake_succeeds_with_matched_keypair ... ok
+test server_and_client_configs_agree_on_reality_key_material ... ok
+test reality_handshake_fails_with_mismatched_public_key ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.62s
+
+     Running tests/relay_detour.rs (target/debug/deps/relay_detour-661d8880cb8b5cf3)
+
+running 9 tests
+test d3_automatic_choice_between_privacy_routes_exercises_complete_two_hop_routes ... ok
+test d3_direct_and_privacy_routes_never_share_an_automatic_group ... ok
+test d3_direct_stays_explicitly_selectable_and_independent_of_the_relay ... ok
+test d3_explicit_privacy_plus_has_no_path_that_avoids_the_relay ... ok
+test d3_privacy_plus_is_the_default_and_the_selector_never_switches_by_itself ... ok
+test profiles_without_relay_routes_keep_the_single_exit_auto_group ... ok
+test relay_path_is_real_detour_and_first_hop_is_not_selectable ... ok
+test relay_path_without_via_endpoint_fails_closed ... ok
+test d3_no_health_probe_group_in_a_privacy_profile_dials_an_exit_directly ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/relay_role_policy.rs (target/debug/deps/relay_role_policy-d52840007b61cad4)
+
+running 81 tests
+test a_customer_literally_named_arcana_probe_gains_no_loopback_privilege ... ok
+test a_customer_literally_named_arcana_probe_gets_no_probe_confinement_on_exit ... ok
+test absent_role_means_exit_for_backward_compatibility ... ok
+test an_exit_has_no_relay_targets_even_with_peers ... ok
+test credential_ref_to_a_different_server_is_refused ... ok
+test credential_ref_transport_mismatch_is_refused ... ok
+test dangling_via_endpoint_is_refused_even_when_unused ... ok
+test dangling_credential_ref_is_refused ... ok
+test deployment_toml_without_public_ipv4_ipv6_fields_still_loads_and_validates ... ok
+test default_node_id_rule_matches_the_shared_installer_fixture_table ... ok
+test disabled_and_expired_users_are_absent_from_the_relay_document ... ok
+test disabled_probe_user_gets_no_probe_rules_but_keeps_mandatory_c16 ... ok
+test duplicate_access_path_ids_are_refused ... ok
+test doctor_accepts_the_own_public_address_rule_it_tells_operators_to_enable ... ok
+test duplicate_endpoint_ids_and_tags_are_refused ... ok
+test egress_toml_patch_is_atomic_validated_and_migration_preserves_it ... ok
+test exit_confines_probe_user_and_leaves_customers_unrouted ... ok
+test exit_denies_customer_tunnel_to_its_own_public_ipv4 ... ok
+test exit_denies_customer_tunnel_to_its_own_public_ipv6 ... ok
+test exit_hairpin_has_exactly_one_route_for_google_domains_and_no_fallback ... ok
+test exit_hairpin_outbound_never_carries_this_exits_own_private_key ... ok
+test exit_hairpin_policy_remains_protected_and_probe_prefix_is_preserved ... ok
+test exit_hairpin_rejects_literal_ipv6_google_destinations_without_dropping ... ok
+test exit_ipv6_policy_defaults_roundtrip_and_doctor_tamper_detection ... ok
+test exit_must_never_declare_its_own_listener_as_relay_infrastructure ... ok
+test exit_policy_values_and_relay_role_are_validated ... ok
+test exit_rendering_keeps_inbounds_outbounds_identical_and_adds_mandatory_c16_route ... ok
+test exit_with_hairpin_config_but_no_credential_still_renders_unchanged ... ok
+test exit_with_hairpin_configured_adds_one_outbound_and_sniff_plus_route_rule ... ok
+test exit_with_hostname_public_host_adds_no_extra_own_ip_rule ... ok
+test exit_with_hostname_public_host_and_public_ipv4_field_denies_customer_tunnel ... ok
+test exit_with_hostname_public_host_and_public_ipv6_field_denies_customer_tunnel ... ok
+test exit_with_public_ipv4_and_public_ipv6_both_set_combines_into_one_rule ... ok
+test exit_without_hairpin_config_renders_exactly_as_before ... ok
+test failed_migration_leaves_previous_state_intact ... ok
+test fresh_install_templates_render_a_current_loadable_deployment_for_both_roles ... ok
+test future_schema_is_refused ... ok
+test hysteria2_first_hop_is_refused ... ok
+test hysteria2_route_over_relay_is_refused ... ok
+test installer_template_with_recorded_own_address_renders_the_deny_rule ... ok
+test invalid_public_ipv4_literal_is_rejected_by_validate ... ok
+test invalid_relay_destinations_are_refused ... ok
+test invalid_role_in_deployment_toml_fails_to_load ... ok
+test ip_literal_exit_targets_become_exact_host_cidrs ... ok
+test ipv6_literal_in_public_ipv4_field_is_rejected ... ok
+test legacy_exit_without_identity_renders_identically_to_current_exit ... ok
+test migration_of_a_v1_relay_keeps_the_relay_role ... ok
+test migration_only_reads_top_level_keys ... ok
+test migration_preserves_an_existing_node_id ... ok
+test node_role_parser_is_strict ... ok
+test paired_relay_allows_only_declared_exits_and_ends_in_reject_for_every_inbound ... ok
+test plain_exit_ipv6_policy_is_explicit_and_scoped ... ok
+test probe_rules_precede_exit_hairpin_rules ... ok
+test probe_rules_precede_relay_policy_which_is_otherwise_unchanged ... ok
+test probe_urls_are_exactly_covered_by_the_probe_allowlist ... ok
+test provisioning_path_builds_a_real_detour_chain_with_distinct_credentials ... ok
+test re_enabling_a_user_never_fabricates_a_missing_peer_credential ... ok
+test relay_destinations_cannot_name_internal_or_metadata_addresses ... ok
+test relay_document_contains_no_exit_credential_and_no_peer_private_material ... ok
+test relay_hairpin_flag_off_leaves_relay_rendering_byte_identical ... ok
+test relay_hairpin_user_gets_exactly_two_extra_rules_scoped_to_google_domains ... ok
+test relay_hairpin_user_still_falls_through_to_reject_for_non_google_destinations ... ok
+test relay_renderer_refuses_a_malformed_in_memory_declaration ... ok
+test relay_role_requires_a_local_ingress_declaration ... ok
+test relay_route_without_via_endpoint_is_refused ... ok
+test relay_serves_its_first_hop_but_never_its_hysteria2_listener ... ok
+test relay_targets_come_only_from_declared_relay_routes ... ok
+test removing_the_exit_credential_removes_both_dependent_routes ... ok
+test rotating_the_exit_credential_does_not_touch_the_first_hop_credential ... ok
+test rotating_the_first_hop_credential_does_not_touch_the_exit_credential ... ok
+test schema_v2_requires_a_valid_node_id ... ok
+test share_links_never_express_a_relay_route_or_the_relay_first_hop ... ok
+test share_links_omit_a_peer_the_user_has_no_credential_for ... ok
+test subscription_token_is_independent_of_both_proxy_credentials ... ok
+test truncated_deployment_state_fails_to_load ... ok
+test udp_relay_capability_is_refused ... ok
+test unpaired_relay_loads_and_has_no_targets ... ok
+test unpaired_relay_loopback_selftest_is_scoped_to_the_reserved_probe_principal ... ok
+test unpaired_relay_provisioning_is_an_explicit_no_route_error ... ok
+test unpaired_relay_rejects_everything_when_no_probe_principal_exists ... ok
+test every_rendered_relay_route_rule_is_accepted_by_real_sing_box ... ok
+
+test result: ok. 81 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/state_integrity.rs (target/debug/deps/state_integrity-051d14da87444dbb)
+
+running 4 tests
+test failed_pre_rename_write_preserves_the_previous_live_state_byte_for_byte ... ok
+test future_users_schema_fails_closed_in_the_public_parse_boundary ... ok
+test syntactically_valid_but_wrong_top_level_shape_is_not_treated_as_empty_state ... ok
+test every_strict_prefix_of_users_file_is_rejected_as_truncated_state ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/static_revision_contract.rs (target/debug/deps/static_revision_contract-b735b5ddbee12b56)
+
+running 2 tests
+test every_valid_contract_document_is_accepted ... ok
+test every_invalid_contract_document_is_rejected ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/two_hop_system.rs (target/debug/deps/two_hop_system-b042249d4b99fbb6)
+
+running 22 tests
+test harness_ports_are_unique_and_outside_the_ephemeral_range ... ok
+test core_start_failure_stays_visible_with_production_logging ... ok
+test harness_readiness_is_owned_by_the_started_process ... ok
+test relay_and_exit_logs_carry_no_credentials_and_no_rejected_destinations ... ok
+test rejected_and_revoked_credentials_never_reach_relay_or_exit_logs ... ok
+test s01_direct_route_client_exit_target ... ok
+test s02_relay_route_client_relay_exit_target ... ok
+test s03_relay_is_not_an_internet_exit ... ok
+test s04_wrong_relay_credential_fails ... ok
+test s05_wrong_exit_credential_fails_after_reaching_the_relay ... ok
+test s06_exit_unavailable_fails_without_direct_fallback ... ok
+test s07_relay_unavailable_fails_while_direct_remains_usable ... ok
+test s08_disabled_user_cannot_reconnect ... ok
+test s09_expired_user_loses_authorization_after_reconciliation ... ok
+test s10_credential_rotation_old_fails_new_works_scopes_independent ... ok
+test s11_malformed_or_dangling_declarations_fail_closed_and_apply_nothing ... ok
+test s12_unpaired_relay_cannot_reach_anything_as_an_exit ... ok
+test s13_relay_reaches_only_the_declared_exit_target ... ok
+test s14_reload_and_repair_preserve_role_and_restrictions ... ok
+test s15_crash_restart_never_passes_through_an_unrestricted_state ... ok
+test s16_privacy_plus_client_never_connects_to_the_exit_directly ... ok
+test s17_relay_down_privacy_plus_fails_closed_while_direct_stays_explicit ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 54.09s
+
+     Running tests/youtube_invariants_doc.rs (target/debug/deps/youtube_invariants_doc-cb60ad41ab05e892)
+
+running 6 tests
+test claude_md_still_points_at_the_invariants ... ok
+test every_invariant_is_still_documented ... ok
+test per_family_evidence_never_claims_native_recovery ... ok
+test the_google_youtube_domain_set_is_not_narrowed ... ok
+test the_tests_the_invariants_name_still_exist ... ok
+test no_third_party_egress_service_is_wired_into_the_renderer ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/main.rs (target/debug/deps/vpn_provisioning_agent-ab70a5fc0a0cd4c9)
+
+running 126 tests
+test config::tests::load_fails_on_missing_file ... ok
+test config::tests::load_parses_a_minimal_config ... ok
+test config::tests::load_rejects_a_non_numeric_lease_pool_size ... ok
+test config::tests::load_respects_an_explicit_nonzero_lease_pool_size ... ok
+test config::tests::load_respects_an_explicit_poll_interval ... ok
+test config::tests::load_respects_an_explicit_zero_lease_pool_size ... ok
+test config::tests::protocol_probe_section_parses_with_defaults ... ok
+test dispatch::tests::optional_expiry_allows_an_indefinite_create_user ... ok
+test dispatch::tests::optional_expiry_still_rejects_a_non_string_value ... ok
+test dispatch::tests::parse_json_output_errors_on_nonzero_exit ... ok
+test dispatch::tests::payload_expires_at_unix_errors_on_malformed_timestamp ... ok
+test dispatch::tests::payload_str_errors_on_missing_field ... ok
+test dispatch::tests::payload_expires_at_unix_parses_rfc3339 ... ok
+test dispatch::tests::payload_str_reads_a_present_string_field ... ok
+test dispatch::tests::payload_u64_errors_on_missing_field ... ok
+test dispatch::tests::payload_u64_errors_on_negative_value ... ok
+test dispatch::tests::payload_u64_reads_a_present_non_negative_integer ... ok
+test dispatch::tests::vpn_admin_spawns_are_always_bounded_and_killed ... ok
+test external_authorization::tests::canonical_legacy_and_v2_fixtures_parse_exactly ... ok
+test external_authorization::tests::effective_fingerprint_ignores_order_but_detects_secret_and_expiry ... ok
+test external_authorization::tests::failed_apply_is_never_acked_and_retry_acks_exact_persisted_revision ... ok
+test external_authorization::tests::large_bounded_snapshot_validates_and_one_over_limit_fails_closed ... ok
+test external_authorization::tests::oversized_snapshot_cannot_replace_previously_accepted_state ... ok
+test external_authorization::tests::persisted_revision_bookkeeping_survives_restart_and_old_format_migrates ... ok
+test external_authorization::tests::policy_rejects_lifetime_overlap_and_three_credentials ... ok
+test external_authorization::tests::privacy_schema_rejects_identity_and_unknown_protocol_fields ... ok
+test external_authorization::tests::rejects_malformed_route_identity_class_dates_and_secrets ... ok
+test external_authorization::tests::revision_parser_rejects_non_integer_revision ... ok
+test external_authorization::tests::revision_zero_advances_to_one_but_cannot_roll_back_or_equivocate ... ok
+test external_authorization::tests::snapshot_parser_never_panics_on_arbitrary_input ... ok
+test external_authorization::tests::versions_are_explicit_and_never_fall_back ... ok
+test health_probe::tests::honors_an_explicit_probe_outbound_override ... ok
+test health_probe::tests::probes_a_real_singbox_direct_outbound_successfully ... ok
+test health_probe::tests::probing_a_nonexistent_outbound_returns_false_against_a_real_singbox ... ok
+test health_probe::tests::returns_false_on_a_non_success_status ... ok
+test health_probe::tests::returns_false_when_the_server_is_unreachable ... ok
+test health_probe::tests::returns_none_when_clash_api_not_configured ... ok
+test health_probe::tests::returns_true_and_latency_on_a_successful_delay_test ... ok
+test lease_pool::tests::absorb_marks_reported_by_generation_and_reads_urgency_and_extensions ... ok
+test lease_pool::tests::batching_bounds_non_urgent_rotations_to_one_per_window ... ok
+test lease_pool::tests::debug_never_prints_secrets ... ok
+test lease_pool::tests::expired_slots_rotate_without_any_control_plane ... ok
+test lease_pool::tests::expiry_is_never_deferred_even_right_after_a_rotation ... ok
+test lease_pool::tests::legacy_state_migrates_ids_without_rotating_protocol_secrets ... ok
+test lease_pool::tests::lifetime_clamp_keeps_a_leasable_window_and_native_30_minute_cap ... ok
+test lease_pool::tests::non_urgent_revocation_waits_for_the_next_batch_boundary ... ok
+test lease_pool::tests::plan_mints_a_bounded_pool_of_distinct_random_slots_on_the_grid ... ok
+test lease_pool::tests::renewal_extends_in_place_floored_capped_and_only_for_live_leased_slots ... ok
+test lease_pool::tests::rotation_bumps_generation_changes_secret_and_marks_unapplied ... ok
+test lease_pool::tests::shrinking_to_zero_empties_the_pool ... ok
+test lease_pool::tests::state_persists_atomically_with_0600_and_survives_reload ... ok
+test lease_pool::tests::sync_body_sends_secrets_only_for_unreported_generations_and_policy ... ok
+test lease_pool::tests::unleased_slot_rotates_only_once_confirmed_unleased_after_its_window ... ok
+test lease_pool::tests::unreported_slot_past_its_window_rotates ... ok
+test lease_pool::tests::urgent_revocation_rotates_now_and_takes_pending_rotations_along ... ok
+test op_dedup::tests::entry_count_is_bounded_oldest_evicted_first ... ok
+test op_dedup::tests::expired_entries_are_pruned_on_the_next_record ... ok
+test op_dedup::tests::lookup_on_a_missing_file_is_none_not_an_error ... ok
+test op_dedup::tests::lookup_survives_reopening_the_log_at_the_same_path ... ok
+test op_dedup::tests::record_then_lookup_round_trips ... ok
+test op_dedup::tests::recording_again_for_the_same_job_id_replaces_not_duplicates ... ok
+test op_dedup_integration_tests::apply_node_revision_passes_a_static_revision_document_through_verbatim ... ok
+test op_dedup_integration_tests::apply_node_revision_twice_across_a_restart_fetches_and_applies_once ... ok
+test op_dedup_integration_tests::create_user_twice_across_a_restart_does_not_mint_a_second_credential ... ok
+test op_dedup_integration_tests::disable_user_twice_across_a_restart_applies_once ... ok
+test op_dedup_integration_tests::enable_user_twice_across_a_restart_applies_once ... ok
+test op_dedup_integration_tests::rotate_credentials_twice_across_a_restart_does_not_rotate_twice ... ok
+test protocol_probe::tests::client_config_routes_everything_through_the_probe_outbound ... ok
+test protocol_probe::tests::debug_never_prints_credentials ... ok
+test protocol_probe::tests::duplicate_observation_in_one_round_does_not_advance_failure_streak ... ok
+test protocol_probe::tests::failure_streaks_require_adjacent_observed_rounds_and_remain_bounded ... ok
+test protocol_probe::tests::finds_probe_user_in_vpn_admin_list ... ok
+test protocol_probe::tests::host_override_is_used_for_loopback_self_probe ... ok
+test protocol_probe::tests::one_transient_failure_is_degraded_not_failed ... ok
+test protocol_probe::tests::parses_hysteria2_share_link_with_obfs_and_encoded_password ... ok
+test protocol_probe::tests::parses_openssl_enddate_formats ... ok
+test protocol_probe::tests::parses_reality_share_link ... ok
+test protocol_probe::tests::rejects_non_reality_vless_and_unknown_schemes ... ok
+test protocol_probe::tests::sweeps_only_probe_prefixed_dirs ... ok
+test protocol_probe::tests::target_dedup_is_global_ordered_and_static_first ... ok
+test protocol_probe::tests::trace_ip_extracts_the_egress_address ... ok
+test protocol_probe::tests::unreachable_reality_endpoint_fails_fast_on_tcp_without_spawning ... ok
+test report_queue::tests::enqueue_never_blocks_regardless_of_endpoint_health ... ok
+test report_queue::tests::enqueue_persists_immediately_even_before_the_background_task_runs ... ok
+test report_queue::tests::load_on_a_missing_file_is_an_empty_queue_not_an_error ... ok
+test dispatch::tests::timeout_kills_the_child_before_it_can_mutate_state ... ok
+test report_queue::tests::reboot_discards_terminal_stale_attempt_without_rewriting_its_token ... ok
+test report_queue::tests::reboot_replays_persisted_original_attempt_then_drains_queue ... ok
+test report_queue::tests::save_then_load_round_trips_and_is_0600_on_unix ... ok
+test ssrf_guard::tests::allows_ipv4_mapped_public_addresses ... ok
+test ssrf_guard::tests::allows_ordinary_public_addresses ... ok
+test ssrf_guard::tests::denies_carrier_grade_nat ... ok
+test ssrf_guard::tests::denies_ipv4_mapped_private_addresses ... ok
+test ssrf_guard::tests::denies_ipv6_ula_and_link_local ... ok
+test ssrf_guard::tests::denies_link_local_v4_generally_too ... ok
+test ssrf_guard::tests::denies_loopback_v4 ... ok
+test ssrf_guard::tests::denies_loopback_v6 ... ok
+test ssrf_guard::tests::denies_metadata_service ... ok
+test ssrf_guard::tests::denies_rfc1918 ... ok
+test ssrf_guard::tests::resolve_and_validate_allows_public_ip_literal ... ok
+test ssrf_guard::tests::resolve_and_validate_rejects_empty_host ... ok
+test ssrf_guard::tests::resolve_and_validate_rejects_ip_literal_targets ... ok
+test stats::tests::counts_open_connections ... ok
+test stats::tests::handles_counters_beyond_u32 ... ok
+test stats::tests::parses_a_real_clash_api_payload ... ok
+test stats::tests::reads_counters_from_a_real_singbox_clash_api ... ok
+test stats::tests::rejects_a_payload_missing_the_counters ... ok
+test stats::tests::rejects_a_wrong_clash_api_secret ... ok
+test stats::tests::tolerates_a_payload_with_no_connections_key ... ok
+test telemetry::probe_user_count_tests::probe_user_is_not_counted_as_a_customer ... ok
+test telemetry::tests::collect_includes_both_probe_fields_when_present ... ok
+test telemetry::tests::collect_includes_probe_ok_false_without_latency ... ok
+test telemetry::tests::collect_omits_probe_fields_entirely_when_none ... ok
+test telemetry::tests::heartbeat_capability_contract_has_stable_names_and_types ... ok
+test telemetry::tests::legacy_heartbeat_is_distinguishable_by_absent_contract ... ok
+test telemetry::tests::proc_readers_never_produce_out_of_range_percentages ... ok
+test telemetry::tests::uptime_is_nonzero_on_linux_ci ... ok
+test worker_client::claim_lease_tests::claim_requires_and_parses_attempt_capability ... ok
+test worker_client::claim_lease_tests::complete_and_fail_echo_the_claim_token ... ok
+test worker_client::claim_lease_tests::duplicate_terminal_reports_are_treated_as_accepted_when_server_is_idempotent ... ok
+test worker_client::claim_lease_tests::reclaimed_attempt_cannot_complete_but_new_attempt_can ... ok
+test worker_client::claim_lease_tests::stale_gone_cancelled_and_unauthorized_are_terminal ... ok
+test worker_client::claim_lease_tests::timeout_is_transient_and_expired_lease_is_rejected_locally ... ok
+test worker_client::external_authorization_tests::failed_ack_can_be_retried_with_the_same_exact_revision ... ok
+test worker_client::external_authorization_tests::fetch_requests_v2_and_ack_contains_only_the_exact_revision ... ok
+test report_queue::tests::queued_completion_survives_repeated_500s_and_delivers_once_the_endpoint_recovers ... ok
+
+test result: ok. 126 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.44s
+
+     Running unittests src/lib.rs (target/debug/deps/provisioning_contract-d24d4c64ba446f70)
+
+running 27 tests
+test tests::a_document_carrying_forbidden_content_fails_validation ... ok
+test tests::both_transports_document_is_valid ... ok
+test tests::capability_advertised_without_an_endpoint_is_rejected ... ok
+test tests::empty_hysteria2_password_is_rejected ... ok
+test tests::duplicate_endpoint_ids_are_rejected ... ok
+test tests::empty_obfs_password_is_rejected ... ok
+test tests::endpoint_without_its_capability_is_rejected ... ok
+test tests::experimental_capability_may_not_appear_in_production_capabilities ... ok
+test tests::experimental_capability_must_carry_the_diag_prefix ... ok
+test tests::from_json_rejects_an_unsupported_schema_version ... ok
+test tests::experimental_capabilities_are_a_separate_field_from_production_ones ... ok
+test tests::json_round_trip_preserves_every_field ... ok
+test tests::malformed_uuid_is_rejected ... ok
+test tests::missing_reality_public_key_is_rejected ... ok
+test tests::missing_reality_short_id_is_rejected ... ok
+test tests::non_hex_short_id_is_rejected ... ok
+test tests::reality_only_document_reports_hysteria2_unavailable ... ok
+test tests::schema_version_is_explicit_and_current ... ok
+test tests::serialized_document_contains_no_forbidden_key_or_value ... ok
+test tests::unexpected_flow_is_rejected ... ok
+test tests::transport_is_an_internally_tagged_discriminator_on_the_endpoint ... ok
+test tests::unknown_capability_and_transport_round_trip_for_forward_compatibility ... ok
+test tests::unknown_obfuscator_is_rejected ... ok
+test tests::unsupported_schema_version_error_body_is_machine_readable ... ok
+test tests::unsupported_schema_version_is_rejected_not_reinterpreted ... ok
+test tests::zero_port_and_malformed_host_are_rejected ... ok
+test tests::vision_off_endpoint_omits_flow_entirely_rather_than_emptying_it ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/access_paths.rs (target/debug/deps/access_paths-aa67f30513427743)
+
+running 10 tests
+test declared_path_set_rejects_dangling_endpoint_reference ... ok
+test duplicate_access_path_ids_are_rejected ... ok
+test automatic_group_mixing_direct_and_relayed_routes_is_rejected ... ok
+test empty_access_paths_are_absent_and_schema_stays_one ... ok
+test empty_or_duplicate_capabilities_are_rejected ... ok
+test legacy_opaque_path_without_access_paths_remains_forward_compatible ... ok
+test relayed_catalog_with_privacy_only_automatic_group_is_servable ... ok
+test relay_metadata_round_trips_without_secrets ... ok
+test relayed_endpoint_rendered_without_detour_is_rejected ... ok
+test unknown_access_path_kind_round_trips ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/adversarial_contract.rs (target/debug/deps/adversarial_contract-02897c1a77cc396e)
+
+running 4 tests
+test a_future_schema_version_is_rejected_at_the_parse_boundary ... ok
+test forbidden_server_private_or_client_policy_markers_fail_closed ... ok
+test invalid_endpoint_host_and_zero_port_are_rejected_before_serialization ... ok
+test every_strict_prefix_of_a_valid_document_is_rejected ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/metadata_and_embedded_config.rs (target/debug/deps/metadata_and_embedded_config-9f98131d69f2096f)
+
+running 15 tests
+test a_private_key_anywhere_in_the_embedded_config_is_rejected ... ok
+test a_document_with_no_new_fields_serializes_without_any_of_their_keys ... ok
+test a_server_filesystem_path_in_the_embedded_config_is_rejected ... ok
+test a_selector_missing_an_endpoint_tag_is_rejected ... ok
+test a_well_formed_two_domain_document_validates ... ok
+test an_unknown_path_value_round_trips_rather_than_failing_the_parse ... ok
+test client_owned_policy_blocks_are_rejected_by_the_top_level_allowlist ... ok
+test every_endpoint_tag_must_have_a_matching_core_outbound ... ok
+test insecure_false_is_accepted_because_it_asserts_verification_is_on ... ok
+test insecure_true_is_rejected_anywhere_in_the_embedded_config ... ok
+test route_final_must_name_the_selector_group ... ok
+test metadata_round_trips_through_json ... ok
+test the_envelope_substring_audit_still_rejects_forbidden_content_outside_the_config ... ok
+test schema_version_stays_one_with_the_new_fields_populated ... ok
+test the_selector_must_list_exactly_the_endpoint_tags_plus_auto ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/subscription-7436dc85c9569218)
+
+running 75 tests
+test rate_limit_regression::bucket_map_does_not_grow_without_bound ... ok
+test relay_subscription_tests::a_relay_user_without_an_exit_credential_gets_no_route_not_the_first_hop ... ok
+test relay_subscription_tests::disabled_relay_user_is_a_generic_404_on_every_route ... ok
+test relay_subscription_tests::every_format_answers_no_route_for_an_unpaired_relay ... ok
+test relay_subscription_tests::live_fingerprint_matches_the_canonical_relay_endpoint_set ... ok
+test relay_subscription_tests::native_singbox_format_on_a_relay_uses_the_detour_chain ... ok
+test relay_subscription_tests::provisioning_on_a_paired_relay_serves_direct_and_via_routes_only ... ok
+test relay_subscription_tests::share_links_on_a_relay_contain_only_the_direct_exit_route ... ok
+test tests::a_configured_title_is_used_and_non_ascii_is_base64_encoded ... ok
+test tests::a_non_numeric_schema_version_is_an_explicit_error_not_a_guess ... ok
+test tests::absent_encoding_leaves_uri_format_byte_identical_to_before ... ok
+test tests::adding_hiddify_pinned_does_not_change_the_normal_subscription ... ok
+test tests::adding_quic_reject_does_not_change_the_normal_subscription ... ok
+test tests::an_unknown_diagnostic_is_rejected_rather_than_silently_ignored ... ok
+test tests::an_unsupported_version_path_reports_which_versions_exist ... ok
+test tests::compat_hiddify_pinned_serves_exactly_one_selectable_outbound ... ok
+test tests::compat_hiddify_pinned_with_uri_format_is_rejected_not_silently_degraded ... ok
+test tests::compat_quic_reject_with_hiddify_format_is_rejected_not_silently_degraded ... ok
+test tests::compat_quic_reject_with_singbox_format_emits_the_udp_443_reject_rule ... ok
+test tests::compat_quic_reject_with_uri_format_is_rejected_not_silently_degraded ... ok
+test tests::compat_tcp_only_with_hiddify_format_is_rejected_not_silently_degraded ... ok
+test tests::compat_tcp_only_with_singbox_format_returns_200_and_tcp_only_json ... ok
+test tests::compat_tcp_only_with_uri_format_is_rejected_not_silently_degraded ... ok
+test tests::compat_vision_off_uri_and_hiddify_formats_are_identical ... ok
+test tests::compat_vision_off_with_hiddify_format_returns_share_links_without_flow ... ok
+test tests::compat_vision_off_with_singbox_format_omits_flow_and_keeps_hysteria2 ... ok
+test tests::compat_youtube_direct_only_differs_from_normal_by_the_route_block ... ok
+test tests::compat_youtube_direct_with_hiddify_format_is_rejected_not_silently_degraded ... ok
+test tests::compat_youtube_direct_with_singbox_format_emits_the_domain_direct_rule ... ok
+test tests::compat_youtube_direct_with_uri_format_is_rejected_not_silently_degraded ... ok
+test tests::default_and_existing_format_outputs_are_byte_for_byte_unchanged ... ok
+test tests::diagnostic_tcp_only_removes_hysteria2_entirely ... ok
+test tests::diagnostic_vision_off_omits_the_flow_field ... ok
+test tests::disabled_user_token_returns_404_not_a_distinguishable_error ... ok
+test tests::encoding_base64_with_singbox_format_is_rejected_not_silently_ignored ... ok
+test tests::error_responses_carry_no_profile_title ... ok
+test tests::every_successful_subscription_format_carries_the_profile_title ... ok
+test tests::existing_outputs_are_byte_for_byte_unchanged_by_the_vision_off_mode_existing ... ok
+test tests::experimental_capabilities_are_never_production_capabilities ... ok
+test tests::healthz_responds_ok ... ok
+test tests::hiddify_format_is_identical_to_uri_format ... ok
+test tests::hiddify_format_with_encoding_base64_returns_decodable_body ... ok
+test tests::no_secret_material_appears_in_any_log_line_at_any_verbosity ... ok
+test tests::normal_subscription_unchanged_when_compat_param_absent ... ok
+test tests::oversized_token_is_rejected_cheaply ... ok
+test tests::removed_xray_format_is_rejected_as_an_unknown_format ... ok
+test tests::state_fingerprint_matches_in_memory_endpoints_and_never_leaks_raw_values ... ok
+test tests::subscription_responses_are_never_cacheable_success_or_error ... ok
+test tests::subscription_served_event_is_not_logged_at_the_production_default_level ... ok
+test tests::subscription_served_event_is_still_available_when_an_operator_raises_the_log_level ... ok
+test tests::subscription_survives_a_poisoned_rate_limiter_lock ... ok
+test rate_limit_regression::a_single_source_burst_does_not_lock_out_the_deployment ... ok
+test tests::the_production_profile_is_what_a_client_gets_without_asking_for_a_diagnostic ... ok
+test tests::the_profile_title_is_identical_for_every_user ... ok
+test tests::unknown_compat_value_returns_400 ... ok
+test tests::unknown_encoding_value_returns_400 ... ok
+test tests::unknown_token_returns_generic_404 ... ok
+test tests::uri_format_returns_plaintext_share_links ... ok
+test tests::uri_format_with_encoding_base64_returns_decodable_body ... ok
+test tests::user_id_is_never_accepted_where_a_subscription_token_is_expected ... ok
+test tests::v1_provision_accepts_an_explicit_matching_schema_version ... ok
+test tests::v1_provision_and_the_legacy_share_links_agree_on_credentials ... ok
+test tests::v1_provision_capabilities_follow_real_configuration ... ok
+test tests::v1_provision_carries_salamander_obfs_only_when_configured ... ok
+test tests::v1_provision_embeds_a_config_whose_selector_can_reach_the_peer ... ok
+test tests::v1_provision_for_a_zero_peer_deployment_emits_no_new_endpoint_keys ... ok
+test tests::v1_provision_never_carries_server_private_or_client_owned_material ... ok
+test tests::v1_provision_rejects_an_unsupported_schema_version_explicitly ... ok
+test tests::v1_provision_omits_a_peer_the_user_has_no_credential_for ... ok
+test tests::v1_provision_responses_are_never_cacheable ... ok
+test tests::v1_provision_serves_a_peer_with_its_own_credential_and_metadata ... ok
+test tests::v1_provision_serves_a_valid_versioned_contract ... ok
+test tests::v1_provision_uses_the_same_token_and_404_semantics_as_sub ... ok
+test tests::valid_token_returns_singbox_subscription ... ok
+test tests::vision_off_with_encoding_base64_returns_decodable_body_without_flow ... ok
+
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running unittests src/main.rs (target/debug/deps/subscription-ed84ed3ad334076f)
+
+running 4 tests
+test hysteria_obfs_password_tests::missing_file_is_none_not_an_error ... ok
+test hysteria_obfs_password_tests::empty_file_is_treated_as_disabled ... ok
+test hysteria_obfs_password_tests::unreadable_present_file_fails_closed_rather_than_looking_disabled ... ok
+test hysteria_obfs_password_tests::valid_password_is_trimmed_and_returned ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/startup_validation.rs (target/debug/deps/startup_validation-07215f5897d2b7a8)
+
+running 8 tests
+test refuses_to_start_when_hysteria_obfs_password_file_is_unreadable ... ok
+test refuses_to_start_with_empty_public_key ... ok
+test refuses_to_start_with_empty_short_id ... ok
+test refuses_to_start_with_non_hex_short_id ... ok
+test refuses_to_start_with_malformed_public_key ... ok
+test release_binary_exposes_package_version ... ok
+test refuses_to_start_with_truncated_public_key ... ok
+test starts_successfully_with_valid_reality_material ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+   Doc-tests common
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests compat_config
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests provisioning_contract
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests subscription
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[update] tests passed; live services untouched during the test phase.
+[update] building new binaries...
+warning: /opt/singbox-vpn/apps/admin/Cargo.toml: file `/opt/singbox-vpn/apps/admin/src/main.rs` found to be present in multiple build targets:
+  * `bin` target `vpn`
+  * `bin` target `vpn-admin`
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.189
+   Compiling syn v3.0.3
+   Compiling cfg-if v1.0.4
+   Compiling smallvec v1.15.2
+   Compiling pin-project-lite v0.2.17
+   Compiling itoa v1.0.18
+   Compiling once_cell v1.21.4
+   Compiling bytes v1.12.1
+   Compiling parking_lot_core v0.9.12
+   Compiling serde_core v1.0.229
+   Compiling syn v2.0.119
+   Compiling synstructure v0.14.0
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling zerofrom-derive v0.1.8
+   Compiling errno v0.3.14
+   Compiling signal-hook-registry v1.4.8
+   Compiling parking_lot v0.12.5
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.8.3
+   Compiling tokio-macros v2.7.2
+   Compiling tracing-core v0.1.36
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.2
+   Compiling stable_deref_trait v1.2.1
+   Compiling log v0.4.33
+   Compiling tokio v1.53.1
+   Compiling yoke v0.8.3
+   Compiling tracing-attributes v0.1.31
+   Compiling getrandom v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling tracing v0.1.44
+   Compiling zerovec-derive v0.11.6
+   Compiling zeroize v1.9.0
+   Compiling zerovec v0.11.8
+   Compiling displaydoc v0.2.7
+   Compiling serde v1.0.229
+   Compiling serde_derive v1.0.229
+   Compiling http v1.5.0
+   Compiling zmij v1.0.23
+   Compiling http-body v1.1.0
+   Compiling subtle v2.6.1
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.13
+   Compiling percent-encoding v2.3.2
+   Compiling zerocopy v0.8.56
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling typenum v1.20.1
+   Compiling serde_json v1.0.151
+   Compiling hybrid-array v0.4.14
+   Compiling futures-util v0.3.34
+   Compiling cc v1.4.7
+   Compiling tinystr v0.8.4
+   Compiling tower-service v0.3.3
+   Compiling memchr v2.8.3
+   Compiling semver v1.0.28
+   Compiling writeable v0.6.4
+   Compiling httparse v1.10.1
+   Compiling thiserror v2.0.20
+   Compiling base64 v0.22.1
+   Compiling litemap v0.8.3
+   Compiling icu_locale_core v2.3.0
+   Compiling rustc_version v0.4.1
+   Compiling ring v0.17.14
+   Compiling zerotrie v0.2.5
+   Compiling potential_utf v0.1.6
+   Compiling thiserror-impl v2.0.20
+   Compiling utf8_iter v1.0.4
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8parse v0.2.2
+   Compiling try-lock v0.2.5
+   Compiling bitflags v2.13.1
+   Compiling want v0.3.1
+   Compiling anstyle-parse v1.0.0
+   Compiling icu_collections v2.3.0
+   Compiling icu_provider v2.3.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling curve25519-dalek v4.1.3
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling form_urlencoded v1.2.2
+   Compiling sync_wrapper v1.0.2
+   Compiling futures-channel v0.3.34
+   Compiling rand_core v0.6.4
+   Compiling atomic-waker v1.1.2
+   Compiling httpdate v1.0.3
+   Compiling rustix v1.1.4
+   Compiling anstyle v1.0.14
+   Compiling const-oid v0.10.2
+   Compiling tower-layer v0.3.3
+   Compiling colorchoice v1.0.5
+   Compiling winnow v1.0.4
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle-query v1.1.5
+   Compiling anstream v1.0.0
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling digest v0.11.3
+   Compiling hyper v1.11.0
+   Compiling rand_chacha v0.3.1
+   Compiling rustls-pki-types v1.15.1
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling cpufeatures v0.3.0
+   Compiling ipnet v2.12.2
+   Compiling linux-raw-sys v0.12.1
+   Compiling strsim v0.11.1
+   Compiling untrusted v0.9.0
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling clap_lex v1.1.0
+   Compiling anyhow v1.0.104
+   Compiling heck v0.5.0
+   Compiling cpufeatures v0.2.17
+   Compiling clap_derive v4.6.7
+   Compiling clap_builder v4.6.7
+   Compiling toml v1.1.6+spec-1.1.0
+   Compiling hyper-util v0.1.20
+   Compiling sha2 v0.11.0
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling rand v0.8.7
+   Compiling tower v0.5.3
+   Compiling common v1.3.1 (/opt/singbox-vpn/crates/common)
+   Compiling provisioning-contract v1.3.1 (/opt/singbox-vpn/crates/provisioning-contract)
+   Compiling http-body-util v0.1.4
+   Compiling getrandom v0.4.3
+   Compiling ryu v1.0.23
+   Compiling rustls v0.23.46
+   Compiling rustversion v1.0.23
+   Compiling regex-syntax v0.8.11
+   Compiling hex v0.4.3
+   Compiling compat-config v1.3.1 (/opt/singbox-vpn/crates/compat-config)
+   Compiling regex-automata v0.4.18
+   Compiling serde_urlencoded v0.7.1
+   Compiling idna_adapter v1.2.2
+   Compiling rustls-webpki v0.103.15
+   Compiling clap v4.6.7
+   Compiling lazy_static v1.5.0
+   Compiling sharded-slab v0.1.7
+   Compiling idna v1.1.0
+   Compiling matchers v0.2.0
+   Compiling tracing-log v0.2.0
+   Compiling async-trait v0.1.92
+   Compiling thread_local v1.1.10
+   Compiling nu-ansi-term v0.50.3
+   Compiling mime v0.3.17
+   Compiling fastrand v2.5.0
+   Compiling tempfile v3.27.0
+   Compiling axum-core v0.4.5
+   Compiling tracing-subscriber v0.3.23
+   Compiling url v2.5.8
+   Compiling tokio-rustls v0.26.5
+   Compiling xattr v1.6.1
+   Compiling webpki-roots v1.0.9
+   Compiling serde_path_to_error v0.1.20
+   Compiling filetime v0.2.29
+   Compiling matchit v0.7.3
+   Compiling axum v0.7.9
+   Compiling tar v0.4.46
+   Compiling hyper-rustls v0.27.10
+   Compiling tower-http v0.6.11
+   Compiling time-core v0.1.9
+   Compiling deranged v0.5.8
+   Compiling qrcode v0.14.1
+   Compiling num-conv v0.2.2
+   Compiling powerfmt v0.2.0
+   Compiling time v0.3.55
+   Compiling subscription v1.3.1 (/opt/singbox-vpn/services/subscription)
+   Compiling reqwest v0.12.28
+   Compiling admin v1.3.1 (/opt/singbox-vpn/apps/admin)
+   Compiling provisioning-agent v1.3.1 (/opt/singbox-vpn/apps/provisioning-agent)
+    Finished `release` profile [optimized] target(s) in 4m 11s
+[update] deployment identity before update: node_id=fin1 role=exit
+[update] installing staged binaries, systemd units, and helper scripts...
+[update] reloading systemd unit definitions...
+[update] install mode: UPGRADE (dev-rebuild) — checking persistent state schema before rendering...
+[update] persistent state schema: current, no migration needed.
+[update] rendering current authoritative users/REALITY state with new tooling...
+sing-box authorization config is already current; no reload needed.
+[update] deliberate service activation (apply stage, not the test phase): restarting vpn-subscription once...
+[update] sing-box config and unit file unchanged; not restarting (keeps live connections up).
+[update] running health check...
+== local health ==
+sing-box service         OK
+subscription service     OK
+sing-box binary          OK
+sing-box config valid    OK
+REALITY key present      OK
+firewall TCP/443         OK
+firewall UDP/443         OK
+firewall subscription/8443 OK
+subscription loopback reachable OK
+VLESS+REALITY listening (443/tcp) OK
+Hysteria2 listening (443/udp) OK
+Hysteria TLS cert present OK
+Hysteria TLS cert not expired OK
+
+== TLS validity (real hostname, real trust chain — no -k) ==
+nginx subscription vhost reachable+trusted (8443, hostname=fin1.xn----8sba1cvaif4e.com) OK
+subscription TLS cert not expiring within 14 days OK
+
+== subscription/server key coherence (run 'vpn-admin doctor') ==
+  This script does not compare the REALITY key material sing-box is
+  actually enforcing against what vpn-subscription would hand a new
+  client right now — that class of drift (server and subscription
+  disagreeing about REALITY keys) passed every check above in a
+  real incident while still failing a real client's handshake.
+  'sudo vpn-admin doctor' adds that check, tagged [L4], from file
+  contents alone (no network needed); 'sudo vpn-admin doctor
+  --protocol' goes further and dials this server's own REALITY
+  listener with a throwaway sing-box client, tagged [L5-6].
+
+== external reachability / real protocol test (NOT performed here) ==
+  Everything above runs from localhost against localhost sockets.
+  It proves the services are up and that TLS is configured
+  correctly for the hostname this host thinks it has — it does NOT
+  prove this VPS is reachable from the public internet (that
+  depends on upstream routing/provider firewall/NAT, none of which
+  this script can see from inside the host), and it does NOT prove
+  a real VLESS+REALITY or Hysteria2 client can complete a full
+  handshake end-to-end. See 'vpn-admin doctor --protocol' for a
+  best-effort loopback self-test, deploy/almalinux/acceptance-test.sh
+  for the listener/access-matrix checks, and
+  docs/DEVICE_ACCEPTANCE_TESTS.md for what real-client verification
+  requires and whether it has actually been performed.
+[update] verifying real protocol handshake...
+[update] provisioning agent binary refreshed.
+[update] kernel network tuning already up to date (/etc/sysctl.d/99-singbox-vpn-dataplane.conf).
+[update] net.core.rmem_max effective value confirmed: 16777216
+[update] net.core.wmem_max effective value confirmed: 16777216
+[update] TCP bbr congestion control enabled and confirmed active for the REALITY/TCP data plane.
+[update] dev-rebuild update complete.
+DONE rc=0

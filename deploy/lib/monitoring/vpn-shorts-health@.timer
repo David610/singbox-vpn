@@ -1,0 +1,11 @@
+[Unit]
+Description=singbox-vpn Shorts health probe schedule (%i)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

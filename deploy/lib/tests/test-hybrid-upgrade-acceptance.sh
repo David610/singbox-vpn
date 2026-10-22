@@ -89,7 +89,7 @@ if SINGBOX_VPN_PRODUCTION_HOST=disposable.example run --scenario normal >/dev/nu
 echo "--- hybrid-policy: the owner's real transition ---"
 fresh_state
 out="$(run --scenario hybrid-policy 2>&1)" && rc=0 || rc=$?
-[ "$rc" -eq 0 ] && grep -q '^HYBRID UPGRADE GATE: PASS (hybrid-policy)$' <<<"$out" && ok "a correct transition passes the gate" || { fail "a correct transition did not pass (rc=$rc)"; echo "$out" | grep -E "FAIL|UNHANDLED" | head; }
+[ "$rc" -eq 0 ] && grep -q '^HYBRID UPGRADE GATE: PASS (hybrid-policy)$' <<<"$out" && ok "a correct transition passes the gate" || { fail "a correct transition did not pass (rc=$rc)"; grep -E "FAIL|UNHANDLED" <<<"$out" | head; }
 ev="$(tr '\n' ' ' <"$T/events")"
 [ "$ev" = "HYBRID-COPY POLICY-SET UPDATE REPAIR DOWNGRADE " ] && ok "state is created in place, then updated, then repaired, then the downgrade is attempted (events: $ev)" || fail "unexpected step order: $ev"
 grep -q "singbox-vpn-src.tar.gz.*sha256sum -c -.*sudo bash deploy/almalinux/update.sh --version v1.3.0-rc.1" "$T/ssh.log"   && ! grep -q "/opt/singbox-vpn/deploy/almalinux/update.sh --version v1.3.0-rc.1" "$T/ssh.log"   && ok "the transition runs the candidate's own updater from its checksum-verified source archive, never the baseline's installed one"   || fail "the transition did not use the candidate's verified updater"
@@ -100,7 +100,7 @@ grep -q 'sha256' <<<"$out" && fail "the report prints hash material" || ok "no c
 echo "--- hybrid and normal scenarios ---"
 for sc in hybrid normal; do
   fresh_state; out="$(run --scenario $sc 2>&1)" && rc=0 || rc=$?
-  [ "$rc" -eq 0 ] && ok "$sc passes" || { fail "$sc failed (rc=$rc)"; echo "$out" | grep FAIL | head -3; }
+  [ "$rc" -eq 0 ] && ok "$sc passes" || { fail "$sc failed (rc=$rc)"; grep FAIL <<<"$out" | head -3; }
 done
 fresh_state; run --scenario normal >/dev/null 2>&1 || true
 grep -q 'HYBRID-COPY' "$T/events" && fail "the normal scenario copied executables by hand" || ok "the normal scenario never creates the hybrid state"

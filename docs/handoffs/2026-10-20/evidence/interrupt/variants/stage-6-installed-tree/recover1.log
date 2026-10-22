@@ -1,0 +1,20 @@
+  'sudo vpn-admin doctor' adds that check, tagged [L4], from file
+  contents alone (no network needed); 'sudo vpn-admin doctor
+  --protocol' goes further and dials this server's own REALITY
+  listener with a throwaway sing-box client, tagged [L5-6].
+
+== external reachability / real protocol test (NOT performed here) ==
+  Everything above runs from localhost against localhost sockets.
+  It proves the services are up and that TLS is configured
+  correctly for the hostname this host thinks it has — it does NOT
+  prove this VPS is reachable from the public internet (that
+  depends on upstream routing/provider firewall/NAT, none of which
+  this script can see from inside the host), and it does NOT prove
+  a real VLESS+REALITY or Hysteria2 client can complete a full
+  handshake end-to-end. See 'vpn-admin doctor --protocol' for a
+  best-effort loopback self-test, deploy/almalinux/acceptance-test.sh
+  for the listener/access-matrix checks, and
+  docs/DEVICE_ACCEPTANCE_TESTS.md for what real-client verification
+  requires and whether it has actually been performed.
+[update] WARNING: found 1 leaked cosign download directory under /tmp left by older updaters (about 135 MB each). They are safe to remove: rm -rf the /tmp/tmp.* directories that contain only cosign-linux-*.
+[update] RECOVERY COMPLETE — PREVIOUS RELEASE (v1.3.0) RESTORED AND VERIFIED. Re-run the update when ready.

@@ -40,15 +40,29 @@ printf 'gate\tresult\texit\tseconds\tlog_sha256\n' >"$SUMMARY"
 {
   echo "commit: ${QUALIFY_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo 'UNKNOWN (exported tree: set QUALIFY_COMMIT)')}"
   echo "tree_clean: $(if [ -n "$(git status --porcelain 2>/dev/null)" ]; then echo no; else echo yes-or-not-git; fi)"
-  echo "workspace_version: $(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+  echo "workspace_version: $(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 || true)"
   echo "date_utc: $(date -u +%FT%TZ)"
   echo "uid: $(id -u)"
   echo "os: $(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")"
   echo "rustc: $(rustc --version 2>&1)"
   echo "cargo: $(cargo --version 2>&1)"
-  echo "sing-box: ${SING_BOX:+$("$SING_BOX" version 2>&1 | head -1)}"
+  echo "sing-box: ${SING_BOX:+$("$SING_BOX" version 2>&1 | head -1 || true)}"
   echo "pinned sing-box: $(sed -n 's/^SINGBOX_VERSION=//p' deploy/lib/versions.env)"
 } >"$OUT/ENVIRONMENT.txt"
+
+# I-81: one shared, bounded Cargo target and a disk/inode budget before any build;
+# the build lock is held for the whole run so a concurrent prune cannot remove it.
+log() { echo "[qualify] $*"; }
+warn() { echo "[qualify] WARN: $*" >&2; }
+die() { echo "[qualify] $*" >&2; exit 2; }
+# shellcheck source=deploy/lib/preflight.sh
+. "$ROOT/deploy/lib/preflight.sh"
+preflight_cargo_build_env || die "cannot prepare the shared build cache $SINGBOX_VPN_BUILD_CACHE"
+preflight_check_build_budget "$SINGBOX_VPN_BUILD_CACHE" || die "insufficient disk headroom; nothing was built"
+exec {QUALIFY_LOCK_FD}>>"$SINGBOX_VPN_BUILD_CACHE/.lock"
+flock -n "$QUALIFY_LOCK_FD" || die "another build holds $SINGBOX_VPN_BUILD_CACHE/.lock"
+echo "cargo_target_dir: $CARGO_TARGET_DIR (jobs $CARGO_BUILD_JOBS)" >>"$OUT/ENVIRONMENT.txt"
+trap 'echo "target_dir_mib: $(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1)" >>"$OUT/ENVIRONMENT.txt"' EXIT
 
 overall=0
 record() { # name result exit seconds logfile
@@ -89,10 +103,22 @@ else
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
-  for t in deploy/lib/tests/*.sh; do gate "fixture-$(basename "$t" .sh)" -- bash "$t"; done
+  # Several fixtures source install.sh, whose paths are fixed (/etc/vpn, /opt/singbox-vpn, /var/lib/singbox-vpn): on a host that
+  # has an installation they read the LIVE deployment and fail for reasons that are not defects (I-48). On such a host run each
+  # one through the clean-host wrapper (private mount namespace, nothing on the host is touched); a retry-pass is a FAIL (exit 3).
+  if [ -e /etc/vpn/deployment.toml ] || [ -d /opt/singbox-vpn ] || [ -d /var/lib/singbox-vpn ]; then
+    echo "fixtures: installed host detected, running each through deploy/lib/run-shell-tests-clean-host.sh" >>"$OUT/ENVIRONMENT.txt"
+    for t in deploy/lib/tests/*.sh; do gate "fixture-$(basename "$t" .sh)" -- bash deploy/lib/run-shell-tests-clean-host.sh "$t"; done
+  else
+    echo "fixtures: clean host, run directly" >>"$OUT/ENVIRONMENT.txt"
+    for t in deploy/lib/tests/*.sh; do gate "fixture-$(basename "$t" .sh)" -- bash "$t"; done
+  fi
 else
   not_run shell-fixtures "the privileged fixtures need root"
 fi
+for f in deploy/lib/tests/test_*.py; do
+  gate "python-$(basename "$f" .py)" -- bash -c 'cd deploy/lib/tests && python3 -m unittest "$1"' _ "$(basename "$f" .py)"
+done
 if [ -n "$PYTHON_BIN" ] && [ -x "$PYTHON_BIN" ]; then
   gate egress-tools-python -- "$PYTHON_BIN" deploy/lib/tests/test-egress-tools.py
 else

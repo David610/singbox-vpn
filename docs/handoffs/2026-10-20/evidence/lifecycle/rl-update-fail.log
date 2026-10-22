@@ -1,0 +1,67 @@
+[update] current release: v1.3.0 (David610/singbox-vpn) -> target release: v1.3.1-rc.2 (David610/singbox-vpn)
+[update] downloading singbox-vpn v1.3.1-rc.2 release source archive + checksum manifest...
+singbox-vpn-src.tar.gz: OK
+[update] source archive checksum verified against release SHA256SUMS.
+[update] downloading pinned cosign v3.1.3 (amd64) to verify release attestations...
+Verified OK
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] checking for prebuilt release binaries (singbox-vpn-x86_64-unknown-linux-gnu.tar.gz)...
+singbox-vpn-x86_64-unknown-linux-gnu.tar.gz: OK
+Verified OK
+[update] artifact attestation verified for repository David610/singbox-vpn.
+[update] staged prebuilt singbox-vpn v1.3.1-rc.2 binaries (x86_64-unknown-linux-gnu) — no Rust compiler needed.
+[update] target release pins the same sing-box version (1.14.1) already installed — no sing-box change needed.
+[update] STAGE complete: v1.3.1-rc.2 verified and ready (source + binaries).
+[update] pre-switch schema compatibility check: v1.3.1-rc.2's vpn-admin can read the current persistent state (status 0).
+[update] deployment identity before update: node_id=fin1 role=exit
+[update] SWITCHING to v1.3.1-rc.2...
+[update] reloading systemd unit definitions...
+[update] install mode: UPDATE v1.3.0 -> v1.3.1-rc.2 — checking persistent state schema before rendering...
+[update] persistent state schema: current, no migration needed.
+[update] ERROR: SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch — deliberately aborting for lifecycle-gate testing.
+[update] WARNING: update to v1.3.1-rc.2 did not commit; restoring previous release (v1.3.0) from /etc/vpn/backups/20261020-102934-233965
+sing-box authorization config is already current; no reload needed.
+== local health ==
+sing-box service         OK
+subscription service     OK
+sing-box binary          OK
+sing-box config valid    OK
+REALITY key present      OK
+firewall TCP/443         OK
+firewall UDP/443         OK
+firewall subscription/8443 OK
+subscription loopback reachable OK
+VLESS+REALITY listening (443/tcp) OK
+Hysteria2 listening (443/udp) OK
+Hysteria TLS cert present OK
+Hysteria TLS cert not expired OK
+
+== TLS validity (real hostname, real trust chain — no -k) ==
+nginx subscription vhost reachable+trusted (8443, hostname=fin1.xn----8sba1cvaif4e.com) OK
+subscription TLS cert not expiring within 14 days OK
+
+== subscription/server key coherence (run 'vpn-admin doctor') ==
+  This script does not compare the REALITY key material sing-box is
+  actually enforcing against what vpn-subscription would hand a new
+  client right now — that class of drift (server and subscription
+  disagreeing about REALITY keys) passed every check above in a
+  real incident while still failing a real client's handshake.
+  'sudo vpn-admin doctor' adds that check, tagged [L4], from file
+  contents alone (no network needed); 'sudo vpn-admin doctor
+  --protocol' goes further and dials this server's own REALITY
+  listener with a throwaway sing-box client, tagged [L5-6].
+
+== external reachability / real protocol test (NOT performed here) ==
+  Everything above runs from localhost against localhost sockets.
+  It proves the services are up and that TLS is configured
+  correctly for the hostname this host thinks it has — it does NOT
+  prove this VPS is reachable from the public internet (that
+  depends on upstream routing/provider firewall/NAT, none of which
+  this script can see from inside the host), and it does NOT prove
+  a real VLESS+REALITY or Hysteria2 client can complete a full
+  handshake end-to-end. See 'vpn-admin doctor --protocol' for a
+  best-effort loopback self-test, deploy/almalinux/acceptance-test.sh
+  for the listener/access-matrix checks, and
+  docs/DEVICE_ACCEPTANCE_TESTS.md for what real-client verification
+  requires and whether it has actually been performed.
+[update] UPDATE FAILED — PREVIOUS RELEASE RESTORED AND VERIFIED (v1.3.0).

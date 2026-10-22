@@ -28,9 +28,9 @@ failures=0
 
 echo "--- static: main() writes the manifest at start_stage, before acceptance_stage ---"
 main_body="$(sed -n '/^main() {/,/^}/p' "$INSTALL_SH")"
-start_stage_line="$(echo "$main_body" | grep -n 'start_stage' | head -n1 | cut -d: -f1)"
-acceptance_stage_line="$(echo "$main_body" | grep -n 'acceptance_stage' | head -n1 | cut -d: -f1)"
-print_status_line="$(echo "$main_body" | grep -n 'print_status' | head -n1 | cut -d: -f1)"
+start_stage_line="$(grep -n 'start_stage' <<<"$main_body" | head -n1 | cut -d: -f1)"
+acceptance_stage_line="$(grep -n 'acceptance_stage' <<<"$main_body" | head -n1 | cut -d: -f1)"
+print_status_line="$(grep -n 'print_status' <<<"$main_body" | head -n1 | cut -d: -f1)"
 if [ -n "$start_stage_line" ] && [ -n "$acceptance_stage_line" ] && [ -n "$print_status_line" ] \
     && [ "$start_stage_line" -lt "$acceptance_stage_line" ] \
     && [ "$acceptance_stage_line" -lt "$print_status_line" ]; then
@@ -43,23 +43,23 @@ fi
 echo
 echo "--- static: start_stage() writes a 'pending' manifest; print_status() writes 'accepted' ---"
 start_stage_body="$(sed -n '/^start_stage() {/,/^}/p' "$INSTALL_SH")"
-if echo "$start_stage_body" | grep -q 'write_install_state_manifest "pending"'; then
+if grep -q 'write_install_state_manifest "pending"' <<<"$start_stage_body"; then
   echo "ok: start_stage() writes the manifest with acceptance=pending"
 else
   echo "FAIL: start_stage() does not write a pending manifest — a failure in acceptance_stage would again leave no manifest at all"
   failures=$((failures + 1))
 fi
 print_status_body="$(sed -n '/^print_status() {/,/^}/p' "$INSTALL_SH")"
-if echo "$print_status_body" | grep -q 'write_install_state_manifest "accepted"'; then
+if grep -q 'write_install_state_manifest "accepted"' <<<"$print_status_body"; then
   echo "ok: print_status() upgrades the manifest to acceptance=accepted"
 else
   echo "FAIL: print_status() does not record acceptance=accepted"
   failures=$((failures + 1))
 fi
 # print_status()'s hard success asserts must remain untouched by this change.
-if echo "$print_status_body" | grep -q 'VLESS_REALITY_OK.*-eq 1.*||.*die' \
-    && echo "$print_status_body" | grep -q 'HYSTERIA2_OK.*-eq 1.*||.*die' \
-    && echo "$print_status_body" | grep -q 'SUBSCRIPTION_BACKEND_OK.*-eq 1.*||.*die'; then
+if grep -q 'VLESS_REALITY_OK.*-eq 1.*||.*die' <<<"$print_status_body" \
+    && grep -q 'HYSTERIA2_OK.*-eq 1.*||.*die' <<<"$print_status_body" \
+    && grep -q 'SUBSCRIPTION_BACKEND_OK.*-eq 1.*||.*die' <<<"$print_status_body"; then
   echo "ok: print_status() still hard-asserts VLESS_REALITY_OK/HYSTERIA2_OK/SUBSCRIPTION_BACKEND_OK before claiming success"
 else
   echo "FAIL: print_status()'s success hard-asserts appear to have been weakened or removed"
@@ -212,14 +212,14 @@ run_manifest_flow() {
 }
 
 out="$(run_manifest_flow)" || true
-if echo "$out" | grep -q '^PENDING_OK$'; then
+if grep -q '^PENDING_OK$' <<<"$out"; then
   echo "ok: a manifest written after start_stage (acceptance=pending) makes existing_install_present() true"
 else
   echo "FAIL: pending-manifest / existing_install_present() interaction is broken"
   echo "$out"
   failures=$((failures + 1))
 fi
-if echo "$out" | grep -q '^IDENTITY_OK$'; then
+if grep -q '^IDENTITY_OK$' <<<"$out"; then
   echo "ok: the manifest records the SHA-256 of the installed executables (empty, not invented, before they exist)"
 else
   echo "FAIL: release-identity hashes are not recorded in the install-state manifest"
@@ -227,9 +227,9 @@ else
   failures=$((failures + 1))
 fi
 update_commit="$(sed -n '/^# COMMIT/,/^committed=1/p' "$REPO_ROOT/deploy/almalinux/update.sh")"
-if echo "$update_commit" | grep -q '"vpn_admin_sha256": "\$vpn_admin_sha256"' \
-    && echo "$update_commit" | grep -q '"subscription_sha256": "\$subscription_sha256"' \
-    && echo "$update_commit" | grep -q 'sha256sum "\$BIN_DIR/vpn-admin"'; then
+if grep -q '"vpn_admin_sha256": "\$vpn_admin_sha256"' <<<"$update_commit" \
+    && grep -q '"subscription_sha256": "\$subscription_sha256"' <<<"$update_commit" \
+    && grep -q 'sha256sum "\$BIN_DIR/vpn-admin"' <<<"$update_commit"; then
   echo "ok: update.sh's COMMIT step records the identity of the executables it just installed"
 else
   echo "FAIL: update.sh does not record executable hashes in the manifest it commits"
@@ -243,14 +243,14 @@ else
   echo "FAIL: a pre-commit doctor run in update.sh is not marked SINGBOX_VPN_RELEASE_IDENTITY_PENDING=1 (would report a false inconsistency)"
   failures=$((failures + 1))
 fi
-if echo "$out" | grep -q '^ACCEPTED_OK$'; then
+if grep -q '^ACCEPTED_OK$' <<<"$out"; then
   echo "ok: upgrading the manifest to acceptance=accepted still keeps existing_install_present() true (a repair run stays a repair run)"
 else
   echo "FAIL: accepted-manifest / existing_install_present() interaction is broken"
   echo "$out"
   failures=$((failures + 1))
 fi
-if echo "$out" | grep -q '^NOARG_REJECTED_OK$'; then
+if grep -q '^NOARG_REJECTED_OK$' <<<"$out"; then
   echo "ok: write_install_state_manifest() with no acceptance argument fails loudly instead of writing an incomplete manifest"
 else
   echo "FAIL: write_install_state_manifest() with no argument did not fail as expected"

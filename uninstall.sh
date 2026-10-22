@@ -172,7 +172,7 @@ if ! curl -fsSL "${CURL_NET_FLAGS[@]}" -o "$tarball" "$url"; then
 If this host has no network access, singbox-vpn state may still be present at /var/lib/singbox-vpn, /etc/vpn and /opt/singbox-vpn — remove those directories manually along with any sing-box/singbox-vpn systemd units under /etc/systemd/system as a last resort."
 fi
 tar -xzf "$tarball" -C "$TMPDIR" || die "failed to extract downloaded source archive."
-SRC_DIR="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+SRC_DIR="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1 || true)"
 [ -n "$SRC_DIR" ] || die "extracted archive did not contain the expected repository directory."
 [ -x "$SRC_DIR/deploy/almalinux/uninstall.sh" ] || die "downloaded source is missing deploy/almalinux/uninstall.sh — cannot continue."
 

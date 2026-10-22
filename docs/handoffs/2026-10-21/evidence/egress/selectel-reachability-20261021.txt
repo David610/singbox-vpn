@@ -1,0 +1,15 @@
+# read-only reachability of 135.106.178.167 from 62.238.46.190 at 2026-10-21T13:21:21Z (no login, no commands, no tunnel)
+## ICMP x5
+--- 135.106.178.167 ping statistics ---
+5 packets transmitted, 5 received, 0% packet loss, time 4008ms
+rtt min/avg/max/mdev = 17.467/17.737/18.486/0.387 ms
+## TCP connect timing (3 each)
+tcp/22 connected in 28 ms
+tcp/22 connected in 29 ms
+tcp/22 connected in 28 ms
+tcp/443 connected in 29 ms
+tcp/443 connected in 29 ms
+tcp/443 connected in 29 ms
+## SSH host key (public; for out-of-band verification by the owner)
+3072 SHA256:i/sU+RLYu68cEgxUFRv1qvUolWJaXNaaekt4yR3CMC0 135.106.178.167 (RSA)
+256 SHA256:MReaYO3BfwTDstY1netdec7ueslyx2tCKDwGOL73rp0 135.106.178.167 (ED25519)

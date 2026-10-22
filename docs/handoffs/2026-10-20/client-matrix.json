@@ -1,0 +1,142 @@
+{
+ "schema_version": 1,
+ "rule": "A cell is PASS only with recorded evidence; parser-level or server-side tests never promote a native client above UNVERIFIED.",
+ "clients": [
+  {
+   "client": "sing-box core 1.14.1 (pinned, real binary)",
+   "platforms": [
+    "linux (staging)"
+   ],
+   "formats_tested": [
+    "singbox",
+    "singbox-hiddify-pinned",
+    "default"
+   ],
+   "reality": "PASS (egress 62.238.46.190)",
+   "hysteria2": "PASS (singbox format; pinned format is REALITY-only by design)",
+   "ipv6_inbound": "PASS locally over the server's IPv6 literal",
+   "tls_sni": "PASS verified certificate, SNI = public host",
+   "shorts": "FAIL on this IP (source refused), see I-38",
+   "status": "SERVER_VERIFIED",
+   "evidence": {
+    "evidence_class": "server-verified (loopback client on the staging node; NOT a native app)",
+    "date": "2026-10-20",
+    "commit_range": "staging/2026-10-20-remediation",
+    "tool": "deploy/lib/subscription_acceptance.py",
+    "artifact": "evidence/staging-subscription-acceptance.json"
+   }
+  },
+  {
+   "client": "Hiddify (iOS)",
+   "formats": [
+    "singbox",
+    "singbox-hiddify-pinned",
+    "uri"
+   ],
+   "status": "UNVERIFIED",
+   "known_issues": [
+    "I-08/I-51 missing-config error, upstream hiddify-app#2372 (client-side)",
+    "discards imported route.rules (INV-2)"
+   ],
+   "required_tests": [
+    "import profile from the served URL (format named below)",
+    "subscription refresh picks up a changed profile",
+    "VLESS+REALITY connects (record transport)",
+    "Hysteria2 connects where the client supports it (record transport)",
+    "client DNS resolves through the tunnel; no DNS leak (device observation)",
+    "IPv4 and IPv6 behaviour recorded (IPv6 leak check)",
+    "10 consecutive true Shorts + the known-failing Short + a normal video with seeking",
+    "Wi-Fi<->cellular switch and unexpected-disconnect recovery",
+    "error reporting is understandable (record any raw client error text)"
+   ]
+  },
+  {
+   "client": "Hiddify (desktop/Android/MagicOS)",
+   "status": "UNVERIFIED",
+   "required_tests": [
+    "import profile from the served URL (format named below)",
+    "subscription refresh picks up a changed profile",
+    "VLESS+REALITY connects (record transport)",
+    "Hysteria2 connects where the client supports it (record transport)",
+    "client DNS resolves through the tunnel; no DNS leak (device observation)",
+    "IPv4 and IPv6 behaviour recorded (IPv6 leak check)",
+    "10 consecutive true Shorts + the known-failing Short + a normal video with seeking",
+    "Wi-Fi<->cellular switch and unexpected-disconnect recovery",
+    "error reporting is understandable (record any raw client error text)"
+   ]
+  },
+  {
+   "client": "Shadowrocket (iOS)",
+   "formats": [
+    "uri-base64"
+   ],
+   "status": "UNVERIFIED",
+   "note": "plain body is reported rejected, base64 served as ?format=uri&encoding=base64 (I-06); import untested",
+   "required_tests": [
+    "import profile from the served URL (format named below)",
+    "subscription refresh picks up a changed profile",
+    "VLESS+REALITY connects (record transport)",
+    "Hysteria2 connects where the client supports it (record transport)",
+    "client DNS resolves through the tunnel; no DNS leak (device observation)",
+    "IPv4 and IPv6 behaviour recorded (IPv6 leak check)",
+    "10 consecutive true Shorts + the known-failing Short + a normal video with seeking",
+    "Wi-Fi<->cellular switch and unexpected-disconnect recovery",
+    "error reporting is understandable (record any raw client error text)"
+   ]
+  },
+  {
+   "client": "INCY (iOS)",
+   "status": "UNVERIFIED",
+   "known_issues": [
+    "I-05 third-party report: REALITY-only subscription may import as an empty provider",
+    "I-04 JSON option expects full Xray configs; the removed xray format was not valid"
+   ],
+   "required_tests": [
+    "import profile from the served URL (format named below)",
+    "subscription refresh picks up a changed profile",
+    "VLESS+REALITY connects (record transport)",
+    "Hysteria2 connects where the client supports it (record transport)",
+    "client DNS resolves through the tunnel; no DNS leak (device observation)",
+    "IPv4 and IPv6 behaviour recorded (IPv6 leak check)",
+    "10 consecutive true Shorts + the known-failing Short + a normal video with seeking",
+    "Wi-Fi<->cellular switch and unexpected-disconnect recovery",
+    "error reporting is understandable (record any raw client error text)"
+   ]
+  },
+  {
+   "client": "v2rayNG (Android)",
+   "formats": [
+    "uri"
+   ],
+   "status": "UNVERIFIED",
+   "note": "VLESS-only; Hysteria2 not supported per docs/clients/V2RAYNG_ANDROID.md",
+   "required_tests": [
+    "import profile from the served URL (format named below)",
+    "subscription refresh picks up a changed profile",
+    "VLESS+REALITY connects (record transport)",
+    "Hysteria2 connects where the client supports it (record transport)",
+    "client DNS resolves through the tunnel; no DNS leak (device observation)",
+    "IPv4 and IPv6 behaviour recorded (IPv6 leak check)",
+    "10 consecutive true Shorts + the known-failing Short + a normal video with seeking",
+    "Wi-Fi<->cellular switch and unexpected-disconnect recovery",
+    "error reporting is understandable (record any raw client error text)"
+   ]
+  },
+  {
+   "client": "NekoBox / Streisand / other sing-box based",
+   "status": "UNVERIFIED",
+   "note": "never exercised; no support claim",
+   "required_tests": [
+    "import profile from the served URL (format named below)",
+    "subscription refresh picks up a changed profile",
+    "VLESS+REALITY connects (record transport)",
+    "Hysteria2 connects where the client supports it (record transport)",
+    "client DNS resolves through the tunnel; no DNS leak (device observation)",
+    "IPv4 and IPv6 behaviour recorded (IPv6 leak check)",
+    "10 consecutive true Shorts + the known-failing Short + a normal video with seeking",
+    "Wi-Fi<->cellular switch and unexpected-disconnect recovery",
+    "error reporting is understandable (record any raw client error text)"
+   ]
+  }
+ ]
+}

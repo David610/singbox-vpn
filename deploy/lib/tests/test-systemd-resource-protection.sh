@@ -47,7 +47,7 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   # on a bare checkout (expected — they're installed by install.sh) but
   # must not report any unit-syntax/directive error for the new lines.
   out=$(systemd-analyze verify "$SINGBOX_UNIT" "$SUB_UNIT" 2>&1 || true)
-  if echo "$out" | grep -iE 'MemoryHigh|MemoryMax|TasksMax' | grep -viE 'not executable'; then
+  if grep -iE 'MemoryHigh|MemoryMax|TasksMax' <<<"$out" | grep -viE 'not executable'; then
     fail "systemd-analyze flagged the new resource-protection directives:\n$out"
   fi
 else

@@ -141,12 +141,12 @@ fi
 echo
 echo "--- static: install_dependencies_debian() calls activate_ufw_ssh_safe(), not a bare 'systemctl enable --now ufw' ---"
 DEBIAN_DEPS_BODY="$(sed -n '/^install_dependencies_debian() {/,/^}/p' "$INSTALL_SH")"
-if echo "$DEBIAN_DEPS_BODY" | grep -q 'activate_ufw_ssh_safe'; then
+if grep -q 'activate_ufw_ssh_safe' <<<"$DEBIAN_DEPS_BODY"; then
   ok "install_dependencies_debian() calls activate_ufw_ssh_safe()"
 else
   fail "install_dependencies_debian() no longer calls activate_ufw_ssh_safe()"
 fi
-if echo "$DEBIAN_DEPS_BODY" | grep -qE 'systemctl enable --now ufw'; then
+if grep -qE 'systemctl enable --now ufw' <<<"$DEBIAN_DEPS_BODY"; then
   fail "install_dependencies_debian() still activates ufw with a bare 'systemctl enable --now ufw' (no SSH-safety)"
 else
   ok "install_dependencies_debian() no longer activates ufw with a bare 'systemctl enable --now ufw'"

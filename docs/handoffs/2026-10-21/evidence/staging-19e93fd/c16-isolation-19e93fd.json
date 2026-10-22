@@ -1,0 +1,72 @@
+{
+ "schema": 1,
+ "utc": "2026-10-21T13:12:47+00:00",
+ "evidence_class": "server-verified (loopback client on the node)",
+ "pass": true,
+ "rows": [
+  {
+   "protocol": "Reality",
+   "target": "own IPv4 :22",
+   "prohibited": true,
+   "result": "rejected",
+   "detail": "connection closed with no data",
+   "pass": true
+  },
+  {
+   "protocol": "Reality",
+   "target": "own IPv6 :22",
+   "prohibited": true,
+   "result": "rejected",
+   "detail": "connection closed with no data",
+   "pass": true
+  },
+  {
+   "protocol": "Reality",
+   "target": "loopback subscription backend",
+   "prohibited": true,
+   "result": "rejected",
+   "detail": "connection closed with no data",
+   "pass": true
+  },
+  {
+   "protocol": "Reality",
+   "target": "control 1.1.1.1:443",
+   "prohibited": false,
+   "result": "connected-silent",
+   "detail": "no data within 4 s",
+   "pass": true
+  },
+  {
+   "protocol": "Hysteria2",
+   "target": "own IPv4 :22",
+   "prohibited": true,
+   "result": "rejected",
+   "detail": "connection closed with no data",
+   "pass": true
+  },
+  {
+   "protocol": "Hysteria2",
+   "target": "own IPv6 :22",
+   "prohibited": true,
+   "result": "rejected",
+   "detail": "connection closed with no data",
+   "pass": true
+  },
+  {
+   "protocol": "Hysteria2",
+   "target": "loopback subscription backend",
+   "prohibited": true,
+   "result": "rejected",
+   "detail": "connection closed with no data",
+   "pass": true
+  },
+  {
+   "protocol": "Hysteria2",
+   "target": "control 1.1.1.1:443",
+   "prohibited": false,
+   "result": "connected-silent",
+   "detail": "no data within 4 s",
+   "pass": true
+  }
+ ]
+}

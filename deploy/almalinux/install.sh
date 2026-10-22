@@ -133,6 +133,10 @@ CURL_NET_FLAGS=(--connect-timeout 10 --max-time 300 --speed-limit 1024 --speed-t
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/preflight.sh"
 # shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/own-address.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/nginx-vhost.sh"
+# shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/perf-tuning.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/ownership.sh"
@@ -408,6 +412,27 @@ on_fatal_error() {
   exit "$exit_code"
 }
 trap 'on_fatal_error $? "${LINENO:-unknown}" "${FUNCNAME[0]:-main}" "${SINGBOX_VPN_STAGE:-initialization}"' ERR
+
+# I-33: ONE scratch workspace for the whole run. Every bare `mktemp` below honours TMPDIR, so the cosign download (~135 MB),
+# release tarballs, rustup-init and probe files all land inside it and are removed by the EXIT trap on success, failure
+# and managed signals. After SIGKILL/host crash a later run removes workspaces whose recorded owner is gone.
+sweep_stale_scratch() { # $1=parent dir  $2=name glob
+  local d pid
+  for d in "$1"/$2; do
+    [ -d "$d" ] && [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] || continue
+    [ -n "$(find "$d" -maxdepth 0 -mmin +10 2>/dev/null)" ] || continue
+    pid="$(cat "$d/.owner-pid" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    kill -0 "$pid" 2>/dev/null && continue
+    rm -rf --one-file-system -- "$d"
+  done
+}
+sweep_stale_scratch /tmp 'singbox-vpn-inner.*'
+INSTALL_WORK="$(mktemp -d /tmp/singbox-vpn-inner.XXXXXXXX)" || die "cannot create the scratch workspace"
+echo "$$" >"$INSTALL_WORK/.owner-pid"
+export TMPDIR="$INSTALL_WORK"
+cleanup_scratch() { rm -rf --one-file-system -- "$INSTALL_WORK"; }
+trap cleanup_scratch EXIT
 
 # SIGINT/SIGTERM (Ctrl-C, or `systemctl stop`/timeout/orchestration
 # killing this script) previously had NO handler outside the narrow
@@ -1431,7 +1456,7 @@ host_config_stage() {
 # canned openssl output — see deploy/lib/tests/test-reality-decoy-tls13-probe.sh.
 reality_decoy_openssl_output_confirms_tls13() {
   local probe_out="${1:-$(cat)}"
-  printf '%s\n' "$probe_out" | grep -qE '^(New|Reused), TLSv1\.3,'
+  grep -qE '^(New|Reused), TLSv1\.3,' <<<"$probe_out"
 }
 
 resolve_reality_handshake_server() {
@@ -1504,6 +1529,19 @@ ensure_cosign() {
     arm64) expected_sha256="$COSIGN_SHA256_ARM64" ;;
     *) die "unsupported architecture '$ARCH' — cannot verify release attestations." ;;
   esac
+  # I-33: the bootstrap already downloaded the pinned cosign. Reuse it, but trust nothing: copy it into this run's
+  # workspace and re-verify it against THIS script's own pinned digest; any mismatch falls back to a fresh download.
+  local handed="${SINGBOX_VPN_COSIGN_BIN:-}"
+  if [ -n "$handed" ] && [ -f "$handed" ] && [ ! -L "$handed" ]; then
+    local mine="$INSTALL_WORK/cosign-handed"
+    if install -m 0700 "$handed" "$mine" 2>/dev/null && [ "$(sha256sum "$mine" | awk '{print $1}')" = "$expected_sha256" ]; then
+      log "reusing the bootstrap's already-verified cosign v${COSIGN_VERSION} (digest re-checked)."
+      COSIGN_BIN="$mine"
+      return 0
+    fi
+    rm -f "$mine"
+    warn "the cosign handed over by the bootstrap did not match the pinned digest; downloading it again."
+  fi
   local tmp asset dest
   tmp="$(mktemp -d)"
   asset="cosign-linux-${ARCH}"
@@ -1726,6 +1764,7 @@ build_binaries_from_source() {
   # --locked matches every CI build/test job: without it, this install-time
   # build could silently resolve a different dependency set than the one
   # committed Cargo.lock records and cargo audit gates in CI.
+  preflight_source_build_guard "$REPO_ROOT" || die "not enough free disk/inodes for a source build (I-81); nothing was installed"
   ( cd "$REPO_ROOT" && cargo build --release --locked -p admin -p subscription -p provisioning-agent )
   install -m 0755 "$REPO_ROOT/target/release/vpn-admin" "$BIN_DIR/vpn-admin"
   install -m 0755 "$REPO_ROOT/target/release/vpn" "$BIN_DIR/vpn"
@@ -1909,8 +1948,24 @@ systemd_stage() {
 # [7] users/groups
 # ---------------------------------------------------------------------
 create_service_users() {
-  id vpn-subscription >/dev/null 2>&1 || { useradd --system --no-create-home --shell /usr/sbin/nologin vpn-subscription; ownership_mark USER_VPNSUB_CREATED; }
-  id sing-box >/dev/null 2>&1 || { useradd --system --no-create-home --shell /usr/sbin/nologin sing-box; ownership_mark USER_SINGBOX_CREATED; }
+  # useradd refuses ("group X exists", exit 9) when the same-named primary
+  # group already exists — left by a root-run test suite or an interrupted
+  # earlier install/uninstall (I-41, reproduced on Ubuntu 26.04). Adopt such
+  # a group with -g instead of aborting the whole install. The user is still
+  # marked created, so uninstall removes the user and its orphaned group.
+  local spec name mark
+  for spec in vpn-subscription:USER_VPNSUB_CREATED sing-box:USER_SINGBOX_CREATED; do
+    name="${spec%%:*}"
+    mark="${spec##*:}"
+    if ! id "$name" >/dev/null 2>&1; then
+      if getent group "$name" >/dev/null 2>&1; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin -g "$name" "$name"
+      else
+        useradd --system --no-create-home --shell /usr/sbin/nologin "$name"
+      fi
+      ownership_mark "$mark"
+    fi
+  done
   # Shared traversal-only group: neither service's *files* become
   # readable by the other (that's still controlled by per-file group
   # ownership below), but both services' primary groups need to walk
@@ -2334,108 +2389,6 @@ certificates_stage() {
 # ---------------------------------------------------------------------
 # [10] REALITY keys
 # ---------------------------------------------------------------------
-# ---------------------------------------------------------------------
-# Own public address (I-15). Records the node's actual public IPv4/IPv6 in
-# deployment.toml so the renderer emits the own-address reject rule (a tunnel
-# user must not reach the node's own services through its public address)
-# whatever form PUBLIC_HOST takes. Evidence order: operator-supplied
-# PUBLIC_IPV4/PUBLIC_IPV6, then addresses configured on this host's
-# interfaces, then (only when no interface carries one, or several do) an
-# address two independent services agree on. DNS is only a tie-break between
-# addresses already proven local; it is never evidence of ownership.
-# ---------------------------------------------------------------------
-resolve_own_public_addresses() {
-  OWN_PUBLIC_IPV4=""
-  OWN_PUBLIC_IPV6=""
-  local fam var supplied local_addrs egress dns pick extra candidate count
-  for fam in 4 6; do
-    var="PUBLIC_IPV$fam"
-    supplied="${!var:-}"
-    pick=""
-    if [ -n "$supplied" ]; then
-      [ "$(preflight_ip_family "$supplied" 2>/dev/null)" = "$fam" ] \
-        || die "$var='$supplied' is not a valid IPv$fam address literal."
-      preflight_is_public_ip "$supplied" \
-        || warn "$var=$supplied is not a public address: the own-address reject rule will not protect a public service with it."
-      pick="$supplied"
-    else
-      local_addrs="$(preflight_local_public_addrs "$fam")"
-      count=0
-      [ -z "$local_addrs" ] || count="$(printf '%s\n' "$local_addrs" | wc -l)"
-      egress=""
-      if [ "$fam" = 4 ] && [ "$count" -ne 1 ]; then
-        egress="$(preflight_detect_egress_ip_confirmed 4 2>/dev/null)" || egress=""
-        if [ -z "$egress" ] && [ -n "${PUBLIC_IP:-}" ] && preflight_is_public_ip "$PUBLIC_IP"; then
-          egress="$PUBLIC_IP"
-        fi
-      fi
-      candidate="$(printf '%s\n%s\n' "$local_addrs" "$egress" | sed '/^$/d' | sort -u)"
-      if [ -n "$candidate" ]; then
-        dns="$(preflight_resolve_host_addrs "$PUBLIC_HOST" 2>/dev/null || true)"
-        pick="$(printf '%s\n' "$candidate" | grep -Fxf <(printf '%s\n' "$dns") 2>/dev/null | head -n 1 || true)"
-        [ -n "$pick" ] || pick="${egress:-$(printf '%s\n' "$candidate" | head -n 1)}"
-        extra="$(printf '%s\n' "$candidate" | grep -Fxv "$pick" | tr '\n' ' ' || true)"
-        [ -z "$extra" ] || warn "this host has more public IPv$fam addresses than deployment.toml can record: ${extra}- the own-address reject rule covers only $pick."
-      fi
-    fi
-    if [ "$fam" = 4 ]; then OWN_PUBLIC_IPV4="$pick"; else OWN_PUBLIC_IPV6="$pick"; fi
-  done
-  export OWN_PUBLIC_IPV4 OWN_PUBLIC_IPV6
-  if [ -z "$OWN_PUBLIC_IPV4" ] && [ -z "$OWN_PUBLIC_IPV6" ]; then
-    if [ -f "$DEPLOYMENT_TOML" ] || [ "${SINGBOX_VPN_ALLOW_UNKNOWN_OWN_ADDRESS:-0}" = 1 ]; then
-      warn "could not establish this node's own public address: tunnel users will be able to reach services bound to it until public_ipv4/public_ipv6 are set in $DEPLOYMENT_TOML (then run: vpn-admin render-config)."
-    else
-      die "could not establish this node's own public IPv4/IPv6 address, so the own-address protection (tunnel users must not reach this node's own services) cannot be enabled. Re-run with PUBLIC_IPV4=<this server's public address> (and PUBLIC_IPV6=... if it has one), or set SINGBOX_VPN_ALLOW_UNKNOWN_OWN_ADDRESS=1 to install WITHOUT that protection."
-    fi
-  else
-    log "own public address: IPv4=${OWN_PUBLIC_IPV4:-none} IPv6=${OWN_PUBLIC_IPV6:-none}"
-  fi
-}
-
-# Writes public_ipv4/public_ipv6 as top-level keys of the rendered file $1,
-# after subscription_host (or ahead of the first table). Nothing is written
-# when both values are empty.
-insert_own_address_keys() {
-  local file="$1" v4="${2:-}" v6="${3:-}" tmp
-  [ -n "$v4$v6" ] || return 0
-  tmp="$file.addr.$$"
-  awk -v v4="$v4" -v v6="$v6" '
-    function emit() {
-      if (done) return
-      print "# This node'"'"'s own public address(es), recorded by install.sh: the tunnel-user"
-      print "# reject rule for the node itself is rendered from them. Update on IP change."
-      if (v4 != "") print "public_ipv4 = \"" v4 "\""
-      if (v6 != "") print "public_ipv6 = \"" v6 "\""
-      done = 1
-    }
-    { if (!done && $0 ~ /^[[:space:]]*\[/) emit(); print }
-    !done && $0 ~ /^subscription_host[[:space:]]*=/ { emit() }
-    END { emit() }
-  ' "$file" >"$tmp" && cat "$tmp" >"$file" && rm -f "$tmp"
-}
-
-# Repair/update of an existing deployment: add the keys only when neither is
-# present. A configured value (even one the operator set on purpose) is never
-# replaced, and a failed detection never aborts a repair.
-backfill_own_public_addresses() {
-  [ -f "$DEPLOYMENT_TOML" ] || return 0
-  if grep -Eq '^[[:space:]]*public_ipv[46][[:space:]]*=' "$DEPLOYMENT_TOML"; then
-    return 0
-  fi
-  if [ -z "${OWN_PUBLIC_IPV4:-}${OWN_PUBLIC_IPV6:-}" ]; then
-    resolve_own_public_addresses
-  fi
-  if [ -z "${OWN_PUBLIC_IPV4:-}${OWN_PUBLIC_IPV6:-}" ]; then
-    warn "$DEPLOYMENT_TOML has no public_ipv4/public_ipv6 and none could be detected."
-    return 0
-  fi
-  local tmp="$DEPLOYMENT_TOML.addr.$$"
-  cp -p "$DEPLOYMENT_TOML" "$tmp"
-  insert_own_address_keys "$tmp" "${OWN_PUBLIC_IPV4:-}" "${OWN_PUBLIC_IPV6:-}"
-  cat "$tmp" >"$DEPLOYMENT_TOML" && rm -f "$tmp"
-  log "recorded this node's own public address in $DEPLOYMENT_TOML (IPv4=${OWN_PUBLIC_IPV4:-none} IPv6=${OWN_PUBLIC_IPV6:-none})"
-}
-
 render_deployment_toml() {
   if [ -f "$DEPLOYMENT_TOML" ]; then
     log "$DEPLOYMENT_TOML already exists, leaving it untouched."
@@ -2550,10 +2503,8 @@ configure_nginx() {
   local host="${SUBSCRIPTION_HOST:-$PUBLIC_HOST}"
   local port="${SUBSCRIPTION_PORT:-8443}"
   install -d -m 0755 "$(dirname "$NGINX_CONF")"
-  sed -e "s/{{SUBSCRIPTION_HOST}}/$host/" -e "s/{{PUBLIC_HOST}}/${PUBLIC_HOST:-$host}/" \
-      -e "s/{{SUBSCRIPTION_PORT}}/$port/" \
-      -e "s/{{SUBSCRIPTION_BACKEND_PORT}}/$SUBSCRIPTION_BACKEND_PORT/" \
-    "$REPO_ROOT/deploy/almalinux/templates/nginx-vpn-subscription.conf.template" >"$NGINX_CONF.tmp"
+  render_nginx_vhost "$REPO_ROOT/deploy/almalinux/templates/nginx-vpn-subscription.conf.template" \
+    "$host" "${PUBLIC_HOST:-$host}" "$port" "$SUBSCRIPTION_BACKEND_PORT" >"$NGINX_CONF.tmp"
   # SELinux (RHEL family) only lets nginx (httpd_t) bind() to a fixed
   # allow-list of ports labeled http_port_t (80/443/8080/8443/etc. are
   # on it by default) — a custom SUBSCRIPTION_PORT is very likely NOT on
@@ -3117,7 +3068,7 @@ acceptance_stage() {
   if [ "$doctor_rc" -ne 0 ]; then
     echo "$doctor_output" >&2
     local fail_lines
-    fail_lines="$(echo "$doctor_output" | grep -F '[FAIL]' || true)"
+    fail_lines="$(grep -F '[FAIL]' <<<"$doctor_output" || true)"
     if [ -n "$fail_lines" ]; then
       die "post-install acceptance check(s) failed — see the [FAIL] line(s) above for the specific cause (this is not necessarily the VLESS+REALITY handshake itself; re-run 'vpn doctor --protocol' any time to see current status):
 $fail_lines"

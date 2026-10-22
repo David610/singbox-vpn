@@ -1,0 +1,48 @@
+# STATUS UPDATE (after your authorizations of R1 and the Selectel assessment)
+
+* **R1 (branch push) - approved, NOT performed: no GitHub credential exists on this VPS.** `git push` fails with "could not read Username"; the
+  session's repository attach did not give this checkout a credential, and a further attempt to inspect git/proxy configuration for one was blocked
+  as credential exploration, which I did not work around. The exact commits are packaged and verified: see "How to complete R1" below.
+* **Selectel (`135.106.178.167`, recorded as `ru1`) - approved for read-only assessment, A1/A2 NOT performed.** This VPS has no SSH private key, no agent and no
+  host-key record for it, and the suitability tool (rightly) requires key login and strict host-key checking. Done instead, unauthenticated and bounded:
+  reachability (ICMP 17.7 ms avg, 0% loss; TCP/22 and TCP/443 accept in 28-29 ms) and the public SSH host-key fingerprints. **Identity and operational role are not
+  established**; I need you to confirm the fingerprints and provide read-only access (below).
+
+## How to complete R1 (pick one)
+1. **From a machine that has GitHub access** (simplest, no secret leaves your hands): copy the bundle and push it.
+       scp root@62.238.46.190:/root/evidence/R1/staging-2026-10-20-remediation.bundle .
+       git clone https://github.com/David610/singbox-vpn.git && cd singbox-vpn
+       git fetch ../staging-2026-10-20-remediation.bundle staging/2026-10-20-remediation:staging/2026-10-20-remediation
+       git rev-parse staging/2026-10-20-remediation      # must equal the commit in /root/evidence/R1/COMMIT.txt
+       git push -u origin staging/2026-10-20-remediation  # branch only; no tags
+2. Or give this VPS a credential scoped to this one repository (fine-grained token, Contents: write, short expiry) by a route you choose; tell me when it is in place
+   and I will re-run the preflight and push. I will not look for credentials myself.
+After the push I inspect every CI job and report the evidence.
+
+## Selectel: what I need
+* Confirm that these are your node's host keys (compare on the node: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`):
+  ED25519 `SHA256:MReaYO3BfwTDstY1netdec7ueslyx2tCKDwGOL73rp0`, RSA `SHA256:i/sU+RLYu68cEgxUFRv1qvUolWJaXNaaekt4yR3CMC0`.
+* Say whether the node is currently serving users (the assessment is read-only, but I need to know to pace the probe) and confirm its role (`ru1`, hairpin target).
+* Give read-only access: add the public key I generate for this purpose to a dedicated account's `authorized_keys` on the node (or tell me another route). I will create a
+  dedicated keypair on this VPS (private key never leaves it, never printed) and give you only the `.pub` line, plus a pinned `known_hosts` entry written only after you confirm the fingerprints.
+
+---
+# Owner actions — the smallest set that unblocks final acceptance (2026-10-21)
+
+Nothing below has been done. Each item is separate; approving one does not approve another. Items are in the order that unblocks the
+most. "Evidence back" is what I need in return to move a gate from BLOCKED/UNVERIFIED to PASS.
+
+| # | You do / approve | Why it is needed | Risk | Rollback | Evidence back |
+|---|---|---|---|---|---|
+| 1 | **Authorize R1**: `git push -u origin staging/2026-10-20-remediation` (nothing else) | CI (`ci.yml`) has never run on this branch; it covers os-matrix, audit, container smoke and singbox-validate, which this host cannot reproduce. Branch is 80+ commits ahead of `origin/main` (`de8f7d5`), fast-forwardable. `ci.yml` has read-only permissions, no release, no publish | creates a remote branch | `git push origin --delete staging/2026-10-20-remediation` | CI run URL and result per job |
+| 2 | **Give me an SSH public key** (the `.pub` line, never the private key) for root, and keep your current session open | root has password login ON and **no** authorized_keys (`evidence/security/posture-*.txt`). I install the key, **you** log in from a second terminal with it, and only then I set `PasswordAuthentication no` | a wrong key + passwords off = lock-out; that is why the order is fixed | re-enable password auth from the still-open session | your confirmation of the key login, then `sshd -T` output |
+| 3 | **Authorize the read-only suitability check of the historical Selectel node** (A1 read-only SSH, A2 SOCKS tunnel with no remote command) — or name another node you own | the staging IP is refused for Shorts (0/5 `REFUSED`, repeatedly). Only an egress that YouTube accepts can fix this; no setting on our side can. Exact commands: `python3 -I deploy/lib/hairpin_target_suitability.py plan --target root@HOST` prints them without executing. Acceptance C1–C8: `docs/operations/HAIRPIN_TARGET_QUALIFICATION.md`. INV-7/8: only an existing, owner-approved node | a login is logged on that host; A2 sends probe traffic from its IP | close the tunnel | `inspect.json` and three `probe` runs >= 1 h apart |
+| 4 | **Run the iPhone procedure** `docs/operations/IPHONE_ACCEPTANCE_PROCEDURE.md` one step at a time (new step **7b** locates the Hiddify "no such file" failure boundary). I create a dedicated QA user; you scan QR codes from your own terminal | native Hiddify iOS is the main unverified client | none to production; QA user removed afterwards | `vpn user remove <qa-user-id>` | per-step answers/screenshots the table asks for |
+| 5 | **Decide I-60** (REALITY +61.9 ms per new connection vs the 40 ms gate). **New evidence changes the options** (`docs/operations/REALITY_DECOY_LATENCY.md`, CORRECTION 2026-10-21): the cost is set by *which remote decoy* is used, not by remote-vs-local. Through REALITY: microsoft.com (today) 73 ms; amazon.com 9 ms, cloudflare.com 9 ms, ikea.com 11 ms. Options: (a) **switch to one of the fast remote decoys** (recommended: no domain, certificate or new service; same security class as today; **every user must re-import** because `sni=` changes, sing-box restarts; I re-measure on the node and run doctor --protocol afterwards; a native client must import the new profile first); (b) keep microsoft.com and approve a documented exception (gate stays FAIL until then); (c) a local decoy (no longer needed for latency) | the gate fails and I will not change a threshold or a decoy on my own | (a) all users re-import | revert the hostname, restart, re-import again | your choice of (a)/(b)/(c) and, for (a), which decoy |
+| 6 | **Approve a reboot window** after you confirm out-of-band console access (provider console/rescue) and item 2 is done | reboot acceptance is a mandatory gate (services, nft egress table, IPv6 neighbour, ufw, both protocols after boot) | VPN down ~1–2 min; a boot failure needs the console | provider console | my post-boot checks |
+| 7 | **After CI is green: authorize R3 (PR) → R4 (merge) → R5 (tag `v1.3.1-rc.3`)** one by one, exactly as in `docs/operations/RC3_RELEASE_SEQUENCE.md` | only a CI-built, cosign-attested release may replace the defective rc.2 (I-54); the staging node runs a development build and is not a release | R5 names the tag permanently; nothing is published before it | revert merge; delete a not-yet-used tag | CI release run, attestation verification, then R6 (my attested upgrade rc.2 -> rc.3 on staging) |
+| 8 | **Provide a disposable VPS** (new, blank, with its own DNS name; no production credentials; destroyed afterwards) for the fresh-install and full lifecycle acceptance of the rc.3 artifact (`docs/operations/RC3_ACCEPTANCE_PROCEDURE.md` section C, `docs/VPS_ACCEPTANCE_TEST.md`) | LIF-4 (fresh install) and LIF-5 (reboot) cannot be tested honestly over the live staging install, and a container is not the supported target. The harness can reuse a certificate snapshot to avoid extra ACME issuance | cost of one short-lived VPS; the DNS record for the disposable name (not `fin1...`) | destroy the VPS, remove the record | the harness log ending `LIFECYCLE GATE: PASS` |
+
+Not asked of you: DNS changes (none needed; the host has no AAAA record by design), any other VPS, any repository action beyond the item you approve.
+
+Housekeeping that stays until you say: the QA subscription URL/profiles in `/root/qa-secrets` (needed for item 4). Delete with `rm -rf /root/qa-secrets` when finished.

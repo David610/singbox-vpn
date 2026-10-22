@@ -75,13 +75,13 @@ fi
 refused="$(cat "$guard/refused-host-control.log")"
 for expected in "systemctl reload-or-restart sing-box" "systemctl restart vpn-subscription" \
   "firewall-cmd --reload" "useradd acceptance-test-user"; do
-  if printf '%s\n' "$refused" | grep -qxF "$expected"; then
+  if grep -qxF "$expected" <<<"$refused"; then
     ok "refused and recorded: $expected"
   else
     fail "not recorded as refused: $expected (log: $(printf '%s' "$refused" | tr '\n' ';'))"
   fi
 done
-if printf '%s\n' "$refused" | grep -q -- "--version"; then
+if grep -q -- "--version" <<<"$refused"; then
   fail "a read-only query was recorded as a host-control attempt"
 else
   ok "read-only queries are refused without being reported as attempts"
@@ -147,14 +147,14 @@ fi
 
 echo "--- D/E: service identity is observed, and update.sh reports it truthfully ---"
 fingerprint="$(host_service_fingerprint)"
-printf '%s\n' "$fingerprint" | grep -q "^sing-box .*MainPID=4242" \
-  && printf '%s\n' "$fingerprint" | grep -q "^vpn-subscription .*NRestarts=0" \
+grep -q "^sing-box .*MainPID=4242" <<<"$fingerprint" \
+  && grep -q "^vpn-subscription .*NRestarts=0" <<<"$fingerprint" \
   && ok "host_service_fingerprint records MainPID/NRestarts per unit" \
   || fail "unexpected fingerprint: $fingerprint"
 
 dev_block="$(awk '/^if \[ "\$DEV_REBUILD" -eq 1 \]; then$/,/^  log "building new binaries\.\.\."$/' "$UPDATE_SH")"
-if printf '%s' "$dev_block" | grep -q 'run_isolated_from_host "$test_guard_dir"' \
-  && printf '%s' "$dev_block" | grep -q 'cargo test --workspace --locked'; then
+if grep -q 'run_isolated_from_host "$test_guard_dir"' <<<"$dev_block" \
+  && grep -q 'cargo test --workspace --locked' <<<"$dev_block"; then
   ok "update.sh runs the test phase through run_isolated_from_host"
 else
   fail "update.sh's test phase is not isolated"
@@ -169,17 +169,17 @@ if grep -q "installed state was not changed" "$UPDATE_SH"; then
 else
   ok "the unverified 'installed state was not changed' claim is gone"
 fi
-before_line="$(printf '%s' "$dev_block" | grep -n 'services_before_tests="$(host_service_fingerprint)"' | cut -d: -f1)"
-after_line="$(printf '%s' "$dev_block" | grep -n 'services_after_tests="$(host_service_fingerprint)"' | cut -d: -f1)"
-run_line="$(printf '%s' "$dev_block" | grep -n 'run_isolated_from_host "$test_guard_dir"' | cut -d: -f1)"
+before_line="$(grep -n 'services_before_tests="$(host_service_fingerprint)"' <<<"$dev_block" | cut -d: -f1)"
+after_line="$(grep -n 'services_after_tests="$(host_service_fingerprint)"' <<<"$dev_block" | cut -d: -f1)"
+run_line="$(grep -n 'run_isolated_from_host "$test_guard_dir"' <<<"$dev_block" | cut -d: -f1)"
 if [ -n "$before_line" ] && [ -n "$after_line" ] && [ -n "$run_line" ] \
   && [ "$before_line" -lt "$run_line" ] && [ "$run_line" -lt "$after_line" ]; then
   ok "service identity is captured before and after the test phase"
 else
   fail "service identity is not captured around the test phase"
 fi
-printf '%s' "$dev_block" | grep -q 'live services CHANGED while the test phase ran' \
-  && printf '%s' "$dev_block" | grep -q 'attempted to control this host' \
+grep -q 'live services CHANGED while the test phase ran' <<<"$dev_block" \
+  && grep -q 'attempted to control this host' <<<"$dev_block" \
   && ok "changed services and refused attempts each have their own truthful failure" \
   || fail "missing truthful failure messages for the test phase"
 grep -q 'deliberate service activation (apply stage, not the test phase)' "$UPDATE_SH" \

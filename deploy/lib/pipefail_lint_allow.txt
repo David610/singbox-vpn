@@ -1,0 +1,5 @@
+# path-suffix | exact substring of the line | why it is not exposed to the pipefail SIGPIPE race
+# One reviewed entry per line. Adding an entry needs a reason a reviewer can check.
+deploy/almalinux/hybrid-upgrade-acceptance.sh|vpn-admin doctor 2>&1 | grep -q 'release ide|command string executed by `bash -c` without pipefail
+deploy/almalinux/lifecycle-acceptance.sh|systemctl list-unit-files 2>/dev/null | grep -q "^sing-box|part of a remote command string run by ssh without pipefail
+deploy/lib/vpn-investigate.sh|echo "    curl -si|text printed for the operator, not executed

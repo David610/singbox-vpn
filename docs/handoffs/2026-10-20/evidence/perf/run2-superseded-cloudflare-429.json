@@ -1,0 +1,141 @@
+{
+ "schema": 1,
+ "utc": "2026-10-20T12:37:01+00:00",
+ "evidence_class": "server-verified, loopback client (shares host CPU); NOT a real client network path",
+ "download": "https://speed.cloudflare.com/__down?bytes=25000000",
+ "runs": 5,
+ "thresholds": {
+  "min_ratio_gate": 0.0,
+  "min_mbps_reality": 200.0,
+  "min_mbps_hy2": 100.0,
+  "max_added_ms": 40.0,
+  "min_soak_success": 0.99
+ },
+ "direct": {
+  "mbps_runs": [
+   1686.3,
+   1152.6,
+   1670.1,
+   1258.5,
+   1809.7
+  ],
+  "mbps_median": 1670.1,
+  "connect_ms_median": 3.7,
+  "connect_ms_p95": 4.5
+ },
+ "tunnels": {
+  "Reality": {
+   "transfer_failures": 0,
+   "mbps_runs": [
+    903.0,
+    844.1,
+    827.6,
+    954.6,
+    1010.6
+   ],
+   "mbps_median": 903.0,
+   "ratio_vs_direct": 0.54,
+   "connect_ms_median": 64.4,
+   "connect_ms_p95": 66.5,
+   "connect_failures": 0,
+   "added_ms_median": 60.7,
+   "concurrency": {
+    "1": {
+     "failed": 0,
+     "aggregate_mbps": 508.9
+    },
+    "4": {
+     "failed": 0,
+     "aggregate_mbps": 1864.4
+    },
+    "8": {
+     "failed": 0,
+     "aggregate_mbps": 2511.5
+    }
+   }
+  },
+  "Hysteria2": {
+   "transfer_failures": 3,
+   "mbps_runs": [
+    141.1,
+    146.6,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "mbps_median": 143.8,
+   "ratio_vs_direct": 0.09,
+   "connect_ms_median": 6.2,
+   "connect_ms_p95": 7.5,
+   "connect_failures": 0,
+   "added_ms_median": 2.5,
+   "concurrency": {
+    "1": {
+     "failed": 1,
+     "aggregate_mbps": 0.0
+    },
+    "4": {
+     "failed": 4,
+     "aggregate_mbps": 0.0
+    },
+    "8": {
+     "failed": 8,
+     "aggregate_mbps": 0.0
+    }
+   }
+  }
+ },
+ "verdicts": [
+  {
+   "check": "Reality: no failed transfers",
+   "pass": true,
+   "detail": "transfers 0, connects 0"
+  },
+  {
+   "check": "Reality: capacity floor: median >= 200.0 Mbps",
+   "pass": true,
+   "detail": "903.0 Mbps (direct 1670.1; ratio 0.54 is informational)"
+  },
+  {
+   "check": "Reality: added connect latency <= 40.0 ms",
+   "pass": false,
+   "detail": "60.7 ms (median)"
+  },
+  {
+   "check": "Reality: concurrency: 0 failed transfers",
+   "pass": true,
+   "detail": "{\"1\": {\"failed\": 0, \"aggregate_mbps\": 508.9}, \"4\": {\"failed\": 0, \"aggregate_mbps\": 1864.4}, \"8\": {\"failed\": 0, \"aggregate_mbps\": 2511.5}}"
+  },
+  {
+   "check": "Hysteria2: no failed transfers",
+   "pass": false,
+   "detail": "transfers 3, connects 0"
+  },
+  {
+   "check": "Hysteria2: capacity floor: median >= 100.0 Mbps",
+   "pass": true,
+   "detail": "143.8 Mbps (direct 1670.1; ratio 0.09 is informational)"
+  },
+  {
+   "check": "Hysteria2: added connect latency <= 40.0 ms",
+   "pass": true,
+   "detail": "2.5 ms (median)"
+  },
+  {
+   "check": "Hysteria2: concurrency: 0 failed transfers",
+   "pass": false,
+   "detail": "{\"1\": {\"failed\": 1, \"aggregate_mbps\": 0.0}, \"4\": {\"failed\": 4, \"aggregate_mbps\": 0.0}, \"8\": {\"failed\": 8, \"aggregate_mbps\": 0.0}}"
+  }
+ ],
+ "method_notes": [
+  "latency = median end-to-end time_total of http://1.1.1.1/ via tunnel minus direct (first versions of this tool timed the local SOCKS connect and under-reported it)",
+  "restart recovery on LOOPBACK understates Hysteria2: a closed local UDP socket returns ICMP port-unreachable at once; a real network does not (I-22: ~30 s stalls). Real-network recovery is UNVERIFIED",
+  "the throughput gate was changed from a tunnel/direct ratio (>= 0.70) to capacity floors AFTER the first run, because client and server share two vCPUs; the first run's ratios were 0.66 (REALITY) and 0.10 (Hysteria2) and are kept in the evidence"
+ ],
+ "not_measured": [
+  "real client access network",
+  "carrier NAT / UDP filtering",
+  "phone CPU/battery",
+  "24 h soak (unless --soak-seconds >= 86400)"
+ ]
+}

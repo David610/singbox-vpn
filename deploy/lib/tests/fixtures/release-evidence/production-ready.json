@@ -1,0 +1,87 @@
+{
+ "schema_version": 1,
+ "release_tag": "v9.9.9",
+ "git_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "claimed_level": "PRODUCTION_READY",
+ "artifact_digests": {
+  "singbox-vpn-source.tar.gz": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ },
+ "ci": {
+  "conclusion": "success",
+  "git_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "run_url": "https://example.invalid/run/1"
+ },
+ "vps_acceptance": {
+  "result": "PASS",
+  "git_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "environment": "AlmaLinux 9.8 staging",
+  "evidence_ref": "docs/release-acceptance/x"
+ },
+ "device_matrix": [
+  {
+   "iphone_model": "iPhone 15",
+   "ios_version": "26.0",
+   "hiddify_version": "4.0.0",
+   "transport": "reality",
+   "network": "wifi",
+   "date": "2026-10-25",
+   "result": "PASS",
+   "evidence_ref": "docs/DEVICE_ACCEPTANCE_TESTS.md#x",
+   "shorts_consecutive_played": 10,
+   "known_failing_short_played": true,
+   "release_tag": "v9.9.9",
+   "git_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "iphone_model": "iPhone 15",
+   "ios_version": "26.0",
+   "hiddify_version": "4.0.0",
+   "transport": "reality",
+   "network": "cellular",
+   "date": "2026-10-25",
+   "result": "PASS",
+   "evidence_ref": "docs/DEVICE_ACCEPTANCE_TESTS.md#x",
+   "shorts_consecutive_played": 10,
+   "known_failing_short_played": true,
+   "release_tag": "v9.9.9",
+   "git_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "iphone_model": "iPhone 15",
+   "ios_version": "26.0",
+   "hiddify_version": "4.0.0",
+   "transport": "hysteria2",
+   "network": "wifi",
+   "date": "2026-10-25",
+   "result": "PASS",
+   "evidence_ref": "docs/DEVICE_ACCEPTANCE_TESTS.md#x",
+   "shorts_consecutive_played": 10,
+   "known_failing_short_played": true,
+   "release_tag": "v9.9.9",
+   "git_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "iphone_model": "iPhone 15",
+   "ios_version": "26.0",
+   "hiddify_version": "4.0.0",
+   "transport": "hysteria2",
+   "network": "cellular",
+   "date": "2026-10-25",
+   "result": "PASS",
+   "evidence_ref": "docs/DEVICE_ACCEPTANCE_TESTS.md#x",
+   "shorts_consecutive_played": 10,
+   "known_failing_short_played": true,
+   "release_tag": "v9.9.9",
+   "git_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ ],
+ "deployment": {
+  "environment": "fin1 staging",
+  "config_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "approved_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+ },
+ "security_gates": {
+  "result": "PASS"
+ },
+ "waivers": []
+}

@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up singbox-vpn state whenever the user database changes
+
+[Path]
+PathChanged=/etc/vpn/compat/users/users.json
+Unit=vpn-state-backup.service
+
+[Install]
+WantedBy=paths.target

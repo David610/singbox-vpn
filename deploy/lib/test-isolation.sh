@@ -51,6 +51,8 @@ isolation_write_guards() {
 case "$tool:\${1:-}" in
   systemctl:--version|systemctl:show|systemctl:status|systemctl:is-active|systemctl:is-enabled|systemctl:is-failed|systemctl:cat|systemctl:list-units|systemctl:list-timers) ;;
   firewall-cmd:--state|firewall-cmd:--get-*|firewall-cmd:--list-*|firewall-cmd:--query-*|firewall-cmd:--version) ;;
+  ufw:status|ufw:version|ufw:--version) ;;
+  nft:list|nft:--version|nft:-v) ;;
   *) echo "$tool \$*" >> "$dir/refused-host-control.log" ;;
 esac
 echo "host-control guard: refused '$tool \$*' during an isolated test run" >&2

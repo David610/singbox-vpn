@@ -63,11 +63,11 @@ else
   sudo timeout 2 tcpdump -i lo -w "$EMPTY_PCAP" 'tcp port 1' >/dev/null 2>&1 || true
   if [[ -f "$EMPTY_PCAP" ]]; then
     EMPTY_OUT="$(sudo "$TOOL" udp-egress-verdict "$EMPTY_PCAP" "$CLIENT_IP" 2>&1)"
-    echo "$EMPTY_OUT" | grep -q '0 TCP/443 packets'
-    echo "$EMPTY_OUT" | grep -q 'VERDICT: INCONCLUSIVE'
-    echo "$EMPTY_OUT" | grep -q 'FACT'
-    echo "$EMPTY_OUT" | grep -q 'INFERENCE'
-    if echo "$EMPTY_OUT" | grep -qiE 'private_key|reality[_ ]?private|vless_uuid|hysteria2_password'; then
+    grep -q '0 TCP/443 packets' <<<"$EMPTY_OUT"
+    grep -q 'VERDICT: INCONCLUSIVE' <<<"$EMPTY_OUT"
+    grep -q 'FACT' <<<"$EMPTY_OUT"
+    grep -q 'INFERENCE' <<<"$EMPTY_OUT"
+    if grep -qiE 'private_key|reality[_ ]?private|vless_uuid|hysteria2_password' <<<"$EMPTY_OUT"; then
       echo "FAIL: udp-egress-verdict printed something secret-shaped" >&2
       exit 1
     fi
@@ -99,9 +99,9 @@ if "$TOOL" mtu '' 2>/dev/null; then exit 1; fi
 if "$TOOL" client 'not-an-ip' 2>/dev/null; then exit 1; fi
 if "$TOOL" client '' 2>/dev/null; then exit 1; fi
 CLIENT_OUT="$("$TOOL" client 203.0.113.5 2>&1)"
-echo "$CLIENT_OUT" | grep -q 'FACT'
-echo "$CLIENT_OUT" | grep -q 'INFERENCE'
-if echo "$CLIENT_OUT" | grep -qiE 'private_key|reality[_ ]?private|vless_uuid|hysteria2_password'; then
+grep -q 'FACT' <<<"$CLIENT_OUT"
+grep -q 'INFERENCE' <<<"$CLIENT_OUT"
+if grep -qiE 'private_key|reality[_ ]?private|vless_uuid|hysteria2_password' <<<"$CLIENT_OUT"; then
   echo "FAIL: client subcommand printed something secret-shaped" >&2
   exit 1
 fi
@@ -163,22 +163,22 @@ path = "relay-egress"
 TOML
 
   PAIRED_OUT="$("$TOOL" pairing "$PAIR_DIR/paired.toml" 2>&1)"
-  echo "$PAIRED_OUT" | grep -q 'RELAY-PAIRED'
-  echo "$PAIRED_OUT" | grep -q 'FACT'
-  echo "$PAIRED_OUT" | grep -q 'INFERENCE'
-  echo "$PAIRED_OUT" | grep -q 'UNKNOWN'
-  if echo "$PAIRED_OUT" | grep -qiE 'test-public-key-that-must-never-print|private_key|reality[_ ]?private|vless_uuid|hysteria2_password|obfs_password'; then
+  grep -q 'RELAY-PAIRED' <<<"$PAIRED_OUT"
+  grep -q 'FACT' <<<"$PAIRED_OUT"
+  grep -q 'INFERENCE' <<<"$PAIRED_OUT"
+  grep -q 'UNKNOWN' <<<"$PAIRED_OUT"
+  if grep -qiE 'test-public-key-that-must-never-print|private_key|reality[_ ]?private|vless_uuid|hysteria2_password|obfs_password' <<<"$PAIRED_OUT"; then
     echo "FAIL: pairing printed something secret-shaped" >&2
     exit 1
   fi
 
   sed '/\[\[peer_endpoints\]\]/,$d' "$PAIR_DIR/paired.toml" >"$PAIR_DIR/unpaired.toml"
   UNPAIRED_OUT="$("$TOOL" pairing "$PAIR_DIR/unpaired.toml" 2>&1)"
-  echo "$UNPAIRED_OUT" | grep -q 'RELAY-UNPAIRED'
+  grep -q 'RELAY-UNPAIRED' <<<"$UNPAIRED_OUT"
 
   sed 's/role = "relay"/role = "exit"/; /\[\[access_paths\]\]/,$d' "$PAIR_DIR/paired.toml" >"$PAIR_DIR/exit.toml"
   EXIT_OUT="$("$TOOL" pairing "$PAIR_DIR/exit.toml" 2>&1)"
-  echo "$EXIT_OUT" | grep -q 'NOT role=relay'
+  grep -q 'NOT role=relay' <<<"$EXIT_OUT"
 else
   echo "SKIP: pairing verdict assertions need awk - only the usage/missing-config contract above applies."
 fi
@@ -213,11 +213,11 @@ else
     fi
 
     SESSION_OUT="$(sudo "$TOOL" session-verdict "$EMPTY_SESSION_PCAP" "$SESSION_CLIENT" 2026-01-01T00:00:00Z 2>&1)"
-    echo "$SESSION_OUT" | grep -q '0 TCP/443 packets'
-    echo "$SESSION_OUT" | grep -q 'VERDICT: INCONCLUSIVE'
-    echo "$SESSION_OUT" | grep -q 'FACT'
-    echo "$SESSION_OUT" | grep -q 'INFERENCE'
-    if echo "$SESSION_OUT" | grep -qiE 'private_key|reality[_ ]?private|vless_uuid|hysteria2_password'; then
+    grep -q '0 TCP/443 packets' <<<"$SESSION_OUT"
+    grep -q 'VERDICT: INCONCLUSIVE' <<<"$SESSION_OUT"
+    grep -q 'FACT' <<<"$SESSION_OUT"
+    grep -q 'INFERENCE' <<<"$SESSION_OUT"
+    if grep -qiE 'private_key|reality[_ ]?private|vless_uuid|hysteria2_password' <<<"$SESSION_OUT"; then
       echo "FAIL: session-verdict printed something secret-shaped" >&2
       exit 1
     fi

@@ -206,7 +206,7 @@ if [ "$REAL" = 1 ]; then
   echo "--- real binaries: v1.2.0 really does load a file with [egress] and say nothing ---"
   for f in "$variants"/header.toml "$variants"/inline.toml "$variants"/dotted.toml; do
     rc=0; out="$("$OLD" --config "$f" config validate 2>&1)" || rc=$?
-    if [ "$rc" -le 2 ] && ! printf '%s' "$out" | grep -qi 'egress'; then
+    if [ "$rc" -le 2 ] && ! grep -qi 'egress' <<<"$out"; then
       ok "$(basename "$f"): the old build accepts the file and never mentions the policy (the silent-ignore hazard)"
     else
       fail "$(basename "$f"): the old build did not behave as a silent-ignore (rc=$rc): $out"

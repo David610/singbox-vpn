@@ -1,0 +1,15 @@
+[10:29:33] installed: vpn-admin 1.3.0 ; health: doctor rc=0 FAILS=0
+[10:29:33] deployment.toml has public_ipv4: 0  [egress] section: 0
+[10:29:34] fingerprinted 10 items
+[10:29:45] update with injected failure: exit 1 (must be nonzero)
+[10:29:45] INJECTION FIRED: yes
+[10:29:45] ROLLBACK LOGGED: no
+[10:29:45] version after: vpn-admin 1.3.0
+[10:29:46] state after rollback: IDENTICAL (config, users, keys, cert, nginx, binaries)
+[10:29:47] health after rollback: doctor rc=0 FAILS=0
+[update] install mode: UPDATE v1.3.0 -> v1.3.1-rc.2 — checking persistent state schema before rendering...
+[update] persistent state schema: current, no migration needed.
+[update] ERROR: SINGBOX_VPN_LIFECYCLE_GATE_ABORT_AFTER=after_switch — deliberately aborting for lifecycle-gate testing.
+[update] WARNING: update to v1.3.1-rc.2 did not commit; restoring previous release (v1.3.0) from /etc/vpn/backups/20261020-102934-233965
+[update] UPDATE FAILED — PREVIOUS RELEASE RESTORED AND VERIFIED (v1.3.0).
+[10:29:47] DONE-B

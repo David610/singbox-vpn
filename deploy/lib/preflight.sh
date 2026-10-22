@@ -130,7 +130,7 @@ preflight_check_port_free() {
     udp) ss_flag="-lnup" ;;
     *) return 0 ;;
   esac
-  owner="$(ss -H "$ss_flag" 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {print; exit}')"
+  owner="$(ss -H "$ss_flag" 2>/dev/null | awk -v p=":$port\$" '$4 ~ p {print; exit}' || true)"
   if [ -n "$owner" ]; then
     echo "Port ${proto^^}/$port is already used by:" >&2
     echo "  $owner" >&2
@@ -158,13 +158,13 @@ preflight_detect_ssh_port() {
   local sshd_config_file="${SSHD_CONFIG_FILE:-/etc/ssh/sshd_config}"
   local port=""
   if command -v sshd >/dev/null 2>&1; then
-    port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
+    port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}' || true)"
   fi
   if [ -z "$port" ] && [ -f "$sshd_config_file" ]; then
     port="$(awk 'tolower($1)=="port"{print $2; exit}' "$sshd_config_file" 2>/dev/null)"
   fi
   if [ -z "$port" ] && command -v ss >/dev/null 2>&1; then
-    port="$(ss -H -lntp 2>/dev/null | grep -E 'sshd|"ssh"' | head -n1 | sed -E 's/.*:([0-9]+)[[:space:]].*/\1/')"
+    port="$(ss -H -lntp 2>/dev/null | grep -E 'sshd|"ssh"' | head -n1 | sed -E 's/.*:([0-9]+)[[:space:]].*/\1/' || true)"
   fi
   if [ -z "$port" ]; then
     return 1
@@ -262,7 +262,7 @@ preflight_check_hostname_resolves_here() {
   my_ips="$( { command -v hostname >/dev/null 2>&1 && hostname -I 2>/dev/null; preflight_detect_public_ip 2>/dev/null; } | tr ' ' '\n' | sed '/^$/d' | sort -u)"
   while IFS= read -r r; do
     [ -z "$r" ] && continue
-    printf '%s\n' "$my_ips" | grep -qx "$r" && match=1
+    grep -qx "$r" <<<"$my_ips" && match=1
   done <<EOF
 $resolved
 EOF
@@ -297,11 +297,14 @@ preflight_is_public_ip() {
     (( a == 169 && b == 254 )) && return 1
     (( a == 172 && b >= 16 && b <= 31 )) && return 1
     (( a == 192 && b == 168 )) && return 1
+    # 192.88.99.0/24: deprecated 6to4 relay anycast (RFC 7526); also used by this
+    # product's own arcana-2hop0 interface, never a host's public address (I-57).
+    (( a == 192 && b == 88 && c == 99 )) && return 1
     (( a == 198 && (b == 18 || b == 19) )) && return 1
     return 0
   fi
   if [[ "$ip" =~ ^[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}$ ]] && [[ "$ip" != *:::* ]]; then
-    [ "$(printf '%s' "$ip" | grep -o '::' | wc -l)" -le 1 ] || return 1
+    [ "$(grep -o '::' <<<"$ip" | wc -l)" -le 1 ] || return 1
     first="${ip%%:*}"
     [ -n "$first" ] || return 1
     a=$((16#$first))
@@ -394,4 +397,107 @@ preflight_detect_public_ip() {
     fi
   done
   return 1
+}
+
+# --- Build disk budget (I-81; reconstructed 2026-10-22, original 3d7c005 MISSING) ---
+# The previous fin1 filled its disk because each qualification run copied the
+# source tree and built into its own multi-GB Rust target dir; ~7 stale copies
+# accumulated and the host had to be rebuilt. Rules:
+#   * every local build uses ONE shared target dir under a managed cache root;
+#   * a build starts only if free space >= operational reserve + build estimate,
+#     and inodes are not nearly exhausted (fail closed if either is unknown);
+#   * abandoned output is removed only from direct children of the managed cache
+#     that carry a disposable marker, never through a symlink, never a git repo,
+#     and only with --apply (dry run is the default).
+# Defaults (override per host): reserve 10 GiB keeps the VPN, logs, backups and
+# an emergency margin alive on the 38 GB fin1 disk (~25%); the estimate of
+# 8 GiB covers one workspace debug+test target. Neither was measured on the
+# rebuilt host yet: qualify-local.sh records the real target size after each
+# run (target_dir_mib in ENVIRONMENT.txt) so the estimate can be replaced by data.
+SINGBOX_VPN_BUILD_CACHE="${SINGBOX_VPN_BUILD_CACHE:-/var/cache/singbox-vpn-build}"
+SINGBOX_VPN_BUILD_RESERVE_MIB="${SINGBOX_VPN_BUILD_RESERVE_MIB:-10240}"
+SINGBOX_VPN_BUILD_ESTIMATE_MIB="${SINGBOX_VPN_BUILD_ESTIMATE_MIB:-8192}"
+SINGBOX_VPN_BUILD_MIN_INODES="${SINGBOX_VPN_BUILD_MIN_INODES:-200000}"
+
+# $1 = path, $2 = reserve MiB, $3 = build estimate MiB, $4 = min free inodes.
+preflight_check_build_budget() {
+  local path="$1" reserve="${2:-$SINGBOX_VPN_BUILD_RESERVE_MIB}" est="${3:-$SINGBOX_VPN_BUILD_ESTIMATE_MIB}"
+  local min_inodes="${4:-$SINGBOX_VPN_BUILD_MIN_INODES}" out avail ifree need
+  out="$(df -Pm "$path" 2>/dev/null || true)"
+  avail="$(awk 'NR==2 {print $4}' <<<"$out")"
+  out="$(df -Pi "$path" 2>/dev/null || true)"
+  ifree="$(awk 'NR==2 {print $4}' <<<"$out")"
+  need=$((reserve + est))
+  if ! [[ "$avail" =~ ^[0-9]+$ ]] || ! [[ "$ifree" =~ ^[0-9]+$ ]]; then
+    echo "build budget: cannot determine free space/inodes on $path; refusing to build." >&2
+    return 1
+  fi
+  if [ "$avail" -lt "$need" ]; then
+    echo "build budget: ${avail}MiB free on $path, need ${need}MiB (reserve ${reserve} + build ${est}); refusing to build. Dry run: preflight_prune_build_cache $SINGBOX_VPN_BUILD_CACHE" >&2
+    return 1
+  fi
+  if [ "$ifree" -lt "$min_inodes" ]; then
+    echo "build budget: ${ifree} free inodes on $path, need ${min_inodes}; refusing to build." >&2
+    return 1
+  fi
+  log "build budget OK: ${avail}MiB / ${ifree} inodes free on $path (need ${need}MiB)"
+}
+
+# Creates the managed cache and exports CARGO_TARGET_DIR (shared) and
+# CARGO_BUILD_JOBS (<= nproc, ~1.5 GiB RAM per rustc job, at least 1).
+preflight_cargo_build_env() {
+  local root="$SINGBOX_VPN_BUILD_CACHE" mem_mib jobs cpus
+  [ -L "$root" ] && { echo "build cache $root is a symlink; refusing." >&2; return 1; }
+  mkdir -p "$root/target" || return 1
+  : >>"$root/.singbox-vpn-build-cache"
+  cpus="$(nproc 2>/dev/null || echo 1)"
+  mem_mib="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+  jobs=$((mem_mib / 1536)); [ "$jobs" -gt "$cpus" ] && jobs="$cpus"; [ "$jobs" -lt 1 ] && jobs=1
+  export CARGO_TARGET_DIR="$root/target" CARGO_BUILD_JOBS="$jobs"
+  log "cargo: shared target $CARGO_TARGET_DIR, $jobs job(s)"
+}
+
+# Installer/updater source builds (fallback when no release binary is used): they build inside their own per-run scratch
+# workspace, which the installer removes afterwards (I-33), so there is no accumulation. They still need the I-81 budget and
+# bounded parallelism. $1 = the directory the build writes into. Exports CARGO_BUILD_JOBS; does not move the target dir.
+preflight_source_build_guard() {
+  local dir="${1:?build dir}" cpus mem_mib jobs
+  preflight_check_build_budget "$dir" || return 1
+  cpus="$(nproc 2>/dev/null || echo 1)"
+  mem_mib="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+  jobs=$((mem_mib / 1536)); [ "$jobs" -gt "$cpus" ] && jobs="$cpus"; [ "$jobs" -lt 1 ] && jobs=1
+  export CARGO_BUILD_JOBS="$jobs"
+}
+
+# $1 = managed cache root; options: --apply (default is a dry run),
+# --include-shared (also the shared target/, only when no build holds $root/.lock).
+preflight_prune_build_cache() {
+  local root="${1:?cache root}" apply=0 shared=0 real entry name
+  shift
+  for a in "$@"; do case "$a" in --apply) apply=1 ;; --include-shared) shared=1 ;; *) echo "unknown option $a" >&2; return 2 ;; esac; done
+  [ -d "$root" ] && [ ! -L "$root" ] || { echo "prune: $root is not a real directory" >&2; return 1; }
+  real="$(cd "$root" && pwd -P)"
+  [ "$real" != "/" ] && [ -f "$real/.singbox-vpn-build-cache" ] || { echo "prune: $root is not a managed build cache" >&2; return 1; }
+  exec {lockfd}>>"$real/.lock"
+  if ! flock -n "$lockfd"; then
+    exec {lockfd}>&-
+    if [ "$shared" -eq 1 ]; then echo "prune: a build holds $real/.lock; refusing." >&2; return 1; fi
+    echo "prune: a build is active; only marked abandoned output is eligible." >&2
+  fi
+  for entry in "$real"/*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    [ -L "$entry" ] && continue                      # never follow out of scope
+    [ -d "$entry" ] || continue
+    [ -e "$entry/.git" ] && continue                 # never a repository
+    if [ "$name" = target ]; then
+      [ "$shared" -eq 1 ] || continue
+    else
+      [ -f "$entry/.singbox-vpn-disposable" ] || continue
+    fi
+    if [ "$apply" -eq 1 ]; then rm -rf --one-file-system -- "$entry" && echo "removed $entry"
+    else echo "would remove $entry ($(du -sm "$entry" 2>/dev/null | cut -f1)MiB)"; fi
+  done
+  [ -n "${lockfd:-}" ] && { exec {lockfd}>&- || true; } 2>/dev/null
+  return 0
 }

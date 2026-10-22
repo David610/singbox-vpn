@@ -133,7 +133,8 @@ grep -q '^Before=sing-box.service$' "$UNIT"
 
 # Lifecycle reconciliation reloads an active unit rather than restart/ExecStop.
 grep -q 'reload-or-restart vpn-egress-isolation.service' "$ROOT/deploy/almalinux/install.sh"
-grep -q 'reload-or-restart vpn-egress-isolation.service' "$ROOT/deploy/almalinux/update.sh"
+grep -q 'reload_or_restart_unit vpn-egress-isolation.service' "$ROOT/deploy/almalinux/update.sh"
+grep -q '^reload_or_restart_unit() { systemctl reset-failed "$1".*systemctl reload-or-restart "$1"' "$ROOT/deploy/almalinux/update.sh"
 ! grep -q 'restart vpn-egress-isolation.service' "$ROOT/deploy/almalinux/update.sh"
 
 echo 'nftables egress lifecycle tests passed'

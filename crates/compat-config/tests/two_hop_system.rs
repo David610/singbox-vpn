@@ -118,7 +118,7 @@ fn serial() -> MutexGuard<'static, ()> {
 // Harness primitives
 // ----------------------------------------------------------------------
 
-fn prerequisites() -> Option<SingBox> {
+fn prerequisites() -> Option<(SingBox, NetLease)> {
     let required = std::env::var("SINGBOX_VPN_REQUIRE_REAL_INTEROP").is_ok();
     let openssl = std::process::Command::new("openssl")
         .arg("version")
@@ -130,8 +130,7 @@ fn prerequisites() -> Option<SingBox> {
             // an environment that should be silently skipped. From here on
             // a missing capability (no sudo, no CAP_NET_ADMIN) must panic,
             // not skip — see the module doc and `DummyInterfaceGuard`.
-            dummy_net();
-            Some(sb)
+            Some((sb, dummy_net()))
         }
         _ if required => panic!("two-hop system tests require sing-box and openssl"),
         _ => {
@@ -141,30 +140,39 @@ fn prerequisites() -> Option<SingBox> {
     }
 }
 
-/// Process-wide dummy interface, created once and reused by every test in
-/// this binary (`SERIAL` already forces the `Lab`-based tests to run one at
-/// a time; `harness_readiness_is_owned_by_the_started_process` also needs
-/// `EXIT_IP` bindable and doesn't go through `Lab` at all, so this can't
-/// live on `Lab` alone).
-///
-/// Note on cleanup: `OnceLock`/`static` contents are not dropped at normal
-/// process exit in Rust, so `DummyInterfaceGuard::drop` does not run here —
-/// on a GitHub Actions runner that's fine, the whole VM is destroyed after
-/// the job. `DummyInterfaceGuard` still implements `Drop` (idempotent,
-/// best-effort `ip link delete`) so a caller that owns one as a local
-/// value gets real teardown, including on an unwinding panic; it just
-/// isn't reachable through this particular process-wide static. Neither
-/// path survives a SIGKILL/process-abort, which does not unwind Rust
-/// destructors at all — that's a hard limitation, not a bug here.
-static DUMMY_NET: std::sync::OnceLock<DummyInterfaceGuard> = std::sync::OnceLock::new();
+/// Reference-counted lease on the suite's dummy interface (I-59). The first
+/// lease creates it, the last one dropped deletes it, so a test run leaves no
+/// `arcana-2hop0` and no `192.88.99.2-6` host routes behind. This matters on a
+/// real node: `update.sh --dev-rebuild` runs these tests as root on the live
+/// host, and a process-wide `static` is never dropped at process exit, so the
+/// previous `OnceLock` design leaked the interface permanently (it then showed up
+/// as extra "public" host addresses in the installer's own-address detection).
+/// Tests are serialized by `SERIAL`, but the counter is also correct if two
+/// leases overlap (`harness_readiness_...` does not go through `Lab`).
+static NET: Mutex<(usize, Option<DummyInterfaceGuard>)> = Mutex::new((0, None));
 
-fn dummy_net() -> &'static DummyInterfaceGuard {
-    DUMMY_NET.get_or_init(|| {
-        DummyInterfaceGuard::setup(
+struct NetLease;
+
+fn dummy_net() -> NetLease {
+    let mut g = NET.lock().unwrap_or_else(|p| p.into_inner());
+    if g.0 == 0 {
+        g.1 = Some(DummyInterfaceGuard::setup(
             DUMMY_IFACE,
             &[RELAY_IP, EXIT_IP, TARGET_IP, UNDECLARED_IP, CLIENT_IP],
-        )
-    })
+        ));
+    }
+    g.0 += 1;
+    NetLease
+}
+
+impl Drop for NetLease {
+    fn drop(&mut self) {
+        let mut g = NET.lock().unwrap_or_else(|p| p.into_inner());
+        g.0 -= 1;
+        if g.0 == 0 {
+            g.1.take(); // DummyInterfaceGuard::drop deletes the interface
+        }
+    }
 }
 
 /// Owns a Linux dummy network interface carrying this suite's non-loopback
@@ -653,11 +661,13 @@ struct Lab {
     /// In front of the exit; both declared peers point at it.
     exit_tap: Tap,
     clients: Vec<Proc>,
+    /// Declared LAST so the interface outlives every process and socket above.
+    _net: NetLease,
 }
 
 impl Lab {
     fn start() -> Option<Lab> {
-        let sb = prerequisites()?;
+        let (sb, net) = prerequisites()?;
         let decoy = spawn_local_tls13_decoy(DecoyCertSize::Small).expect("local TLS 1.3 decoy");
         let exit = Node::new(&sb, &decoy, "0a1b2c3d");
         let relay = Node::new(&sb, &decoy, "1a2b3c4d");
@@ -673,6 +683,7 @@ impl Lab {
             decoy,
             sb,
             clients: Vec::new(),
+            _net: net,
         };
         lab.write_exit_deployment();
         lab.write_relay_deployment(true);
@@ -1841,7 +1852,9 @@ fn harness_ports_are_unique_and_outside_the_ephemeral_range() {
 #[test]
 fn harness_readiness_is_owned_by_the_started_process() {
     let _serial = serial();
-    let Some(sb) = prerequisites() else { return };
+    let Some((sb, _net)) = prerequisites() else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let port = free_port();
     let config = dir.path().join("config.json");

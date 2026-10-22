@@ -101,9 +101,9 @@ healthz_block="$(awk '/location \/healthz \{/,/^    \}/' "$NGINX_TEMPLATE")"
 if [ -z "$healthz_block" ]; then
   fail "could not locate the /healthz location block in the template"
 else
-  if printf '%s' "$healthz_block" | grep -q 'allow 127.0.0.1;' \
-    && printf '%s' "$healthz_block" | grep -q 'allow ::1;' \
-    && printf '%s' "$healthz_block" | grep -q 'deny all;'; then
+  if grep -q 'allow 127.0.0.1;' <<<"$healthz_block" \
+    && grep -q 'allow ::1;' <<<"$healthz_block" \
+    && grep -q 'deny all;' <<<"$healthz_block"; then
     ok "/healthz allows only 127.0.0.1/::1 and denies everything else"
   else
     fail "/healthz is not restricted to loopback (allow 127.0.0.1; allow ::1; deny all;)"
@@ -112,7 +112,7 @@ else
   # come before proxy_pass has a chance to matter, but more importantly
   # here, they must both be present in the same location so this can
   # never regress into a location that forgot the `deny all;` catch-all.
-  if printf '%s' "$healthz_block" | grep -q 'proxy_pass'; then
+  if grep -q 'proxy_pass' <<<"$healthz_block"; then
     ok "/healthz still proxies to the loopback backend (local diagnostics keep working)"
   else
     fail "/healthz no longer proxies to the backend — local health checks would break"
@@ -122,8 +122,8 @@ fi
 echo
 echo "--- nginx vhost template: /sub/ token-safety directives are untouched by this change ---"
 sub_block="$(awk '/location \/sub\/ \{/,/^    \}/' "$NGINX_TEMPLATE")"
-if printf '%s' "$sub_block" | grep -q 'access_log off;' \
-  && printf '%s' "$sub_block" | grep -q 'error_log .* crit;'; then
+if grep -q 'access_log off;' <<<"$sub_block" \
+  && grep -q 'error_log .* crit;' <<<"$sub_block"; then
   ok "/sub/ still disables full access logging and caps error_log at crit (bearer token never logged)"
 else
   fail "/sub/'s token-safety logging directives regressed"
@@ -149,9 +149,9 @@ for f in "$REPO_ROOT/deploy/almalinux/install.sh" "$REPO_ROOT/deploy/almalinux/h
     start=$((lineno - 3))
     [ "$start" -lt 1 ] && start=1
     context="$(sed -n "${start},$((lineno + 1))p" "$f")"
-    if printf '%s' "$context" | grep -q 'https://'; then
+    if grep -q 'https://' <<<"$context"; then
       found_public_healthz_probe=1
-      if printf '%s' "$context" | grep -q -- '--resolve' && printf '%s' "$context" | grep -q '127\.0\.0\.1'; then
+      if grep -q -- '--resolve' <<<"$context" && grep -q '127\.0\.0\.1' <<<"$context"; then
         ok "$(basename "$f"): public-vhost /healthz probe (line $lineno) uses --resolve ...:127.0.0.1 (survives the loopback restriction)"
       else
         fail "$(basename "$f"): public-vhost /healthz probe (line $lineno) does not resolve to loopback — it would now get 403:

@@ -95,7 +95,7 @@ if command -v idn2 >/dev/null 2>&1 || command -v idn >/dev/null 2>&1; then
     )
   }
   out="$(run_resolve_host_config 2>&1)" || true
-  if echo "$out" | grep -q '^PUBLIC_HOST=xn--e1aybc.invalid$'; then
+  if grep -q '^PUBLIC_HOST=xn--e1aybc.invalid$' <<<"$out"; then
     ok "resolve_host_config() converts an env-supplied Unicode PUBLIC_HOST to punycode before validation/use"
   else
     fail "resolve_host_config() did not convert an env-supplied Unicode PUBLIC_HOST as expected; got: $out"
@@ -110,8 +110,8 @@ else
   fail "install_idn_support() no longer installs libidn2 for the rhel family — Unicode domains on AlmaLinux 9 would silently have no converter available"
 fi
 preflight_body="$(sed -n '/^preflight_stage() {/,/^}/p' "$INSTALL_SH")"
-idn_line="$(echo "$preflight_body" | grep -n '^\s*install_idn_support\s*$' | head -n1 | cut -d: -f1)"
-host_line="$(echo "$preflight_body" | grep -n '^\s*resolve_host_config\s*$' | head -n1 | cut -d: -f1)"
+idn_line="$(grep -n '^\s*install_idn_support\s*$' <<<"$preflight_body" | head -n1 | cut -d: -f1)"
+host_line="$(grep -n '^\s*resolve_host_config\s*$' <<<"$preflight_body" | head -n1 | cut -d: -f1)"
 if [ -n "$idn_line" ] && [ -n "$host_line" ] && [ "$idn_line" -lt "$host_line" ]; then
   ok "install_idn_support() runs before resolve_host_config() in preflight_stage — the converter is available before it is needed"
 else

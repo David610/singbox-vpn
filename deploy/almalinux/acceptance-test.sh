@@ -22,9 +22,36 @@ set -uo pipefail
 STATE_DIR="/etc/vpn/compat"
 REQUIRED_FAIL=0
 
+NONREQ_FAIL=0
+NONREQ_NAMES=()
+# ACCEPTANCE_STRICT=1 turns every non-required FAIL into a failed run.
+ACCEPTANCE_STRICT="${ACCEPTANCE_STRICT:-0}"
+
 pass() { printf "%-46s PASS\n" "$1"; }
-fail() { printf "%-46s FAIL %s\n" "$1" "${2:-}"; }
+# A non-required FAIL is still a FAIL: it is counted and named in the final
+# verdict so the summary can never read as a clean pass above FAIL lines (I-43).
+fail() { printf "%-46s FAIL %s\n" "$1" "${2:-}"; NONREQ_FAIL=$((NONREQ_FAIL + 1)); NONREQ_NAMES+=("$1"); }
 fail_required() { printf "%-46s FAIL (required) %s\n" "$1" "${2:-}"; REQUIRED_FAIL=1; }
+
+# Final verdict. Prints the summary and returns the process exit status.
+acceptance_summary() {
+  if [ "$REQUIRED_FAIL" -ne 0 ]; then
+    echo "ACCEPTANCE TEST: FAILED (one or more required checks failed)"
+    return 1
+  fi
+  if [ "$NONREQ_FAIL" -ne 0 ]; then
+    local joined
+    joined="$(printf '%s; ' "${NONREQ_NAMES[@]}")"
+    if [ "$ACCEPTANCE_STRICT" = "1" ]; then
+      echo "ACCEPTANCE TEST: FAILED (strict: $NONREQ_FAIL non-required check(s) failed: ${joined%; })"
+      return 1
+    fi
+    echo "ACCEPTANCE TEST: PASSED WITH $NONREQ_FAIL NON-REQUIRED FAILURE(S) - NOT a clean pass; platform checks that did not apply or were not met: ${joined%; }"
+    return 0
+  fi
+  echo "ACCEPTANCE TEST: PASSED (all required checks passed; no failures of any kind)"
+  return 0
+}
 
 section() { echo; echo "== $1 =="; }
 
@@ -57,8 +84,18 @@ fi
 section "firewalld"
 if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
   pass "firewalld active"
+elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  # Debian/Ubuntu backend: verify the VPN ports are actually allowed.
+  ufw_rules="$(ufw status 2>/dev/null)"
+  for rule in "443/tcp" "443/udp"; do
+    if grep -qE "^${rule}[[:space:]]+(ALLOW|LIMIT)" <<<"$ufw_rules"; then
+      pass "ufw allows $rule"
+    else
+      fail_required "ufw allows $rule" "(ufw is active but the VPN port is not allowed)"
+    fi
+  done
 else
-  fail "firewalld active" "(not running — container may lack systemd/firewalld entirely)"
+  fail "firewalld/ufw active" "(neither is active — container, or the host has no firewall)"
 fi
 
 section "file ownership / permissions"
@@ -214,9 +251,5 @@ echo "  Both are also exercised automatically by the destructive"
 echo "  lifecycle gate: deploy/almalinux/lifecycle-acceptance.sh."
 
 echo
-if [ "$REQUIRED_FAIL" -ne 0 ]; then
-  echo "ACCEPTANCE TEST: FAILED (one or more required checks failed)"
-  exit 1
-fi
-echo "ACCEPTANCE TEST: PASSED (all required checks passed)"
-exit 0
+acceptance_summary
+exit $?

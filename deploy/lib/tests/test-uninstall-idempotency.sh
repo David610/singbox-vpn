@@ -75,7 +75,7 @@ if [ "$rc1" -eq 0 ]; then
 else
   fail "first run exited $rc1: $out1"
 fi
-if echo "$out1" | grep -qi "nothing to remove"; then
+if grep -qi "nothing to remove" <<<"$out1"; then
   ok "first run correctly reports nothing to remove"
 else
   fail "first run did not report 'nothing to remove'; got: $out1"
@@ -90,7 +90,7 @@ if [ "$rc2" -eq 0 ]; then
 else
   fail "second run exited $rc2: $out2"
 fi
-if echo "$out2" | grep -qi "nothing to remove"; then
+if grep -qi "nothing to remove" <<<"$out2"; then
   ok "second run correctly reports nothing to remove"
 else
   fail "second run did not report 'nothing to remove'; got: $out2"

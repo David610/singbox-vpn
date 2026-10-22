@@ -1,0 +1,6 @@
+it=1 deploy/lib/tests/test-ssh-harden.sh
+it=2 deploy/lib/tests/test-ssh-harden.sh
+it=3 deploy/lib/tests/test-ssh-harden.sh
+it=4 deploy/lib/tests/test-ssh-harden.sh
+it=5 deploy/lib/tests/test-ssh-harden.sh
+it=6 deploy/lib/tests/test-ssh-harden.sh

@@ -8,7 +8,7 @@ CONFIG="${EGRESS_GATE_CONFIG:-/etc/vpn/deployment.toml}"
 # A fresh candidate install declares reject_google (the installer default
 # since v1.3.1); a v1.2.0 -> candidate update keeps the allow default. Either
 # is a valid fresh standalone baseline; the gate restores whichever it found.
-initial="$("$ADMIN" --config "$CONFIG" egress show | head -1)"
+initial="$("$ADMIN" --config "$CONFIG" egress show | head -1 || true)"
 case "$initial" in
   'ipv6_literal: allow (plain exit default)') baseline=allow ;;
   'ipv6_literal: reject_google') baseline=reject_google ;;

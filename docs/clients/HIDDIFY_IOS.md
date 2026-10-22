@@ -367,3 +367,42 @@ Practical reading of this table:
 For the standalone literal-IPv6 policy (v1.3.0) and its native iPhone/VPS
 acceptance gates, see [exit policy](../EXIT_IPV6_POLICY.md). Rejection is not
 proof of native IPv4 retry. Published v1.2.0 evidence does not accept v1.3.0.
+
+## "open …/Library/Caches/Working/configs/<id>.json: no such file or directory" (I-08)
+
+**Status 2026-10-20: client-side, unfixed upstream, not caused or fixable by the
+server.** Evidence class: user reported + upstream issue + code reading; the
+trigger on the owner's iPhone is **UNVERIFIED**.
+
+- Upstream: `hiddify/hiddify-app#2372` "[iOS 26] tunnel cannot open Working
+  config in App Group container" (opened 2026-10-09, Hiddify 4.0.0 dev, still
+  open, no maintainer reply or linked PR when checked). Same dialog ("Unexpected
+  failure") and `failed to start core: CoreStatus.stopped`. The reporter's
+  Hysteria2 server logged zero attempts from the device, and the same profile
+  worked on desktop, matching our expectation that the server is uninvolved.
+- Reporter's hypothesis (unconfirmed): the profile JSON lives in
+  `Library/Caches/Working/configs/`, which iOS may purge, while the profile
+  database persists, so `connect()` finds a database entry whose file is gone;
+  possibly also an app/extension container mismatch (#2317, dev flavor and
+  signing IDs).
+- What helped there: only deleting the app, rebooting, reinstalling and
+  re-importing. Re-importing the profile, freeing storage, re-adding the VPN
+  configuration and restarting the app did not.
+
+**What this repository can and cannot do.** Nothing in the subscription or the
+server can recreate a file inside the app's container. Do not claim any server
+change fixes it. A durable fix belongs upstream: write the profile into a
+non-purgeable App Group directory (Application Support) atomically
+(temp file + rename); regenerate the file from the persisted profile record
+when it is missing at connect time; and surface the underlying `open()` error
+instead of `CoreStatus.stopped`. An upstream-quality proposal must pass the
+Flutter/iOS build and a physical-device test before it is called ready; neither
+has been run.
+
+**Reproduction/diagnosis plan (device required, one step at a time).** Ask the
+owner to record, when the error appears: iOS version, Hiddify version/build
+(Settings -> About), whether the device was low on storage or recently
+restarted, whether Connect On Demand is enabled, and whether it follows a
+profile refresh. Then test whether it occurs after an iOS cache purge
+(restart the phone, wait, reconnect) versus only after a profile update.
+Until then the issue stays `UNVERIFIED` on-device.

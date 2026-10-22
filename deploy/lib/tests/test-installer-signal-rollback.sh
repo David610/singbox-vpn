@@ -22,6 +22,12 @@ set -Eeuo pipefail
 # (a human's Ctrl-C, or `kill -INT`/`kill -TERM` on a directly-run
 # install.sh) never inherits SIGINT as ignored in the first place.
 set -m
+# A process started as an async job of a non-interactive shell (`cmd &`, nohup, some CI wrappers) inherits SIGINT as
+# IGNORED, and bash can never trap a signal that was ignored at start: the SIGINT half below would then wait forever.
+# Fail loudly instead of hanging (this is a property of how the test was launched, not of install.sh).
+if [ "$(( 0x$(awk '/^SigIgn:/{print $2}' /proc/$$/status) & 2 ))" -ne 0 ]; then
+  echo "FAIL: SIGINT is ignored in this process (launched as an async job?). Run this test in the foreground or via run_in_background of a login shell."; exit 1
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TMP="$(mktemp -d)"
@@ -63,6 +69,8 @@ chmod +x "$TMP/trigger.sh"
 
 export TEST_ROOT="$ROOT" TEST_TMP="$TMP" ROLLBACK_LOG="$TMP/rollback.log"
 
+# Every wait below is bounded so a regression fails the test instead of hanging the whole suite.
+wait_bounded() { local p="$1" _; for _ in $(seq 1 300); do kill -0 "$p" 2>/dev/null || { wait "$p"; return $?; }; sleep 0.1; done; kill -9 "$p" 2>/dev/null; wait "$p" 2>/dev/null; return 124; }
 wait_for_ready() {
   local out="$1" tries=0
   while [ "$tries" -lt 50 ]; do
@@ -82,7 +90,7 @@ pid=$!
 wait_for_ready "$out" || { echo "FAIL: trigger process never reached TRIGGER_READY"; exit 1; }
 kill -TERM "$pid"
 rc=0
-wait "$pid" || rc=$?
+wait_bounded "$pid" || rc=$?
 [ "$rc" -eq 143 ] || { echo "FAIL: expected exit 143 after SIGTERM, got $rc"; cat "$out"; exit 1; }
 [ "$(cat "$ROLLBACK_LOG" 2>/dev/null)" = "--yes" ] || { echo "FAIL: SIGTERM did not trigger the fresh-install rollback (mock uninstall.sh was not invoked with --yes)"; cat "$out"; exit 1; }
 grep -q "rolling back everything" "$out" || { echo "FAIL: rollback log message missing after SIGTERM"; cat "$out"; exit 1; }
@@ -98,7 +106,7 @@ pid=$!
 wait_for_ready "$out" || { echo "FAIL: trigger process never reached TRIGGER_READY"; exit 1; }
 kill -INT "$pid"
 rc=0
-wait "$pid" || rc=$?
+wait_bounded "$pid" || rc=$?
 [ "$rc" -eq 130 ] || { echo "FAIL: expected exit 130 after SIGINT, got $rc"; cat "$out"; exit 1; }
 [ "$(cat "$ROLLBACK_LOG" 2>/dev/null)" = "--yes" ] || { echo "FAIL: SIGINT did not trigger the fresh-install rollback"; cat "$out"; exit 1; }
 echo "ok: SIGINT mid-stage rolls back a fresh install and exits 130"

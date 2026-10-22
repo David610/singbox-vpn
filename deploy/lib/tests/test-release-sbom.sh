@@ -22,24 +22,24 @@ trap 'rm -rf "$WORK"' EXIT
 echo "--- static: release.yml generates, attests, uploads and publishes the SBOM + license inventory ---"
 build_job="$(sed -n '/^  build:$/,/^  runtime-compat:$/p' "$RELEASE_YML")"
 publish_job="$(sed -n '/^  publish:$/,/^  verify-published-bootstrap:$/p' "$RELEASE_YML")"
-echo "$build_job" | grep -q 'bash deploy/lib/generate-sbom.sh --version "\$RELEASE_TAG"' \
+grep -q 'bash deploy/lib/generate-sbom.sh --version "\$RELEASE_TAG"' <<<"$build_job" \
   && ok "build job runs the generator for the release tag" || fail "build job does not generate the SBOM"
-build_line="$(echo "$build_job" | grep -n 'build-release-x86_64.sh' | head -1 | cut -d: -f1)"
-sbom_line="$(echo "$build_job" | grep -n 'generate-sbom.sh' | head -1 | cut -d: -f1)"
+build_line="$(grep -n 'build-release-x86_64.sh' <<<"$build_job" | head -1 | cut -d: -f1)"
+sbom_line="$(grep -n 'generate-sbom.sh' <<<"$build_job" | head -1 | cut -d: -f1)"
 [ -n "$build_line" ] && [ -n "$sbom_line" ] && [ "$build_line" -lt "$sbom_line" ] \
   && ok "SBOM is generated in the same job, after the release binaries are built" \
   || fail "SBOM generation is not in the build job after the release build"
-echo "$build_job" | grep -A8 'Attest SBOM and license inventory provenance' | grep -q 'singbox-vpn-sbom.cdx.json' \
+grep -A8 'Attest SBOM and license inventory provenance' <<<"$build_job" | grep -q 'singbox-vpn-sbom.cdx.json' \
   && ok "SBOM is covered by a Sigstore provenance attestation" || fail "SBOM is not attested"
 for f in singbox-vpn-sbom.cdx.json singbox-vpn-licenses.json singbox-vpn-sbom.sigstore.json; do
-  echo "$build_job" | grep -q "^            $f$" && ok "build uploads $f" || fail "build does not upload $f"
+  grep -q "^            $f$" <<<"$build_job" && ok "build uploads $f" || fail "build does not upload $f"
 done
 for f in singbox-vpn-sbom.cdx.json singbox-vpn-licenses.json; do
-  echo "$publish_job" | grep -q "dist/$f" && ok "publish ships $f" || fail "publish does not ship $f"
-  echo "$publish_job" | grep -q "test -s $f" && ok "publish refuses to run without $f" || fail "publish does not require $f"
-  echo "$publish_job" | grep -q "$f.sha256" && ok "SHA256SUMS covers $f" || fail "SHA256SUMS does not cover $f"
+  grep -q "dist/$f" <<<"$publish_job" && ok "publish ships $f" || fail "publish does not ship $f"
+  grep -q "test -s $f" <<<"$publish_job" && ok "publish refuses to run without $f" || fail "publish does not require $f"
+  grep -q "$f.sha256" <<<"$publish_job" && ok "SHA256SUMS covers $f" || fail "SHA256SUMS does not cover $f"
 done
-echo "$publish_job" | grep -q 'dist/\*.sigstore.json' && ok "publish still ships Sigstore bundles" || fail "publish lost the Sigstore bundles"
+grep -q 'dist/\*.sigstore.json' <<<"$publish_job" && ok "publish still ships Sigstore bundles" || fail "publish lost the Sigstore bundles"
 grep -q 'generate-sbom.sh --version ci-dry-run' "$CI_YML" \
   && ok "CI runs the generator against the real workspace on every change" || fail "CI does not dry-run the SBOM generator"
 

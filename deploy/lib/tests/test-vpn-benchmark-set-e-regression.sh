@@ -126,7 +126,7 @@ HARNESS
 failures=0
 assert_contains() {
   local desc="$1" haystack="$2" needle="$3"
-  if printf '%s' "$haystack" | grep -qF "$needle"; then
+  if grep -qF "$needle" <<<"$haystack"; then
     echo "ok: $desc"
   else
     echo "FAIL: $desc — expected to find [$needle] in:"
@@ -136,7 +136,7 @@ assert_contains() {
 }
 assert_not_contains() {
   local desc="$1" haystack="$2" needle="$3"
-  if printf '%s' "$haystack" | grep -qF "$needle"; then
+  if grep -qF "$needle" <<<"$haystack"; then
     echo "FAIL: $desc — did not expect to find [$needle] in:"
     echo "$haystack" | sed 's/^/    /'
     failures=$((failures + 1))

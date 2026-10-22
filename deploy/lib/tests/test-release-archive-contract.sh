@@ -52,7 +52,7 @@ os_sh_targets="$(grep -oE 'echo "[A-Za-z0-9_.-]+-unknown-linux-gnu"' "$REPO_ROOT
 [ -n "$yml_targets" ] || { echo "FAIL: could not find any singbox-vpn-<target>.tar.gz reference in release.yml"; failures=$((failures + 1)); }
 missing=0
 for t in $yml_targets; do
-  if echo "$os_sh_targets" | grep -qFx "$t"; then
+  if grep -qFx "$t" <<<"$os_sh_targets"; then
     echo "ok: release.yml builds $t, which os.sh's rust_target_for_arch() also resolves to"
   else
     echo "FAIL: release.yml builds $t, but os.sh's rust_target_for_arch() has no matching output"

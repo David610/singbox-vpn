@@ -340,7 +340,8 @@ enum GoogleEgressHairpinCommands {
         relay_port: u16,
         #[arg(long)]
         relay_server_name: String,
-        #[arg(long)]
+        /// base64url, so it can start with '-': accept it as a value, not a flag
+        #[arg(long, allow_hyphen_values = true)]
         relay_reality_public_key: String,
         #[arg(long)]
         relay_reality_short_id: String,
@@ -5439,6 +5440,8 @@ fn cmd_doctor(
         report_check(status, "L2", message);
     }
     check_expected_public_surface(cfg, &mut failures);
+    check_host_ipv6_egress();
+    check_host_egress_isolation_table(&mut failures);
     check_firewall_zone_and_ownership();
     check_l4_subscription_coherence(cfg, &mut failures);
     check_l4_live_subscription_process_state(cfg, &mut failures);
@@ -6230,11 +6233,13 @@ fn cmd_doctor_report(cfg: &DeploymentConfig, output: Option<&std::path::Path>) -
         Some(listeners) => {
             let ssh_port = detect_ssh_port(&listeners);
             let expected = expected_singbox_vpn_ports(cfg);
+            let declared = read_declared_inbounds(&cfg.singbox_config_file());
             let findings = classify_public_surface(
                 &listeners,
                 ssh_port,
                 &expected,
                 cfg.subscription.listen_port,
+                declared.as_ref(),
             );
             if findings.is_empty() {
                 let _ = writeln!(out, "no listening sockets observed");
@@ -7935,6 +7940,88 @@ fn classify_public_surface(
     ssh_port: Option<u16>,
     expected: &[ExpectedPort],
     subscription_backend_port: u16,
+    declared: Option<&DeclaredInbounds>,
+) -> Vec<(CheckStatus, String)> {
+    classify_public_surface_in(
+        listeners,
+        ssh_port,
+        expected,
+        subscription_backend_port,
+        local_ephemeral_port_range(),
+        declared,
+    )
+}
+
+/// Kernel ephemeral (auto-assigned) port range, `net.ipv4.ip_local_port_range`.
+fn parse_ephemeral_range(text: &str) -> Option<(u16, u16)> {
+    let mut it = text.split_whitespace();
+    let lo: u16 = it.next()?.parse().ok()?;
+    let hi: u16 = it.next()?.parse().ok()?;
+    (lo <= hi).then_some((lo, hi))
+}
+
+fn local_ephemeral_port_range() -> (u16, u16) {
+    std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|t| parse_ephemeral_range(&t))
+        .unwrap_or((32768, 60999))
+}
+
+/// Inbound `(udp, port)` pairs the on-disk sing-box config declares.
+type DeclaredInbounds = std::collections::BTreeSet<(bool, u16)>;
+
+/// Pure: the inbound listeners a sing-box config can bind. sing-box binds a
+/// listening port only if an inbound declares it, so a socket that no inbound
+/// declares is an outbound flow socket, whatever its port.
+fn declared_inbounds(config: &serde_json::Value) -> DeclaredInbounds {
+    let mut out = DeclaredInbounds::new();
+    for ib in config["inbounds"].as_array().into_iter().flatten() {
+        let Some(port) = ib["listen_port"]
+            .as_u64()
+            .and_then(|p| u16::try_from(p).ok())
+        else {
+            continue;
+        };
+        match ib["type"].as_str().unwrap_or("") {
+            "hysteria" | "hysteria2" | "tuic" | "naive" => {
+                out.insert((true, port));
+            }
+            "vless" | "vmess" | "trojan" | "http" => {
+                out.insert((false, port));
+            }
+            _ => {
+                out.insert((false, port));
+                out.insert((true, port));
+            }
+        }
+    }
+    out
+}
+
+fn read_declared_inbounds(path: &std::path::Path) -> Option<DeclaredInbounds> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    v["inbounds"].is_array().then(|| declared_inbounds(&v))
+}
+
+/// `classify_public_surface` with the ephemeral range injected (pure/testable).
+///
+/// `ss -ulnp` also lists unconnected OUTBOUND UDP sockets. For an unexpected
+/// non-loopback UDP socket owned by singbox-vpn's own process:
+///   - an inbound in the config declares the port -> FAIL (a real, unintended
+///     listener — even on an ephemeral port);
+///   - no inbound declares it and the port is ephemeral -> INFO (flow socket);
+///   - no inbound declares it and the port is not ephemeral -> FAIL;
+///   - the config could not be read (`declared` is None) -> ephemeral is WARN
+///     (cannot be told apart), anything else FAIL. Never INFO without proof.
+///
+/// Any TCP listener stays FAIL.
+fn classify_public_surface_in(
+    listeners: &[ListenSocket],
+    ssh_port: Option<u16>,
+    expected: &[ExpectedPort],
+    subscription_backend_port: u16,
+    ephemeral: (u16, u16),
+    declared: Option<&DeclaredInbounds>,
 ) -> Vec<(CheckStatus, String)> {
     let mut findings = Vec::new();
     for l in listeners {
@@ -8012,6 +8099,34 @@ fn classify_public_surface(
 
         if let Some(name) = owner {
             if is_singbox_vpn_process(name) {
+                if l.udp && (ephemeral.0..=ephemeral.1).contains(&l.port) {
+                    match declared {
+                        Some(d) if !d.contains(&(true, l.port)) => {
+                            findings.push((
+                                CheckStatus::Info,
+                                format!(
+                                    "{name} holds an outbound UDP flow socket on \
+                                     {addr_port}/{proto} (ephemeral port, no configured \
+                                     inbound declares it; not a listener)"
+                                ),
+                            ));
+                            continue;
+                        }
+                        None => {
+                            findings.push((
+                                CheckStatus::Warn,
+                                format!(
+                                    "{name} has a UDP socket on {addr_port}/{proto} (ephemeral \
+                                     port) but the sing-box config could not be read, so an \
+                                     outbound flow socket cannot be told from an unintended \
+                                     inbound"
+                                ),
+                            ));
+                            continue;
+                        }
+                        Some(_) => {} // a configured inbound: fall through to FAIL
+                    }
+                }
                 findings.push((
                     CheckStatus::Fail,
                     format!(
@@ -8021,6 +8136,20 @@ fn classify_public_surface(
                 ));
                 continue;
             }
+        }
+
+        // The host's own DHCPv4 lease: systemd-networkd's client socket on UDP 68 is bound to the interface's
+        // address AND device (`addr%ifname`). Deliberately narrow -- UDP, port 68, that owner, an interface-bound
+        // address -- so any other unexpected listener keeps warning.
+        if l.udp && l.port == 68 && owner == Some("systemd-network") && l.addr.contains('%') {
+            findings.push((
+                CheckStatus::Info,
+                format!(
+                    "{addr_port}/{proto} is the host's DHCPv4 client (systemd-networkd, bound to its \
+                     interface address) -- this machine's own address lease, not a service"
+                ),
+            ));
+            continue;
         }
 
         let owner_desc =
@@ -8038,6 +8167,129 @@ fn classify_public_surface(
         ));
     }
     findings
+}
+
+/// IPv6 egress health of the host itself (I-55). A node with a global IPv6
+/// address and a default route whose gateway neighbour entry is FAILED has
+/// broken IPv6 for every user it exits, whatever its DNS says — exactly how a
+/// host firewall rejecting neighbour discovery (I-54) looks from the inside.
+/// Pure: all inputs are observations passed in.
+fn classify_host_ipv6(
+    has_global: bool,
+    gateway: Option<&str>,
+    neighbour_state: Option<&str>,
+) -> (CheckStatus, String) {
+    if !has_global {
+        return (
+            CheckStatus::Info,
+            "no global IPv6 address on this host: IPv6 egress is not applicable".into(),
+        );
+    }
+    let Some(gw) = gateway else {
+        return (
+            CheckStatus::Warn,
+            "this host has a global IPv6 address but no default IPv6 route: users cannot egress over IPv6".into(),
+        );
+    };
+    match neighbour_state {
+        Some(state) if state.eq_ignore_ascii_case("FAILED") => (
+            CheckStatus::Warn,
+            format!(
+                "IPv6 default gateway {gw} neighbour entry is FAILED: IPv6 egress is broken for every user \
+                 (neighbour discovery is failing — check host firewall/nftables rules that reject \
+                 ICMPv6 or fe80::/10 and ff00::/8, and the provider's IPv6 setup)"
+            ),
+        ),
+        Some(_) | None => (
+            CheckStatus::Ok,
+            format!("IPv6 default gateway {gw} neighbour discovery is not failing"),
+        ),
+    }
+}
+
+fn host_ipv6_observations() -> (bool, Option<String>, Option<String>) {
+    let run = |args: &[&str]| -> Option<String> {
+        let o = std::process::Command::new("ip").args(args).output().ok()?;
+        o.status
+            .success()
+            .then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    let has_global = run(&["-6", "-o", "addr", "show", "scope", "global"])
+        .map(|t| {
+            t.lines().any(|l| {
+                !l.contains("temporary") && !l.contains("deprecated") && !l.contains("tentative")
+            })
+        })
+        .unwrap_or(false);
+    let route = run(&["-6", "route", "show", "default"]).unwrap_or_default();
+    let mut gw = None;
+    let mut dev = None;
+    let words: Vec<&str> = route.split_whitespace().collect();
+    for w in words.windows(2) {
+        match w[0] {
+            "via" if gw.is_none() => gw = Some(w[1].to_string()),
+            "dev" if dev.is_none() => dev = Some(w[1].to_string()),
+            _ => {}
+        }
+    }
+    let state = match (&gw, &dev) {
+        (Some(g), Some(d)) => run(&["-6", "neigh", "show", g, "dev", d])
+            .and_then(|t| t.split_whitespace().last().map(str::to_string)),
+        _ => None,
+    };
+    (has_global, gw, state)
+}
+
+/// Host egress-isolation table shape (I-54). Pure: the `nft list table` text is passed in.
+fn classify_egress_isolation_table(listing: Option<&str>) -> (CheckStatus, String) {
+    let Some(text) = listing else {
+        return (
+            CheckStatus::Info,
+            "no host egress-isolation nftables table is loaded".into(),
+        );
+    };
+    if text.contains("skuid !=") {
+        return (
+            CheckStatus::Fail,
+            "the host egress-isolation table uses a NEGATED uid match (`meta skuid != UID accept`): kernel IPv6 neighbour \
+             discovery has no socket owner, falls into the reject rules and breaks IPv6 for the whole host (I-54, present in \
+             every release up to v1.3.1-rc.2). Update to a release that scopes the rejects with a positive uid match, then \
+             re-run vpn-egress-isolation.service"
+                .into(),
+        );
+    }
+    if text.contains("meta skuid") {
+        (
+            CheckStatus::Ok,
+            "host egress-isolation table scopes its rejects to the sing-box uid with a positive match".into(),
+        )
+    } else {
+        (
+            CheckStatus::Warn,
+            "host egress-isolation table is loaded but its uid scoping could not be recognised"
+                .into(),
+        )
+    }
+}
+
+fn check_host_egress_isolation_table(failures: &mut u32) {
+    let listing = std::process::Command::new("nft")
+        .args(["list", "table", "inet", "arcana_egress_isolation"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let (status, msg) = classify_egress_isolation_table(listing.as_deref());
+    if status == CheckStatus::Fail {
+        *failures += 1;
+    }
+    report_check(status, "L3", msg);
+}
+
+fn check_host_ipv6_egress() {
+    let (has_global, gw, state) = host_ipv6_observations();
+    let (status, msg) = classify_host_ipv6(has_global, gw.as_deref(), state.as_deref());
+    report_check(status, "L3", msg);
 }
 
 /// `vpn doctor`'s expected-public-surface check: enumerates real
@@ -8066,11 +8318,13 @@ fn check_expected_public_surface(cfg: &DeploymentConfig, failures: &mut u32) {
         );
     }
     let expected = expected_singbox_vpn_ports(cfg);
+    let declared = read_declared_inbounds(&cfg.singbox_config_file());
     let findings = classify_public_surface(
         &listeners,
         ssh_port,
         &expected,
         cfg.subscription.listen_port,
+        declared.as_ref(),
     );
     if findings.is_empty() {
         report_check(
@@ -10701,7 +10955,7 @@ mod public_surface_tests {
         let listeners = parse_ss_listen_output(text, false);
         assert_eq!(listeners.len(), 2);
         assert!(listeners.iter().all(ListenSocket::is_loopback));
-        let findings = classify_public_surface(&listeners, Some(22), &[], 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &[], 9100, None);
         assert!(
             findings.is_empty(),
             "loopback listeners reported: {findings:?}"
@@ -10712,7 +10966,7 @@ mod public_surface_tests {
     fn a_wildcard_listener_is_flagged_without_claiming_internet_reachability() {
         let text = "LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=2,fd=5))\n";
         let listeners = parse_ss_listen_output(text, false);
-        let findings = classify_public_surface(&listeners, Some(22), &[], 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &[], 9100, None);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, CheckStatus::Warn);
         assert!(findings[0].1.contains("UNKNOWN"), "{}", findings[0].1);
@@ -10850,7 +11104,7 @@ mod public_surface_tests {
     #[test]
     fn expected_singbox_vpn_listener_is_ok() {
         let listeners = vec![sock(false, "0.0.0.0", 443, Some("sing-box"))];
-        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, CheckStatus::Ok);
         assert!(findings[0].1.contains("VLESS+REALITY"));
@@ -10861,14 +11115,14 @@ mod public_surface_tests {
         // Non-root run: process name unavailable — must not be treated
         // as a conflict just because the owner could not be identified.
         let listeners = vec![sock(true, "0.0.0.0", 443, None)];
-        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert_eq!(findings[0].0, CheckStatus::Ok);
     }
 
     #[test]
     fn expected_ssh_listener_is_ok() {
         let listeners = vec![sock(false, "0.0.0.0", 2222, Some("sshd"))];
-        let findings = classify_public_surface(&listeners, Some(2222), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(2222), &expected(), 9100, None);
         assert_eq!(findings[0].0, CheckStatus::Ok);
         assert!(findings[0].1.contains("SSH"));
     }
@@ -10876,14 +11130,14 @@ mod public_surface_tests {
     #[test]
     fn subscription_backend_on_loopback_is_ok() {
         let listeners = vec![sock(false, "127.0.0.1", 9100, Some("vpn-subscriptio"))];
-        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert_eq!(findings[0].0, CheckStatus::Ok);
     }
 
     #[test]
     fn subscription_backend_exposed_publicly_is_fail() {
         let listeners = vec![sock(false, "0.0.0.0", 9100, Some("vpn-subscriptio"))];
-        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, CheckStatus::Fail);
         assert!(findings[0].1.contains("NON-loopback"));
@@ -10892,16 +11146,243 @@ mod public_surface_tests {
     #[test]
     fn internal_singbox_vpn_process_on_an_unexpected_public_port_is_fail() {
         let listeners = vec![sock(false, "0.0.0.0", 6000, Some("sing-box"))];
-        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, CheckStatus::Fail);
         assert!(findings[0].1.contains("internal singbox-vpn process"));
     }
 
+    const EPHEMERAL: (u16, u16) = (32768, 60999);
+
+    fn declared(pairs: &[(bool, u16)]) -> DeclaredInbounds {
+        pairs.iter().copied().collect()
+    }
+
+    fn classify_in(
+        listeners: &[ListenSocket],
+        declared: Option<&DeclaredInbounds>,
+    ) -> Vec<(CheckStatus, String)> {
+        classify_public_surface_in(listeners, Some(22), &expected(), 9100, EPHEMERAL, declared)
+    }
+
+    #[test]
+    fn dhcpv4_client_socket_of_systemd_networkd_is_info_not_a_warning() {
+        // `ss -ulnp` on a DHCP-configured host: systemd-networkd's DHCPv4 client holds UDP 68 bound to the
+        // interface's own address and device (`addr%eth0`). It is the host's address lease, not a service.
+        let l = vec![sock(
+            true,
+            "62.238.46.190%eth0",
+            68,
+            Some("systemd-network"),
+        )];
+        let f = classify_in(&l, None);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].0, CheckStatus::Info);
+        assert!(f[0].1.contains("DHCP"), "{}", f[0].1);
+    }
+
+    #[test]
+    fn udp_68_is_only_benign_for_the_dhcp_client_bound_to_an_interface() {
+        // Everything near the DHCP case stays a WARN: another owner, an unknown owner, a wildcard bind, TCP,
+        // a different port. The exemption must not become a general "unknown UDP listener" suppression.
+        for (udp, addr, port, owner) in [
+            (true, "62.238.46.190%eth0", 68, Some("python3")),
+            (true, "62.238.46.190%eth0", 68, None),
+            (true, "0.0.0.0", 68, Some("systemd-network")),
+            (true, "62.238.46.190", 68, Some("systemd-network")),
+            (false, "62.238.46.190%eth0", 68, Some("systemd-network")),
+            (true, "62.238.46.190%eth0", 69, Some("systemd-network")),
+        ] {
+            let f = classify_in(&[sock(udp, addr, port, owner)], None);
+            assert_eq!(f.len(), 1);
+            assert_eq!(
+                f[0].0,
+                CheckStatus::Warn,
+                "{udp} {addr}:{port} {owner:?}: {}",
+                f[0].1
+            );
+        }
+    }
+
+    #[test]
+    fn own_process_outbound_udp_flow_sockets_are_info_when_no_inbound_declares_them() {
+        // `ss -ulnp` lists sing-box's unconnected outbound UDP sockets (23
+        // false FAILs on the previous node).
+        let d = declared(&[(false, 443), (true, 443)]);
+        let listeners: Vec<_> = (0..23)
+            .map(|i| sock(true, "0.0.0.0", 40000 + i, Some("sing-box")))
+            .collect();
+        let findings = classify_in(&listeners, Some(&d));
+        assert_eq!(findings.len(), 23);
+        assert!(
+            findings.iter().all(|f| f.0 == CheckStatus::Info),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_configured_inbound_on_an_ephemeral_port_is_still_fail() {
+        // The false negative the first heuristic hid: an inbound a mistaken
+        // config really declares, on an ephemeral-range port.
+        let d = declared(&[(true, 443), (true, 41000)]);
+        let findings = classify_in(&[sock(true, "0.0.0.0", 41000, Some("sing-box"))], Some(&d));
+        assert_eq!(findings[0].0, CheckStatus::Fail, "{findings:?}");
+        // ...while a neighbouring undeclared socket stays INFO.
+        let findings = classify_in(&[sock(true, "0.0.0.0", 41001, Some("sing-box"))], Some(&d));
+        assert_eq!(findings[0].0, CheckStatus::Info);
+    }
+
+    #[test]
+    fn own_process_udp_on_a_non_ephemeral_unexpected_port_is_fail_declared_or_not() {
+        let d = declared(&[(true, 443), (true, 5353)]);
+        for port in [5353, 1900, 8444] {
+            let l = [sock(true, "0.0.0.0", port, Some("sing-box"))];
+            assert_eq!(
+                classify_in(&l, Some(&d))[0].0,
+                CheckStatus::Fail,
+                "udp/{port}"
+            );
+            assert_eq!(
+                classify_in(&l, None)[0].0,
+                CheckStatus::Fail,
+                "udp/{port} no config"
+            );
+        }
+    }
+
+    #[test]
+    fn ephemeral_own_process_udp_is_never_info_without_a_readable_config() {
+        let findings = classify_in(&[sock(true, "0.0.0.0", 40000, Some("sing-box"))], None);
+        assert_eq!(findings[0].0, CheckStatus::Warn, "{findings:?}");
+    }
+
+    #[test]
+    fn own_process_tcp_listener_on_an_ephemeral_port_is_still_fail() {
+        let d = declared(&[]);
+        let findings = classify_in(&[sock(false, "0.0.0.0", 40000, Some("sing-box"))], Some(&d));
+        assert_eq!(findings[0].0, CheckStatus::Fail);
+    }
+
+    #[test]
+    fn declared_inbounds_reads_transport_per_inbound_type() {
+        let cfg = serde_json::json!({"inbounds": [
+            {"type": "vless", "listen_port": 443},
+            {"type": "hysteria2", "listen_port": 443},
+            {"type": "shadowsocks", "listen_port": 8388},
+            {"type": "tun"}
+        ]});
+        let d = declared_inbounds(&cfg);
+        assert_eq!(
+            d,
+            declared(&[(false, 443), (true, 443), (false, 8388), (true, 8388)])
+        );
+        assert!(read_declared_inbounds(std::path::Path::new("/nonexistent/x.json")).is_none());
+    }
+
+    #[test]
+    fn egress_isolation_table_with_a_negated_uid_match_is_a_failure() {
+        // I-54: `meta skuid != UID accept` lets socketless kernel packets (IPv6 neighbour discovery)
+        // fall into the rejects and kills host IPv6. Published releases <= rc.2 install this form.
+        let broken = "table inet arcana_egress_isolation {\n chain output {\n  meta skuid != 995 accept\n  ip6 daddr { fe80::/10 } reject\n }\n}";
+        let (st, msg) = classify_egress_isolation_table(Some(broken));
+        assert_eq!(st, CheckStatus::Fail, "{msg}");
+        assert!(msg.contains("I-54"));
+    }
+
+    #[test]
+    fn egress_isolation_table_with_positive_uid_scoping_is_ok() {
+        let good = "table inet arcana_egress_isolation {\n chain output {\n  meta skuid 995 ip6 daddr { fe80::/10 } counter packets 0 bytes 0 reject\n }\n}";
+        assert_eq!(
+            classify_egress_isolation_table(Some(good)).0,
+            CheckStatus::Ok
+        );
+    }
+
+    #[test]
+    fn missing_or_unrecognised_egress_isolation_table_is_not_ok() {
+        assert_eq!(classify_egress_isolation_table(None).0, CheckStatus::Info);
+        assert_eq!(
+            classify_egress_isolation_table(Some("table inet arcana_egress_isolation { }")).0,
+            CheckStatus::Warn
+        );
+    }
+
+    #[test]
+    fn hairpin_set_accepts_a_reality_public_key_that_starts_with_a_hyphen() {
+        // REALITY public keys are base64url (43 chars), so about 1 in 64 start with '-'.
+        // clap used to read such a key as an unknown flag ("unexpected argument '-A'").
+        use clap::Parser;
+        for key in [
+            "-ABCdefghijklmnopqrstuvwxyz0123456789_abcdef",
+            "_ABCdefghijklmnopqrstuvwxyz0123456789-abcdef",
+            "AbCdefghijklmnopqrstuvwxyz0123456789_abcdef-",
+        ] {
+            let parsed = Cli::try_parse_from([
+                "vpn-admin",
+                "google-egress-hairpin",
+                "set",
+                "--relay-host",
+                "192.0.2.10",
+                "--relay-port",
+                "443",
+                "--relay-server-name",
+                "www.example.com",
+                "--relay-reality-public-key",
+                key,
+                "--relay-reality-short-id",
+                "143b6f8d",
+                "--uuid-stdin",
+            ]);
+            assert!(parsed.is_ok(), "key {key:?} rejected: {:?}", parsed.err());
+        }
+    }
+
+    #[test]
+    fn host_ipv6_failed_gateway_neighbour_is_a_warning_not_ok() {
+        let (st, msg) = classify_host_ipv6(true, Some("fe80::1"), Some("FAILED"));
+        assert_eq!(st, CheckStatus::Warn, "{msg}");
+        assert!(msg.contains("FAILED") && msg.contains("fe80::1"));
+        assert_eq!(
+            classify_host_ipv6(true, Some("fe80::1"), Some("failed")).0,
+            CheckStatus::Warn
+        );
+    }
+
+    #[test]
+    fn host_ipv6_healthy_missing_or_not_applicable_states() {
+        assert_eq!(
+            classify_host_ipv6(true, Some("fe80::1"), Some("REACHABLE")).0,
+            CheckStatus::Ok
+        );
+        assert_eq!(
+            classify_host_ipv6(true, Some("fe80::1"), Some("STALE")).0,
+            CheckStatus::Ok
+        );
+        assert_eq!(
+            classify_host_ipv6(true, Some("fe80::1"), None).0,
+            CheckStatus::Ok
+        );
+        assert_eq!(classify_host_ipv6(true, None, None).0, CheckStatus::Warn);
+        assert_eq!(
+            classify_host_ipv6(false, Some("fe80::1"), Some("FAILED")).0,
+            CheckStatus::Info
+        );
+    }
+
+    #[test]
+    fn ephemeral_range_parser_reads_proc_format_and_rejects_garbage() {
+        assert_eq!(
+            parse_ephemeral_range("32768\t60999\n"),
+            Some((32768, 60999))
+        );
+        assert_eq!(parse_ephemeral_range("60999 32768"), None);
+        assert_eq!(parse_ephemeral_range("x"), None);
+    }
+
     #[test]
     fn unrelated_process_on_a_non_loopback_port_is_warn_not_fail() {
         let listeners = vec![sock(false, "0.0.0.0", 8080, Some("apache2"))];
-        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, CheckStatus::Warn);
         assert!(findings[0].1.contains("apache2"));
@@ -10911,14 +11392,14 @@ mod public_surface_tests {
     fn unidentified_process_on_a_non_loopback_port_is_warn_never_fail() {
         // Never assume malicious just because the owner is unknown.
         let listeners = vec![sock(false, "0.0.0.0", 8080, None)];
-        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert_eq!(findings[0].0, CheckStatus::Warn);
     }
 
     #[test]
     fn loopback_only_unrelated_listener_is_not_reported_at_all() {
         let listeners = vec![sock(false, "127.0.0.1", 5432, Some("postgres"))];
-        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert!(
             findings.is_empty(),
             "a loopback-only unrelated listener must not be reported: {findings:?}"
@@ -10930,7 +11411,7 @@ mod public_surface_tests {
         // Something other than sing-box is bound to the REALITY port —
         // a real, actionable "port conflict," not a plain pass.
         let listeners = vec![sock(false, "0.0.0.0", 443, Some("nginx"))];
-        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let findings = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].0, CheckStatus::Fail);
         assert!(findings[0].1.contains("port conflict"));
@@ -10946,7 +11427,7 @@ mod public_surface_tests {
         // function gets caught by review, not just by this comment.
         let listeners = vec![sock(false, "0.0.0.0", 9999, Some("mystery"))];
         let before = listeners.clone();
-        let _ = classify_public_surface(&listeners, Some(22), &expected(), 9100);
+        let _ = classify_public_surface(&listeners, Some(22), &expected(), 9100, None);
         assert_eq!(
             listeners, before,
             "classify_public_surface must not mutate its input"

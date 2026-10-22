@@ -37,6 +37,8 @@ die() { echo "[uninstall] ERROR: $*" >&2; exit 1; }
 . "$REPO_ROOT/deploy/lib/nginx-default.sh"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/deploy/lib/preflight.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/deploy/lib/proc-safe.sh"
 
 # This script (and everything it execs, e.g. vpn-admin) runs as root
 # and is normally reached via the stable /opt/singbox-vpn/bin/singbox-vpn-uninstall
@@ -810,7 +812,9 @@ for unit_path in "${!singbox_vpn_unit_keys[@]}"; do
   fi
 done
 pgrep -x sing-box >/dev/null 2>&1 && CRITICAL_RESIDUE+=("a sing-box process is still running")
-pgrep -f 'vpn-subscription-svc' >/dev/null 2>&1 && CRITICAL_RESIDUE+=("a vpn-subscription-svc process is still running")
+# Exact argv of the service, not "any process mentioning the name" (an editor, a tail or this very script's own
+# command line would otherwise count as a running service).
+[ -n "$(proc_pids_exact '[^ ]*/vpn-subscription-svc( .*)?')" ] && CRITICAL_RESIDUE+=("a vpn-subscription-svc process is still running")
 for f in vpn-admin vpn vpn-subscription-svc; do
   [ -e "/usr/local/bin/$f" ] && CRITICAL_RESIDUE+=("/usr/local/bin/$f still present")
 done

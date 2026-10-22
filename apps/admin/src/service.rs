@@ -247,11 +247,20 @@ impl CompatibilityServiceManager {
         self.reload_or_restart()?;
         // A single `is-active` immediately after reload can catch the unit
         // during its brief active window before ExecStart/health failure
-        // makes it exit. Require three consecutive healthy observations and
-        // allow a bounded startup window.
-        let deadline = std::time::Instant::now() + self.settle * 10;
+        // makes it exit. Require three consecutive healthy observations
+        // within a bounded number of observations.
+        //
+        // The bound is a COUNT, not a wall-clock deadline: each observation is
+        // a real subprocess (`systemctl is-active`) whose own latency grows on
+        // a loaded host, and a deadline that subprocess time consumes turns
+        // "slow to ask" into "not healthy" (I-75: 3 spawns could not fit in
+        // settle*10, so a healthy unit was reported failed and a legitimate
+        // change was rolled back). With a count, a healthy unit is confirmed
+        // after exactly three polls however slow they are, and an unhealthy
+        // one is abandoned after MAX_POLLS polls.
+        const MAX_POLLS: u32 = 10;
         let mut consecutive_active = 0u8;
-        while std::time::Instant::now() < deadline {
+        for _ in 0..MAX_POLLS {
             std::thread::sleep(self.settle);
             if self.is_active() {
                 consecutive_active += 1;
@@ -390,11 +399,114 @@ exit 1
             .with_systemctl_binary(systemctl)
             .with_settle(Duration::from_millis(20));
         for i in 1..=20 {
+            // Report WHY, not just that: "Start request repeated too quickly" is the limiter (a product defect);
+            // "did not remain active" is the verify window (3 consecutive is-active spawns within settle*10) being
+            // missed on a loaded host (test timing).
+            let r = mgr.reload_and_verify();
             assert!(
-                mgr.reload_and_verify().is_ok(),
-                "reload {i} of a rapid burst was refused by the start-rate limiter"
+                r.is_ok(),
+                "reload {i} of a rapid burst was refused by the start-rate limiter (error: {:?})",
+                r.err()
             );
         }
+    }
+
+    /// A fake `systemctl` whose `is-active` takes `delay_ms` (a loaded host's fork/exec latency, made deterministic) and answers
+    /// per `answers` (one char per call: `1` active, `0` not; the last char repeats). Every `is-active` call is counted.
+    fn fake_systemctl_slow_is_active(
+        dir: &std::path::Path,
+        delay_ms: u32,
+        answers: &str,
+    ) -> (PathBuf, PathBuf) {
+        let path = dir.join("systemctl");
+        let calls = dir.join("is-active-calls");
+        let delay = format!("{}.{:03}", delay_ms / 1000, delay_ms % 1000);
+        let script = format!(
+            r#"#!/usr/bin/env bash
+CALLS="{calls}"
+case "$1" in
+  --version) exit 0 ;;
+  show) echo "loaded"; exit 0 ;;
+  reset-failed|reload-or-restart) exit 0 ;;
+  is-active)
+    n=$(cat "$CALLS" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$CALLS"
+    sleep {delay}
+    a="{answers}"; i=$((n - 1)); [ "$i" -ge "${{#a}}" ] && i=$((${{#a}} - 1))
+    [ "${{a:$i:1}}" = 1 ] && exit 0
+    exit 3 ;;
+esac
+exit 1
+"#,
+            calls = calls.display(),
+            delay = delay,
+            answers = answers,
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (path, calls)
+    }
+
+    fn polls(calls: &std::path::Path) -> u32 {
+        std::fs::read_to_string(calls)
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// I-75, made deterministic: the verify budget must be a number of OBSERVATIONS, not a wall-clock deadline that the
+    /// subprocess latency itself consumes. A healthy unit whose `is-active` takes 150 ms (a loaded host) used to be reported
+    /// "did not remain active" because 3 spawns could not fit in settle*10 (200 ms at a 20 ms settle).
+    #[test]
+    fn slow_is_active_spawns_do_not_make_a_healthy_service_fail_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let (systemctl, calls) = fake_systemctl_slow_is_active(dir.path(), 150, "1");
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(systemctl)
+            .with_settle(Duration::from_millis(20));
+        assert_eq!(mgr.reload_and_verify(), Ok(()));
+        assert_eq!(
+            polls(&calls),
+            3,
+            "a healthy unit is confirmed by exactly three consecutive observations"
+        );
+    }
+
+    /// The bound still holds: a unit that never comes up is given up on after a fixed number of observations (10),
+    /// however slow or fast each observation is.
+    #[test]
+    fn a_unit_that_never_comes_up_is_abandoned_after_a_fixed_number_of_observations() {
+        let dir = tempfile::tempdir().unwrap();
+        let (systemctl, calls) = fake_systemctl_slow_is_active(dir.path(), 30, "0");
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(systemctl)
+            .with_settle(Duration::from_millis(5));
+        let err = mgr.reload_and_verify().unwrap_err();
+        assert!(err.contains("did not remain active"), "{err}");
+        assert_eq!(polls(&calls), 10);
+    }
+
+    /// Flapping is not health: active/inactive alternation never produces three CONSECUTIVE healthy observations.
+    #[test]
+    fn a_flapping_unit_never_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let (systemctl, calls) = fake_systemctl_slow_is_active(dir.path(), 0, "11010");
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(systemctl)
+            .with_settle(Duration::from_millis(5));
+        assert!(mgr.reload_and_verify().is_err());
+        assert_eq!(polls(&calls), 10);
+    }
+
+    /// A unit that needs a few observations to start is still accepted inside the bound.
+    #[test]
+    fn a_slow_starter_is_accepted_within_the_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let (systemctl, calls) = fake_systemctl_slow_is_active(dir.path(), 10, "0001");
+        let mgr = CompatibilityServiceManager::new("sing-box")
+            .with_systemctl_binary(systemctl)
+            .with_settle(Duration::from_millis(5));
+        assert_eq!(mgr.reload_and_verify(), Ok(()));
+        assert_eq!(polls(&calls), 6);
     }
 
     /// `systemctl is-failed` exits 0 when the unit IS in `failed` state
