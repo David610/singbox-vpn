@@ -30,10 +30,22 @@ Recommended: a Hetzner **Storage Box**, ordered in the Hetzner console. Set it u
 Config is kept in `/etc/vpn/backup.env` (mode 0600, no secrets): `BACKUP_SFTP_TARGET=<sub-account>@<box>.your-storagebox.de:fin1-backups`,
 `BACKUP_SFTP_PORT=23`, `BACKUP_SFTP_KEY=/root/.ssh/fin1_backup_upload`, `BACKUP_SFTP_KNOWN_HOSTS=/etc/vpn/backup-known_hosts`.
 
-## Each backup run (after install; a systemd timer, daily and after every user change)
-1. `state-backup.sh create /var/backups/singbox-vpn` writes the encrypted archive (mode 0600) and its `.sha256`.
-2. `state-backup.sh upload FILE` uploads both, downloads the archive back and compares SHA-256. It prints `VERIFIED off-host` only on a match.
-3. Local copies older than the 3 newest are deleted. The remote copies are kept; Storage Box snapshots can add retention.
+## Each backup run (`state-backup.sh run`, via systemd units in `deploy/lib/backup/`)
+1. `create` writes the encrypted archive (mode 0600) and its `.sha256` to `/var/backups/singbox-vpn`.
+2. `upload` sends both, downloads the archive back and compares SHA-256. `VERIFIED off-host` is printed only on a match.
+   A failed upload fails the unit, so it shows in `systemctl --failed`, and pruning is skipped.
+3. `prune` keeps the 3 newest **local** archives (`BACKUP_KEEP_LOCAL`). fin1 never deletes remote copies.
+
+Triggers: `vpn-state-backup.timer` runs daily (persistent, so a missed run happens at the next boot), and `vpn-state-backup.path`
+runs after every change to `/etc/vpn/compat/users/users.json`, which covers user creation, removal and rotation. The units are installed and
+enabled only after `backup.env`, the recipient and the pinned host key exist. The first run is watched by hand to completion.
+
+`/etc/vpn/backup.env` is sourced as root, so the tool refuses it unless it is owned by root and is neither group- nor world-writable. The sftp
+target must be `user@host:dir` with plain characters and no `..`.
+
+**Known limit:** fin1's upload key can also delete or overwrite remote files. An attacker who gains root on fin1 could wipe
+the off-host copies. The protection must live where fin1 cannot reach it: enable **Storage Box snapshots**
+(automatic, e.g. daily with 14 kept) in the Hetzner console. The sub-account cannot touch snapshots.
 
 ## Restore (proven by the restore drill; never tested on fin1 itself)
 1. On the new host, download the newest `*.tar.age` and `.sha256` from the Storage Box. Then run `state-backup.sh verify FILE`.

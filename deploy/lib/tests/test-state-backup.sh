@@ -28,8 +28,8 @@ while read -r cmd a b; do case "$cmd" in
   *) [ -z "$cmd" ] || { echo "stub sftp: $cmd" >&2; exit 1; } ;; esac; done <"$batch"
 F
 chmod +x "$T/sftp"
-run() { BACKUP_ROOT="$T/root" BACKUP_RECIPIENTS="$T/recipients.txt" BACKUP_SFTP_TARGET="u@storage.example:fin1" \
-        BACKUP_SFTP_KEY="$T/owner_ssh" BACKUP_SFTP_KNOWN_HOSTS="$T/kh" SFTP_BIN="$T/sftp" FAKE_REMOTE="$T/remote" \
+run() { BACKUP_ROOT="$T/root" BACKUP_RECIPIENTS="$T/recipients.txt" BACKUP_SFTP_TARGET="${BACKUP_SFTP_TARGET:-u@storage.example:fin1}" \
+        BACKUP_SFTP_KEY="$T/owner_ssh" BACKUP_SFTP_KNOWN_HOSTS="$T/kh" SFTP_BIN="${SFTP_BIN:-$T/sftp}" FAKE_REMOTE="$T/remote" \
         TMPDIR="$T/tmp" bash "$S" "$@"; }
 mkdir -p "$T/tmp" "$T/out"; : >"$T/kh"
 
@@ -79,5 +79,35 @@ cp "$T/owner.key" "$T/recipients.txt"
 run create "$T/out" >/dev/null 2>&1 && bad "accepted a PRIVATE key as recipient" || ok "refuses a recipients file containing a private key"
 : >"$T/recipients.txt"
 run create "$T/out" >/dev/null 2>&1 && bad "accepted empty recipients" || ok "refuses to create without a recipient"
+
+
+# ---- hardening review (2026-10-22): env-file trust, input validation, retention, run, units
+age-keygen -y "$T/owner.key" >"$T/recipients.txt"
+printf 'BACKUP_PATHS="etc/vpn"\n' >"$T/env"; chmod 666 "$T/env"
+out="$(BACKUP_ENV_FILE="$T/env" run create "$T/out" 2>&1)" && bad "sourced a world-writable env file" || { grep -q 'writable' <<<"$out" && ok "refuses a group/world-writable env file (it is sourced as root)" || bad "env refusal reason: $out"; }
+chmod 600 "$T/env"; BACKUP_ENV_FILE="$T/env" run create "$T/out" >/dev/null 2>&1 && ok "accepts an owner-only env file" || bad "rejected a 0600 env file"
+
+out="$(BACKUP_SFTP_TARGET='u@s:fin1 backups' run upload "$f" 2>&1)" && bad "accepted a target dir with a space" || ok "rejects unsafe characters in the sftp target"
+out="$(BACKUP_SFTP_TARGET='u@s:../../etc' run upload "$f" 2>&1)" && bad "accepted a traversal target" || ok "rejects a traversal target dir"
+
+P="$T/prune"; mkdir -p "$P"
+for i in 1 2 3 4 5; do : >"$P/test-state-2026010${i}T000000Z.tar.age"; : >"$P/test-state-2026010${i}T000000Z.tar.age.sha256"; done
+echo keep >"$P/unrelated.txt"
+run prune "$P" 3 >/dev/null 2>&1
+left="$(cd "$P" && printf '%s ' *.tar.age)"
+[ "$left" = "test-state-20260103T000000Z.tar.age test-state-20260104T000000Z.tar.age test-state-20260105T000000Z.tar.age " ] && ok "prune keeps the 3 newest archives" || bad "prune left: $left"
+[ ! -e "$P/test-state-20260101T000000Z.tar.age.sha256" ] && [ -f "$P/unrelated.txt" ] && ok "prune removes the sidecar too and nothing else" || bad "prune scope"
+run prune "$P" 0 >/dev/null 2>&1 && bad "prune accepted keep=0" || ok "prune refuses to keep fewer than 1"
+
+rm -rf "$T/remote"/* "$T/runout"; mkdir -p "$T/runout"
+out="$(BACKUP_OUT_DIR="$T/runout" run run 2>&1)"; rc=$?
+{ [ $rc -eq 0 ] && grep -q 'VERIFIED off-host' <<<"$out" && ls "$T/remote"/*.tar.age >/dev/null 2>&1; } && ok "run = create + verified upload + prune" || bad "run: rc=$rc $out"
+out="$(BACKUP_OUT_DIR="$T/runout" SFTP_BIN=/bin/false run run 2>&1)"; rc=$?
+[ $rc -ne 0 ] && ok "run fails loudly when the upload fails" || bad "run hid an upload failure"
+
+U="$ROOT/deploy/lib/backup"
+grep -q '^ExecStart=/opt/singbox-vpn/deploy/lib/backup/state-backup.sh run$' "$U/vpn-state-backup.service" && ok "service runs the installed tool" || bad "service ExecStart"
+grep -q '^PathChanged=/etc/vpn/compat/users/users.json$' "$U/vpn-state-backup.path" && ok "path unit triggers on user changes" || bad "path unit"
+grep -q '^OnCalendar=daily$' "$U/vpn-state-backup.timer" && grep -q '^Persistent=true$' "$U/vpn-state-backup.timer" && ok "daily persistent timer" || bad "timer"
 
 [ "$fail" -eq 0 ] && echo "PASS: test-state-backup.sh" || { echo "FAIL: $fail"; exit 1; }
