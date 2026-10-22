@@ -120,6 +120,17 @@ node is down, YouTube must fail visibly rather than silently exit from the
 refused IP and look "half working".
 *Enforced by:* `exit_hairpin_has_exactly_one_route_for_google_domains_and_no_fallback`.
 
+*Also enforced end to end across state transitions (INV-1, 4, 5, 6, 9) by:*
+`hairpin_invariants_survive_user_churn_reconcile_repair_and_policy_changes`
+(`apps/admin/tests/cli.rs`). It walks one exit through hairpin `set`, user
+create/disable, repeated reconcile (`render-config --require-applied`: config
+byte-identical, no extra sing-box restart), a repair-style `init`, refused
+`egress set allow`, `egress set reject_all`/`clear`, and hairpin `clear`/`set`,
+and re-checks the invariants on the config sing-box would load after each step,
+against a frozen domain floor that does not follow `GOOGLE_EGRESS_DOMAINS`.
+Earlier Shorts fixes were lost through transitions like these, not through the
+renderer's single-input unit tests.
+
 **INV-7 — No third-party egress services.** Cloudflare WARP is **forbidden**
 (owner, 2026-10-11 — likely a Cloudflare terms issue for a multi-user
 service). Do not use it, even to test. No residential/mobile proxy services,

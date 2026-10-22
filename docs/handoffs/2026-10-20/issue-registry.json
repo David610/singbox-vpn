@@ -640,6 +640,19 @@
    "supersedes_audit_entry": false
   },
   {
+   "id": "I-94",
+   "severity": "high",
+   "component": "Shorts regression protection (issue #169)",
+   "state": "FIXED_IN_BRANCH",
+   "title": "the hairpin invariants were only unit-tested on single renderer inputs, while earlier Shorts fixes were lost through the transitions around the renderer (user churn, the reconcile timer's render-config, repair/re-init, egress policy changes, clear/set); no test walked a real vpn-admin through them",
+   "fix": "apps/admin/tests/cli.rs hairpin_invariants_survive_user_churn_reconcile_repair_and_policy_changes: after every step re-checks sniff -> literal-IPv6 reject (no_drop) -> single route order, C-16 before sniff, the whole domain set against a FROZEN floor, no selector/urltest, final=direct, byte-identical no-op reconcile with no extra sing-box restart, refused `egress set allow`, and that the hairpin UUID is never printed; registered in docs/YOUTUBE_FIX_INVARIANTS.md and guarded by youtube_invariants_doc.rs",
+   "regression_test": "mutation-checked: removing ggpht.com from GOOGLE_EGRESS_DOMAINS and dropping no_drop each fail it; it passes on current code (a regression guard, not a red-before test)",
+   "device_required": "no",
+   "remaining_risk": "does NOT show native Shorts work (#169 stays BLOCKED: signed-in/Incognito root cause UNKNOWN, needs a physical iPhone and an authorized host); the fake systemctl and fake sing-box mean no real restart or traffic is exercised; provisioning-agent lease rotation is not covered here",
+   "evidence": "local run; CI pending",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-93",
    "severity": "critical",
    "component": "host trust tooling (issue #167 / I-86)",
