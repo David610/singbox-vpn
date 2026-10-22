@@ -4453,6 +4453,24 @@ fn print_node_identity(cfg: &DeploymentConfig) {
     }
 }
 
+/// I-19: an exit whose `deployment.toml` predates v1.3.1 has no `[egress]`
+/// section, which means `allow`: literal IPv6 destinations leave over IPv6,
+/// unlike a fresh install (`reject_google`). The installer deliberately never
+/// rewrites an existing deployment.toml, so nothing else tells the operator the
+/// two differ. Report it; never change the policy automatically (see
+/// docs/EXIT_IPV6_POLICY.md: a policy change is a controlled, authorized step).
+fn undeclared_ipv6_policy_notice(cfg: &DeploymentConfig) -> Option<String> {
+    use compat_config::deployment::NodeRole;
+    let has_ipv6 = cfg.public_ipv6.as_deref().is_some_and(|ip| !ip.is_empty());
+    (cfg.role == NodeRole::Exit && cfg.egress.is_none() && has_ipv6).then(|| {
+        "exit has a public IPv6 address but declares no [egress] ipv6_literal policy, which \
+         means `allow`: literal-IPv6 destinations leave over IPv6. Fresh v1.3.1 installs \
+         declare `reject_google`. Nothing was changed. If Shorts fail on this node, review \
+         docs/EXIT_IPV6_POLICY.md and decide whether to run `vpn-admin egress set reject_google`"
+            .to_string()
+    })
+}
+
 /// `doctor`'s relay policy check: proves the document this node renders
 /// (and therefore what `render-config` would apply) forwards only to the
 /// declared exits and ends in a reject. Reports aggregate counts only.
@@ -4468,6 +4486,9 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
             if !compat_config::server::exit_egress_policy_matches(cfg, doc) {
                 report_check(CheckStatus::Fail, "L2", "exit egress policy mismatch: missing, duplicated, shadowed or reordered C-16/IPv6/hairpin rules");
                 *failures += 1;
+            }
+            if let Some(notice) = undeclared_ipv6_policy_notice(cfg) {
+                report_check(CheckStatus::Warn, "L2", notice);
             }
             if let Some(egress) = &cfg.egress {
                 report_check(CheckStatus::Info, "L2", format!("exit ipv6_literal={}: rejection is a proxy close, not proof of native IPv4 retry{}", egress.ipv6_literal.as_str(),
@@ -10167,6 +10188,45 @@ mod ipv6_posture_tests {
 /// pin the bounded-retry policy against an injected resolver so a
 /// regression here fails deterministically, without depending on real
 /// DNS or real wall-clock sleeps.
+#[cfg(test)]
+mod undeclared_ipv6_policy_tests {
+    use super::*;
+
+    fn exit_cfg(extra: &str) -> DeploymentConfig {
+        let text = format!(
+            "schema_version = 2\nnode_id = \"de1\"\nrole = \"exit\"\npublic_host = \"de1.example.test\"\n\
+             subscription_host = \"de1.example.test\"\n{extra}\n[reality]\nlisten_port = 443\n\
+             handshake_server = \"www.example.com\"\n\n[hysteria2]\nlisten_port = 443\n\n\
+             [subscription]\nlisten_port = 9100\n"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        std::fs::write(&path, text).unwrap();
+        DeploymentConfig::load(&path).unwrap()
+    }
+
+    #[test]
+    fn an_exit_with_public_ipv6_and_no_declared_policy_is_flagged_not_changed() {
+        let cfg = exit_cfg("public_ipv6 = \"2001:db8::1\"");
+        assert!(cfg.egress.is_none());
+        let notice = undeclared_ipv6_policy_notice(&cfg).expect("must warn");
+        assert!(
+            notice.contains("vpn-admin egress set reject_google"),
+            "{notice}"
+        );
+        assert!(cfg.egress.is_none(), "doctor must never rewrite the policy");
+    }
+
+    #[test]
+    fn declared_policy_ipv4_only_exit_and_relay_are_not_flagged() {
+        assert!(undeclared_ipv6_policy_notice(&exit_cfg(
+            "public_ipv6 = \"2001:db8::1\"\n[egress]\nipv6_literal = \"reject_google\""
+        ))
+        .is_none());
+        assert!(undeclared_ipv6_policy_notice(&exit_cfg("public_ipv4 = \"192.0.2.1\"")).is_none());
+    }
+}
+
 #[cfg(test)]
 mod hostname_resolution_tests {
     use super::*;

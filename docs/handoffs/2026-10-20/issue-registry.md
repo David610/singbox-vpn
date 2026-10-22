@@ -79,7 +79,7 @@ States: CONFIRMED_OPEN, IN_PROGRESS, FIXED_IN_BRANCH, CI_VERIFIED, SERVER_VERIFI
 | I-16 | medium | fixed-on-main | SERVER_VERIFIED | Dev-channel installer over an existing install reuses the old source tree and records version 'main' |
 | I-17 | low | fixed-on-main | SERVER_VERIFIED | doctor release-identity WARN on source builds because vpn and vpn-admin are separate compiles with different hashes |
 | I-18 | medium | fixed-on-main | SERVER_VERIFIED | doctor --protocol and installer self-test cover REALITY only; Hysteria2 breakage passes health checks |
-| I-19 | medium | open | CONFIRMED_OPEN | Existing deployments keep exit ipv6_literal=allow after update; dual-stack destinations are reached over IPv6 |
+| I-19 | medium | open | FIXED_IN_BRANCH | Existing deployments keep exit ipv6_literal=allow after update; dual-stack destinations are reached over IPv6 |
 | I-20 | medium | blocked | BLOCKED | Exit IPv4 91.244.71.165 is refused by YouTube for Shorts (0/6 default and IPv4-only; control 6/6) |
 | I-21 | medium | blocked | BLOCKED | UDP/443 from the test PC is filtered; Hysteria2/QUIC real-client tests and the real reconnect-stall measurement are impo |
 | I-22 | medium | blocked | BLOCKED | Hysteria2 client stalls up to ~30 s after a server restart (1.14.1 sends no QUIC CONNECTION_CLOSE; 1.14.3 does) |
