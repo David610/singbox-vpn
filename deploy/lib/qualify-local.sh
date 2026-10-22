@@ -50,6 +50,20 @@ printf 'gate\tresult\texit\tseconds\tlog_sha256\n' >"$SUMMARY"
   echo "pinned sing-box: $(sed -n 's/^SINGBOX_VERSION=//p' deploy/lib/versions.env)"
 } >"$OUT/ENVIRONMENT.txt"
 
+# I-81: one shared, bounded Cargo target and a disk/inode budget before any build;
+# the build lock is held for the whole run so a concurrent prune cannot remove it.
+log() { echo "[qualify] $*"; }
+warn() { echo "[qualify] WARN: $*" >&2; }
+die() { echo "[qualify] $*" >&2; exit 2; }
+# shellcheck source=deploy/lib/preflight.sh
+. "$ROOT/deploy/lib/preflight.sh"
+preflight_cargo_build_env || die "cannot prepare the shared build cache $SINGBOX_VPN_BUILD_CACHE"
+preflight_check_build_budget "$SINGBOX_VPN_BUILD_CACHE" || die "insufficient disk headroom; nothing was built"
+exec {QUALIFY_LOCK_FD}>>"$SINGBOX_VPN_BUILD_CACHE/.lock"
+flock -n "$QUALIFY_LOCK_FD" || die "another build holds $SINGBOX_VPN_BUILD_CACHE/.lock"
+echo "cargo_target_dir: $CARGO_TARGET_DIR (jobs $CARGO_BUILD_JOBS)" >>"$OUT/ENVIRONMENT.txt"
+trap 'echo "target_dir_mib: $(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1)" >>"$OUT/ENVIRONMENT.txt"' EXIT
+
 overall=0
 record() { # name result exit seconds logfile
   local sha="-"
