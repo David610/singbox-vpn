@@ -193,15 +193,15 @@ jobs:
       # though those tests shipped in this directory. `sudo` is required by
       # the tests that exercise root-owned staging/uninstall safeguards; all
       # tests use isolated fixtures and none performs a real host install.
-      - name: nftables + setpriv (behavioural egress-isolation test needs the real nft)
+      - name: nftables + setpriv + age (egress-isolation test needs the real nft; the state-backup test needs real age)
         run: |
           set -euo pipefail
-          if ! command -v nft >/dev/null || ! command -v setpriv >/dev/null; then
+          if ! command -v nft >/dev/null || ! command -v setpriv >/dev/null || ! command -v age >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
             timeout 60 sudo apt-get update -y >/dev/null
-            timeout 90 sudo apt-get install -y nftables util-linux >/dev/null
+            timeout 90 sudo apt-get install -y nftables util-linux age >/dev/null
           fi
-          command -v nft >/dev/null && command -v setpriv >/dev/null
+          command -v nft >/dev/null && command -v setpriv >/dev/null && command -v age >/dev/null
       - name: deployment lifecycle and shell regression tests
         run: |
           set -euo pipefail
