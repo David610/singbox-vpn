@@ -46,7 +46,9 @@ pub fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
     if delta.is_negative() {
         return None;
     }
-    Some(Duration::from_secs(delta.whole_seconds() as u64).min(MAX_RETRY_AFTER))
+    // Round up: a fractional second left must never become a shorter wait.
+    let secs = delta.whole_seconds() as u64 + u64::from(delta.subsec_nanoseconds() > 0);
+    Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER))
 }
 
 /// "Equal jitter" exponential backoff: half the exponential step is fixed and
@@ -132,6 +134,9 @@ pub fn is_gated(err: &anyhow::Error) -> bool {
 struct GateState {
     backoff: Backoff,
     blocked_until: Option<Instant>,
+    /// End of the longest wait a server `Retry-After` demanded. A success
+    /// never ends the gate before this instant.
+    server_minimum_until: Option<Instant>,
     consecutive_failures: u32,
 }
 
@@ -147,6 +152,7 @@ impl ControlPlaneGate {
             state: Arc::new(Mutex::new(GateState {
                 backoff: Backoff::new(base, cap),
                 blocked_until: None,
+                server_minimum_until: None,
                 consecutive_failures: 0,
             })),
         }
@@ -169,8 +175,12 @@ impl ControlPlaneGate {
     pub fn record_success(&self) {
         let mut state = self.state.lock().expect("gate mutex poisoned");
         state.backoff.reset();
-        state.blocked_until = None;
         state.consecutive_failures = 0;
+        // A success that was already in flight when another request got a 429
+        // must not erase the server's unexpired minimum; our own backoff is
+        // cleared as before.
+        let now = Instant::now();
+        state.blocked_until = state.server_minimum_until.filter(|until| *until > now);
     }
 
     pub fn record_failure(&self, retry_after: Option<Duration>) {
@@ -184,6 +194,14 @@ impl ControlPlaneGate {
         let own = state.backoff.next_delay(jitter);
         let delay = retry_after.map_or(own, |server| server.max(own));
         let until = now + delay;
+        if let Some(server) = retry_after {
+            let minimum = now + server;
+            state.server_minimum_until = Some(
+                state
+                    .server_minimum_until
+                    .map_or(minimum, |current| current.max(minimum)),
+            );
+        }
         // Never shorten a wait that is already running.
         state.blocked_until = Some(
             state
@@ -390,5 +408,31 @@ mod tests {
         let samples: Vec<f64> = (0..64).map(|_| random_unit()).collect();
         assert!(samples.iter().all(|v| (0.0..1.0).contains(v)));
         assert!(samples.windows(2).any(|w| w[0] != w[1]));
+    }
+
+    #[test]
+    fn success_in_flight_cannot_clear_an_unexpired_server_minimum() {
+        let gate = ControlPlaneGate::new(S(1), S(60));
+        let now = Instant::now();
+        gate.record_failure_at(now, Some(S(120)), 0.5);
+        // A request that was already in flight on another endpoint succeeds.
+        gate.record_success();
+        assert!(
+            gate.check_at(now + S(100)).is_err(),
+            "server-required minimum must survive a concurrent success"
+        );
+        assert!(gate.check_at(now + S(121)).is_ok());
+    }
+
+    #[test]
+    fn http_date_retry_after_rounds_up_never_down() {
+        let when = time::OffsetDateTime::now_utc() + time::Duration::milliseconds(5900);
+        let raw = when
+            .format(&time::format_description::well_known::Rfc2822)
+            .unwrap();
+        // RFC 2822 has whole-second resolution; the parsed wait must not be
+        // shorter than the time remaining to the stated second.
+        let got = parse_retry_after(&headers(&raw)).unwrap();
+        assert!(got >= S(5), "{got:?}");
     }
 }

@@ -165,6 +165,13 @@ fn jittered(base: Duration) -> Duration {
     base.mul_f64(0.75 + 0.5 * random_unit())
 }
 
+/// Delay after the event channel was superseded. The server's `Retry-After`
+/// and our own floor are minimums: jitter may only add to them (I-87).
+fn superseded_delay(retry_after: Option<Duration>, floor: Duration, unit: f64) -> Duration {
+    let minimum = retry_after.unwrap_or_default().max(floor);
+    minimum + minimum.mul_f64(0.25 * unit.clamp(0.0, 1.0))
+}
+
 /// Runs forever (until the process exits).
 pub async fn run_loop(client: WorkerClient, wake: Arc<Wakeups>, timing: Timing) {
     let mut cursor: Option<String> = None;
@@ -197,8 +204,12 @@ pub async fn run_loop(client: WorkerClient, wake: Arc<Wakeups>, timing: Timing) 
             Ok(EventsOutcome::Superseded { retry_after }) => {
                 tracing::warn!("another connection from this node replaced the event channel");
                 wake.set_healthy(false);
-                let wait = retry_after.unwrap_or_default().max(timing.superseded_floor);
-                tokio::time::sleep(jittered(wait)).await;
+                tokio::time::sleep(superseded_delay(
+                    retry_after,
+                    timing.superseded_floor,
+                    random_unit(),
+                ))
+                .await;
             }
             Err(err) => {
                 wake.set_healthy(false);
@@ -221,6 +232,18 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const S: fn(u64) -> Duration = Duration::from_secs;
+
+    #[test]
+    fn superseded_delay_never_undercuts_the_server_minimum() {
+        for unit in [0.0, 0.25, 0.5, 0.999_999] {
+            let d = superseded_delay(Some(S(30)), S(5), unit);
+            assert!(d >= S(30), "retry-after 30s shortened to {d:?}");
+            let d = superseded_delay(None, S(5), unit);
+            assert!(d >= S(5), "floor 5s shortened to {d:?}");
+            let d = superseded_delay(Some(S(1)), S(5), unit);
+            assert!(d >= S(5), "floor must still apply: {d:?}");
+        }
+    }
 
     #[test]
     fn without_a_healthy_channel_everything_is_polled_every_iteration() {
