@@ -93,3 +93,20 @@ None of the reconstructions needs the VPN. Next is owner input: SSH key, backup 
 (`AssertionError: init T`). It never ran while step 10 was failing, so it is pre-existing and not caused by these commits.
 The next commit makes the assertion report init's stderr, so CI shows the cause.
 
+| 8 | The hairpin simulation (`singbox-validate` step 12; it had never run in CI) uses a private `SINGBOX_VPN_LOCK_PATH`. The host lock gave EACCES at `vpn-admin init`. | `5cbd398` (diagnostic), `1ed9693755cfdcb872041a101055a94906cf5a93` (fix) | see below |
+
+**CI GREEN at `1ed9693755cfdcb872041a101055a94906cf5a93`** (run 39810417865): 22/22 jobs succeeded, 0 failed, 0 skipped. That includes
+`audit`, all `singbox-validate` steps (the 12-test interop manifest, the hairpin simulation and its mutation checks), `shell` (the backup test
+with real age), `test`, `fmt`, `clippy`, `release-build`, `offline-full-verdict` and every os-matrix job. This is CODE_QUALIFIED
+evidence only. It says nothing about a deployed host, a device or Shorts.
+
+## Installation prerequisites (state at this commit)
+| Prerequisite | State |
+|---|---|
+| Corrected source at an exact commit, CI green | MET: `1ed9693` |
+| Disk budget (I-81) | MET: 34 GB free against an 18 GB build need |
+| Owner SSH key installed and password login disabled | NOT MET: waiting for the owner's public key. Over 3,300 failed root password attempts are already in the log. |
+| Pre-install Hetzner snapshot | NOT MET (owner) |
+| Backup destination and dedicated backup recipient | NOT MET (owner) |
+| Owner authorization to install and provision 3 new identities | NOT GIVEN |
+| DNS for fin1.xn----8sba1cvaif4e.com points at this host | to be checked immediately before install |
