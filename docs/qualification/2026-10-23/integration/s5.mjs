@@ -1,0 +1,13 @@
+import * as L from "./lib.mjs";
+const { sql } = L;
+const f = await L.fixture("s5", 2);
+const rev = () => sql(`select coalesce((select desired_revision from public.compatibility_authorization_node_state where node_id='${f.node}'),0)`);
+const revoked = () => sql(`select string_agg(revoked::text, ',' order by credential_id) from public.compatibility_authorizations where node_id='${f.node}'`);
+const show = (label) => console.log(label.padEnd(58), "revision=", rev(), " row.revoked=", revoked());
+show("baseline");
+sql(`update public.external_vpn_devices set revoked_at=now() where device_id='${f.devices[0].device}'`); show("direct UPDATE external_vpn_devices.revoked_at");
+sql(`update public.subscriptions set status='canceled' where id=${f.sub}`); show("subscription canceled (Stripe lapse)");
+sql(`update public.subscriptions set status='active' where id=${f.sub}`);
+sql(`update public.customer_accounts set suspended_at=now() where id='${f.account}'`); show("account suspended");
+sql(`update public.customer_accounts set suspended_at=null where id='${f.account}'`);
+console.log(sql(`select pg_get_functiondef('public.revoke_external_vpn_device'::regproc)`).split("\n").filter(l=>/compat|revoked|update|bump|revision/i.test(l)).slice(0,12).join("\n"));

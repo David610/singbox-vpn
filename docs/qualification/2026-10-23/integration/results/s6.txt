@@ -1,0 +1,6 @@
+PASS initial apply: both credentials present (404 ms)
+PASS expiry enforced locally WHILE the control plane is down (DB stopped before expiry) :: 40280 ms after outage start (credential had ~40 s left) (42339 ms)
+PASS agent restart with the control plane up: state restored, no duplicate/lost credentials :: 302 ms (989 ms)
+PASS credential secret rotation: new ciphertext -> new revision -> applied with the new secret :: 5033 ms (6057 ms)
+PASS node API key rotation: old key refused (401), new key accepted (2178 ms)
+5 passed, 0 failed

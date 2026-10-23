@@ -1,0 +1,4 @@
+PASS authorizations works via the per-device fallback when device_entitlements_batch is missing (167 ms)
+PASS revocation still reflected without the migration (166 ms)
+PASS events endpoint without the wake-token functions: status (agents must fall back to polling, never storm) :: status=501 retry-after=600 (27 ms)
+3 passed, 0 failed

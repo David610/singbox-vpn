@@ -1,0 +1,9 @@
+#!/bin/bash
+# Recording stand-in for vpn-admin: logs every invocation, never touches the host.
+d="${STUB_DIR:?}"; echo "$(date +%s.%N) $*" >> "$d/calls.log"
+while [ $# -gt 0 ]; do [ "$1" = "--input" ] && f="$2"; shift; done
+case "$*" in *) ;; esac
+if grep -q "external-authorizations" <<<"$(tail -1 "$d/calls.log")"; then
+  n=$(ls "$d"/applied-*.json 2>/dev/null | wc -l); cp "$f" "$d/applied-$((n+1)).json"; echo '{"live":true}'; exit 0
+fi
+echo '{}'

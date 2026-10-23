@@ -1,0 +1,72 @@
+{
+ "schema_version": 1,
+ "observed_date": "2026-10-23",
+ "base_sha": "548a376803c367c76519df2e59976cd89016044f",
+ "decision": "NO-GO",
+ "scopes": {
+  "standalone_vpn": "NO-GO",
+  "arcana_commercial": "NO-GO"
+ },
+ "statuses": [
+  {
+   "id": "main_protection_requires_checks",
+   "status": "PASS",
+   "evidence": [
+    "issue #170",
+    "deploy/lib/verify-main-protection.py",
+    "PR #185 (closed, unmerged)"
+   ]
+  },
+  {
+   "id": "paired_integration",
+   "status": "FAIL",
+   "evidence": [
+    "INTEGRATION-EVIDENCE.md"
+   ],
+   "reason": "5 defects; 3 fixed in branches (singbox-vpn #186, vpn-web #85), I-100 and I-102 open"
+  },
+  {
+   "id": "worker_cpu",
+   "status": "UNVERIFIED"
+  },
+  {
+   "id": "docs_links",
+   "status": "PASS",
+   "evidence": [
+    "DOCS-AUDIT.md"
+   ]
+  },
+  {
+   "id": "release_candidate",
+   "status": "BLOCKED",
+   "reason": "not created; signing/provenance/container build need the release workflow"
+  },
+  {
+   "id": "vps_access",
+   "status": "BLOCKED"
+  },
+  {
+   "id": "host_trust",
+   "status": "BLOCKED",
+   "reason": "owner confirmation of five root logins (I-86)"
+  },
+  {
+   "id": "server_qualified",
+   "status": "BLOCKED"
+  },
+  {
+   "id": "device_verified",
+   "status": "BLOCKED",
+   "reason": "eight native cells not run"
+  }
+ ],
+ "shorts": {
+  "signed_in": "UNVERIFIED",
+  "incognito": "UNVERIFIED",
+  "root_cause": "UNKNOWN",
+  "routing_change": false
+ },
+ "production_mutations": [
+  "GitHub ruleset 22482226: required_status_checks added (additive)"
+ ]
+}

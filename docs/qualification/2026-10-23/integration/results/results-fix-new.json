@@ -1,0 +1,27 @@
+{
+ "agent": "fix",
+ "server": "new",
+ "first_apply_ms": 305,
+ "idle_30s": {
+  "/api/agent/authorizations 200": 6,
+  "/api/agent/claim 200": 6
+ },
+ "idle_requests_per_hour_projected": 1440,
+ "revoke_latency_ms": 3429,
+ "live_after_revoke": 1,
+ "outage_25s": {
+  "/api/agent/authorizations 503": 4,
+  "/api/agent/claim 503": 4
+ },
+ "outage_requests": 8,
+ "post_outage_revoke_latency_ms": 3730,
+ "live_final": 0,
+ "agent_alive": true,
+ "agent_errors": 5,
+ "agent_log_tail": [
+  "2026-10-23T08:10:58.965808Z  WARN vpn_provisioning_agent: lease pool tick failed error=vpn-admin lease-pool sync did not reach a live, reloaded sing-box",
+  "2026-10-23T08:10:58.973561Z  WARN vpn_provisioning_agent: external authorization reconciliation failed error=GET /api/agent/authorizations returned 503 Service Unavailable",
+  "2026-10-23T08:10:58.981307Z ERROR vpn_provisioning_agent: poll iteration failed error=claiming a job",
+  "2026-10-23T08:11:03.999646Z  WARN vpn_provisioning_agent: lease pool tick failed error=vpn-admin lease-pool sync did not reach a live, reloaded sing-box"
+ ]
+}
