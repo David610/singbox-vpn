@@ -2,6 +2,21 @@
 
 Dated record, 2026-10-23. **Nothing here has been run on the host.** No production connection succeeded in this session.
 
+> ## Status update (2026-10-23, later) - read this first
+>
+> The sections below are the original handoff, kept as written. Several statements in it are now superseded:
+>
+> | Original statement | Now |
+> |---|---|
+> | "Nothing here has been run on the host. No production connection succeeded." | Superseded. The agent session itself runs **on this host**, so the earlier "SSH attempts" were the machine connecting to itself, and the integration tests of 2026-10-23 ran here (they were later removed; see `docs/qualification/2026-10-23/README.md`, corrections log). |
+> | "The staging key is not in `authorized_keys`" (section 1) | Superseded. The owner installed it; key login works. The owner's **own** key is still not installed. |
+> | "Trust prerequisite: were the five root logins yours?" (section 3) | **Answered.** The owner stated on 2026-10-23 that all five were theirs and authorized (user-reported). This resolves login attribution only. It does not prove ownership of the source networks or that the host is secure. |
+> | "Server qualified = BLOCKED" (end of section 5) | Still BLOCKED: the VPN is not installed and no exact artifact exists. |
+>
+> Remaining before any install: owner's own public key installed and a key login proven from a **second** session; provider-console recovery confirmed; then password login disabled
+> (`deploy/lib/ssh-harden.sh verify` first), with the rollback in section 7 below. Host-specific findings are kept in private evidence, not in this repository.
+
+
 ## 1. What is missing, precisely
 
 | Fact | Evidence |
@@ -84,3 +99,14 @@ encrypted backup target) are done, and the release candidate exists (RELEASE-CAN
 
 Each step produces evidence stored under `docs/release-acceptance/<tag>.evidence.json` via `deploy/lib/release_evidence.py`.
 Until then: server qualified = **BLOCKED**, device verified = **BLOCKED**.
+
+## 7. Rollback for SSH hardening (added 2026-10-23)
+
+Do this only after a key login is proven from a second session and the provider console is confirmed to work.
+
+1. Keep one root session open throughout; never close it until the new session is verified.
+2. Before editing, copy the config: `cp -a /etc/ssh/sshd_config.d/50-cloud-init.conf /root/50-cloud-init.conf.bak` and `cp -a /etc/ssh/sshd_config /root/sshd_config.bak`.
+3. Validate before reload: `sshd -t` must print nothing. Reload (not restart): `systemctl reload ssh`.
+4. In a new terminal, log in with the key. If it fails, in the still-open session restore the backups and `systemctl reload ssh`.
+5. If every SSH session is lost: use the provider console (web console login as root) to restore the two backup files and run `systemctl reload ssh`.
+6. Recovery path to verify beforehand, not after: the provider console can open a root shell on this server without SSH.
