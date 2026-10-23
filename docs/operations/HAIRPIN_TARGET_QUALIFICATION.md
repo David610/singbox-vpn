@@ -57,7 +57,7 @@ Until C1-C8 pass, Shorts remain `UNVERIFIED`/`BLOCKED` and no user is moved to t
 ## D. Local, offline preparation already available (no other host needed)
 * Render-level invariants: `crates/compat-config/tests/relay_role_policy.rs` (`exit_hairpin_*`, 13 invariants doc test).
 * Two-hop real-sing-box system tests (loopback dummy interface, S1-S17) including fail-closed and wrong-credential cases.
-* Simulated two-node hairpin test: see `docs/operations/HAIRPIN_SIMULATION.md` (if present) for its status.
+* Simulated two-node hairpin test: see `deploy/lib/hairpin_simulation.py` and `deploy/lib/tests/` (run in CI; a simulation, not a two-node device or VPS result).
 
 ## E. Executable form of A1/A2/C1/C2 (prepared 2026-10-21; **not run against any host**)
 `deploy/lib/hairpin_target_suitability.py` (13 hermetic tests, mutation-checked) implements exactly the read-only steps above:
