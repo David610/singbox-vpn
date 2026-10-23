@@ -66,6 +66,37 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------
+# Bounded network stages. A real CI run (2026-10-23, run 39998210724) sat
+# silent for 9m57s in the dependency-install container (`dnf install`, output
+# discarded) until the job's 10-minute timeout cancelled it, although the same
+# step normally takes seconds. Every network-dependent stage is therefore
+# wall-clock bounded per attempt, retried a bounded number of times, and
+# loud on failure. Worst case (image pull 3 x (40+10)s plus dependency
+# install 3 x (110+10)s) must stay below the CI job timeout; this is
+# asserted by deploy/lib/tests/test-release-build-bounded-network.sh.
+RELEASE_BUILD_NETWORK_BUDGET_SECONDS=510
+
+run_bounded_retry() {
+  local attempts="$1" bound="$2" n rc
+  shift 2
+  [ "${1:-}" = "--" ] && shift
+  for ((n = 1; n <= attempts; n++)); do
+    rc=0
+    timeout --kill-after=10 "$bound" "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+      echo "::warning::attempt $n/$attempts timed out after ${bound}s: $*" >&2
+    else
+      echo "::warning::attempt $n/$attempts failed (rc=$rc): $*" >&2
+    fi
+  done
+  echo "::error::$* failed after $attempts attempt(s)" >&2
+  return 1
+}
+
+# ---------------------------------------------------------------------
 # Pure contract check (no Docker) — kept separate from the CLI/Docker
 # plumbing below, same reasoning as check-glibc-baseline.sh's
 # glibc_version_le(): deploy/lib/tests/test-release-container-environment.sh
@@ -145,10 +176,14 @@ main() {
   host_gid="$(id -g)"
 
   echo "== preparing release build image (installing build dependencies as root, once, inside the container's own layer) =="
-  deps_container="$(docker create "$RELEASE_BUILD_IMAGE" bash -c 'set -euo pipefail; dnf install -y gcc gcc-c++ make >/dev/null')"
+  echo "== network stages are bounded: worst case ${RELEASE_BUILD_NETWORK_BUDGET_SECONDS}s (pull 3x40s + dependency install 3x110s, plus kill grace) =="
+  run_bounded_retry 3 40 -- docker pull "$RELEASE_BUILD_IMAGE"
+  # dnf output goes to a log inside the container and is replayed on failure, never discarded:
+  # a stalled mirror must leave evidence. Per-request timeout/retries/minrate keep dnf itself from stalling.
+  deps_container="$(docker create "$RELEASE_BUILD_IMAGE" bash -c 'set -euo pipefail; if ! dnf install -y --setopt=timeout=20 --setopt=retries=2 --setopt=minrate=1000 gcc gcc-c++ make >/tmp/dnf-install.log 2>&1; then tail -n 40 /tmp/dnf-install.log >&2; exit 1; fi')"
   cleanup_deps_container() { docker rm -f "$deps_container" >/dev/null 2>&1 || true; }
   trap cleanup_deps_container EXIT
-  docker start -a "$deps_container"
+  run_bounded_retry 3 110 -- bash -c 'docker kill "$1" >/dev/null 2>&1 || true; docker start -a "$1"' _ "$deps_container"
   docker commit "$deps_container" "$BUILD_IMAGE_TAG" >/dev/null
   cleanup_deps_container
   trap - EXIT
