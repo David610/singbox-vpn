@@ -102,6 +102,60 @@ pub struct AgentConfig {
     /// principals, credential ids, protocol secrets, and validity bounds.
     #[serde(default = "default_external_authorization_state_file")]
     pub external_authorization_state_file: String,
+    /// How the agent paces its calls to the control plane. Every field has a
+    /// safe default; an existing config file keeps working unchanged.
+    #[serde(default)]
+    pub control_plane: ControlPlaneConfig,
+}
+
+/// Pacing of control-plane calls (see `pacing.rs` and `events.rs`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct ControlPlaneConfig {
+    /// Use the authenticated long-poll event channel (`GET /api/agent/events`)
+    /// to learn about new jobs, authorization changes and lease revocations
+    /// within about a second. Where the server has no such channel (it answers
+    /// 501) or it fails, the agent transparently falls back to polling every
+    /// `poll_interval_secs`, so this is safe to leave on.
+    pub events_enabled: bool,
+    /// While the event channel is healthy, how often to reconcile anyway
+    /// (clamped 15..=600). This bounds the damage of a lost wake-up.
+    pub reconcile_interval_secs: u64,
+    /// Long-poll duration, seconds (clamped 5..=30).
+    pub events_wait_secs: u64,
+    /// First step of the failure backoff, seconds (clamped 1..=30).
+    pub backoff_base_secs: u64,
+    /// Ceiling of the failure backoff, seconds (clamped 5..=900). While the
+    /// control plane keeps failing, polling calls leave the node at most this
+    /// often (plus jitter) instead of every poll interval.
+    pub backoff_max_secs: u64,
+}
+
+impl Default for ControlPlaneConfig {
+    fn default() -> Self {
+        Self {
+            events_enabled: true,
+            reconcile_interval_secs: 60,
+            events_wait_secs: 25,
+            backoff_base_secs: 2,
+            backoff_max_secs: 60,
+        }
+    }
+}
+
+impl ControlPlaneConfig {
+    pub fn reconcile_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.reconcile_interval_secs.clamp(15, 600))
+    }
+    pub fn events_wait_secs(&self) -> u64 {
+        self.events_wait_secs.clamp(5, 30)
+    }
+    pub fn backoff_base(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.backoff_base_secs.clamp(1, 30))
+    }
+    pub fn backoff_max(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.backoff_max_secs.clamp(5, 900))
+    }
 }
 
 fn default_rotation_batch_interval_secs() -> u64 {
@@ -228,6 +282,7 @@ impl std::fmt::Debug for AgentConfig {
                 "protocol_probe",
                 &self.protocol_probe.as_ref().map(|_| "<configured>"),
             )
+            .field("control_plane", &self.control_plane)
             .finish()
     }
 }
@@ -402,5 +457,58 @@ reality_uri = "vless://secret-uuid@h:1?security=reality&pbk=k"
     fn load_fails_on_missing_file() {
         let result = AgentConfig::load(Path::new("/nonexistent/provisioning-agent.toml"));
         assert!(result.is_err());
+    }
+    #[test]
+    fn control_plane_defaults_apply_to_an_existing_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            "worker_url = \"http://x\"
+node_id = \"n\"
+agent_api_key = \"k\"
+vpn_admin_binary = \"/b\"
+vpn_admin_config = \"/c\"
+",
+        )
+        .unwrap();
+        let cfg = AgentConfig::load(&path).unwrap();
+        assert!(cfg.control_plane.events_enabled);
+        assert_eq!(cfg.control_plane.reconcile_interval().as_secs(), 60);
+        assert_eq!(cfg.control_plane.events_wait_secs(), 25);
+        assert_eq!(cfg.control_plane.backoff_base().as_secs(), 2);
+        assert_eq!(cfg.control_plane.backoff_max().as_secs(), 60);
+    }
+
+    #[test]
+    fn control_plane_values_are_parsed_and_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provisioning-agent.toml");
+        std::fs::write(
+            &path,
+            "worker_url = \"http://x\"
+node_id = \"n\"
+agent_api_key = \"k\"
+vpn_admin_binary = \"/b\"
+vpn_admin_config = \"/c\"
+[control_plane]
+events_enabled = false
+reconcile_interval_secs = 1
+events_wait_secs = 999
+backoff_base_secs = 0
+backoff_max_secs = 100000
+",
+        )
+        .unwrap();
+        let cp = AgentConfig::load(&path).unwrap().control_plane;
+        assert!(!cp.events_enabled);
+        assert_eq!(
+            cp.reconcile_interval().as_secs(),
+            15,
+            "floor protects the control plane"
+        );
+        assert_eq!(cp.events_wait_secs(), 30);
+        assert_eq!(cp.backoff_base().as_secs(), 1);
+        assert_eq!(cp.backoff_max().as_secs(), 900);
     }
 }
