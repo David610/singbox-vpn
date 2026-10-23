@@ -1,5 +1,7 @@
 # Production-readiness record — 2026-10-23
 
+> **CORRECTION (2026-10-23, later):** the agent session runs on the intended VPS itself, so the integration stack described below as "disposable" ran on that host (build tools, a test PostgreSQL cluster, Node and Rust under `/root` and `/opt`; nothing left listening; the test stack was later removed from the host with the owner's approval, apart from some leftover clone directories). Statements below that no host was touched are superseded by this notice. Host-specific findings (logins, SSH and firewall state) are deliberately **not** published in this public repository; they are in the owner's private evidence.
+
 **Decision: NO-GO for both scopes.** This is a dated record, not a release and not authorization to change a host.
 It supersedes nothing in `../2026-10-22/`; it adds what was done since.
 
@@ -18,7 +20,7 @@ It supersedes nothing in `../2026-10-22/`; it adds what was done since.
 | Worker CPU / real 429 / replay through HTTP | UNVERIFIED | no Workers runtime here |
 | Documentation links/anchors | PASS (offline gate added to CI) | [DOCS-AUDIT.md](DOCS-AUDIT.md) |
 | Release candidate rc.3 | NOT CREATED | [RELEASE-CANDIDATE.md](RELEASE-CANDIDATE.md); local build determinism PASS, SBOM PASS; signing/provenance/container UNVERIFIED |
-| VPS access | BLOCKED | SSH refuses the only available key; handoff `docs/handoffs/2026-10-23/VPS-ACCESS-AND-TRUST.md` |
+| VPS access | read-only inspection done; trust and hardening still open (details private) | superseded earlier text: SSH refused the only available key; handoff `docs/handoffs/2026-10-23/VPS-ACCESS-AND-TRUST.md` |
 | Host trust (I-86 / #167) | BLOCKED | needs the owner's yes/no on five specific logins (listed in the handoff) |
 | Server qualified | BLOCKED | no host access, no artifact |
 | Native Shorts, 8 cells | BLOCKED | runbook `docs/operations/IPHONE_SHORTS_MATRIX_RUNBOOK.md`; all cells BLOCKED |

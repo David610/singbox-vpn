@@ -43,7 +43,8 @@
   },
   {
    "id": "vps_access",
-   "status": "BLOCKED"
+   "status": "PASS",
+   "reason": "read-only inspection only; host trust and hardening still open"
   },
   {
    "id": "host_trust",
@@ -67,6 +68,7 @@
   "routing_change": false
  },
  "production_mutations": [
-  "GitHub ruleset 22482226: required_status_checks added (additive)"
+  "GitHub ruleset 22482226: required_status_checks added (additive)",
+  "fin1: the agent's integration work ran on the host itself (dev tooling and a test PostgreSQL cluster, since removed with owner approval); details in private evidence"
  ]
 }

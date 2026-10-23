@@ -1,6 +1,6 @@
 # Paired control-plane integration harness (2026-10-23)
 
-Disposable, local, test-credentials only. **Nothing here touches production, Cloudflare, Supabase cloud or any real agent.**
+Local, test-credentials only. No Cloudflare, Supabase cloud or real agent was touched. **Correction: it ran on the intended VPS itself (see ../README.md).**
 
 Stack: PostgreSQL 16 (58 vpn-web migrations from `scripts/sql/supabase-bootstrap.sql` + migrations + `seed.sql`) → PostgREST 16.5 →
 a path-stripping proxy (`/rest/v1`, as Supabase's gateway does) → vpn-web's real Node API (`server/index.mjs`, PR #84 + #85) → the real
