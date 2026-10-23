@@ -1,0 +1,14 @@
+#!/bin/sh
+# Recording stand-in for vpn-admin used ONLY by the paired-integration test: logs every call,
+# copies the external-authorizations input it was given, never touches the host.
+# argv: --config <file> <subcommand> --input <file>
+d="${STUB_DIR:?STUB_DIR is required}"
+echo "$*" >> "$d/calls.log"
+case "$3" in
+  external-authorizations)
+    n=$(find "$d" -maxdepth 1 -name 'applied-*.json' | wc -l)
+    cp "$5" "$d/applied-$((n + 1)).json"
+    echo '{"live":true}'
+    ;;
+  *) echo '{}' ;;
+esac

@@ -1,0 +1,106 @@
+name: paired-integration
+
+# Isolated agent x control-plane integration (I-99, I-100, I-102): PostgreSQL 16 service,
+# PostgREST, vpn-web's real Node API, and the real provisioning-agent binary. Runs on a GitHub
+# runner only; the agent's vpn-admin is a recording stand-in. Not a required check: it needs a
+# vpn-web ref and builds two agents. Each (agent, server) pair has an EXPECTED outcome, so the
+# job also proves failing-before: a baseline that unexpectedly passes fails the job.
+on:
+  workflow_dispatch:
+    inputs:
+      vpnweb_new_ref:
+        description: "vpn-web ref with the entitlement-revision fix (server, fixed)"
+        default: "fix/entitlement-revision"
+      vpnweb_old_ref:
+        description: "vpn-web ref without it (server, baseline)"
+        default: "fix/hub-stale-cache"
+  push:
+    branches: ["ci/paired-integration*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  POSTGREST_VERSION: v16.5
+  POSTGREST_SHA256: 5099e7ada38f9f6846cd87c14c5f158b7c165f1e9959665ad412e61f4dceba95
+
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: candidate
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Last main commit BEFORE #186/#190 (I-99/I-102). Not `main`: those fixes are merged, so a
+          # moving `main` baseline passes the cases it must fail and the negative controls go stale.
+          ref: 548a376803c367c76519df2e59976cd89016044f
+          path: baseline
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: David610/vpn-web
+          ref: ${{ inputs.vpnweb_new_ref || 'fix/entitlement-revision' }}
+          path: vpnweb-new
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: David610/vpn-web
+          ref: ${{ inputs.vpnweb_old_ref || 'fix/hub-stale-cache' }}
+          path: vpnweb-old
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
+      - name: PostgreSQL client and PostgREST (checksum-pinned)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          curl -fsSL -o /tmp/postgrest.txz "https://github.com/PostgREST/postgrest/releases/download/${POSTGREST_VERSION}/postgrest-${POSTGREST_VERSION}-linux-static-x86-64.tar.xz"
+          echo "${POSTGREST_SHA256}  /tmp/postgrest.txz" | sha256sum -c -
+          tar -xJf /tmp/postgrest.txz -C /tmp && /tmp/postgrest --version
+      - name: Install vpn-web dependencies (both server variants)
+        run: |
+          set -euo pipefail
+          (cd vpnweb-new && npm ci --no-audit --no-fund)
+          (cd vpnweb-old && npm ci --no-audit --no-fund)
+      - name: Build the candidate agent and the baseline (pre-#186, I-99/I-102 unfixed) agent
+        run: |
+          set -euo pipefail
+          (cd candidate && cargo build --release --locked -p provisioning-agent)
+          (cd baseline && cargo build --release --locked -p provisioning-agent)
+          sha256sum candidate/target/release/vpn-provisioning-agent baseline/target/release/vpn-provisioning-agent
+      - name: "candidate agent + fixed server: everything passes"
+        run: |
+          RESULT_DIR=$(mktemp -d) VPNWEB_DIR=$PWD/vpnweb-new AGENT_BIN=$PWD/candidate/target/release/vpn-provisioning-agent \
+            POSTGREST_BIN=/tmp/postgrest node candidate/deploy/ci/paired-integration/run.mjs
+      - name: "candidate agent + baseline server: renewal (I-100) must FAIL"
+        run: |
+          RESULT_DIR=$(mktemp -d) VPNWEB_DIR=$PWD/vpnweb-old AGENT_BIN=$PWD/candidate/target/release/vpn-provisioning-agent \
+            POSTGREST_BIN=/tmp/postgrest EXPECT="S2:fail" node candidate/deploy/ci/paired-integration/run.mjs
+      - name: "baseline agent + fixed server: fresh-device revoke and quarantine (I-102) must FAIL"
+        run: |
+          RESULT_DIR=$(mktemp -d) VPNWEB_DIR=$PWD/vpnweb-new AGENT_BIN=$PWD/baseline/target/release/vpn-provisioning-agent \
+            POSTGREST_BIN=/tmp/postgrest EXPECT="S3:fail,S4:fail" node candidate/deploy/ci/paired-integration/run.mjs
+      - name: "baseline agent + baseline server: revocation never applied (I-99)"
+        run: |
+          RESULT_DIR=$(mktemp -d) VPNWEB_DIR=$PWD/vpnweb-old AGENT_BIN=$PWD/baseline/target/release/vpn-provisioning-agent \
+            POSTGREST_BIN=/tmp/postgrest EXPECT="S1:fail,S2:fail,S3:fail,S4:fail" node candidate/deploy/ci/paired-integration/run.mjs
