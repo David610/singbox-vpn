@@ -1,0 +1,11 @@
+PASS 401 without/with wrong key (98 ms)
+PASS authorizations: 200 with ETag, decrypted protocol, two live creds :: etag "805c57b585f… (160 ms)
+PASS ETag/304: If-None-Match -> 304 empty body, same on instance B (stateless) (230 ms)
+PASS weak-validator and list forms of If-None-Match accepted; wrong etag -> 200 (115 ms)
+PASS revocation: device revoked -> ETag changes, revoked=true, stale ETag cannot hide it (143 ms)
+PASS subscription lapse (canceled) -> all revoked, ETag changes, no DB row changed in compat table (254 ms)
+PASS time-based expiry without any write: current_period_end in the past -> revoked :: live after period_end passed: 1 (grace policy may keep entitlement; see past_due_grace) (234 ms)
+PASS cross-node isolation: another node's key sees none of this node's credentials (750 ms)
+PASS bad schema -> 400; unknown route -> not 200 (9 ms)
+
+9 passed, 0 failed

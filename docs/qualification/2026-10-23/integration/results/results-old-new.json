@@ -1,0 +1,28 @@
+{
+ "agent": "old",
+ "server": "new",
+ "first_apply_ms": 305,
+ "idle_30s": {
+  "/api/agent/authorizations 200": 6,
+  "/api/agent/claim 200": 6
+ },
+ "idle_requests_per_hour_projected": 1440,
+ "revoke_latency_ms": null,
+ "live_after_revoke": 2,
+ "outage_25s": {
+  "/api/agent/authorizations 503": 5,
+  "/api/agent/claim 503": 5,
+  "/api/agent/heartbeat 503": 1
+ },
+ "outage_requests": 11,
+ "post_outage_revoke_latency_ms": null,
+ "live_final": 2,
+ "agent_alive": true,
+ "agent_errors": 5,
+ "agent_log_tail": [
+  "2026-10-23T08:01:23.643413Z  WARN vpn_provisioning_agent: lease pool tick failed error=vpn-admin lease-pool sync did not reach a live, reloaded sing-box",
+  "2026-10-23T08:01:23.676522Z  WARN vpn_provisioning_agent: external authorization reconciliation failed error=external authorization revision content changed without a new revision",
+  "2026-10-23T08:01:28.704823Z  WARN vpn_provisioning_agent: lease pool tick failed error=vpn-admin lease-pool sync did not reach a live, reloaded sing-box",
+  "2026-10-23T08:01:28.730076Z  WARN vpn_provisioning_agent: external authorization reconciliation failed error=external authorization revision content changed without a new revision"
+ ]
+}

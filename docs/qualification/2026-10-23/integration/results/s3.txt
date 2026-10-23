@@ -1,0 +1,8 @@
+PASS DB outage: /authorizations must not answer 401 (a credential verdict) for an infrastructure fault :: status=503 retry-after=5 (1121 ms)
+PASS DB outage: /events status :: status=503 retry-after=5 (17 ms)
+PASS DB outage: /healthz :: status=200 (9 ms)
+PASS recovery: authorizations 200 again after DB returns (1293 ms)
+api exit: null null {"level":"info","msg":"listening","host":"127.0.0.1","port":18831,"routes":14,"prefixes":["/api/agent"]}
+
+
+4 passed, 0 failed

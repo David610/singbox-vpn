@@ -1,0 +1,10 @@
+baseline                                                   revision= 2  row.revoked= false,false
+direct UPDATE external_vpn_devices.revoked_at              revision= 2  row.revoked= false,false
+subscription canceled (Stripe lapse)                       revision= 2  row.revoked= false,false
+account suspended                                          revision= 2  row.revoked= false,false
+  update public.external_vpn_devices set revoked_at=coalesce(revoked_at,now()),
+    subscription_token_hash=encode(extensions.gen_random_bytes(32),'hex'), updated_at=now()
+    where device_id=p_device_id and account_id=p_account_id and revoked_at is null
+  update public.compatibility_credentials set revoked_at=coalesce(revoked_at,now()) where device_id=p_device_id;
+  update public.compatibility_authorizations set revoked=true, valid_until=least(valid_until,now()), updated_at=now()
+  update public.devices set status='REVOKED', revoked_at=coalesce(revoked_at,now()), subscription_id=null

@@ -1,0 +1,13 @@
+PASS no cursor -> immediate resync with all channels + cursor (84 ms)
+PASS quiet node: long poll returns reason=timeout after ~wait with unchanged cursor :: 2024 ms (2025 ms)
+PASS garbage / oversized cursor -> resync, never an error or hang (141 ms)
+PASS wait validation: non-numeric -> 400 (25 ms)
+PASS pending job wakes a waiting agent on BOTH instances (changed includes jobs) (2330 ms)
+PASS revocation wakes the agent as 'authorizations' within the entitlement interval :: 5046 ms (5078 ms)
+PASS MISSED event: stale cursor from before the revocation still reports the change (catch-up, no loss) (26 ms)
+PASS billing lapse (no compat row changes) wakes agent via entitlement token :: 5053 ms (5075 ms)
+PASS second concurrent waiter for the same node supersedes the first (409 + Retry-After) (1335 ms)
+PASS node isolation: other node's events not triggered by this node's change (3758 ms)
+PASS revoked node key rejected within auth-cache TTL (NODE_AUTH_TTL_MS=1000) (2130 ms)
+
+11 passed, 0 failed
