@@ -1,0 +1,26 @@
+{
+ "agent": "new",
+ "server": "new",
+ "first_apply_ms": 407,
+ "idle_30s": {
+  "/api/agent/events 200": 1
+ },
+ "idle_requests_per_hour_projected": 120,
+ "revoke_latency_ms": 4028,
+ "live_after_revoke": 1,
+ "outage_25s": {
+  "/api/agent/events 200": 1,
+  "/api/agent/events 503": 1
+ },
+ "outage_requests": 2,
+ "post_outage_revoke_latency_ms": 3529,
+ "live_final": 0,
+ "agent_alive": true,
+ "agent_errors": 0,
+ "agent_log_tail": [
+  "2026-10-23T08:12:47.603904Z  WARN vpn_provisioning_agent: lease pool tick failed error=vpn-admin lease-pool sync did not reach a live, reloaded sing-box",
+  "2026-10-23T08:12:52.617066Z  WARN vpn_provisioning_agent: lease pool tick failed error=vpn-admin lease-pool sync did not reach a live, reloaded sing-box",
+  "2026-10-23T08:12:57.546110Z  WARN vpn_provisioning_agent: lease pool tick failed error=vpn-admin lease-pool sync did not reach a live, reloaded sing-box",
+  "2026-10-23T08:13:02.566027Z  WARN vpn_provisioning_agent: lease pool tick failed error=vpn-admin lease-pool sync did not reach a live, reloaded sing-box"
+ ]
+}

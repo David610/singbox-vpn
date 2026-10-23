@@ -1,0 +1,1 @@
+{"first_apply_ms":302,"revoke_latency_ms":2012,"requests":{"/api/agent/events501":1,"/api/agent/heartbeat200":1,"/api/agent/authorizations200":4,"/api/agent/claim200":3,"/api/agent/authorizations304":1},"total":10}
