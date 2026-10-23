@@ -176,6 +176,7 @@ main() {
   host_gid="$(id -g)"
 
   echo "== preparing release build image (installing build dependencies as root, once, inside the container's own layer) =="
+  echo "== network stages are bounded: worst case ${RELEASE_BUILD_NETWORK_BUDGET_SECONDS}s (pull 3x40s + dependency install 3x110s, plus kill grace) =="
   run_bounded_retry 3 40 -- docker pull "$RELEASE_BUILD_IMAGE"
   # dnf output goes to a log inside the container and is replayed on failure, never discarded:
   # a stalled mirror must leave evidence. Per-request timeout/retries/minrate keep dnf itself from stalling.
