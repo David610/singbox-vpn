@@ -1094,7 +1094,7 @@ mod tests {
         let mut reconciler = ExternalReconciler::open(&cfg).unwrap();
 
         let err = reconciler
-            .tick(&cfg, &client)
+            .tick(&cfg, &client, true)
             .await
             .expect_err("quarantine must be reported");
         assert!(err.to_string().contains("cred_badsecret01"), "{err}");
