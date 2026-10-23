@@ -30,7 +30,7 @@ repository archive SHA256. Source anchors:
   not a supported product mechanism. No safe general literal-to-A translation
   was established, so none is implemented.
 - `routeConnection`/`routePacketConnection` return a reject error for proxy
-  flows. The official `docs/configuration/route/rule_action.md` says the
+  flows. The official sing-box documentation (`configuration/route/rule_action`, upstream, not this repository) says the
   method applies to pre-sniff TUN rejection; non-TUN flows are closed.
   VLESS/Hysteria2 are proxy inbounds on this VPS. `no_drop` only disables
   rate-based escalation to drops; it does not create proven iPhone TUN ICMP.
