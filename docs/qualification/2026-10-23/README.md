@@ -38,7 +38,7 @@ It supersedes nothing in `../2026-10-22/`; it adds what was done since.
 
 ## Reports
 
-[INTEGRATION-EVIDENCE.md](INTEGRATION-EVIDENCE.md) · [ISSUE-LEDGER.md](ISSUE-LEDGER.md) · [DOCS-AUDIT.md](DOCS-AUDIT.md) · [RELEASE-CANDIDATE.md](RELEASE-CANDIDATE.md) · [integration harness](integration/README.md) · [status.json](status.json)
+[INTEGRATION-EVIDENCE.md](INTEGRATION-EVIDENCE.md) · [ISSUE-LEDGER.md](ISSUE-LEDGER.md) · [SECURITY-PRIVACY.md](SECURITY-PRIVACY.md) · [DOCS-AUDIT.md](DOCS-AUDIT.md) · [RELEASE-CANDIDATE.md](RELEASE-CANDIDATE.md) · [integration harness](integration/README.md) · [status.json](status.json)
 
 ## Privacy and security statements this record supports (and does not)
 
