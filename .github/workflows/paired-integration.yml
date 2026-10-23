@@ -52,7 +52,9 @@ jobs:
           path: candidate
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          # Last main commit BEFORE #186/#190 (I-99/I-102). Not `main`: those fixes are merged, so a
+          # moving `main` baseline passes the cases it must fail and the negative controls go stale.
+          ref: 548a376803c367c76519df2e59976cd89016044f
           path: baseline
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,7 +82,7 @@ jobs:
           set -euo pipefail
           (cd vpnweb-new && npm ci --no-audit --no-fund)
           (cd vpnweb-old && npm ci --no-audit --no-fund)
-      - name: Build the candidate agent and the baseline (main) agent
+      - name: Build the candidate agent and the baseline (pre-#186, I-99/I-102 unfixed) agent
         run: |
           set -euo pipefail
           (cd candidate && cargo build --release --locked -p provisioning-agent)
