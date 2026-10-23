@@ -889,10 +889,7 @@ mod tests {
         let parsed = parse_snapshot(doc).expect("a bad item must not fail the snapshot");
         let mut quarantined = parsed.quarantined.clone();
         quarantined.sort();
-        assert_eq!(
-            quarantined,
-            ["cred_baddate0001", "cred_badsecret01"]
-        );
+        assert_eq!(quarantined, ["cred_baddate0001", "cred_badsecret01"]);
         let ids: Vec<_> = parsed
             .desired
             .authorizations
