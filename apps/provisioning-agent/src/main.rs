@@ -1,9 +1,11 @@
 mod config;
 mod dispatch;
+mod events;
 mod external_authorization;
 mod health_probe;
 mod lease_pool;
 mod op_dedup;
+mod pacing;
 mod protocol_probe;
 mod report_queue;
 mod ssrf_guard;
@@ -65,6 +67,22 @@ async fn main() -> Result<()> {
         ));
     }
 
+    let wake = events::Wakeups::new();
+    let mut schedule =
+        events::Schedule::new(cfg.control_plane.reconcile_interval(), Instant::now());
+    if cfg.control_plane.events_enabled {
+        tokio::spawn(events::run_loop(
+            client.clone(),
+            wake.clone(),
+            events::Timing::production(cfg.control_plane.events_wait_secs()),
+        ));
+    } else {
+        tracing::info!(
+            "event channel disabled by config; polling every {}s",
+            poll_interval.as_secs()
+        );
+    }
+
     let mut lease_pool = match lease_pool::LeasePool::open(&cfg) {
         Ok(pool) => Some(pool),
         Err(err) => {
@@ -89,6 +107,7 @@ async fn main() -> Result<()> {
 
     loop {
         let now = Instant::now();
+        let due = schedule.due(now, &wake);
 
         if now >= next_heartbeat {
             let (probe_ok, probe_latency_ms) = health_probe::probe_data_plane(
@@ -103,7 +122,7 @@ async fn main() -> Result<()> {
                 payload["protocol_probe"] = report;
             }
             if let Err(err) = client.heartbeat(&payload).await {
-                tracing::warn!(error = %err, "node heartbeat failed");
+                log_control_plane_error("node heartbeat failed", &err);
             }
             next_heartbeat = Instant::now() + heartbeat_interval;
         }
@@ -116,8 +135,9 @@ async fn main() -> Result<()> {
         if let Some(pool) = lease_pool.as_mut() {
             // Runs every iteration: expiry enforcement is bounded by the
             // poll interval, and does not depend on the control plane.
-            if let Err(err) = pool.tick(&cfg, &client).await {
-                tracing::warn!(error = %err, "lease pool tick failed");
+            if let Err(err) = pool.tick(&cfg, &client, due.leases).await {
+                log_control_plane_error("lease pool tick failed", &err);
+                schedule.retry_leases(Instant::now());
             }
         }
 
@@ -125,27 +145,49 @@ async fn main() -> Result<()> {
             // The durable local snapshot is rendered on every process start
             // and whenever its active set changes, so expiry remains bounded
             // by this loop even during a control-plane outage.
-            if let Err(err) = external.tick(&cfg, &client).await {
-                tracing::warn!(error = %err, "external authorization reconciliation failed");
+            if let Err(err) = external.tick(&cfg, &client, due.authorizations).await {
+                log_control_plane_error("external authorization reconciliation failed", &err);
+                schedule.retry_authorizations(Instant::now());
             }
         }
 
-        match poll_once(&cfg, &client, &report_queue, &op_dedup).await {
+        let polled = if due.claim {
+            poll_once(&cfg, &client, &report_queue, &op_dedup).await
+        } else {
+            Ok(false)
+        };
+        match polled {
             Ok(true) => {
                 // A job was processed. Immediately claim the next one instead
                 // of sleeping for the idle poll interval; this lets a single
                 // node drain a signup/renewal burst as fast as vpn-admin can
                 // safely apply the jobs.
+                schedule.claim_again_now(Instant::now());
                 continue;
             }
-            Ok(false) => {
-                tokio::time::sleep(poll_interval).await;
-            }
+            Ok(false) => {}
             Err(err) => {
-                tracing::error!(error = %err, "poll iteration failed");
-                tokio::time::sleep(poll_interval).await;
+                log_control_plane_error("poll iteration failed", &err);
+                schedule.retry_claim(Instant::now());
             }
         }
+        // Local work above runs at least every poll interval (credential
+        // expiry never depends on the control plane); an event wakes the loop
+        // early so a new job or a revocation is handled within about a second.
+        tokio::select! {
+            _ = wake.notify.notified() => {}
+            _ = tokio::time::sleep(poll_interval) => {}
+        }
+    }
+}
+
+/// Backoff pauses are expected during an outage and must not flood the
+/// journal at poll rate; real failures still log at warn.
+fn log_control_plane_error(what: &str, err: &anyhow::Error) {
+    if pacing::is_gated(err) {
+        tracing::debug!(error = %err, "{what}");
+    } else {
+        tracing::warn!(error = %err, "{what}");
     }
 }
 
@@ -353,6 +395,7 @@ mod op_dedup_integration_tests {
             rotation_batch_interval_secs: 60,
             heartbeat_interval_secs: 60,
             protocol_probe: None,
+            control_plane: Default::default(),
         }
     }
 

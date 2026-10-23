@@ -1,5 +1,8 @@
 use crate::config::AgentConfig;
+use crate::pacing::{parse_retry_after, ApiError, ControlPlaneGate};
 use anyhow::{anyhow, bail, Context, Result};
+use reqwest::header::{ETAG, IF_NONE_MATCH};
+use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -59,11 +62,52 @@ struct ClaimResponse {
     job: Option<Job>,
 }
 
+/// Result of a conditional `GET /api/agent/authorizations`.
+#[derive(Debug)]
+pub enum AuthorizationsFetch {
+    /// The server confirmed the caller's ETag is still current (304).
+    NotModified,
+    Fresh {
+        body: Value,
+        etag: Option<String>,
+    },
+}
+
+/// Result of one `GET /api/agent/events` long poll.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EventsOutcome {
+    /// `reason` is "change", "resync" or "timeout"; `changed` names the
+    /// channels ("jobs", "authorizations", "leases") that moved.
+    Event {
+        reason: String,
+        changed: Vec<String>,
+        cursor: String,
+    },
+    /// The server has no event channel (501, or 404/405 from an older control
+    /// plane without the route): fall back to polling.
+    Unavailable,
+    /// Another connection from this node replaced this one (409).
+    Superseded {
+        retry_after: Option<std::time::Duration>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct EventsBody {
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    changed: Vec<String>,
+    #[serde(default)]
+    cursor: String,
+}
+
 #[derive(Clone)]
 pub struct WorkerClient {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
+    gate: ControlPlaneGate,
 }
 
 impl WorkerClient {
@@ -77,6 +121,57 @@ impl WorkerClient {
             http,
             base_url: cfg.worker_url.clone(),
             api_key: cfg.agent_api_key.clone(),
+            gate: ControlPlaneGate::new(
+                cfg.control_plane.backoff_base(),
+                cfg.control_plane.backoff_max(),
+            ),
+        }
+    }
+
+    #[cfg(test)]
+    /// The shared circuit breaker, for the event task and for tests.
+    pub fn gate(&self) -> &ControlPlaneGate {
+        &self.gate
+    }
+
+    /// Sends a polling request through the shared gate: nothing leaves the
+    /// node while the control plane is backing off, every outcome feeds the
+    /// breaker, and any non-success becomes a typed [`ApiError`].
+    async fn polling(
+        &self,
+        request: reqwest::RequestBuilder,
+        what: &'static str,
+    ) -> Result<reqwest::Response> {
+        self.gate.check()?;
+        let res = match request.send().await {
+            Ok(res) => res,
+            Err(err) => {
+                self.gate.record_failure(None);
+                return Err(anyhow::Error::new(err).context(format!("{what} request failed")));
+            }
+        };
+        let status = res.status();
+        if status.is_success() || status == StatusCode::NOT_MODIFIED {
+            self.gate.record_success();
+            return Ok(res);
+        }
+        let retry_after = parse_retry_after(res.headers());
+        self.gate.record_failure(retry_after);
+        Err(ApiError::Status {
+            what,
+            status: status.as_u16(),
+            retry_after,
+        }
+        .into())
+    }
+
+    /// Feeds the breaker from a call that must never be blocked by it
+    /// (job reports and job-time fetches own their retry policy).
+    fn observe(&self, status: StatusCode, headers: &reqwest::header::HeaderMap) {
+        if status.is_success() {
+            self.gate.record_success();
+        } else if status.as_u16() == 429 || status.is_server_error() {
+            self.gate.record_failure(parse_retry_after(headers));
         }
     }
 
@@ -84,16 +179,13 @@ impl WorkerClient {
     /// nothing is pending right now.
     pub async fn claim(&self) -> Result<Option<Job>> {
         let res = self
-            .http
-            .post(format!("{}/api/agent/claim", self.base_url))
-            .bearer_auth(&self.api_key)
-            .send()
-            .await
-            .context("POST /api/agent/claim request failed")?;
-
-        if !res.status().is_success() {
-            bail!("POST /api/agent/claim returned {}", res.status());
-        }
+            .polling(
+                self.http
+                    .post(format!("{}/api/agent/claim", self.base_url))
+                    .bearer_auth(&self.api_key),
+                "POST /api/agent/claim",
+            )
+            .await?;
 
         let parsed: ClaimResponse = res
             .json()
@@ -123,6 +215,7 @@ impl WorkerClient {
             .send()
             .await
             .context("POST /api/agent/jobs/:id/complete request failed")?;
+        self.observe(res.status(), res.headers());
 
         if res.status().is_success() {
             return Ok(ReportDisposition::Accepted);
@@ -154,6 +247,7 @@ impl WorkerClient {
             .send()
             .await
             .context("POST /api/agent/jobs/:id/fail request failed")?;
+        self.observe(res.status(), res.headers());
 
         if res.status().is_success() {
             return Ok(ReportDisposition::Accepted);
@@ -171,18 +265,14 @@ impl WorkerClient {
 
     /// Sends a privacy-safe operational heartbeat.
     pub async fn heartbeat(&self, payload: &Value) -> Result<()> {
-        let res = self
-            .http
-            .post(format!("{}/api/agent/heartbeat", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(payload)
-            .send()
-            .await
-            .context("POST /api/agent/heartbeat request failed")?;
-
-        if !res.status().is_success() {
-            bail!("POST /api/agent/heartbeat returned {}", res.status());
-        }
+        self.polling(
+            self.http
+                .post(format!("{}/api/agent/heartbeat", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(payload),
+            "POST /api/agent/heartbeat",
+        )
+        .await?;
         Ok(())
     }
 
@@ -201,6 +291,7 @@ impl WorkerClient {
             .send()
             .await
             .context("GET /api/agent/revision/:revision request failed")?;
+        self.observe(res.status(), res.headers());
 
         if !res.status().is_success() {
             bail!(
@@ -230,25 +321,21 @@ impl WorkerClient {
     /// than retry: the next one carries the same running total, so nothing
     /// is double-counted and nothing is lost but resolution.
     pub async fn report_traffic(&self, sample: &crate::stats::TrafficSample) -> Result<()> {
-        let res = self
-            .http
-            .post(format!("{}/api/agent/traffic", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&serde_json::json!({
-                "bytes_up": sample.bytes_up,
-                "bytes_down": sample.bytes_down,
-                "connections_open": sample.connections_open,
-                "sampled_at": time::OffsetDateTime::now_utc()
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .context("formatting sampled_at")?,
-            }))
-            .send()
-            .await
-            .context("POST /api/agent/traffic request failed")?;
-
-        if !res.status().is_success() {
-            bail!("POST /api/agent/traffic returned {}", res.status());
-        }
+        self.polling(
+            self.http
+                .post(format!("{}/api/agent/traffic", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&serde_json::json!({
+                    "bytes_up": sample.bytes_up,
+                    "bytes_down": sample.bytes_down,
+                    "connections_open": sample.connections_open,
+                    "sampled_at": time::OffsetDateTime::now_utc()
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .context("formatting sampled_at")?,
+                })),
+            "POST /api/agent/traffic",
+        )
+        .await?;
         Ok(())
     }
 
@@ -257,61 +344,139 @@ impl WorkerClient {
     /// ever logged, and errors only name the status code.
     pub async fn sync_leases(&self, body: &Value) -> Result<Value> {
         let res = self
-            .http
-            .post(format!("{}/api/agent/leases/sync", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(body)
-            .send()
-            .await
-            .context("POST /api/agent/leases/sync request failed")?;
-        if !res.status().is_success() {
-            bail!("POST /api/agent/leases/sync returned {}", res.status());
-        }
+            .polling(
+                self.http
+                    .post(format!("{}/api/agent/leases/sync", self.base_url))
+                    .bearer_auth(&self.api_key)
+                    .json(body),
+                "POST /api/agent/leases/sync",
+            )
+            .await?;
         res.json()
             .await
             .context("parsing /api/agent/leases/sync response body")
     }
 
+    #[cfg(test)]
     /// Fetch this node's control-plane-owned external compatibility state.
     /// The response is never logged because it contains protocol secrets.
     pub async fn fetch_authorizations(&self) -> Result<Value> {
-        let res = self
+        match self.fetch_authorizations_conditional(None).await? {
+            AuthorizationsFetch::Fresh { body, .. } => Ok(body),
+            AuthorizationsFetch::NotModified => {
+                bail!("GET /api/agent/authorizations returned 304 to an unconditional request")
+            }
+        }
+    }
+
+    /// Conditional form of the plain authorizations fetch: with the ETag of
+    /// the snapshot already held, an unchanged state costs one tiny 304 and
+    /// no server-side decryption.
+    pub async fn fetch_authorizations_conditional(
+        &self,
+        etag: Option<&str>,
+    ) -> Result<AuthorizationsFetch> {
+        let mut request = self
             .http
             .get(format!("{}/api/agent/authorizations", self.base_url))
             .query(&[("schema", "2")])
-            .bearer_auth(&self.api_key)
-            .send()
-            .await
-            .context("GET /api/agent/authorizations request failed")?;
-        if !res.status().is_success() {
-            bail!("GET /api/agent/authorizations returned {}", res.status());
+            .bearer_auth(&self.api_key);
+        if let Some(etag) = etag {
+            request = request.header(IF_NONE_MATCH, etag);
         }
-        res.json()
+        let res = self
+            .polling(request, "GET /api/agent/authorizations")
+            .await?;
+        if res.status() == StatusCode::NOT_MODIFIED {
+            return Ok(AuthorizationsFetch::NotModified);
+        }
+        let etag = res
+            .headers()
+            .get(ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = res
+            .json()
             .await
-            .context("parsing /api/agent/authorizations response body")
+            .context("parsing /api/agent/authorizations response body")?;
+        Ok(AuthorizationsFetch::Fresh { body, etag })
+    }
+
+    /// One long poll of the authenticated event channel. The response is a
+    /// hint about WHICH state moved, never the state itself.
+    pub async fn wait_events(&self, cursor: Option<&str>, wait_secs: u64) -> Result<EventsOutcome> {
+        self.gate.check()?;
+        let mut request = self
+            .http
+            .get(format!("{}/api/agent/events", self.base_url))
+            .query(&[("wait", wait_secs.to_string())])
+            .bearer_auth(&self.api_key)
+            .timeout(std::time::Duration::from_secs(wait_secs + 15));
+        if let Some(cursor) = cursor {
+            request = request.query(&[("cursor", cursor)]);
+        }
+        let res = match request.send().await {
+            Ok(res) => res,
+            Err(err) => {
+                self.gate.record_failure(None);
+                return Err(anyhow::Error::new(err).context("GET /api/agent/events request failed"));
+            }
+        };
+        let status = res.status();
+        if status.is_success() {
+            let body: EventsBody = res
+                .json()
+                .await
+                .context("parsing /api/agent/events response body")?;
+            // A real answer always names why it returned ("timeout", "change",
+            // ...). `200 {}` from a broken proxy or error page is not an event:
+            // treating it as one marks the channel healthy and, because it
+            // returns instantly, would have the agent re-ask at network speed.
+            if body.reason.is_empty() {
+                anyhow::bail!("/api/agent/events answered 200 without a reason; not an event");
+            }
+            self.gate.record_success();
+            return Ok(EventsOutcome::Event {
+                reason: body.reason,
+                changed: body.changed,
+                cursor: body.cursor,
+            });
+        }
+        match status.as_u16() {
+            // The control plane answered; it just has no event channel. Not a failure.
+            // 404/405: an older control plane that predates the route.
+            501 | 404 | 405 => Ok(EventsOutcome::Unavailable),
+            409 => Ok(EventsOutcome::Superseded {
+                retry_after: parse_retry_after(res.headers()),
+            }),
+            code => {
+                let retry_after = parse_retry_after(res.headers());
+                self.gate.record_failure(retry_after);
+                Err(ApiError::Status {
+                    what: "GET /api/agent/events",
+                    status: code,
+                    retry_after,
+                }
+                .into())
+            }
+        }
     }
 
     /// Acknowledges the exact v2 snapshot that was verified live. The body contains no
     /// authorization or protocol secret, and callers must never substitute a latest revision.
     pub async fn ack_external_authorizations(&self, snapshot_revision: u64) -> Result<()> {
-        let res = self
-            .http
-            .post(format!("{}/api/agent/authorizations", self.base_url))
-            .query(&[("schema", "2")])
-            .bearer_auth(&self.api_key)
-            .json(&serde_json::json!({
-                "schema_version": 2,
-                "snapshot_revision": snapshot_revision,
-            }))
-            .send()
-            .await
-            .context("POST /api/agent/authorizations acknowledgement failed")?;
-        if !res.status().is_success() {
-            bail!(
-                "POST /api/agent/authorizations acknowledgement returned {}",
-                res.status()
-            );
-        }
+        self.polling(
+            self.http
+                .post(format!("{}/api/agent/authorizations", self.base_url))
+                .query(&[("schema", "2")])
+                .bearer_auth(&self.api_key)
+                .json(&serde_json::json!({
+                    "schema_version": 2,
+                    "snapshot_revision": snapshot_revision,
+                })),
+            "POST /api/agent/authorizations acknowledgement",
+        )
+        .await?;
         Ok(())
     }
 
@@ -391,6 +556,11 @@ mod external_authorization_tests {
         let client = client(&server.uri());
         assert!(client.ack_external_authorizations(10).await.is_err());
         server.verify().await;
+        assert!(
+            crate::pacing::is_gated(&client.ack_external_authorizations(10).await.unwrap_err()),
+            "the failed ACK pauses polling calls until the backoff elapses"
+        );
+        client.gate().record_success(); // the backoff window has elapsed
 
         server.reset().await;
         Mock::given(method("POST"))
@@ -424,6 +594,10 @@ mod claim_lease_tests {
                 .unwrap(),
             base_url: base_url.to_string(),
             api_key: "node-key".to_string(),
+            gate: ControlPlaneGate::new(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(5),
+            ),
         }
     }
 
@@ -574,5 +748,255 @@ mod claim_lease_tests {
         }))
         .unwrap();
         assert!(!expired.lease_is_live().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+    use std::time::Duration;
+    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client(base_url: &str) -> WorkerClient {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("agent.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "worker_url = {base_url:?}\nnode_id = \"node_test\"\nagent_api_key = \"test-key\"\nvpn_admin_binary = \"vpn-admin\"\nvpn_admin_config = \"deployment.toml\"\n[control_plane]\nbackoff_base_secs = 30\nbackoff_max_secs = 60\n"
+            ),
+        )
+        .unwrap();
+        WorkerClient::new(&AgentConfig::load(&config).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_429_closes_the_gate_so_the_next_poll_sends_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/claim"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "40"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        let first = client.claim().await.unwrap_err();
+        assert_eq!(first.to_string(), "POST /api/agent/claim returned 429");
+        for _ in 0..25 {
+            let err = client.claim().await.unwrap_err();
+            assert!(crate::pacing::is_gated(&err), "{err}");
+        }
+        // `expect(1)` verifies on drop that exactly one request reached the server.
+    }
+
+    #[tokio::test]
+    async fn one_failing_endpoint_pauses_every_polling_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/heartbeat"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/leases/sync"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        assert!(client.heartbeat(&serde_json::json!({})).await.is_err());
+        assert!(crate::pacing::is_gated(
+            &client
+                .sync_leases(&serde_json::json!({}))
+                .await
+                .unwrap_err()
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_success_reopens_the_gate() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/claim"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "job": null })),
+            )
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        client.gate().record_failure_at(
+            std::time::Instant::now() - Duration::from_secs(120),
+            None,
+            0.0,
+        );
+        assert!(client.claim().await.unwrap().is_none());
+        assert_eq!(client.gate().consecutive_failures(), 0);
+    }
+
+    #[tokio::test]
+    async fn job_reports_are_never_blocked_by_the_gate() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/jobs/9/complete"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        client.gate().record_failure(Some(Duration::from_secs(600)));
+        let outcome = client
+            .complete(9, "tok", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(outcome, ReportDisposition::Accepted);
+        assert_eq!(
+            client.gate().consecutive_failures(),
+            0,
+            "a delivered report proves the control plane is up"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_error_counts_as_a_failure() {
+        let client = client("http://127.0.0.1:9");
+        assert!(client.claim().await.is_err());
+        assert_eq!(client.gate().consecutive_failures(), 1);
+        assert!(crate::pacing::is_gated(&client.claim().await.unwrap_err()));
+    }
+
+    #[tokio::test]
+    async fn conditional_fetch_sends_if_none_match_and_understands_304() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/authorizations"))
+            .and(header("if-none-match", "\"abc\""))
+            .respond_with(ResponseTemplate::new(304).insert_header("ETag", "\"abc\""))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        let outcome = client
+            .fetch_authorizations_conditional(Some("\"abc\""))
+            .await
+            .unwrap();
+        assert!(matches!(outcome, AuthorizationsFetch::NotModified));
+        assert_eq!(
+            client.gate().consecutive_failures(),
+            0,
+            "304 is a healthy answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn conditional_fetch_returns_the_body_and_new_etag() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/authorizations"))
+            .respond_with(ResponseTemplate::new(200).insert_header("ETag", "\"v2\"").set_body_json(
+                serde_json::json!({ "schema_version": 2, "snapshot_revision": 4, "authorizations": [] }),
+            ))
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        match client.fetch_authorizations_conditional(None).await.unwrap() {
+            AuthorizationsFetch::Fresh { body, etag } => {
+                assert_eq!(etag.as_deref(), Some("\"v2\""));
+                assert_eq!(body["snapshot_revision"], 4);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn events_report_changes_with_the_cursor_round_trip() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/events"))
+            .and(query_param("cursor", "c1"))
+            .and(query_param("wait", "25"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "reason": "change", "changed": ["jobs"], "cursor": "c2"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        assert_eq!(
+            client.wait_events(Some("c1"), 25).await.unwrap(),
+            EventsOutcome::Event {
+                reason: "change".into(),
+                changed: vec!["jobs".into()],
+                cursor: "c2".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn events_501_is_unavailable_not_a_failure_and_409_is_superseded() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/events"))
+            .respond_with(ResponseTemplate::new(501))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/events"))
+            .respond_with(ResponseTemplate::new(409).insert_header("Retry-After", "5"))
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        assert_eq!(
+            client.wait_events(None, 25).await.unwrap(),
+            EventsOutcome::Unavailable
+        );
+        assert_eq!(client.gate().consecutive_failures(), 0);
+        assert_eq!(
+            client.wait_events(None, 25).await.unwrap(),
+            EventsOutcome::Superseded {
+                retry_after: Some(Duration::from_secs(5))
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_old_server_without_the_events_route_does_not_throttle_job_polling() {
+        for status in [404, 405] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/agent/events"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            let client = client(&server.uri());
+            assert_eq!(
+                client.wait_events(None, 25).await.unwrap(),
+                EventsOutcome::Unavailable,
+                "status {status}: an older control plane has no event channel"
+            );
+            assert_eq!(client.gate().consecutive_failures(), 0, "status {status}");
+            assert!(
+                client.gate().check().is_ok(),
+                "status {status}: the shared gate must stay open for claim/authorization polling"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn events_5xx_trips_the_gate_like_any_other_poll() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/events"))
+            .respond_with(ResponseTemplate::new(503).insert_header("Retry-After", "30"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client(&server.uri());
+        assert!(client.wait_events(None, 25).await.is_err());
+        assert!(crate::pacing::is_gated(
+            &client.wait_events(None, 25).await.unwrap_err()
+        ));
     }
 }
