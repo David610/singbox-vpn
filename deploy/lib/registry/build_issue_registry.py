@@ -350,6 +350,12 @@ NEW += [
       "vpn-web server/__tests__/app.test.mjs 'never writes a path parameter ... to the error log' (fails on the old code with the token in the entry)", "no",
       "branch only; the repository's check-log-secrets scanner cannot see calls through an injected log function, so it did not catch this; other log call sites were grepped, none found",
       "docs/qualification/2026-10-23/ISSUE-LEDGER.md"),
+    n("I-104", "low", "CI shell job apt install step", "FLAKY",
+      "on PR #189 the 'shell' job step that apt-installs nftables, util-linux and age exited 124 (its own 90 s 'timeout' around apt-get install) on attempt 1; offline-full-verdict then correctly failed. Attempt 2 of the failed jobs passed",
+      "no product change. Infrastructure only: the step never reached any test. Same family as I-96 (slow package mirror); raise the step timeout or retry the install rather than loosen anything else",
+      "none (a retry-pass is evidence to keep, not a clean pass; the first-attempt failure is recorded here)", "no",
+      "second occurrence of an install-step timeout in a week; if it recurs a retry wrapper around the install steps is justified",
+      "https://github.com/David610/singbox-vpn/actions/runs/39929015669 (attempt 1: shell step timeout, verdict failure; attempt 2: success)"),
 ]
 
 

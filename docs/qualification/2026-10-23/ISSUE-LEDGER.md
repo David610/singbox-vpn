@@ -1,7 +1,7 @@
 # Security and reliability issue ledger — 2026-10-23
 
 The canonical source is `docs/handoffs/2026-10-20/issue-registry.json`, regenerated with
-`python3 deploy/lib/registry/build_issue_registry.py` (63 re-assessed + 34 carried = 97 entries). Roughly 90 historical entries are **not**
+`python3 deploy/lib/registry/build_issue_registry.py` (64 re-assessed + 34 carried = 98 entries). Roughly 90 historical entries are **not**
 90 current defects: the table classifies by state, and only the rows below need action.
 
 ## Registry by state (after this regeneration)
@@ -13,7 +13,7 @@ The canonical source is `docs/handoffs/2026-10-20/issue-registry.json`, regenera
 | UNVERIFIED | carried from the 2026-10-15 audit, not re-verified | 14 |
 | BLOCKED | needs the host, a device or an owner decision | 7 |
 | CONFIRMED_OPEN | reproduced, not fixed | 11 |
-| FLAKY / IN_PROGRESS | 3 / 1 | 4 |
+| FLAKY / IN_PROGRESS | 4 / 1 | 5 |
 
 ## New this session
 
