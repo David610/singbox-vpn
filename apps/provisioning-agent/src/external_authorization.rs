@@ -249,6 +249,31 @@ fn load_state(path: &Path) -> Result<PersistedExternalState> {
     Ok(state)
 }
 
+/// True when `next` holds exactly the credentials in `current`, identical in every field except
+/// that some have newly become `revoked`. Un-revoking is never a tightening.
+fn only_tightens(current: &AuthorizationSet, next: &AuthorizationSet) -> bool {
+    if current.authorizations.len() != next.authorizations.len() {
+        return false;
+    }
+    next.authorizations.iter().all(|incoming| {
+        let Some(held) = current.authorizations.iter().find(|held| {
+            held.principal_id == incoming.principal_id
+                && held.credential_id == incoming.credential_id
+        }) else {
+            return false;
+        };
+        if held.revoked && !incoming.revoked {
+            return false;
+        }
+        let mut normalized = incoming.clone();
+        normalized.revoked = held.revoked;
+        matches!(
+            (serde_json::to_vec(&normalized), serde_json::to_vec(held)),
+            (Ok(a), Ok(b)) if a == b
+        )
+    })
+}
+
 fn adopt_snapshot(state: &mut PersistedExternalState, next: ParsedSnapshot) -> Result<bool> {
     let desired_changed = serde_json::to_vec(&next.desired)? != serde_json::to_vec(&state.desired)?;
     match (state.snapshot_revision, next.snapshot_revision) {
@@ -256,7 +281,14 @@ fn adopt_snapshot(state: &mut PersistedExternalState, next: ParsedSnapshot) -> R
             bail!("stale external authorization snapshot revision")
         }
         (Some(current), Some(incoming)) if incoming == current && desired_changed => {
-            bail!("external authorization revision content changed without a new revision")
+            // The control plane derives `revoked` from live entitlement (billing lapse,
+            // suspension, device revocation), which can change without a new revision.
+            // Refusing that left a revoked credential live indefinitely. A snapshot that
+            // only sets `revoked` on credentials we already hold can never grant access,
+            // so it is accepted; any other same-revision change is still equivocation.
+            if !only_tightens(&state.desired, &next.desired) {
+                bail!("external authorization revision content changed without a new revision")
+            }
         }
         (Some(_), None) => bail!("refusing external authorization schema downgrade"),
         _ => {}
@@ -665,6 +697,81 @@ mod tests {
         .is_err());
         assert_eq!(state.snapshot_revision, Some(1));
         assert_eq!(state.desired.authorizations.len(), 1);
+    }
+
+    fn held(revoked: bool) -> PersistedExternalState {
+        let mut doc = fixture("v2-active");
+        doc["snapshot_revision"] = 5.into();
+        doc["authorizations"][0]["revoked"] = revoked.into();
+        let parsed = parse_snapshot(doc).unwrap();
+        PersistedExternalState {
+            desired: parsed.desired,
+            snapshot_revision: parsed.snapshot_revision,
+            applied_snapshot_revision: Some(5),
+            acknowledged_snapshot_revision: Some(5),
+        }
+    }
+
+    fn incoming(mutate: impl FnOnce(&mut Value)) -> ParsedSnapshot {
+        let mut doc = fixture("v2-active");
+        doc["snapshot_revision"] = 5.into();
+        mutate(&mut doc);
+        parse_snapshot(doc).unwrap()
+    }
+
+    #[test]
+    fn same_revision_revocation_from_entitlement_is_adopted_and_reapplied() {
+        let mut state = held(false);
+        let changed = adopt_snapshot(
+            &mut state,
+            incoming(|d| d["authorizations"][0]["revoked"] = true.into()),
+        )
+        .expect("a revocation at an unchanged revision must not be refused");
+        assert!(changed);
+        assert!(state.desired.authorizations[0].revoked);
+        assert_eq!(state.snapshot_revision, Some(5));
+        // Must be re-applied and re-acknowledged, never skipped as already applied.
+        assert_eq!(state.applied_snapshot_revision, None);
+        assert_eq!(state.acknowledged_snapshot_revision, None);
+    }
+
+    #[test]
+    fn same_revision_changes_that_could_grant_access_are_still_equivocation() {
+        // un-revoking
+        let mut state = held(true);
+        assert!(adopt_snapshot(&mut state, incoming(|_| {})).is_err());
+        assert!(
+            state.desired.authorizations[0].revoked,
+            "state untouched on refusal"
+        );
+        // extending validity while also revoking is not a pure tightening
+        let mut state = held(false);
+        assert!(adopt_snapshot(
+            &mut state,
+            incoming(|d| {
+                d["authorizations"][0]["revoked"] = true.into();
+                d["authorizations"][0]["valid_until"] = "2026-10-02T06:00:00Z".into();
+            })
+        )
+        .is_err());
+        // swapping the secret
+        let mut state = held(false);
+        assert!(adopt_snapshot(
+            &mut state,
+            incoming(|d| {
+                d["authorizations"][0]["protocol"]["vless_uuid"] =
+                    "99999999-9999-4999-8999-999999999999".into();
+            })
+        )
+        .is_err());
+        // dropping or adding a credential
+        let mut state = held(false);
+        assert!(adopt_snapshot(
+            &mut state,
+            incoming(|d| d["authorizations"] = serde_json::json!([]))
+        )
+        .is_err());
+        assert!(!state.desired.authorizations.is_empty());
     }
 
     #[test]
