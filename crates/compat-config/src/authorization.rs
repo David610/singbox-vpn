@@ -39,6 +39,75 @@ pub struct Authorization {
 }
 
 impl Authorization {
+    /// Everything that can be decided about one credential in isolation.
+    ///
+    /// A revoked credential only has to be *identifiable*: it can never become active, so
+    /// its validity window and secrets are irrelevant, and the control plane itself shortens
+    /// them when it revokes (`valid_until = least(valid_until, now())`). Rejecting such a
+    /// credential would block the very revocation it represents.
+    ///
+    /// For a live credential the lifetime must be positive and at most
+    /// `COMPAT_MAX_LIFETIME_SECS`. There is deliberately no minimum here: the control plane
+    /// shortens an old credential to the rotation overlap window, and a shorter lifetime can
+    /// only restrict access. The minimum remains an *issuance* rule (`credential_policy`).
+    pub fn validate_item(&self) -> Result<(), String> {
+        validate_principal_id(&self.principal_id)?;
+        validate_credential_id(&self.credential_id)?;
+        match self.class {
+            CredentialClass::Native if !self.principal_id.starts_with("native_") => {
+                return Err("native credential requires a native_ principal".into())
+            }
+            CredentialClass::Compatibility if !self.principal_id.starts_with("ext_") => {
+                return Err("compatibility credential requires an ext_ principal".into())
+            }
+            _ => {}
+        }
+        let lifetime = self
+            .valid_until
+            .checked_sub(self.valid_from)
+            .ok_or("invalid validity range")?;
+        if self.revoked {
+            return Ok(());
+        }
+        if lifetime <= 0 {
+            return Err(format!(
+                "credential {:?} has an empty validity interval",
+                self.credential_id
+            ));
+        }
+        if self.vless_uuid.is_none() && self.hysteria2_password.is_none() {
+            return Err(format!(
+                "credential {:?} has no protocol secret",
+                self.credential_id
+            ));
+        }
+        if self
+            .vless_uuid
+            .as_ref()
+            .is_some_and(|secret| !valid_vless_uuid(secret.expose()))
+        {
+            return Err("credential has a malformed VLESS UUID".into());
+        }
+        if self
+            .hysteria2_password
+            .as_ref()
+            .is_some_and(|secret| !valid_hysteria2_password(secret.expose()))
+        {
+            return Err("credential has a malformed Hysteria2 password".into());
+        }
+        match self.class {
+            CredentialClass::Native if lifetime > NATIVE_LEASE_SECS => Err(format!(
+                "native credential {:?} exceeds the 30 minute lease policy",
+                self.credential_id
+            )),
+            CredentialClass::Compatibility if lifetime > COMPAT_MAX_LIFETIME_SECS => Err(format!(
+                "compatibility credential {:?} lifetime is outside policy",
+                self.credential_id
+            )),
+            _ => Ok(()),
+        }
+    }
+
     pub fn is_active_at(&self, now: i64) -> bool {
         !self.revoked && self.valid_from <= now && now < self.valid_until
     }
@@ -55,69 +124,18 @@ impl AuthorizationSet {
     pub fn validate(&self) -> Result<(), String> {
         let mut ids = BTreeSet::new();
         for item in &self.authorizations {
-            validate_principal_id(&item.principal_id)?;
-            validate_credential_id(&item.credential_id)?;
-            match item.class {
-                CredentialClass::Native if !item.principal_id.starts_with("native_") => {
-                    return Err("native credential requires a native_ principal".into())
-                }
-                CredentialClass::Compatibility if !item.principal_id.starts_with("ext_") => {
-                    return Err("compatibility credential requires an ext_ principal".into())
-                }
-                _ => {}
-            }
+            item.validate_item()?;
             if !ids.insert(item.credential_id.as_str()) {
                 return Err(format!("duplicate credential_id {:?}", item.credential_id));
             }
-            let lifetime = item
-                .valid_until
-                .checked_sub(item.valid_from)
-                .ok_or("invalid validity range")?;
-            if lifetime <= 0 {
-                return Err(format!(
-                    "credential {:?} has an empty validity interval",
-                    item.credential_id
-                ));
-            }
-            if item.vless_uuid.is_none() && item.hysteria2_password.is_none() {
-                return Err(format!(
-                    "credential {:?} has no protocol secret",
-                    item.credential_id
-                ));
-            }
-            if item
-                .vless_uuid
-                .as_ref()
-                .is_some_and(|secret| !valid_vless_uuid(secret.expose()))
-            {
-                return Err("credential has a malformed VLESS UUID".into());
-            }
-            if item
-                .hysteria2_password
-                .as_ref()
-                .is_some_and(|secret| !valid_hysteria2_password(secret.expose()))
-            {
-                return Err("credential has a malformed Hysteria2 password".into());
-            }
-            match item.class {
-                CredentialClass::Native if lifetime > NATIVE_LEASE_SECS => {
-                    return Err(format!(
-                        "native credential {:?} exceeds the 30 minute lease policy",
-                        item.credential_id
-                    ))
-                }
-                CredentialClass::Compatibility
-                    if !(COMPAT_MIN_LIFETIME_SECS..=COMPAT_MAX_LIFETIME_SECS)
-                        .contains(&lifetime) =>
-                {
-                    return Err(format!(
-                        "compatibility credential {:?} lifetime is outside policy",
-                        item.credential_id
-                    ))
-                }
-                _ => {}
-            }
         }
+        self.validate_set()
+    }
+
+    /// Set-level rules only (per-principal overlap and simultaneity). Revoked credentials
+    /// grant nothing, so they do not count toward either bound; counting them would let a
+    /// credential the control plane has already revoked block unrelated updates.
+    pub fn validate_set(&self) -> Result<(), String> {
         for principal in self
             .authorizations
             .iter()
@@ -127,7 +145,7 @@ impl AuthorizationSet {
             let credentials: Vec<_> = self
                 .authorizations
                 .iter()
-                .filter(|a| &a.principal_id == principal)
+                .filter(|a| &a.principal_id == principal && !a.revoked)
                 .collect();
             // Bound every pair's overlap independently.
             for (i, a) in credentials.iter().enumerate() {
@@ -295,6 +313,60 @@ mod tests {
         s.authorizations[1].valid_until = 200_000;
         assert!(s.validate().is_err());
     }
+    #[test]
+    fn a_revoked_credential_is_never_rejected_for_its_validity_window() {
+        // The control plane revokes with valid_until = least(valid_until, now()), which can
+        // leave a window shorter than any issuance minimum, or empty, or inverted. That
+        // must not block the revocation itself.
+        for (from, until) in [(0, 60), (100, 100), (500, 100)] {
+            let mut a = auth("cred_revoked001", from, until);
+            a.revoked = true;
+            let set = AuthorizationSet { authorizations: vec![a] };
+            assert!(set.validate().is_ok(), "revoked {from}->{until} must validate");
+            assert!(set.active_at(from).is_empty() && set.active_at(until).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_live_credential_shortened_by_rotation_is_valid_but_bad_lifetimes_still_are_not() {
+        // Rotation shortens the old credential to the overlap window.
+        let shortened = auth("cred_shortened1", 0, 3_600);
+        assert!(AuthorizationSet { authorizations: vec![shortened] }.validate().is_ok());
+        // Zero/negative and over-maximum lifetimes stay rejected.
+        assert!(AuthorizationSet { authorizations: vec![auth("cred_empty00001", 10, 10)] }.validate().is_err());
+        assert!(AuthorizationSet { authorizations: vec![auth("cred_inverted01", 10, 5)] }.validate().is_err());
+        let too_long = auth("cred_toolong001", 0, COMPAT_MAX_LIFETIME_SECS + 1);
+        assert!(AuthorizationSet { authorizations: vec![too_long] }.validate().is_err());
+    }
+
+    #[test]
+    fn revoked_identity_is_still_checked() {
+        let mut bad = auth("cred_revoked002", 0, 10);
+        bad.revoked = true;
+        bad.principal_id = "not-a-principal".into();
+        assert!(bad.validate_item().is_err(), "an unidentifiable credential is not exempt");
+    }
+
+    #[test]
+    fn revoked_credentials_do_not_count_toward_the_per_principal_bounds() {
+        // Two live credentials plus one revoked, all overlapping: only the live pair counts.
+        let mut dead = auth("cred_dead000001", 0, 30_000);
+        dead.revoked = true;
+        let set = AuthorizationSet {
+            authorizations: vec![auth("cred_live000001", 0, 30_000), auth("cred_live000002", 0, 30_000), dead],
+        };
+        assert!(set.validate().is_ok());
+        // Three live ones are still rejected.
+        let three = AuthorizationSet {
+            authorizations: vec![
+                auth("cred_live000001", 0, 30_000),
+                auth("cred_live000002", 0, 30_000),
+                auth("cred_live000003", 0, 30_000),
+            ],
+        };
+        assert!(three.validate().is_err());
+    }
+
     #[test]
     fn native_renewal_preserves_secret_and_extends_only_expiry() {
         let a = native("cred_native01", 0);

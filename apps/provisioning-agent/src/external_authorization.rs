@@ -30,7 +30,9 @@ struct LegacyWireSnapshot {
 struct V2WireSnapshot {
     schema_version: u8,
     snapshot_revision: u64,
-    authorizations: Vec<V2WireAuthorization>,
+    // Raw values: each item is decoded and validated on its own so that a single malformed
+    // credential is quarantined instead of failing the whole snapshot (I-102).
+    authorizations: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -72,6 +74,10 @@ struct WireProtocol {
 struct ParsedSnapshot {
     desired: AuthorizationSet,
     snapshot_revision: Option<u64>,
+    /// credential_ids excluded because they were individually invalid. Fail closed: a
+    /// quarantined credential is simply absent from `desired`, so a copy we already hold is
+    /// removed, never kept. Labels are identifiers only, never secrets.
+    quarantined: Vec<String>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -147,6 +153,39 @@ fn enforce_snapshot_size(size: usize) -> Result<()> {
     Ok(())
 }
 
+/// Identifier safe to log for an item we could not accept. Never includes any other field.
+fn quarantine_label(raw: &Value) -> String {
+    raw.get("credential_id")
+        .and_then(Value::as_str)
+        .filter(|id| {
+            id.starts_with("cred_")
+                && id.len() <= 96
+                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        })
+        .map(str::to_owned)
+        .unwrap_or_else(|| "<unidentifiable>".to_owned())
+}
+
+/// Decode and fully validate one v2 item in isolation.
+fn decode_v2_item(raw: Value) -> Result<Authorization> {
+    let item: V2WireAuthorization =
+        serde_json::from_value(raw).context("invalid v2 authorization item")?;
+    let authorization = convert_authorization(
+        item.principal_id,
+        item.credential_id,
+        item.class,
+        item.valid_from,
+        item.valid_until,
+        item.revoked,
+        item.protocol,
+    )?;
+    authorization.validate_item().map_err(anyhow::Error::msg)?;
+    if authorization.class != CredentialClass::Compatibility {
+        bail!("external authorization item is not a compatibility credential");
+    }
+    Ok(authorization)
+}
+
 fn parse_snapshot(value: Value) -> Result<ParsedSnapshot> {
     // schema_version is the sole explicit discriminator. Its presence always selects the
     // versioned parser; malformed/unknown versions never fall back to the legacy contract.
@@ -157,24 +196,21 @@ fn parse_snapshot(value: Value) -> Result<ParsedSnapshot> {
             bail!("unsupported external authorization schema_version");
         }
         enforce_snapshot_size(wire.authorizations.len())?;
-        let authorizations = wire
-            .authorizations
-            .into_iter()
-            .map(|item| {
-                convert_authorization(
-                    item.principal_id,
-                    item.credential_id,
-                    item.class,
-                    item.valid_from,
-                    item.valid_until,
-                    item.revoked,
-                    item.protocol,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut authorizations = Vec::with_capacity(wire.authorizations.len());
+        let mut quarantined = Vec::new();
+        for raw in wire.authorizations {
+            let label = quarantine_label(&raw);
+            match decode_v2_item(raw) {
+                Ok(item) => authorizations.push(item),
+                Err(_) => quarantined.push(label),
+            }
+        }
+        // Set-level violations (duplicate credential ids, per-principal bounds) are ambiguous
+        // about *which* credential is wrong, so they still reject the whole snapshot.
         return Ok(ParsedSnapshot {
             desired: validate_external_set(AuthorizationSet { authorizations })?,
             snapshot_revision: Some(wire.snapshot_revision),
+            quarantined,
         });
     }
 
@@ -199,6 +235,7 @@ fn parse_snapshot(value: Value) -> Result<ParsedSnapshot> {
     Ok(ParsedSnapshot {
         desired: validate_external_set(AuthorizationSet { authorizations })?,
         snapshot_revision: None,
+        quarantined: Vec::new(),
     })
 }
 
@@ -249,29 +286,34 @@ fn load_state(path: &Path) -> Result<PersistedExternalState> {
     Ok(state)
 }
 
-/// True when `next` holds exactly the credentials in `current`, identical in every field except
-/// that some have newly become `revoked`. Un-revoking is never a tightening.
-fn only_tightens(current: &AuthorizationSet, next: &AuthorizationSet) -> bool {
-    if current.authorizations.len() != next.authorizations.len() {
-        return false;
-    }
-    next.authorizations.iter().all(|incoming| {
-        let Some(held) = current.authorizations.iter().find(|held| {
-            held.principal_id == incoming.principal_id
-                && held.credential_id == incoming.credential_id
-        }) else {
-            return false;
-        };
-        if held.revoked && !incoming.revoked {
-            return false;
-        }
-        let mut normalized = incoming.clone();
-        normalized.revoked = held.revoked;
-        matches!(
-            (serde_json::to_vec(&normalized), serde_json::to_vec(held)),
-            (Ok(a), Ok(b)) if a == b
-        )
-    })
+/// True when `next` is `current` made strictly more restrictive: every credential in `next`
+/// already exists in `current` with identical fields except that some have newly become
+/// `revoked`, and every credential missing from `next` is one we deliberately quarantined
+/// (removal can only revoke access). Un-revoking, secret/validity changes and added
+/// credentials are never a tightening.
+fn only_tightens(current: &AuthorizationSet, next: &AuthorizationSet, quarantined: &[String]) -> bool {
+    let same = |a: &Authorization, b: &Authorization| {
+        a.principal_id == b.principal_id && a.credential_id == b.credential_id
+    };
+    let dropped_only_if_quarantined = current.authorizations.iter().all(|held| {
+        next.authorizations.iter().any(|incoming| same(held, incoming))
+            || quarantined.iter().any(|label| label == &held.credential_id)
+    });
+    dropped_only_if_quarantined
+        && next.authorizations.iter().all(|incoming| {
+            let Some(held) = current.authorizations.iter().find(|held| same(held, incoming)) else {
+                return false;
+            };
+            if held.revoked && !incoming.revoked {
+                return false;
+            }
+            let mut normalized = incoming.clone();
+            normalized.revoked = held.revoked;
+            matches!(
+                (serde_json::to_vec(&normalized), serde_json::to_vec(held)),
+                (Ok(a), Ok(b)) if a == b
+            )
+        })
 }
 
 fn adopt_snapshot(state: &mut PersistedExternalState, next: ParsedSnapshot) -> Result<bool> {
@@ -286,7 +328,7 @@ fn adopt_snapshot(state: &mut PersistedExternalState, next: ParsedSnapshot) -> R
             // Refusing that left a revoked credential live indefinitely. A snapshot that
             // only sets `revoked` on credentials we already hold can never grant access,
             // so it is accepted; any other same-revision change is still equivocation.
-            if !only_tightens(&state.desired, &next.desired) {
+            if !only_tightens(&state.desired, &next.desired, &next.quarantined) {
                 bail!("external authorization revision content changed without a new revision")
             }
         }
@@ -308,6 +350,9 @@ pub struct ExternalReconciler {
     state: PersistedExternalState,
     applied_active_fingerprint: Vec<u8>,
     applied_this_process: bool,
+    /// Credentials excluded from the last accepted snapshot; while non-empty the revision is
+    /// not acknowledged, because it was not applied in full.
+    quarantined: Vec<String>,
 }
 
 impl ExternalReconciler {
@@ -319,20 +364,26 @@ impl ExternalReconciler {
             state,
             applied_active_fingerprint: Vec::new(),
             applied_this_process: false,
+            quarantined: Vec::new(),
         })
     }
 
     pub async fn tick(&mut self, cfg: &AgentConfig, client: &WorkerClient) -> Result<()> {
         let mut fetch_error = None;
         match client.fetch_authorizations().await.and_then(parse_snapshot) {
-            Ok(next) => match adopt_snapshot(&mut self.state, next) {
-                Ok(true) => {
-                    // Desired state and its exact revision become durable before live mutation.
-                    save(&self.path, &self.state)?;
+            Ok(next) => {
+                let quarantined = next.quarantined.clone();
+                match adopt_snapshot(&mut self.state, next) {
+                    Ok(changed) => {
+                        self.quarantined = quarantined;
+                        if changed {
+                            // Desired state and its exact revision become durable before live mutation.
+                            save(&self.path, &self.state)?;
+                        }
+                    }
+                    Err(error) => fetch_error = Some(error),
                 }
-                Ok(false) => {}
-                Err(error) => fetch_error = Some(error),
-            },
+            }
             Err(error) => fetch_error = Some(error),
         }
 
@@ -354,6 +405,7 @@ impl ExternalReconciler {
         if let Some(revision) = self.state.snapshot_revision {
             if self.state.applied_snapshot_revision == Some(revision)
                 && self.state.acknowledged_snapshot_revision != Some(revision)
+                && self.quarantined.is_empty()
             {
                 // Capture and ACK the revision that was applied, never a subsequently fetched
                 // or server-side "latest" revision. ACK failure does not roll back live VPN state.
@@ -364,6 +416,15 @@ impl ExternalReconciler {
         }
         if let Some(error) = fetch_error {
             return Err(error);
+        }
+        if !self.quarantined.is_empty() {
+            // Loud on every tick, and never acknowledged, so the control plane keeps seeing
+            // this revision as not applied until the credential is corrected.
+            bail!(
+                "{} credential(s) quarantined and excluded (fail closed), revision not acknowledged: {}",
+                self.quarantined.len(),
+                self.quarantined.join(", ")
+            );
         }
         Ok(())
     }
@@ -774,6 +835,96 @@ mod tests {
         assert!(!state.desired.authorizations.is_empty());
     }
 
+    /// A clone of v2-active's credential under a new id, edited by `edit`.
+    fn item_like(credential_id: &str, edit: impl FnOnce(&mut Value)) -> Value {
+        let mut item = fixture("v2-active")["authorizations"][0].clone();
+        item["credential_id"] = credential_id.into();
+        edit(&mut item);
+        item
+    }
+
+    /// v2-active at `revision` plus `extras` appended to its authorizations.
+    fn snapshot_with(revision: u64, extras: Vec<Value>) -> Value {
+        let mut doc = fixture("v2-active");
+        doc["snapshot_revision"] = revision.into();
+        doc["authorizations"].as_array_mut().unwrap().extend(extras);
+        doc
+    }
+
+    #[test]
+    fn one_malformed_credential_is_quarantined_and_the_rest_are_still_adopted() {
+        let doc = snapshot_with(
+            7,
+            vec![
+                item_like("cred_badsecret01", |i| i["protocol"]["vless_uuid"] = "not-a-uuid".into()),
+                item_like("cred_baddate0001", |i| i["valid_until"] = "yesterday".into()),
+                item_like("cred_unknownfld1", |i| i["surprise"] = 1.into()),
+                // revoked with an inverted window: exactly what a real revocation can leave
+                item_like("cred_revokedshort", |i| {
+                    i["revoked"] = true.into();
+                    i["valid_until"] = i["valid_from"].clone();
+                }),
+            ],
+        );
+        let parsed = parse_snapshot(doc).expect("a bad item must not fail the snapshot");
+        let mut quarantined = parsed.quarantined.clone();
+        quarantined.sort();
+        assert_eq!(quarantined, ["cred_baddate0001", "cred_badsecret01", "cred_unknownfld1"]);
+        let ids: Vec<_> = parsed.desired.authorizations.iter().map(|a| a.credential_id.as_str()).collect();
+        assert_eq!(ids, ["cred_external01", "cred_revokedshort"], "valid + the revoked one are kept");
+        assert!(parsed.desired.authorizations[1].revoked);
+        assert_eq!(parsed.snapshot_revision, Some(7));
+    }
+
+    #[test]
+    fn a_held_credential_whose_new_version_is_malformed_is_removed_not_kept() {
+        let mut state = held(false);
+        let next = parse_snapshot(incoming_doc(|d| {
+            d["authorizations"][0]["protocol"]["vless_uuid"] = "not-a-uuid".into();
+        }))
+        .unwrap();
+        assert_eq!(next.quarantined, ["cred_external01"]);
+        // same revision, credential removed because it was quarantined: a tightening
+        assert!(adopt_snapshot(&mut state, next).expect("removal of a quarantined credential must be adopted"));
+        assert!(state.desired.authorizations.is_empty(), "fail closed: not left live");
+    }
+
+    #[test]
+    fn removal_is_only_adopted_at_an_unchanged_revision_when_the_credential_was_quarantined() {
+        let mut state = held(false);
+        let empty = parse_snapshot(incoming_doc(|d| d["authorizations"] = serde_json::json!([]))).unwrap();
+        assert!(empty.quarantined.is_empty());
+        assert!(adopt_snapshot(&mut state, empty).is_err(), "a silent drop is still equivocation");
+        assert_eq!(state.desired.authorizations.len(), 1);
+    }
+
+    #[test]
+    fn a_revocation_is_applied_even_when_another_credential_in_the_snapshot_is_malformed() {
+        let mut state = held(false);
+        let doc = {
+            let mut d = snapshot_with(5, vec![item_like("cred_badsecret01", |i| i["protocol"]["vless_uuid"] = "x".into())]);
+            d["authorizations"][0]["revoked"] = true.into();
+            d
+        };
+        let next = parse_snapshot(doc).unwrap();
+        assert_eq!(next.quarantined, ["cred_badsecret01"]);
+        assert!(adopt_snapshot(&mut state, next).unwrap());
+        assert!(state.desired.authorizations[0].revoked, "legitimate revocation was not blocked");
+    }
+
+    #[test]
+    fn set_level_ambiguity_still_rejects_the_whole_snapshot() {
+        let dup = snapshot_with(5, vec![item_like("cred_external01", |_| {})]);
+        assert!(parse_snapshot(dup).is_err(), "duplicate credential ids are ambiguous");
+    }
+
+    fn incoming_doc(mutate: impl FnOnce(&mut Value)) -> Value {
+        let mut doc = fixture("v2-active");
+        doc["snapshot_revision"] = 5.into();
+        mutate(&mut doc);
+        doc
+    }
+
     #[test]
     fn effective_fingerprint_ignores_order_but_detects_secret_and_expiry() {
         let parsed = parse_snapshot(fixture("v2-a-b")).unwrap();
@@ -800,6 +951,63 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_quarantined_credential_is_excluded_applied_around_and_never_acknowledged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let server = MockServer::start().await;
+        let doc = snapshot_with(
+            3,
+            vec![item_like("cred_badsecret01", |i| i["protocol"]["vless_uuid"] = "not-a-uuid".into())],
+        );
+        Mock::given(method("GET"))
+            .and(path("/api/agent/authorizations"))
+            .and(query_param("schema", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(doc))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/authorizations"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let applied = dir.path().join("applied.json");
+        let binary = dir.path().join("vpn-admin");
+        std::fs::write(
+            &binary,
+            format!("#!/bin/sh\ncp \"$5\" {:?}\nprintf '%s\\n' '{{\"live\":true}}'\n", applied),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config_path = dir.path().join("agent.toml");
+        let state_path = dir.path().join("external.json");
+        std::fs::write(
+            &config_path,
+            format!(
+                "worker_url = {:?}\nnode_id = \"node_test\"\nagent_api_key = \"test-key\"\nvpn_admin_binary = {:?}\nvpn_admin_config = \"deployment.toml\"\nexternal_authorization_state_file = {:?}\n",
+                server.uri(), binary, state_path
+            ),
+        )
+        .unwrap();
+        let cfg = AgentConfig::load(&config_path).unwrap();
+        let client = WorkerClient::new(&cfg);
+        let mut reconciler = ExternalReconciler::open(&cfg).unwrap();
+
+        let err = reconciler.tick(&cfg, &client).await.expect_err("quarantine must be reported");
+        assert!(err.to_string().contains("cred_badsecret01"), "{err}");
+        assert!(!err.to_string().contains("not-a-uuid"), "no secret in the message");
+        let applied_set: AuthorizationSet = serde_json::from_slice(&std::fs::read(&applied).unwrap()).unwrap();
+        assert_eq!(applied_set.authorizations.len(), 1, "the valid credential was applied");
+        assert_eq!(applied_set.authorizations[0].credential_id, "cred_external01");
+        let persisted = load_state(&state_path).unwrap();
+        assert_eq!(persisted.applied_snapshot_revision, Some(3));
+        assert_eq!(persisted.acknowledged_snapshot_revision, None, "partially applied revision is not acknowledged");
     }
 
     #[cfg(unix)]
