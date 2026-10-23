@@ -2,7 +2,7 @@
 
 use crate::config::AgentConfig;
 use crate::dispatch::{parse_json_output, run_vpn_admin, vpn_admin_command};
-use crate::worker_client::WorkerClient;
+use crate::worker_client::{AuthorizationsFetch, WorkerClient};
 use anyhow::{anyhow, bail, Context, Result};
 use compat_config::authorization::{Authorization, AuthorizationSet, CredentialClass};
 use compat_config::secret::SecretString;
@@ -363,6 +363,9 @@ pub struct ExternalReconciler {
     state: PersistedExternalState,
     applied_active_fingerprint: Vec<u8>,
     applied_this_process: bool,
+    /// ETag of the snapshot currently held, so an unchanged state costs a
+    /// 304. In memory only: after a restart the first fetch is a full one.
+    etag: Option<String>,
     /// Credentials excluded from the last accepted snapshot; while non-empty the revision is
     /// not acknowledged, because it was not applied in full.
     quarantined: Vec<String>,
@@ -377,27 +380,50 @@ impl ExternalReconciler {
             state,
             applied_active_fingerprint: Vec::new(),
             applied_this_process: false,
+            etag: None,
             quarantined: Vec::new(),
         })
     }
 
-    pub async fn tick(&mut self, cfg: &AgentConfig, client: &WorkerClient) -> Result<()> {
+    /// `fetch_due` gates ONLY the network fetch. Local enforcement (expiry of
+    /// the held desired state, applying it, ACKing it) runs on every call, so
+    /// it never depends on the control plane or on how often it is polled.
+    pub async fn tick(
+        &mut self,
+        cfg: &AgentConfig,
+        client: &WorkerClient,
+        fetch_due: bool,
+    ) -> Result<()> {
         let mut fetch_error = None;
-        match client.fetch_authorizations().await.and_then(parse_snapshot) {
-            Ok(next) => {
-                let quarantined = next.quarantined.clone();
-                match adopt_snapshot(&mut self.state, next) {
-                    Ok(changed) => {
-                        self.quarantined = quarantined;
-                        if changed {
-                            // Desired state and its exact revision become durable before live mutation.
-                            save(&self.path, &self.state)?;
+        if fetch_due {
+            match client
+                .fetch_authorizations_conditional(self.etag.as_deref())
+                .await
+            {
+                Ok(AuthorizationsFetch::NotModified) => {}
+                Ok(AuthorizationsFetch::Fresh { body, etag }) => {
+                    let parsed = parse_snapshot(body);
+                    let quarantined = parsed
+                        .as_ref()
+                        .map(|next| next.quarantined.clone())
+                        .unwrap_or_default();
+                    match parsed.and_then(|next| adopt_snapshot(&mut self.state, next)) {
+                        Ok(changed) => {
+                            self.quarantined = quarantined;
+                            if changed {
+                                // Desired state and its exact revision become durable before live mutation.
+                                save(&self.path, &self.state)?;
+                            }
+                            self.etag = etag;
+                        }
+                        Err(error) => {
+                            self.etag = None;
+                            fetch_error = Some(error);
                         }
                     }
-                    Err(error) => fetch_error = Some(error),
                 }
+                Err(error) => fetch_error = Some(error),
             }
-            Err(error) => fetch_error = Some(error),
         }
 
         let now = OffsetDateTime::now_utc().unix_timestamp();
@@ -1068,7 +1094,7 @@ mod tests {
         let mut reconciler = ExternalReconciler::open(&cfg).unwrap();
 
         let err = reconciler
-            .tick(&cfg, &client)
+            .tick(&cfg, &client, true)
             .await
             .expect_err("quarantine must be reported");
         assert!(err.to_string().contains("cred_badsecret01"), "{err}");
@@ -1147,7 +1173,7 @@ mod tests {
         let client = WorkerClient::new(&cfg);
         let mut reconciler = ExternalReconciler::open(&cfg).unwrap();
 
-        assert!(reconciler.tick(&cfg, &client).await.is_err());
+        assert!(reconciler.tick(&cfg, &client, true).await.is_err());
         let after_failure = load_state(&state_path).unwrap();
         assert_eq!(after_failure.snapshot_revision, Some(0));
         assert_eq!(after_failure.applied_snapshot_revision, None);
@@ -1164,7 +1190,7 @@ mod tests {
         );
 
         std::fs::remove_file(fail_flag).unwrap();
-        reconciler.tick(&cfg, &client).await.unwrap();
+        reconciler.tick(&cfg, &client, true).await.unwrap();
         let applied = load_state(&state_path).unwrap();
         assert_eq!(applied.applied_snapshot_revision, Some(0));
         assert_eq!(applied.acknowledged_snapshot_revision, Some(0));
