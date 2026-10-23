@@ -7,7 +7,7 @@ stack described in INTEGRATION-EVIDENCE.md), **UNVERIFIED** (not tested here). N
 
 | Item | Status |
 |---|---|
-| fin1 (62.238.46.190) trust | **BLOCKED** — five successful root password logins on 2026-10-22 not confirmed (I-86, #167); root password login reported enabled with >3,300 failed attempts (I-39). The owner's statement that the VPS is theirs and safe is recorded; the narrow question (were those five logins yours?) is still unanswered |
+| fin1 (62.238.46.190) trust | **Login attribution resolved by the owner (user-reported, 2026-10-23); host trust NOT established.** Original text of this row: "BLOCKED — five successful root password logins on 2026-10-22 not confirmed (I-86, #167)". Still open: root password login enabled with heavy brute-force exposure (I-39), source-network ownership unverified, logs of a possibly-compromised root are not proof |
 | Any production credential rotation / host change this session | none |
 
 ## Confirmed risks found this session

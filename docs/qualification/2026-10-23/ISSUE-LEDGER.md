@@ -32,7 +32,7 @@ The canonical source is `docs/handoffs/2026-10-20/issue-registry.json`, regenera
 
 | Class | IDs | Needs |
 |---|---|---|
-| Owner decision / host trust | I-86, I-93 (critical), I-39 | owner confirms the 5 logins; key-only SSH proven before password login is disabled |
+| Host trust / hardening | I-86, I-93, I-39 | I-86 login attribution: owner-attributed 2026-10-23 (user-reported; state UNVERIFIED, not 'trusted'). Still needed: the owner's own public key, key login proven from a second session, then password login disabled (I-39) |
 | Native device | I-38, I-20, I-21, I-22, I-28; Shorts differential (#169) | iPhone matrix; staging host good hairpin target |
 | Client-side upstream defects | I-08, I-09 (Hiddify iOS), I-05 (INCY), I-04 | not fixable server-side; document and track upstream |
 | Product/design | I-10 (7 of 10 user operations restart sing-box and drop connections), I-60 (REALITY decoy adds ~60–80 ms/connection), I-100, I-102 | design decision |

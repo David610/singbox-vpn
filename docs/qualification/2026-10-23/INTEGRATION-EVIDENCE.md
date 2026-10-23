@@ -1,5 +1,7 @@
 # Paired control-plane integration evidence — vpn-web #84 × singbox-vpn #172 (2026-10-23)
 
+> **Correction (2026-10-23, later):** "disposable" here means *not a production service*, not *a different machine*: the stack ran on the intended VPS itself (see README corrections log). The results stand; the isolation claim is withdrawn.
+
 Everything here ran in a **disposable local stack with test credentials**: PostgreSQL 16.15, PostgREST 16.5, vpn-web's real Node API
 (`server/index.mjs`), the real `vpn-provisioning-agent` binary with a recording `vpn-admin` stand-in. No production system, Cloudflare
 account, Supabase project or real agent was touched; no agent was enabled. Harness, raw results and caveats:

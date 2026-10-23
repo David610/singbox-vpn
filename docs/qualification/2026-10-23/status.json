@@ -48,12 +48,13 @@
   },
   {
    "id": "host_trust",
-   "status": "BLOCKED",
-   "reason": "owner confirmation of five root logins (I-86)"
+   "status": "OPEN",
+   "reason": "login attribution resolved by owner statement (user-reported); host security and source-network ownership not established; hardening pending"
   },
   {
    "id": "server_qualified",
-   "status": "BLOCKED"
+   "status": "BLOCKED",
+   "reason": "VPN not installed; no exact artifact"
   },
   {
    "id": "device_verified",
@@ -70,5 +71,13 @@
  "production_mutations": [
   "GitHub ruleset 22482226: required_status_checks added (additive)",
   "fin1: the agent's integration work ran on the host itself (dev tooling and a test PostgreSQL cluster, since removed with owner approval); details in private evidence"
+ ],
+ "owner_decisions": [
+  {
+   "date": "2026-10-23",
+   "decision": "all five historical successful root logins on 2026-10-22 were the owner's and authorized",
+   "evidence_class": "user reported",
+   "scope": "login attribution only"
+  }
  ]
 }
