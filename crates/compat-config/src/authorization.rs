@@ -321,8 +321,13 @@ mod tests {
         for (from, until) in [(0, 60), (100, 100), (500, 100)] {
             let mut a = auth("cred_revoked001", from, until);
             a.revoked = true;
-            let set = AuthorizationSet { authorizations: vec![a] };
-            assert!(set.validate().is_ok(), "revoked {from}->{until} must validate");
+            let set = AuthorizationSet {
+                authorizations: vec![a],
+            };
+            assert!(
+                set.validate().is_ok(),
+                "revoked {from}->{until} must validate"
+            );
             assert!(set.active_at(from).is_empty() && set.active_at(until).is_empty());
         }
     }
@@ -331,12 +336,28 @@ mod tests {
     fn a_live_credential_shortened_by_rotation_is_valid_but_bad_lifetimes_still_are_not() {
         // Rotation shortens the old credential to the overlap window.
         let shortened = auth("cred_shortened1", 0, 3_600);
-        assert!(AuthorizationSet { authorizations: vec![shortened] }.validate().is_ok());
+        assert!(AuthorizationSet {
+            authorizations: vec![shortened]
+        }
+        .validate()
+        .is_ok());
         // Zero/negative and over-maximum lifetimes stay rejected.
-        assert!(AuthorizationSet { authorizations: vec![auth("cred_empty00001", 10, 10)] }.validate().is_err());
-        assert!(AuthorizationSet { authorizations: vec![auth("cred_inverted01", 10, 5)] }.validate().is_err());
+        assert!(AuthorizationSet {
+            authorizations: vec![auth("cred_empty00001", 10, 10)]
+        }
+        .validate()
+        .is_err());
+        assert!(AuthorizationSet {
+            authorizations: vec![auth("cred_inverted01", 10, 5)]
+        }
+        .validate()
+        .is_err());
         let too_long = auth("cred_toolong001", 0, COMPAT_MAX_LIFETIME_SECS + 1);
-        assert!(AuthorizationSet { authorizations: vec![too_long] }.validate().is_err());
+        assert!(AuthorizationSet {
+            authorizations: vec![too_long]
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]
@@ -344,7 +365,10 @@ mod tests {
         let mut bad = auth("cred_revoked002", 0, 10);
         bad.revoked = true;
         bad.principal_id = "not-a-principal".into();
-        assert!(bad.validate_item().is_err(), "an unidentifiable credential is not exempt");
+        assert!(
+            bad.validate_item().is_err(),
+            "an unidentifiable credential is not exempt"
+        );
     }
 
     #[test]
@@ -353,7 +377,11 @@ mod tests {
         let mut dead = auth("cred_dead000001", 0, 30_000);
         dead.revoked = true;
         let set = AuthorizationSet {
-            authorizations: vec![auth("cred_live000001", 0, 30_000), auth("cred_live000002", 0, 30_000), dead],
+            authorizations: vec![
+                auth("cred_live000001", 0, 30_000),
+                auth("cred_live000002", 0, 30_000),
+                dead,
+            ],
         };
         assert!(set.validate().is_ok());
         // Three live ones are still rejected.
