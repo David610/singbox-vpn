@@ -1,7 +1,7 @@
 # Security and reliability issue ledger — 2026-10-23
 
 The canonical source is `docs/handoffs/2026-10-20/issue-registry.json`, regenerated with
-`python3 deploy/lib/registry/build_issue_registry.py` (62 re-assessed + 34 carried = 96 entries). Roughly 90 historical entries are **not**
+`python3 deploy/lib/registry/build_issue_registry.py` (63 re-assessed + 34 carried = 97 entries). Roughly 90 historical entries are **not**
 90 current defects: the table classifies by state, and only the rows below need action.
 
 ## Registry by state (after this regeneration)
@@ -9,7 +9,7 @@ The canonical source is `docs/handoffs/2026-10-20/issue-registry.json`, regenera
 | State | Meaning | Count |
 |---|---|---|
 | CI_VERIFIED / SERVER_VERIFIED | evidence at the stated class (CI run / staging host / external service) | 12 / 21 |
-| FIXED_IN_BRANCH | fix and test exist; no class-level evidence beyond that | 27 |
+| FIXED_IN_BRANCH | fix and test exist; no class-level evidence beyond that | 28 |
 | UNVERIFIED | carried from the 2026-10-15 audit, not re-verified | 14 |
 | BLOCKED | needs the host, a device or an owner decision | 7 |
 | CONFIRMED_OPEN | reproduced, not fixed | 11 |
@@ -24,6 +24,7 @@ The canonical source is `docs/handoffs/2026-10-20/issue-registry.json`, regenera
 | I-98 | high | DB fault → 401 → agent drops job reports | vpn-web `functions/lib/node-auth.js` | vpn-web #85 | node-auth tests + app test + real stack | FIXED_IN_BRANCH |
 | I-97 | medium | stale event-hub cache delays revocation ≤25 s | vpn-web `functions/lib/agent-events.js` | vpn-web #85 | `agent-events.test.js` + real stack | FIXED_IN_BRANCH |
 | I-101 | medium | app-before-migration ⇒ 503 on `/events` ⇒ agent throttled | vpn-web `server/event-source.mjs`, `events.js` | vpn-web #85 | two tests + real stack | FIXED_IN_BRANCH |
+| I-103 | medium | `/sub/<token>` bearer token written to the app log on a handler error | vpn-web `server/app.mjs` error log used the concrete path | vpn-web #85 | `app.test.mjs` (fails before) | FIXED_IN_BRANCH |
 | I-100 | medium | un-revoke (renewal) never reaches the node at the same revision | agent rule × control plane | none — design decision | unit test pins refusal | CONFIRMED_OPEN |
 | I-102 | medium | one out-of-policy credential blocks the whole snapshot (incl. revocations) | `compat-config` validate × no DB CHECK | none — design decision | reproduced; no test yet | CONFIRMED_OPEN |
 

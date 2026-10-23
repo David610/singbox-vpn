@@ -344,6 +344,12 @@ NEW += [
       "reproduced with the real agent: one 40 s credential prevented the first apply of the other, valid credential (agent log: 'lifetime is outside policy' every tick); no regression test yet", "no",
       "no row in normal operation is expected to be out of policy; the issuing RPC sets 7 days in the fixture. Partial application is a security-sensitive design choice, not made here",
       "docs/qualification/2026-10-23/INTEGRATION-EVIDENCE.md"),
+    n("I-103", "medium", "vpn-web Node adapter", "FIXED_IN_BRANCH",
+      "the adapter's error log recorded the concrete request path, so any handler exception on /sub/<token> wrote the subscription bearer token to the application log (journald); the success log already used the route template",
+      "vpn-web PR #85: log the route template in the error entry too",
+      "vpn-web server/__tests__/app.test.mjs 'never writes a path parameter ... to the error log' (fails on the old code with the token in the entry)", "no",
+      "branch only; the repository's check-log-secrets scanner cannot see calls through an injected log function, so it did not catch this; other log call sites were grepped, none found",
+      "docs/qualification/2026-10-23/ISSUE-LEDGER.md"),
 ]
 
 
