@@ -8,7 +8,7 @@ It supersedes nothing in `../2026-10-22/`; it adds what was done since.
 | Scope | Verdict | Why |
 |---|---|---|
 | Standalone VPN (≤10 trusted users) | **NO-GO** | host not yet hardened or baselined (I-39; login attribution itself is resolved, see corrections log), no exact-artifact install, no native device evidence; Shorts root cause UNKNOWN |
-| Commercial Arcana | **NO-GO** | agents intentionally still disabled; vpn-web #84/#85 not merged or deployed; I-100/I-102 fixes in review (see INTEGRATION-EVIDENCE.md); Worker CPU unmeasured; accounts/billing/Telegram end-to-end not run |
+| Commercial Arcana | **NO-GO** | agents intentionally still disabled; the vpn-web stack (#84/#85/#87) is not deployed; Worker CPU unmeasured; accounts/billing/Telegram end-to-end not run |
 
 ## Status table
 
@@ -16,7 +16,7 @@ It supersedes nothing in `../2026-10-22/`; it adds what was done since.
 |---|---|---|
 | Code on `main` 548a376 | PASS | CI and Security success on that exact SHA |
 | Main-branch protection requires CI + CodeQL | PASS (external service) | ruleset 22482226; `verify-main-protection.py` PASS; PR #185 `BLOCKED` while `offline-full-verdict` failed. No merge call attempted. Required approvals still 0 (owner decision) |
-| Paired agent × control-plane integration | FAIL → fixes in review | 5 defects found (2 in #84, 3 on `main`); 3 fixed in branches, 2 open — [INTEGRATION-EVIDENCE.md](INTEGRATION-EVIDENCE.md) |
+| Paired agent × control-plane integration | PASS in branches (not merged, not deployed) | 7 defects found; all fixed in branches and verified end to end on an isolated runner with expected-failure baselines (run 39945392121) — [INTEGRATION-EVIDENCE.md](INTEGRATION-EVIDENCE.md). #172 remains a held draft |
 | Worker CPU / real 429 / replay through HTTP | UNVERIFIED | no Workers runtime here |
 | Documentation links/anchors | PASS (offline gate added to CI) | [DOCS-AUDIT.md](DOCS-AUDIT.md) |
 | Release candidate rc.3 | NOT CREATED | [RELEASE-CANDIDATE.md](RELEASE-CANDIDATE.md); local build determinism PASS, SBOM PASS; signing/provenance/container UNVERIFIED |

@@ -77,3 +77,30 @@ there. (b) The hub adds a constant DB cost per API instance regardless of agents
 Cloudflare Workers CPU/request budgets; a real 429 end to end; replayed/stale snapshot through HTTP; mixed agent builds on one node;
 two agents on one node (the hub's 409 handles two waiters, the double-apply case was not run); behaviour when `vpn-admin` actually restarts sing-box.
 **No agent was re-enabled and nothing was deployed.**
+
+## Update: I-100 and I-102 resolved in branches, verified end to end on an isolated runner
+
+Original status above ("OPEN - design decision") is kept as written; this section supersedes it.
+
+| ID | Resolution | PR |
+|---|---|---|
+| I-100 renewal not re-enabled | the snapshot read advances `desired_revision` once, atomically, when a node's effective-entitlement digest changes (`get_compatibility_authorization_snapshot_synced`; falls back on a DB without the migration) | vpn-web #87 (stacked on #85, #84) |
+| I-102 one bad credential blocks everything | revoked credentials only need to be identifiable; live ones need a positive lifetime <= 30 d (no minimum in snapshot validation); the agent quarantines value-level invalid credentials individually; schema violations, duplicates and per-principal bounds still refuse the whole snapshot | singbox-vpn #190 (stacked on #186) |
+
+**Discovery while fixing I-102:** it is reachable through ordinary operations. The control plane revokes with `valid_until = least(valid_until, now())` and rotates by shortening the old
+credential, producing lifetimes below the agent's 6 h minimum. On today's `main` agent, **revoking a device younger than 6 hours is never applied**, and it blocks every other update on that node.
+
+Isolated environment: GitHub Actions runner (workflow `paired-integration`, run 39945392121, head `6b95b3e`): PostgreSQL 16 service, PostgREST v16.5 (checksum pinned), vpn-web's real Node API, the real agent binary;
+`vpn-admin` is a recording stand-in. Nothing ran on the VPS for this. Scenarios: S1 lapse, S2 renewal (I-100), S3 revoke a fresh device (I-102), S4 revocation beside an invalid credential, also asserting the partially applied revision is not acknowledged.
+
+| Agent | Server | S1 lapse | S2 renewal | S3 fresh revoke | S4 revoke + bad credential |
+|---|---|---|---|---|---|
+| candidate (#190) | fixed (#87) | PASS 2.0 s | **PASS 2.0 s** | **PASS 2.0 s** | **PASS 1.8 s** |
+| candidate (#190) | baseline (#85) | PASS | **FAIL** (expected: I-100 before) | PASS | PASS |
+| `main` | fixed (#87) | PASS | PASS | **FAIL** (expected: I-102 before) | **FAIL** (expected: I-102 before) |
+| `main` | baseline (#85) | FAIL (I-99) | FAIL | FAIL | FAIL |
+
+Every cell matched its expectation; the job fails if a baseline unexpectedly passes or a fix unexpectedly fails, so failing-before is asserted, not only observed. The `compat-config` unit tests were also run
+against `main`'s validator in CI and failed there (3 of 3), and pass with the fix.
+
+Still not proven: Cloudflare Workers CPU, a real 429, replay through HTTP, mixed agent builds on one node, time-based entitlement expiry end to end (covered by construction: the digest is computed at read time, but no test advances the clock), and behaviour on a real node (`vpn-admin` here is a stand-in).
