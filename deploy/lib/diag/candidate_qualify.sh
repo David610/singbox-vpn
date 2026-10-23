@@ -20,14 +20,16 @@ ssh $SSHO $T 'python3 -I /tmp/tls_survey.py /tmp/ips_union.json cand; echo; echo
 head -n -1 "$OUT/stage1.raw" | tee "$OUT/stage1.txt"; tail -n 1 "$OUT/stage1.raw" > "$OUT/tls_survey.json"
 ssh $SSHO $T 'rm -f /tmp/tls_survey.py /tmp/quic_vn_probe.py /tmp/v6_check.py /tmp/ips_union.json /tmp/tls_survey_cand.json'
 echo "== stage 2: browser media probe through $T (plain ssh -D, TCP only)"
-ssh $SSHO -D 127.0.0.1:$PORT -N -f $T; sleep 2
+ssh $SSHO -D 127.0.0.1:$PORT -N $T &
+SSH_PID=$!   # tracked PID, killed by exact PID below (see test-no-broad-process-kills.sh)
+sleep 2
 IDS=sAcElROnYIE,0HAETg7L15o,0uWzj4AiiZ8,0hkt2-EwMl4,5mU6SRS2Bxo,3II9AFi5U0M,147Jql-pxqk,1yfCBYdjLHU,19IX8zSEJXg
 su - ytprobe -c "PLAYWRIGHT_BROWSERS_PATH=\$HOME/pw-browsers timeout 600 ~/venv/bin/python ~/shorts_media_probe.py --proxy socks5://127.0.0.1:$PORT --ids $IDS --dwell 25 --label cand_$L" | tee "$OUT/stage2_shorts.txt"
 cp $PROBE_HOME/result_cand_$L.json "$OUT/" 2>/dev/null
 if [ "${4:-}" = "--sustained" ] && [ -n "$SUST" ]; then
   su - ytprobe -c "PLAYWRIGHT_BROWSERS_PATH=\$HOME/pw-browsers timeout 1000 ~/venv/bin/python ~/shorts_media_probe.py --proxy socks5://127.0.0.1:$PORT --ids watch:$SUST --dwell 900 --label cand_${L}_sustained" | tee "$OUT/stage3_sustained.txt"
 fi
-pkill -f "ssh .*-D 127.0.0.1:$PORT" 2>/dev/null
+kill "$SSH_PID" 2>/dev/null || true
 python3 -I - "$OUT" <<'PY'
 import json,sys,glob,collections
 o=sys.argv[1];v={'dir':o}
