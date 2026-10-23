@@ -43,16 +43,33 @@ Earlier text is kept in place in the documents it appears in; this table is the 
 | Installation / server qualification | BLOCKED | unchanged | The VPN is not installed; no exact artifact; BLOCKED |
 | Owner-confirmed logins | "needs the owner's yes/no" | answered | see Trust status |
 
-## Where the work is
+## Pull requests: dependency order, state and why some stay open
 
-| Item | Location |
-|---|---|
-| Agent revocation fix | singbox-vpn PR #186 |
-| Agent/server pairing fixes | vpn-web PR #85 (stacked on #84) |
-| Docs gate + stale-reference fixes | singbox-vpn PR from `docs/link-checks` |
-| Device runbook + VPS handoff | singbox-vpn PR from `docs/device-runbook-and-access-handoff` |
-| Registry + this record | singbox-vpn PR from `qual/2026-10-23-report` |
-| #172 | still a draft; held; independently re-verified (173 tests); needs I-100/I-102 decisions and the vpn-web deploy order |
+Nothing is merged. The merge step was declined by the session's "merge without review" guard, so every PR below waits for a human. All are mergeable and green on the heads shown.
+`main` now requires `offline-full-verdict`, `codeql-rust` and `codeql-actions` on an up-to-date branch, so after each merge the next PR needs **Update branch** and a fresh CI run.
+
+**singbox-vpn** (merge in this order)
+
+| # | PR | Base | What | Why this position |
+|---|---|---|---|---|
+| 1 | #186 | `main` | agent adopts a same-revision snapshot that only revokes held credentials (I-99, exists on `main`) | independent; fixes a live defect; 47/47 on `ffce278` |
+| 2 | #190 | #186's branch, retarget to `main` after #1 | isolate invalid credentials; revocations no longer blocked by lifetime policy (I-102) | contains #186's commits; touches the same file; 47/47 on `8a2d1f7` |
+| 3 | #191 | #190's branch, retarget after #2 | isolated paired-integration workflow (manual, not required) | needs #190's agent to exist on `main`; run 39945392121 green |
+| 4 | #187 | `main` | docs link/anchor gate in the `docs` job | independent of the above; 47/47 on `09318cc` |
+| 5 | #188 | `main` | iPhone runbook + VPS handoff with status update and SSH rollback | docs only; its links are checked by #187's gate once #4 is in; 47/47 on `897b8eb` |
+| 6 | #189 | `main` | this record + registry regeneration | **last**: the registry is generated, so merge it after any change to `build_issue_registry.py` and re-run the generator on update |
+| - | #172 | `main` (draft) | provisioning-agent quota remediation (#160) | **stays a draft.** It conflicts with #190 in `external_authorization.rs`, is 26 commits behind `main`, depends on the vpn-web stack being merged and deployed in the right order (migration before app), and Worker CPU, a real 429, mixed-version agents and replay remain unverified. Agents stay disabled. Rebase after #1-#3 |
+
+**vpn-web** (`main` has no branch protection; whether Cloudflare Pages deploys from `main` is **UNVERIFIED**, no deployment record or workflow exists in GitHub)
+
+| # | PR | Base | What | Notes |
+|---|---|---|---|---|
+| 1 | #86 | `main` | Next.js 15.5.28 (critical advisories) | independent; also fixes the `npm audit` gate that blocks every other vpn-web PR |
+| 2 | #84 | `main` | agent API on a long-lived Node server: events, ETag/304, batching | code is backward compatible (events answer 501 on Pages); the migrations `20261018*` and `20261019*` are **not** applied by merging |
+| 3 | #85 | #84's branch, retarget after #2 | hub staleness, DB fault as 503, missing-migration 501, token not logged | contains the same Next.js bump as #86 |
+| 4 | #87 | #85's branch, retarget after #3 | entitlement changes advance the snapshot revision (I-100) | needs migration `20261019*` before it has any effect; falls back without it |
+
+Before enabling any agent: apply both migrations, deploy the Node API, deploy the fixed agent, and re-run `paired-integration`.
 
 ## Reports
 
