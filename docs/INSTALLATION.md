@@ -664,8 +664,6 @@ confinement for the entire host, not just this service.
 - [ALMALINUX_DEPLOYMENT.md](ALMALINUX_DEPLOYMENT.md) — extended
   AlmaLinux/RHEL-family reference (stage-by-stage internals, file
   ownership matrix, credential rotation table)
-- [DEPLOYMENT.md](DEPLOYMENT.md) — developer/architecture internals
-  (native adaptive stack, Docker services), unrelated to this installer
 - [RECOVERY.md](RECOVERY.md) — full-host disaster recovery
 - [clients/README.md](clients/README.md) — per-client setup guides
 

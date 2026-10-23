@@ -9,6 +9,7 @@ use compat_config::model::GOOGLE_EGRESS_DOMAINS;
 const INVARIANTS: &str = include_str!("../../../docs/YOUTUBE_FIX_INVARIANTS.md");
 const CLAUDE_MD: &str = include_str!("../../../CLAUDE.md");
 const POLICY_TESTS: &str = include_str!("relay_role_policy.rs");
+const ADMIN_CLI_TESTS: &str = include_str!("../../../apps/admin/tests/cli.rs");
 const SERVER_RS: &str = include_str!("../src/server.rs");
 const DEPLOYMENT_RS: &str = include_str!("../src/deployment.rs");
 
@@ -39,6 +40,25 @@ fn the_tests_the_invariants_name_still_exist() {
             "enforcing test {name} was removed or renamed; INV-* is no longer enforced"
         );
     }
+}
+
+/// The end-to-end transition test lives in the admin crate; the document and
+/// that test must not drift apart or be removed without a conscious edit.
+#[test]
+fn the_transition_test_the_invariants_name_still_exists() {
+    let name = "hairpin_invariants_survive_user_churn_reconcile_repair_and_policy_changes";
+    assert!(
+        INVARIANTS.contains(name),
+        "{name} is no longer named in the invariants document"
+    );
+    assert!(
+        ADMIN_CLI_TESTS.contains(&format!("fn {name}(")),
+        "{name} was removed or renamed; hairpin invariants are no longer checked across transitions"
+    );
+    assert!(
+        ADMIN_CLI_TESTS.contains("const HAIRPIN_DOMAIN_FLOOR"),
+        "the frozen domain floor was removed from the transition test"
+    );
 }
 
 #[test]

@@ -146,6 +146,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
       - run: cargo doc --locked --workspace --no-deps
+      # Deterministic, offline: relative links and #anchors in every tracked
+      # Markdown file must resolve (historical records are listed, not failed).
+      - name: documentation links and anchors
+        run: python3 -I deploy/lib/docs-links-check.py
 
   shell:
     # Shell-script hygiene gate (docs/FINAL_PRODUCTION_AUDIT.md P2): every
@@ -696,9 +700,16 @@ jobs:
   # gaining an operation without a corresponding required CI job.
   offline-full-verdict:
     needs: [offline-node-contract, fmt, clippy, test, release-build, release-container-smoke, audit, docs, shell, os-matrix, secret-logging-check, no-legacy-identity-check, workspace-version-consistency-check, license-check, singbox-validate]
+    # Run even when a dependency failed: a SKIPPED required check counts as
+    # passing for branch protection, so the failure must surface here (#170).
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: every mapped proof must have succeeded (failure, cancelled and skipped all fail)
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 -I deploy/lib/ci-needs-verdict.py
       - run: bash deploy/lib/tests/test-offline-full-ci-equivalence.sh
       - run: echo 'OFFLINE FULL GATE EQUIVALENCE PASS for ${{ github.sha }}'

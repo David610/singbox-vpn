@@ -266,6 +266,42 @@ NEW += [
       "test-shorts-monitor-install.sh with no historical commit object", "no",
       "fixture intentionally preserves the old wrong classifier and must never be installed",
       "fixture source: df47737eaca761f9a2a9bb30c91aa7000b98168d"),
+    n("I-94", "high", "Shorts regression protection (issue #169)", "FIXED_IN_BRANCH",
+      "the hairpin invariants were only unit-tested on single renderer inputs, while earlier Shorts fixes were lost through the transitions around the renderer (user churn, the reconcile timer's render-config, repair/re-init, egress policy changes, clear/set); no test walked a real vpn-admin through them",
+      "apps/admin/tests/cli.rs hairpin_invariants_survive_user_churn_reconcile_repair_and_policy_changes: after every step re-checks sniff -> literal-IPv6 reject (no_drop) -> single route order, C-16 before sniff, the whole domain set against a FROZEN floor, no selector/urltest, final=direct, byte-identical no-op reconcile with no extra sing-box restart, refused `egress set allow`, and that the hairpin UUID is never printed; registered in docs/YOUTUBE_FIX_INVARIANTS.md and guarded by youtube_invariants_doc.rs",
+      "mutation-checked: removing ggpht.com from GOOGLE_EGRESS_DOMAINS and dropping no_drop each fail it; it passes on current code (a regression guard, not a red-before test)", "no",
+      "does NOT show native Shorts work (#169 stays BLOCKED: signed-in/Incognito root cause UNKNOWN, needs a physical iPhone and an authorized host); the fake systemctl and fake sing-box mean no real restart or traffic is exercised; provisioning-agent lease rotation is not covered here",
+      "local run; CI pending"),
+    n("I-93", "critical", "host trust tooling (issue #167 / I-86)", "BLOCKED",
+      "no tested way existed for the owner to collect and read sshd authentication evidence privately, flag guessing/root-password patterns, or record a host-trust decision that is checked for self-consistency",
+      "deploy/lib/ssh-auth-evidence.sh (read-only; raw data in a new 0700 dir; redacted stdout), ssh_auth_summary.py (S1.. labels, anomaly hints), host_trust_decision.py (TRUSTED refused if any session is NOT_OWNER/UNKNOWN or no snapshot), docs/qualification/2026-10-22/HOST-TRUST-DECISION.md",
+      "deploy/lib/tests/test_ssh_auth_summary.py, test-ssh-auth-evidence.sh, test_host_trust_decision.py (synthetic documentation-range logs only; the IPv6 matcher bug the tests found is fixed)", "no",
+      "BLOCKED on the owner: five historical root-password logins unconfirmed; host trust UNKNOWN; the tools have never run against a real host; no host was accessed or changed",
+      "tests only"),
+    n("I-92", "high", "CI required-check semantics (issue #170)", "FIXED_IN_BRANCH",
+      "offline-full-verdict needs 15 jobs and has the default `if: success()`: when any needed job fails the verdict job is SKIPPED, and a skipped required check counts as passing, so requiring only the three named checks would not have blocked a merge with a failing test/shell/fmt job",
+      "the verdict job runs `if: always()` and fails unless every needed job succeeded (deploy/lib/ci-needs-verdict.py); verify-main-protection.py checks the ruleset and emits a no-weakening update body",
+      "deploy/lib/tests/test-ci-verdict-semantics.sh (red before), deploy/lib/tests/test_verify_main_protection.py (live 2026-10-22 snapshot reports NOT ENFORCED)", "no",
+      "the ruleset itself is NOT changed (needs administration): #170 stays open. GitHub's skipped-counts-as-success behaviour was not re-demonstrated here; step 5 of docs/qualification/2026-10-22/BRANCH-PROTECTION.md does that",
+      "live ruleset 22482226 read 2026-10-22: no required_status_checks rule, required_approving_review_count 0"),
+    n("I-91", "medium", "release SBOM / license inventory", "FIXED_IN_BRANCH",
+      "generate-sbom.sh described only the runtime graph of vpn-admin and subscription, but build-release-x86_64.sh compiles and release.yml packages vpn-provisioning-agent too (and update.sh refreshes it): the shipped binary with the TLS stack (reqwest, rustls, rustls-webpki, webpki-roots) was missing from the SBOM and license inventory (142 components instead of 193)",
+      "SHIPPED_PACKAGES now includes provisioning-agent; the generator fails closed if any shipped package is absent; licenses.json scope text updated",
+      "deploy/lib/tests/test-release-sbom.sh (fixture gains the agent and a TLS crate; red before: names list lacked them, and a graph without the agent was accepted)", "no",
+      "SBOM completeness is checked against the Cargo graph only, not against the files in the release archive; first discovered while reviewing #166 dependency scope",
+      "local dry run: 193 components, rustls-webpki 0.103.16, webpki-roots 1.0.10 present"),
+    n("I-95", "low", "Rust dependency maintenance (issue #166)", "FIXED_IN_BRANCH",
+      "deferred #161 (bulk lockfile update) and #121 (application rand 0.8 -> 0.10) had no recorded decision, and the yanked yoke-derive 0.8.3 warning was open",
+      "yoke-derive -> 0.8.4 (PR #176, merged); the release SBOM now covers the shipped agent (I-91, PR #177); docs/qualification/2026-10-22/DEPENDENCIES.md records licenses, MSRV, audit, and the justified NOT_PLANNED decisions for the 71-package bulk update and the rand migration",
+      "audit/test/clippy/release-build/singbox-validate jobs on b3061c5 (run 39855914650); test-release-sbom.sh", "no",
+      "NOT_PLANNED, not implemented: bulk update (no advisory) and rand 0.10 (credential generation, no benefit). GitHub/Dependabot alert inventory is not readable with the available token",
+      "docs/qualification/2026-10-22/DEPENDENCIES.md"),
+    n("I-96", "low", "CI os-matrix (almalinux:9) install step", "FLAKY",
+      "on main 357707c the os-matrix almalinux:9 job spent 15 min 39 s in 'Install git' (a slow package mirror) and was cancelled by its 20-minute limit before the OS check started; offline-full-verdict then correctly FAILED the run ('required jobs did not succeed')",
+      "no product change. Infrastructure only: the job never reached the check. The single permitted re-run of the failed job passed all 22 jobs",
+      "none (an infrastructure flake: a retry-pass is evidence to keep, not a clean pass; the first-attempt failure is recorded here)", "no",
+      "the 20-minute job limit leaves no slack for a slow dnf mirror; if it recurs, raise the limit or retry the install step rather than loosen the check. Not yet reproduced a second time",
+      "https://github.com/David610/singbox-vpn/actions/runs/39864089422 (attempt 1: os-matrix almalinux:9 cancelled, offline-full-verdict failure; attempt 2: success)"),
     n("I-90", "high", "interrupted-update cleanup health gate", "FIXED_IN_BRANCH",
       "recover-interrupted-update.sh ignored health-command exit status: nonzero with no FAIL line allowed marker/backup deletion",
       "capture the command status separately and refuse cleanup on any nonzero result; never print raw health output",
@@ -278,6 +314,7 @@ NEW += [
 # Carried audit issues re-assessed this session WITH evidence. Nothing is promoted
 # without a pointer to the evidence that supports the new state.
 UPGRADES = {
+    "I-27": ("FIXED_IN_BRANCH", "no .gitattributes existed: a Windows checkout with core.autocrlf=true produced CRLF in 289 scripts, units, templates and configs and install.sh no longer parsed under bash (reproduced by cloning with core.autocrlf=true). .gitattributes now pins *.sh, *.py, systemd units, templates, *.toml, *.env and bin/singbox-vpn-uninstall to eol=lf; nothing in the index was renormalized. Test: deploy/lib/tests/test-line-endings.sh (red before: 289 files CRLF, install.sh unparsable). Not covered: a real Windows host, and files outside those patterns (fixtures, *.rs) which are not parsed by bash or systemd."),
     "I-34": ("FIXED_IN_BRANCH", "after `render-config` applies a change, vpn-admin compares the running vpn-subscription's /internal/state-fingerprint with a fresh render and restarts only a service that is PROVEN stale (restart drops no VPN connection); at most once per target state, so a restart that does not help cannot loop under the reconcile timer; unreachable service is never restarted. Tests: apps/admin tests/cli.rs render_config_restarts_a_running_subscription_service_that_advertises_a_stale_port (red before), ..._leaves_a_current_..., ..._unreachable, ..._not_restart_..._repeatedly (mutation-checked). Not covered: a real systemd restart on a host; the same staleness after commands other than render-config is still only reported by doctor L4."),
     "I-19": ("FIXED_IN_BRANCH", "doctor now WARNs (L2) when an exit has a public IPv6 and no [egress] section, i.e. the pre-v1.3.1 default `allow`, and names `vpn-admin egress set reject_google`; it never changes the policy (apps/admin undeclared_ipv6_policy_tests; red before: function absent). The installer still never rewrites an existing deployment.toml, so the DEFAULT for pre-v1.3.1 hosts is unchanged by design: the divergence is now visible, not removed. Whether `reject_google` fixes native Shorts is NOT established (docs/EXIT_IPV6_POLICY.md evidence boundary)."),
     "I-12": ("SERVER_VERIFIED", "Hysteria2 inbound renders ignore_client_bandwidth=true with no declared caps (the shipped default) and standard clients are NOT locked out: pinned sing-box 1.14.1 clients and the real Hiddify core v5.0.3 (hiddify-sing-box 1.13.0-rc.2) both connect over Hysteria2 with Salamander (evidence/staging-subscription-acceptance*.json, evidence/hiddify-core-v5.0.3-acceptance.json). Not tested: a deployment with declared bandwidth caps."),
@@ -287,6 +324,42 @@ UPGRADES = {
     "I-17": ("SERVER_VERIFIED", "doctor on a dev-channel install reports release identity OK with all three executables matching the recorded hashes."),
     "I-18": ("SERVER_VERIFIED", "doctor --protocol --require-protocol now runs both a REALITY and a Hysteria2 self-test (both lines present and passing on staging)."),
 }
+
+
+# CI_VERIFIED means: the fix is on main and the regression test ran green in
+# GitHub CI on that exact commit. It says nothing about a server, a device or
+# production. Each entry names what CI did NOT prove. An id may be promoted only
+# from FIXED_IN_BRANCH or UNVERIFIED; anything else fails the build.
+CI_MAIN_SHA = "11af71e7d22f672c2713d65f42aac035e431010c"
+CI_RUN_URL = "https://github.com/David610/singbox-vpn/actions/runs/39862513265"
+SECURITY_RUN_URL = "https://github.com/David610/singbox-vpn/actions/runs/39862513405"
+CI_PROMOTE = {
+    "I-11": "service::tests::a_burst_of_administrative_reloads_is_never_refused_by_the_start_limit passes; removing the reset-failed call makes it fail at reload 9 ('Start request repeated too quickly'). Simulated start limit with a fake systemctl: no real systemd, no real sing-box",
+    "I-19": "doctor WARN unit tests pass. Visibility only: the pre-v1.3.1 default is unchanged by design and no native Shorts claim is made",
+    "I-27": "test-line-endings.sh passes in the CI shell job (autocrlf clone has no CRLF, install.sh parses). Simulated on Linux; no real Windows host",
+    "I-34": "the four render_config_* subscription tests pass with the real subscription binary. systemctl is faked: no real systemd restart",
+    "I-49": "test-local-tree-provenance.sh and the release_identity test pass. Temp git repos only: no real install was run on a host",
+    "I-50": "root_group_cleanup_tests pass (fake groupadd/groupdel, child-process exit handler). CI runs unprivileged, so the real root path was exercised only by a local root run",
+    "I-74": "test-installer-sourcing-keeps-exit-trap.sh passes in the CI shell job. The clean-host runner's LEAK detector itself is not part of CI, only run locally",
+    "I-91": "test-release-sbom.sh and the CI SBOM dry run pass. The SBOM is checked against the Cargo graph, not the files in a release archive",
+    "I-92": "test-ci-verdict-semantics.sh and test_verify_main_protection.py pass, and offline-full-verdict ran green under the new always() rule. Blocking of a failing PR is NOT demonstrated and the ruleset is unchanged: issue #170 stays open",
+    "I-94": "the hairpin transition test and youtube_invariants_doc pass. A regression guard (passes on current code, mutation-checked); no native Shorts claim and no real restart or traffic",
+}
+
+
+def apply_ci_promotions(new, carried):
+    index = {row["id"]: row for row in list(new) + list(carried)}
+    for issue_id, caveat in CI_PROMOTE.items():
+        row = index.get(issue_id)
+        if row is None:
+            sys.exit(f"CI_PROMOTE names unknown issue {issue_id}")
+        if row["state"] not in ("FIXED_IN_BRANCH", "UNVERIFIED"):
+            sys.exit(f"CI_PROMOTE: {issue_id} is {row['state']}, only FIXED_IN_BRANCH/UNVERIFIED may be promoted")
+        row["state"] = "CI_VERIFIED"
+        proof = (f"CI success on main {CI_MAIN_SHA[:7]} (CI {CI_RUN_URL}; Security {SECURITY_RUN_URL}). "
+                 f"Scope: {caveat}")
+        key = "evidence" if "evidence" in row else "evidence_2026_10_20"
+        row[key] = (row.get(key) + " | " if row.get(key) else "") + proof
 
 
 def main():
@@ -301,6 +374,7 @@ def main():
     for x in NEW:
         x["supersedes_audit_entry"] = x["id"] in {c["id"] for c in carried}
     carried = [c for c in carried if c["id"] not in newids]
+    apply_ci_promotions(NEW, carried)
     reg = {"schema_version": 1, "generated_for": "2026-10-20 staging remediation", "new": NEW, "carried": carried}
     json.dump(reg, open(OUT + ".json", "w"), indent=1)
     md = ["# Issue registry (generated from issue-registry.json — do not edit by hand)\n",
