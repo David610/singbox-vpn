@@ -196,8 +196,8 @@ it, only restates it as frozen.
 ## 5. Links (external/non-Arcana-app VPN access)
 
 **Already fully specified and implemented — this is not an open item.**
-Canonical, stable contract: `docs/contracts/ARCANA_LINKS_V1.md` (this
-repo, `main`). This section is a pointer/summary, not a competing
+Canonical, stable contract: `docs/contracts/ARCANA_LINKS_V1.md` (in the
+`vpn-web` repository, `main`; not part of this repository). This section is a pointer/summary, not a competing
 definition; where the two differ, `ARCANA_LINKS_V1.md` wins.
 
 ```
