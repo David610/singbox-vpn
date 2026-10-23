@@ -20,7 +20,7 @@ const POSTGREST = path.resolve(need("POSTGREST_BIN"));
 const STUB = path.resolve(path.dirname(new URL(import.meta.url).pathname), "stub-vpn-admin");
 const expect = Object.fromEntries((process.env.EXPECT || "").split(",").filter(Boolean).map((x) => x.split(":")));
 const only = (process.env.ONLY || "").split(",").filter(Boolean);
-const DB = "arcana_it", PGENV = { ...process.env, PGHOST: "localhost", PGPORT: "5432", PGUSER: "postgres", PGPASSWORD: "postgres" };
+const DB = "arcana_it", PGENV = { ...process.env, PGHOST: "localhost", PGPORT: "5432", PGUSER: "postgres", PGPASSWORD: "postgres", PGOPTIONS: "-c search_path=public,extensions -c client_min_messages=warning" };
 const ENC_KEY = "22".repeat(32), JWT_SECRET = "TEST-ONLY-" + crypto.randomBytes(16).toString("hex");
 const work = mkdtempSync(path.join(tmpdir(), "paired-it-"));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
