@@ -3986,6 +3986,36 @@ fn doctor_coverage_line_distinguishes_not_run_from_failed_from_passed() {
     );
 }
 
+/// A healthy doctor run must still say that YouTube/Shorts delivery depends
+/// on the egress IP and is not verified, so green L1-L4 never reads as
+/// "Shorts will play" (docs/YOUTUBE_FIX_INVARIANTS.md, issue #169).
+#[test]
+fn doctor_always_reports_youtube_egress_readiness_as_unverified() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let yt_line = stdout
+        .lines()
+        .find(|l| l.contains("[YT"))
+        .unwrap_or_else(|| panic!("doctor must emit a YouTube readiness line:\n{stdout}"));
+    assert!(
+        yt_line.contains("UNVERIFIED") && yt_line.contains("own public IP"),
+        "plain exit must say Google traffic uses its own IP and readiness is unverified: {yt_line}"
+    );
+    assert!(
+        !yt_line.contains("[OK") && !yt_line.to_lowercase().contains("will play"),
+        "the YouTube line must never be a pass: {yt_line}"
+    );
+}
+
 #[test]
 fn doctor_report_redacts_secrets_and_includes_expected_sections() {
     let dir = tempfile::tempdir().unwrap();
