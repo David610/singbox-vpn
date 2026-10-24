@@ -2,11 +2,24 @@
 """Native-ish YouTube Shorts media probe (diagnostic only; NOT device acceptance).
 Per Short: sample <video>.currentTime every 0.5 s for DWELL s; count videoplayback bytes; flag the
 155-byte 'yt-ump' refusal; keep bot-challenge and 'unavailable' separate. JSON to stdout last line."""
-import argparse,json,sys,time,re
-from playwright.sync_api import sync_playwright
+import argparse,json,os,sys,time,re
 ap=argparse.ArgumentParser();ap.add_argument('--proxy');ap.add_argument('--quic',action='store_true');ap.add_argument('--channel',default=None)
-ap.add_argument('--ids',required=True);ap.add_argument('--dwell',type=float,default=25);ap.add_argument('--label',default='run')
-a=ap.parse_args();ids=a.ids.split(',')
+ap.add_argument('--ids',default='');ap.add_argument('--dwell',type=float,default=25);ap.add_argument('--label',default='run')
+ap.add_argument('--out',help='result JSON path (default: result_<label>.json in the current directory)')
+ap.add_argument('--self-check',action='store_true',help='verify Playwright and its Chromium are usable, then exit 0/3')
+a=ap.parse_args()
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError as e:
+    sys.stderr.write('playwright is not importable: %s\n'%e);sys.exit(3)
+if a.self_check:
+    with sync_playwright() as p:
+        exe=p.chromium.executable_path
+    if not os.path.exists(exe):
+        sys.stderr.write('chromium is not installed (%s); run: candidate_qualify.sh setup\n'%exe);sys.exit(3)
+    sys.exit(0)
+if not a.ids:ap.error('--ids is required')
+ids=a.ids.split(',')
 CONSENT={"name":"SOCS","value":"CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg","domain":".youtube.com","path":"/"}
 JS="""()=>{const v=[...document.querySelectorAll('video')].find(x=>x.readyState>0||x.currentTime>0)||document.querySelector('video');
 const t=(document.body.innerText||'').toLowerCase();
@@ -55,4 +68,7 @@ with sync_playwright() as p:
     b.close()
 for r in res:print('%-12s %-13s start=%-5s played=%5.1fs maxstall=%4.1fs vp_reqs=%3d refusal-like=%d media=%6dKB st=%s'%(r['id'],r['verdict'],r['start_s'],r['played_s'],r['max_stall_s'],r['videoplayback_reqs'],r['refusal_155B_like'],r['media_bytes']//1000,r['statuses']))
 print('SUMMARY',a.label,json.dumps({k:sum(1 for r in res if r['verdict']==k) for k in ('PLAYED','FROZE','REFUSED','BOT_CHALLENGE','NO_START')}))
-json.dump(res,open('result_%s.json'%a.label,'w'))
+out=a.out or 'result_%s.json'%a.label
+tmp=out+'.tmp'
+json.dump(res,open(tmp,'w'))
+os.replace(tmp,out)
