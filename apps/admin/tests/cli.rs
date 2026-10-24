@@ -2769,6 +2769,92 @@ fn future_expiry_extension_does_not_restart_but_expiry_revocation_does() {
     );
 }
 
+/// I-10 restart matrix. An operation that leaves the rendered authorization
+/// unchanged must cause no `systemctl reload-or-restart sing-box` at all (a
+/// redundant enable/disable, token rotation, read-only commands, a no-op
+/// reconcile). An operation that changes it must reach the rendered config AND
+/// cost at most one restart, so `rotate-credentials` (two secrets) is one
+/// restart, not two. The upper bound, not equality, keeps this valid if a
+/// future in-place reload lowers the count, while the config check still
+/// proves the change (e.g. a revocation) was actually applied.
+#[test]
+#[cfg(unix)]
+fn user_operation_restart_matrix_is_one_restart_per_real_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    let command = || {
+        let mut cmd = admin(dir.path(), &cfg_path);
+        cmd.env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SYSTEMCTL_LOG", &log_path);
+        cmd
+    };
+    let config_path = dir.path().join("state/sing-box/config.json");
+    let rendered = || std::fs::read(&config_path).unwrap_or_default();
+    // Run one operation; return (sing-box restarts caused, rendered config changed).
+    let run = |args: &[&str]| -> (usize, bool) {
+        let before = count_reload_or_restart_calls(&log_path);
+        let config_before = rendered();
+        command().args(args).assert().success();
+        (
+            count_reload_or_restart_calls(&log_path) - before,
+            rendered() != config_before,
+        )
+    };
+    // No change to authorization: nothing rendered, nothing restarted.
+    let unchanged = |args: &[&str], what: &str| {
+        assert_eq!(run(args), (0, false), "{what}");
+    };
+    // A real change: must be applied to the rendered config, at most one restart.
+    let applied = |args: &[&str], what: &str| {
+        let (restarts, changed) = run(args);
+        assert!(changed, "{what}: rendered config must change");
+        assert!(
+            restarts <= 1,
+            "{what}: {restarts} restarts, expected at most 1"
+        );
+    };
+
+    command().arg("init").assert().success();
+    let output = command()
+        .args(["user", "create", "--name", "matrix", "--json"])
+        .assert()
+        .success();
+    let created: serde_json::Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    // Operations that must not touch the data plane.
+    unchanged(&["user", "enable", id], "enable of an enabled user");
+    unchanged(&["user", "rotate-token", id], "token rotation");
+    unchanged(&["user", "list"], "list");
+    unchanged(&["user", "links", id], "links");
+    unchanged(&["render-config", "--require-applied"], "no-op reconcile");
+
+    // Each real authorization change is applied, with at most one restart.
+    applied(&["user", "disable", id], "disable");
+    unchanged(&["user", "disable", id], "disable of a disabled user");
+    applied(&["user", "enable", id], "enable");
+    applied(&["user", "rotate-vless", id], "rotate-vless");
+    applied(&["user", "rotate-hysteria", id], "rotate-hysteria");
+    applied(&["user", "rotate-credentials", id], "rotate-credentials");
+    applied(&["user", "remove", id], "remove");
+    unchanged(
+        &["render-config", "--require-applied"],
+        "reconcile after the last change",
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn authorization_backed_native_lease_renewal_uses_live_path_without_restart() {
