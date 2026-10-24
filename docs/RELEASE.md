@@ -164,9 +164,23 @@ Native evidence must distinguish `signed_in` and `incognito` for both transports
 and both networks. The validator also requires the YouTube version, matching
 runtime binary digest, at least 900 seconds continuous playback, long-form
 playback/seek, reconnect, app restart, post-reconciliation playback and intended
-Google egress verification. Each cell must also record `shorts_distinct_played >= 10`\n(no greater than `shorts_consecutive_played`), `shorts_min_playback_seconds >= 30`\nfor every counted Short (choose videos long enough to cross the historical\n20-second stall), `repeated_switching: true`, and integer `observed_failures: 0`.\nCount startup, switching, freezing and recovery failures across the entire agreed\ncell, including retries; a later successful attempt must not erase a failure.\nKeep only aggregate counts in the acceptance record; human-reviewed evidence\nreferences must substantiate distinct videos and timing without publishing\naccount data or browsing history. Legacy cells missing these measurements do\nnot qualify. These are observations, never a guarantee of future success. See the dated
+Google egress verification. Each cell must also record `shorts_distinct_played >= 10`
+(no greater than `shorts_consecutive_played`), `shorts_min_playback_seconds >= 30`
+for every counted Short (choose videos long enough to cross the historical
+20-second stall), `repeated_switching: true`, and integer `observed_failures: 0`.
+Count startup, switching, freezing and recovery failures across the entire agreed
+cell, including retries; a later successful attempt must not erase a failure.
+Keep only aggregate counts in the acceptance record; human-reviewed evidence
+references must substantiate distinct videos and timing without publishing
+account data or browsing history. Legacy cells missing these measurements do
+not qualify. These are observations, never a guarantee of future success. See the dated
 [executable procedure](qualification/2026-10-22/RUNBOOK.md). A synthetic test
 fixture passing the validator is never device evidence.
+
+Use exactly one aggregate record per transport/network/authentication cell.
+Include every attempt in that cell's counts. Duplicate cells are rejected so
+that a successful retry cannot mask a failed attempt. Keep superseded test runs
+in a separate dated evidence file; a new agreed run requires the entire matrix.
 
 The stable tag may differ from the accepted RC only in:
 

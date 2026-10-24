@@ -3,6 +3,19 @@
  "generated_for": "2026-10-20 staging remediation",
  "new": [
   {
+   "id": "I-105",
+   "severity": "high",
+   "component": "release native Shorts acceptance",
+   "state": "FIXED_IN_BRANCH",
+   "title": "device evidence could qualify without 10 distinct Shorts, per-Short playback beyond the 20-second stall, repeated switching or zero failures; duplicate PASS cells could mask failed retries",
+   "fix": "require >=10 distinct plays, >=30 seconds minimum playback per counted Short, explicit switching, integer zero failures and exactly one aggregate record per required cell",
+   "regression_test": "test_release_evidence.py: 18 invalid-measurement subcases and 4 duplicate-cell subcases fail before fixes; 20 tests pass after",
+   "device_required": "yes",
+   "remaining_risk": "validator mechanics only; no current native playback, accepted egress, exact artifact or deployed lifecycle evidence",
+   "evidence": "PR #201; local synthetic regression tests on 2026-10-24; docs/qualification/2026-10-24/DELIVERY.md",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-37",
    "severity": "medium",
    "component": "admin/doctor",

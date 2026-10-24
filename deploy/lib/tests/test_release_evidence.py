@@ -98,6 +98,17 @@ class ReleaseEvidence(unittest.TestCase):
         self.assertEqual(run(d, "--require", "DEVICE_VERIFIED")[:2],
                          (1, "SERVER_QUALIFIED"))  # cannot exceed total consecutive plays
 
+    def test_duplicate_cell_cannot_hide_a_failure_or_retry(self):
+        for result in ("FAIL", "PASS"):
+            for first in (True, False):
+                with self.subTest(result=result, first=first):
+                    d = self.base()
+                    repeated = copy.deepcopy(d["device_matrix"][0])
+                    repeated["result"] = result
+                    d["device_matrix"].insert(0 if first else len(d["device_matrix"]), repeated)
+                    self.assertEqual(run(d, "--require", "DEVICE_VERIFIED")[:2],
+                                     (1, "SERVER_QUALIFIED"))
+
     def test_ci_on_a_different_commit_is_not_code_qualified(self):
         d = self.base()
         d["ci"]["git_commit"] = "c" * 40

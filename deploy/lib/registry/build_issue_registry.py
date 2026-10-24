@@ -19,6 +19,12 @@ def n(id_, sev, comp, state, title, fix="", test="", device="no", risk="", evide
 
 
 NEW = [
+    n("I-105", "high", "release native Shorts acceptance", "FIXED_IN_BRANCH",
+      "device evidence could qualify without 10 distinct Shorts, per-Short playback beyond the 20-second stall, repeated switching or zero failures; duplicate PASS cells could mask failed retries",
+      "require >=10 distinct plays, >=30 seconds minimum playback per counted Short, explicit switching, integer zero failures and exactly one aggregate record per required cell",
+      "test_release_evidence.py: 18 invalid-measurement subcases and 4 duplicate-cell subcases fail before fixes; 20 tests pass after",
+      "yes", "validator mechanics only; no current native playback, accepted egress, exact artifact or deployed lifecycle evidence",
+      "PR #201; local synthetic regression tests on 2026-10-24; docs/qualification/2026-10-24/DELIVERY.md"),
     n("I-37", "medium", "admin/doctor", "FIXED_IN_BRANCH",
       "doctor reported sing-box outbound UDP flow sockets as FAIL; first heuristic could hide a mistaken inbound on an ephemeral port",
       "classifier uses the on-disk config's declared inbounds: declared->FAIL, undeclared ephemeral->INFO, unreadable config->WARN",

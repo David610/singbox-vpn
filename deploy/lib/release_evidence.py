@@ -90,7 +90,13 @@ def compute(doc: dict, tag: str | None, commit: str | None) -> tuple[str, list[s
     cells = doc.get("device_matrix") or []
     waivers = doc.get("waivers") or []
     good = {}
+    seen = set()
+    duplicates = set()
     for cell in cells:
+        key = (cell.get("transport"), cell.get("network"), cell.get("youtube_mode"))
+        if key in seen:
+            duplicates.add(key)
+        seen.add(key)
         if (cell.get("result") == "PASS" and cell.get("git_commit") == c
                 and cell.get("release_tag") == doc["release_tag"]
                 and all(cell.get(f) not in (None, "") for f in CELL_FIELDS)
@@ -105,9 +111,9 @@ def compute(doc: dict, tag: str | None, commit: str | None) -> tuple[str, list[s
                 and DIGEST.fullmatch(str(doc.get("runtime_binary_sha256", "")))
                 and cell.get("binary_sha256") == doc["runtime_binary_sha256"]
                 and cell.get("known_failing_short_played") is True):
-            good[(cell["transport"], cell["network"], cell["youtube_mode"])] = cell
+            good[key] = cell
     missing = [f"{t}/{n}/{m}" for t in REQUIRED_TRANSPORTS for n in REQUIRED_NETWORKS
-               for m in REQUIRED_YOUTUBE_MODES if (t, n, m) not in good]
+               for m in REQUIRED_YOUTUBE_MODES if (t, n, m) not in good or (t, n, m) in duplicates]
     if missing:
         errs.append("DEVICE_VERIFIED not met: no complete PASS cell for " + ", ".join(missing)
                     + (" (waived)" if waivers else ""))
