@@ -193,6 +193,8 @@ jobs:
                 break
               fi
               echo "::warning::shellcheck install attempt $attempt failed or timed out"
+              # a timeout can interrupt dpkg mid-transaction; finish it before retrying
+              sudo dpkg --configure -a >/dev/null 2>&1 || true
               sleep $((attempt * 5))
             done
             [ "$ok" -eq 1 ] || { echo "::error::could not install shellcheck after 3 bounded attempts"; exit 1; }
@@ -217,6 +219,8 @@ jobs:
                 break
               fi
               echo "::warning::nftables/age install attempt $attempt failed or timed out"
+              # a timeout can interrupt dpkg mid-transaction; finish it before retrying
+              sudo dpkg --configure -a >/dev/null 2>&1 || true
               sleep $((attempt * 5))
             done
             [ "$ok" -eq 1 ] || { echo "::error::could not install nftables/util-linux/age after 3 bounded attempts"; exit 1; }
