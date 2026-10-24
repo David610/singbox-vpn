@@ -4945,6 +4945,28 @@ fn report_check(status: CheckStatus, layer: &str, message: impl AsRef<str>) {
     println!("{} [{layer:<4}] {}", check_status_label(status), message);
 }
 
+/// Always-visible, never-passing statement that YouTube/Shorts delivery is
+/// a property of the Google egress IP and network path, which no local check
+/// can establish. Deliberately `Info` and deliberately not derived from the
+/// L1-L6 results: a green doctor must never read as "Shorts will play".
+fn report_youtube_egress_readiness(cfg: &DeploymentConfig) {
+    let egress = if cfg.google_egress_hairpin.is_some() {
+        "Google/YouTube traffic leaves through the paired hairpin node"
+    } else {
+        "Google/YouTube traffic leaves from this node's own public IP"
+    };
+    report_check(
+        CheckStatus::Info,
+        "YT",
+        format!(
+            "YouTube/Shorts readiness: UNVERIFIED. {egress}. YouTube may refuse Shorts media \
+             to an egress IP (signed-out sessions first) even though TLS and every check above \
+             succeed. Qualify the egress with deploy/lib/diag/candidate_qualify.sh and confirm \
+             on a native device (docs/YOUTUBE_FIX_INVARIANTS.md); doctor cannot verify it."
+        ),
+    );
+}
+
 #[cfg(unix)]
 fn installed_file_policy(
     path: &std::path::Path,
@@ -5600,6 +5622,8 @@ fn cmd_doctor(
         );
         ProtocolCheckResult::NotRun
     };
+
+    report_youtube_egress_readiness(cfg);
 
     if telegram {
         print_telegram_diagnostics_summary(cfg, l1_l4_failures, protocol_result);
