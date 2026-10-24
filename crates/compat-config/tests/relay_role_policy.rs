@@ -2046,3 +2046,169 @@ fn probe_rules_precede_relay_policy_which_is_otherwise_unchanged() {
         without["route"]["rules"].as_array().unwrap().as_slice()
     );
 }
+
+// ----------------------------------------------------------------------
+// Opt-in Google-egress TLS spoof (exit-only; sing-box >= 1.14 `tls_spoof`)
+// ----------------------------------------------------------------------
+
+const SPOOF_TOML: &str = "\n[google_egress_tls_spoof]\nsni = \"ya.ru\"\n";
+
+#[test]
+fn tls_spoof_absent_leaves_exit_rendering_byte_identical() {
+    let plain = load(&base("exit")).unwrap();
+    let before = render(&plain, &[user()]);
+    assert!(!before.to_string().contains("tls_spoof"));
+    assert!(!before.to_string().contains("route-options"));
+}
+
+#[test]
+fn tls_spoof_adds_exactly_a_sniff_and_a_scoped_non_terminal_route_options_rule() {
+    let plain = render(&load(&base("exit")).unwrap(), &[user()]);
+    let spoofed = render(&load(&(base("exit") + SPOOF_TOML)).unwrap(), &[user()]);
+    let p = plain["route"]["rules"].as_array().unwrap();
+    let s = spoofed["route"]["rules"].as_array().unwrap();
+    assert_eq!(s.len(), p.len() + 2);
+    let opt = s
+        .iter()
+        .find(|r| r["action"] == "route-options")
+        .expect("route-options rule");
+    assert_eq!(opt["tls_spoof"], "ya.ru");
+    assert_eq!(opt["tls_spoof_method"], "wrong-sequence");
+    assert_eq!(opt["protocol"], "tls");
+    assert_eq!(opt["network"], "tcp");
+    assert_eq!(opt["port"], 443);
+    assert_eq!(
+        opt["domain_suffix"],
+        serde_json::json!(compat_config::model::GOOGLE_EGRESS_DOMAINS)
+    );
+    assert!(opt.get("outbound").is_none(), "must stay non-terminal");
+    let sniff_at = s
+        .iter()
+        .position(|r| r["action"] == "sniff" && r["sniffer"] == serde_json::json!(["tls"]))
+        .unwrap();
+    let opt_at = s
+        .iter()
+        .position(|r| r["action"] == "route-options")
+        .unwrap();
+    assert!(
+        sniff_at < opt_at,
+        "the domain must be sniffed before the rule that needs it"
+    );
+    assert_eq!(spoofed["route"]["final"], "direct");
+    let without_new: Vec<_> = s
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != sniff_at && *i != opt_at)
+        .map(|(_, r)| r.clone())
+        .collect();
+    assert_eq!(
+        &without_new, p,
+        "every other rule is unchanged and in order"
+    );
+    assert!(
+        sniff_at > 0 && s[..sniff_at].iter().any(|r| r["action"] == "reject"),
+        "the spoof rules come after the mandatory C-16 deny rules"
+    );
+}
+
+#[test]
+fn tls_spoof_method_is_selectable_and_validated() {
+    let t = base("exit")
+        + "\n[google_egress_tls_spoof]\nsni = \"ya.ru\"\nmethod = \"wrong-checksum\"\n";
+    let doc = render(&load(&t).unwrap(), &[user()]);
+    assert!(doc
+        .to_string()
+        .contains("\"tls_spoof_method\":\"wrong-checksum\""));
+    let bad =
+        base("exit") + "\n[google_egress_tls_spoof]\nsni = \"ya.ru\"\nmethod = \"nonsense\"\n";
+    assert!(load(&bad).is_err());
+}
+
+#[test]
+fn tls_spoof_rejects_relay_hairpin_google_names_and_malformed_hosts() {
+    assert!(load(&(base("exit") + SPOOF_TOML)).is_ok());
+    assert!(
+        load(&(paired_relay_toml() + SPOOF_TOML)).is_err(),
+        "exit-only"
+    );
+    assert!(
+        load(&(exit_hairpin_deployment_toml() + SPOOF_TOML)).is_err(),
+        "not with a hairpin"
+    );
+    for bad in [
+        "www.youtube.com",
+        "google.com",
+        "x.googlevideo.com",
+        "nodot",
+        "a b.ru",
+        "-a.ru",
+        "ya..ru",
+        "ya.ru/x",
+        "",
+    ] {
+        let t = format!(
+            "{}\n[google_egress_tls_spoof]\nsni = \"{bad}\"\n",
+            base("exit")
+        );
+        assert!(load(&t).is_err(), "{bad:?} must be rejected");
+    }
+    assert!(
+        load(&(base("exit") + "\n[google_egress_tls_spoof]\nsni = \"ya.ru\"\nextra = 1\n"))
+            .is_err()
+    );
+}
+
+#[test]
+fn tls_spoof_policy_is_part_of_the_exact_exit_policy_check() {
+    let cfg = load(&(base("exit") + SPOOF_TOML)).unwrap();
+    let doc = render(&cfg, &[user()]);
+    assert!(compat_config::server::exit_egress_policy_matches(
+        &cfg, &doc
+    ));
+    let plain = load(&base("exit")).unwrap();
+    assert!(
+        !compat_config::server::exit_egress_policy_matches(&plain, &doc),
+        "a spoofed document must not pass as the plain policy"
+    );
+}
+
+#[test]
+fn every_tls_spoof_method_renders_a_route_accepted_by_real_sing_box() {
+    let Some(sb) = common::SingBox::find() else {
+        if std::env::var("SINGBOX_VPN_REQUIRE_REAL_INTEROP").is_ok() {
+            panic!("real sing-box is required but was not found");
+        }
+        eprintln!("skipping: sing-box not found");
+        return;
+    };
+    for method in [
+        "wrong-sequence",
+        "wrong-checksum",
+        "wrong-ack",
+        "wrong-md5",
+        "wrong-timestamp",
+    ] {
+        let toml = format!(
+            "{}\n[google_egress_tls_spoof]\nsni = \"ya.ru\"\nmethod = \"{method}\"\n",
+            base("exit")
+        );
+        let production = render(&load(&toml).unwrap(), &[user()]);
+        let minimal = serde_json::json!({
+            "inbounds": [
+                {"type": "mixed", "tag": "vless-reality-in", "listen": "127.0.0.1", "listen_port": common::free_port()},
+                {"type": "mixed", "tag": "hysteria2-in", "listen": "127.0.0.1", "listen_port": common::free_port()}
+            ],
+            "outbounds": production["outbounds"].clone(),
+            "route": production["route"].clone()
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exit-spoof-route.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&minimal).unwrap()).unwrap();
+        let out = sb.check(&path);
+        assert!(
+            out.status.success(),
+            "sing-box rejected tls_spoof_method {method}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

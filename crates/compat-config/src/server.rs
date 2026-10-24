@@ -726,6 +726,22 @@ pub fn exit_egress_rules(
         }
         rules.push(reject);
     }
+    if let Some(spoof) = &deployment.google_egress_tls_spoof {
+        // Opt-in only. Sniff (TLS, TCP/443, bounded wait) recovers the domain
+        // of IP-only destinations; the second rule is non-terminal, so routing
+        // continues to the normal `direct` egress with the spoof option set.
+        // The destination, SNI and certificate verification are not changed.
+        rules.push(json!({"network":"tcp","port":443,"action":"sniff","sniffer":["tls"],"timeout":"300ms"}));
+        rules.push(json!({
+            "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
+            "network": "tcp",
+            "port": 443,
+            "protocol": "tls",
+            "action": "route-options",
+            "tls_spoof": spoof.sni,
+            "tls_spoof_method": spoof.method.as_str(),
+        }));
+    }
     rules
 }
 
