@@ -2807,7 +2807,10 @@ fn user_operation_restart_matrix_is_one_restart_per_real_change() {
         let before = count_reload_or_restart_calls(&log_path);
         let config_before = rendered();
         command().args(args).assert().success();
-        (count_reload_or_restart_calls(&log_path) - before, rendered() != config_before)
+        (
+            count_reload_or_restart_calls(&log_path) - before,
+            rendered() != config_before,
+        )
     };
     // No change to authorization: nothing rendered, nothing restarted.
     let unchanged = |args: &[&str], what: &str| {
@@ -2817,7 +2820,10 @@ fn user_operation_restart_matrix_is_one_restart_per_real_change() {
     let applied = |args: &[&str], what: &str| {
         let (restarts, changed) = run(args);
         assert!(changed, "{what}: rendered config must change");
-        assert!(restarts <= 1, "{what}: {restarts} restarts, expected at most 1");
+        assert!(
+            restarts <= 1,
+            "{what}: {restarts} restarts, expected at most 1"
+        );
     };
 
     command().arg("init").assert().success();
@@ -2843,7 +2849,10 @@ fn user_operation_restart_matrix_is_one_restart_per_real_change() {
     applied(&["user", "rotate-hysteria", id], "rotate-hysteria");
     applied(&["user", "rotate-credentials", id], "rotate-credentials");
     applied(&["user", "remove", id], "remove");
-    unchanged(&["render-config", "--require-applied"], "reconcile after the last change");
+    unchanged(
+        &["render-config", "--require-applied"],
+        "reconcile after the last change",
+    );
 }
 
 #[test]
