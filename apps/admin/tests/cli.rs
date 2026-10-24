@@ -3668,6 +3668,51 @@ fn hairpin_invariants_survive_user_churn_reconcile_repair_and_policy_changes() {
     run(&["render-config"], "").success();
     assert_hairpin_invariants(&load(), "after repair-style init + render");
 
+    // Credential and user lifecycle operations re-render the same config; none may
+    // lose, reorder or widen the hairpin rules (rotation and removal are the
+    // operations a fix was lost through before).
+    let id_of = |name: &str| -> String {
+        let listing = String::from_utf8(
+            run(&["user", "list"], "")
+                .success()
+                .get_output()
+                .stdout
+                .clone(),
+        )
+        .unwrap();
+        listing
+            .lines()
+            .find(|l| l.contains(name))
+            .and_then(|l| l.split_whitespace().next())
+            .unwrap_or_else(|| panic!("{name} in user list"))
+            .to_string()
+    };
+    let bob_id = id_of("bob");
+    run(&["user", "enable", &alice_id], "").success();
+    assert_hairpin_invariants(&load(), "after user enable");
+    run(&["user", "rotate-vless", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after rotate-vless");
+    run(&["user", "rotate-hysteria", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after rotate-hysteria");
+    run(&["user", "rotate-credentials", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after rotate-credentials");
+    run(&["user", "rotate-token", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after rotate-token");
+    run(&["init", "--rotate"], "").success();
+    run(&["render-config"], "").success();
+    assert_hairpin_invariants(&load(), "after REALITY key rotation");
+    run(&["hysteria-obfs-rotate"], "").success();
+    assert_hairpin_invariants(&load(), "after Hysteria2 obfuscation rotation");
+    run(&["user", "remove", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after user remove");
+
+    // A backup/restore round trip must reproduce a config that still satisfies them.
+    let archive = dir.path().join("hairpin-roundtrip.tar");
+    run(&["backup", "--output", archive.to_str().unwrap()], "").success();
+    run(&["user", "create", "--name", "carol"], "").success();
+    run(&["restore", archive.to_str().unwrap()], "").success();
+    assert_hairpin_invariants(&load(), "after backup + restore");
+
     // Explicitly disabling literal-IPv6 protection on a hairpin exit is refused
     // and leaves the config exactly as it was (INV-5).
     let before_policy = std::fs::read(&config_path).unwrap();
