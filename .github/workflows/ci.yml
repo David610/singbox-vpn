@@ -186,8 +186,18 @@ jobs:
           set -euo pipefail
           if ! command -v shellcheck >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
-            timeout 60 sudo apt-get update -y >/dev/null
-            timeout 90 sudo apt-get install -y shellcheck >/dev/null
+            ok=0
+            for attempt in 1 2 3; do
+              if timeout 60 sudo apt-get update -y >/dev/null && timeout 90 sudo apt-get install -y shellcheck >/dev/null; then
+                ok=1
+                break
+              fi
+              echo "::warning::shellcheck install attempt $attempt failed or timed out"
+              # a timeout can interrupt dpkg mid-transaction; finish it before retrying
+              sudo dpkg --configure -a >/dev/null 2>&1 || true
+              sleep $((attempt * 5))
+            done
+            [ "$ok" -eq 1 ] || { echo "::error::could not install shellcheck after 3 bounded attempts"; exit 1; }
           fi
           shellcheck -S warning install.sh uninstall.sh bin/singbox-vpn-uninstall deploy/lib/*.sh deploy/almalinux/*.sh deploy/lib/tests/*.sh
       # Run the complete deterministic suite rather than maintaining a
@@ -202,8 +212,18 @@ jobs:
           set -euo pipefail
           if ! command -v nft >/dev/null || ! command -v setpriv >/dev/null || ! command -v age >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
-            timeout 60 sudo apt-get update -y >/dev/null
-            timeout 90 sudo apt-get install -y nftables util-linux age >/dev/null
+            ok=0
+            for attempt in 1 2 3; do
+              if timeout 60 sudo apt-get update -y >/dev/null && timeout 90 sudo apt-get install -y nftables util-linux age >/dev/null; then
+                ok=1
+                break
+              fi
+              echo "::warning::nftables/age install attempt $attempt failed or timed out"
+              # a timeout can interrupt dpkg mid-transaction; finish it before retrying
+              sudo dpkg --configure -a >/dev/null 2>&1 || true
+              sleep $((attempt * 5))
+            done
+            [ "$ok" -eq 1 ] || { echo "::error::could not install nftables/util-linux/age after 3 bounded attempts"; exit 1; }
           fi
           command -v nft >/dev/null && command -v setpriv >/dev/null && command -v age >/dev/null
       - name: deployment lifecycle and shell regression tests
@@ -289,7 +309,7 @@ jobs:
             # OS test, and preserve the final dnf failure if all attempts fail.
             installed=0
             for attempt in 1 2 3; do
-              if dnf --refresh install -y git >/dev/null; then
+              if timeout 240 dnf --refresh install -y git >/dev/null; then
                 installed=1
                 break
               fi
