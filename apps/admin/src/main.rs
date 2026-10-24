@@ -4584,6 +4584,21 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
             if let Some(notice) = undeclared_ipv6_policy_notice(cfg) {
                 report_check(CheckStatus::Warn, "L2", notice);
             }
+            if let Some(spoof) = &cfg.google_egress_tls_spoof {
+                let caps = perf_singbox_pid().and_then(|pid| {
+                    std::fs::read_to_string(format!("/proc/{pid}/status"))
+                        .ok()
+                        .and_then(|s| proc_status_cap_eff(&s))
+                });
+                match caps.map(cap_eff_allows_tls_spoof) {
+                    Some(true) => report_check(CheckStatus::Ok, "L2", format!("google_egress_tls_spoof ({}, {}): sing-box holds CAP_NET_RAW and CAP_NET_ADMIN", spoof.sni, spoof.method.as_str())),
+                    Some(false) => {
+                        report_check(CheckStatus::Fail, "L2", "google_egress_tls_spoof is configured but the running sing-box lacks CAP_NET_RAW/CAP_NET_ADMIN: it starts, but the spoof silently does nothing. Install the systemd drop-in described in docs/TLS_SPOOF.md and restart sing-box");
+                        *failures += 1;
+                    }
+                    None => report_check(CheckStatus::Warn, "L2", "google_egress_tls_spoof is configured but the sing-box capabilities could not be read (service down?)"),
+                }
+            }
             if let Some(egress) = &cfg.egress {
                 report_check(CheckStatus::Info, "L2", format!("exit ipv6_literal={}: rejection is a proxy close, not proof of native IPv4 retry{}", egress.ipv6_literal.as_str(),
                     if egress.ipv6_literal == Ipv6LiteralPolicy::RejectAll { "; IPv6-only literal destinations fail" } else { "" }));
@@ -6089,6 +6104,40 @@ fn perf_singbox_pid() -> Option<u32> {
         }
     }
     None
+}
+
+/// Effective capability mask from the text of `/proc/<pid>/status`.
+fn proc_status_cap_eff(status: &str) -> Option<u64> {
+    let hex = status.lines().find_map(|l| l.strip_prefix("CapEff:"))?;
+    u64::from_str_radix(hex.trim(), 16).ok()
+}
+
+/// sing-box `tls_spoof` on Linux needs CAP_NET_ADMIN (12) and CAP_NET_RAW (13).
+fn cap_eff_allows_tls_spoof(cap_eff: u64) -> bool {
+    const NET_ADMIN: u64 = 1 << 12;
+    const NET_RAW: u64 = 1 << 13;
+    cap_eff & (NET_ADMIN | NET_RAW) == (NET_ADMIN | NET_RAW)
+}
+
+#[cfg(test)]
+mod tls_spoof_capability_tests {
+    use super::*;
+
+    #[test]
+    fn reads_cap_eff_from_proc_status() {
+        let s = "Name:\tsing-box\nCapInh:\t0000000000000400\nCapEff:\t0000000000003400\nCapBnd:\t0000000000003400\n";
+        assert_eq!(proc_status_cap_eff(s), Some(0x3400));
+        assert_eq!(proc_status_cap_eff("Name:\tx\n"), None);
+    }
+
+    #[test]
+    fn shipped_service_capabilities_do_not_allow_the_spoof() {
+        // CAP_NET_BIND_SERVICE (10) only: sing-box starts, the spoof silently does nothing.
+        assert!(!cap_eff_allows_tls_spoof(1 << 10));
+        assert!(!cap_eff_allows_tls_spoof((1 << 10) | (1 << 13)));
+        assert!(!cap_eff_allows_tls_spoof((1 << 10) | (1 << 12)));
+        assert!(cap_eff_allows_tls_spoof((1 << 10) | (1 << 12) | (1 << 13)));
+    }
 }
 
 /// `vpn doctor --performance`: host/kernel/network MEASUREMENTS only —
