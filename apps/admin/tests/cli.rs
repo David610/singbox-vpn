@@ -2769,6 +2769,80 @@ fn future_expiry_extension_does_not_restart_but_expiry_revocation_does() {
     );
 }
 
+/// I-10 restart matrix. Every config-changing user operation costs exactly one
+/// `systemctl reload-or-restart sing-box` (a full restart), and every operation
+/// that leaves the rendered authorization unchanged costs none. In particular a
+/// redundant enable/disable, token rotation and read-only commands must not
+/// bounce every connected client, and `rotate-credentials` (two secrets) must
+/// be ONE restart, not two sequential ones.
+#[test]
+#[cfg(unix)]
+fn user_operation_restart_matrix_is_one_restart_per_real_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    let systemctl = fake_systemctl(dir.path());
+    let log_path = dir.path().join("systemctl.log");
+    let augmented_path = std::env::join_paths(
+        std::iter::once(systemctl.parent().unwrap().to_path_buf()).chain(
+            std::env::var_os("PATH")
+                .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+    let command = || {
+        let mut cmd = admin(dir.path(), &cfg_path);
+        cmd.env("PATH", &augmented_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SYSTEMCTL_LOG", &log_path);
+        cmd
+    };
+    // Run one operation and return how many sing-box restarts it caused.
+    let restarts = |args: &[&str]| -> usize {
+        let before = count_reload_or_restart_calls(&log_path);
+        command().args(args).assert().success();
+        count_reload_or_restart_calls(&log_path) - before
+    };
+
+    command().arg("init").assert().success();
+    let output = command()
+        .args(["user", "create", "--name", "matrix", "--json"])
+        .assert()
+        .success();
+    let created: serde_json::Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    // Operations that must not touch the data plane.
+    assert_eq!(restarts(&["user", "enable", id]), 0, "enable of an enabled user");
+    assert_eq!(restarts(&["user", "rotate-token", id]), 0, "token rotation");
+    assert_eq!(restarts(&["user", "list"]), 0, "list");
+    assert_eq!(restarts(&["user", "links", id]), 0, "links");
+    assert_eq!(
+        restarts(&["render-config", "--require-applied"]),
+        0,
+        "no-op reconcile"
+    );
+
+    // Each real authorization change is exactly one restart.
+    assert_eq!(restarts(&["user", "disable", id]), 1, "disable");
+    assert_eq!(restarts(&["user", "disable", id]), 0, "disable of a disabled user");
+    assert_eq!(restarts(&["user", "enable", id]), 1, "enable");
+    assert_eq!(restarts(&["user", "rotate-vless", id]), 1, "rotate-vless");
+    assert_eq!(restarts(&["user", "rotate-hysteria", id]), 1, "rotate-hysteria");
+    assert_eq!(
+        restarts(&["user", "rotate-credentials", id]),
+        1,
+        "rotating both secrets is one restart, not two"
+    );
+    assert_eq!(restarts(&["user", "remove", id]), 1, "remove");
+    assert_eq!(
+        restarts(&["render-config", "--require-applied"]),
+        0,
+        "reconcile after the last change"
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn authorization_backed_native_lease_renewal_uses_live_path_without_restart() {
