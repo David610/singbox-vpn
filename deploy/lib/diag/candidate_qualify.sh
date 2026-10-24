@@ -140,6 +140,9 @@ cleanup_resources() {
       || log "warning: could not remove $REMOTE_DIR on the candidate; delete it by hand"
     REMOTE_DIR=""
   fi
+  if [ "$SSH_READY" -eq 1 ]; then
+    timeout 10 ssh -O exit "${SSH_OPTS[@]}" "$TARGET" >/dev/null 2>&1 || true
+  fi
   if [ -n "$WORK" ] && [ -d "$WORK" ]; then
     rm -rf "$WORK"
     WORK=""
@@ -318,7 +321,10 @@ validate_run_args() {
 build_ssh_options() {
   local common=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3
     -o StrictHostKeyChecking=yes "-o" "UserKnownHostsFile=$KH" -o PasswordAuthentication=no
-    -o KbdInteractiveAuthentication=no)
+    -o KbdInteractiveAuthentication=no
+    # ONE connection for the whole run: hosts rate-limit new SSH connections (ufw "LIMIT" allows 6 per
+    # 30 s per source), and this tool needs a dozen steps plus the tunnel.
+    -o ControlMaster=auto "-o" "ControlPath=$WORK/cm" -o ControlPersist=600)
   SSH_OPTS=("${common[@]}" -p "$PORT")
   SCP_OPTS=("${common[@]}" -P "$PORT")
   if [ -n "$KEY" ]; then

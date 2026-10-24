@@ -135,6 +135,8 @@ assert_verdict PASS 0
 check "schema_version present" test "$(vfield schema_version)" = "1"
 check "host identity recorded as verified" test "$(vfield host_identity)" = "verified"
 check "ssh host-key checking is strict (never accept-new/no)" bash -c '! grep -Eq "StrictHostKeyChecking=(accept-new|no)" "$1" && grep -q "StrictHostKeyChecking=yes" "$1"' _ "$S/calls.log"
+check "all steps share ONE multiplexed SSH connection (hosts rate-limit new connections, e.g. ufw LIMIT)" bash -c 'grep -q "ControlMaster=auto" "$1" && grep -q "ControlPath=" "$1" && [ "$(grep -c "^SSH " "$1")" -gt 0 ] && ! grep "^SSH " "$1" | grep -qv "ControlMaster=auto"' _ "$S/calls.log"
+check "the multiplexed master is closed at the end (-O exit)" grep -q -- "-O exit" "$S/calls.log"
 check "no reliance on /tmp/ips_union.json (IP union is built in the evidence dir)" test -s "$(vdir)/ips_union.json"
 check "remote tempdir was created and removed" bash -c 'grep -q "mktemp" "$1" && grep -q "^REMOTE_RM " "$1" && [ -z "$(find "$2/remote" -mindepth 1 2>/dev/null)" ]' _ "$S/calls.log" "$S"
 check "tunnel was opened and is gone" bash -c '[ -s "$1/tunnel.pid" ] && ! kill -0 "$(cat "$1/tunnel.pid")" 2>/dev/null' _ "$S"
