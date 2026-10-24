@@ -250,9 +250,9 @@ NEW += [
       "owner statement 2026-10-23 (issue #167); docs/qualification/2026-10-23/README.md"),
     n("I-87", "medium", "PR #160 event Retry-After", "FIXED_IN_BRANCH",
       "superseded-event delay applies 0.75..1.25 jitter after max(Retry-After, floor), allowing an early retry",
-      "PR #160 head ead10c8 reconstructed on the draft agent branch (NOT merged to main); superseded_delay() adds nonnegative jitter only; gate keeps server_minimum_until across in-flight success; HTTP-date Retry-After rounds up; eventless 200 replies are rejected and the event request rate is floored; 404/405 mean no event channel",
+      "PR #160 head ead10c8 reconstructed and merged to main as PR #192 (daaacd0); superseded_delay() adds nonnegative jitter only; gate keeps server_minimum_until across in-flight success; HTTP-date Retry-After rounds up; eventless 200 replies are rejected and the event request rate is floored; 404/405 mean no event channel",
       "events::tests::superseded_delay_never_undercuts_the_server_minimum, pacing::tests::success_in_flight_cannot_clear_an_unexpired_server_minimum, http_date_retry_after_rounds_up_never_down, malformed_empty_and_incomplete_event_bodies_back_off_and_never_mark_healthy, instantly_answered_events_are_rate_limited_not_a_request_storm, an_old_server_without_the_events_route_does_not_throttle_job_polling (all red before)", "no",
-      "draft PR only: no vpn-web #84 paired integration, no live-server mixed-version run, no Worker CPU measurement (request count model only: 3600 -> 324 per agent-hour); agents stay disabled; process-local gate loses its minimum on restart",
+      "merged to main as PR #192, unit-level only: no vpn-web #84 paired integration, no live-server mixed-version run, no Worker CPU measurement (request count model only: 3600 -> 324 per agent-hour); agents stay disabled; process-local gate loses its minimum on restart",
       "docs/qualification/2026-10-22/PR-INTEGRATION.md"),
     n("I-88", "medium", "af_capture test-window coverage", "FIXED_IN_BRANCH",
       "legacy report with two coincident bins could qualify a much longer A/B window with missing coverage",
@@ -324,7 +324,7 @@ NEW += [
       "adopt_snapshot refused any same-revision change as equivocation, but the control plane derives 'revoked' from live entitlement (billing lapse, suspension, device revocation) without a new revision: such revocations were never applied and the credential stayed live. Exists on main",
       "singbox-vpn PR #186: adopt a same-revision snapshot only when it is a strict tightening (same credentials, identical fields, revoked false->true)",
       "external_authorization.rs same_revision_* tests (the revocation test fails on the unfixed code with the production error text); end to end with the real agent and real vpn-web API: never applied before, 3.4-4.0 s after", "no",
-      "branch only; mixed-version behaviour with other agent builds not tested; un-revoke is I-100",
+      "merged to main as PR #186, unit-level on main; mixed-version behaviour with other agent builds not tested; un-revoke is I-100",
       "docs/qualification/2026-10-23/INTEGRATION-EVIDENCE.md"),
     n("I-100", "medium", "provisioning-agent / vpn-web", "FIXED_IN_BRANCH",
       "a credential revoked by entitlement and later restored (renewal after a lapse) was not re-enabled at the same revision: the agent refuses un-revoking without a higher snapshot_revision, and entitlement changes never advanced it, so a paying customer stayed locked out",
@@ -342,7 +342,7 @@ NEW += [
       "one credential outside the lifetime policy made the agent reject the WHOLE snapshot. Reachable in normal operation: revoke_external_vpn_device sets valid_until = least(valid_until, now()) and rotation shortens the old credential, both producing lifetimes below the 6 h minimum, so on main revoking a device younger than 6 h is never applied and blocks every other update on the node",
       "singbox-vpn PR #190: validate_item() (revoked credentials only need identity; live ones need a positive lifetime <= 30 d, no minimum in snapshot validation); the agent quarantines value-level invalid credentials individually (fail closed, rest applied, revision not acknowledged, ids reported); schema violations, duplicates and per-principal bounds still refuse the whole snapshot",
       "compat-config tests FAIL on main's validator in CI and pass fixed; agent quarantine tests; isolated end to end (paired-integration run 39945392121): main's agent fails 'fresh-device revoke' and 'revocation beside an invalid credential' even against the fixed server, the candidate passes both in ~2 s", "no",
-      "branch only; legacy (non-versioned) snapshots stay whole-snapshot strict; a set-level violation (duplicate ids / per-principal bounds) can still block a node's snapshot; dropping the minimum lifetime from snapshot validation is a deliberate policy change (the minimum remains an issuance rule)",
+      "merged to main as PR #190; legacy (non-versioned) snapshots stay whole-snapshot strict; a set-level violation (duplicate ids / per-principal bounds) can still block a node's snapshot; dropping the minimum lifetime from snapshot validation is a deliberate policy change (the minimum remains an issuance rule)",
       "docs/qualification/2026-10-23/INTEGRATION-EVIDENCE.md"),
     n("I-103", "medium", "vpn-web Node adapter", "FIXED_IN_BRANCH",
       "the adapter's error log recorded the concrete request path, so any handler exception on /sub/<token> wrote the subscription bearer token to the application log (journald); the success log already used the route template",
@@ -395,19 +395,34 @@ CI_PROMOTE = {
 }
 
 
+# Second batch, promoted on the later main commit de89be3 (merged PRs #186,
+# #190, #192). Each batch cites its own exact commit and runs.
+CI_MAIN_SHA_2 = "de89be39a3e0541328499e07fb5a0b204b32610d"
+CI_RUN_URL_2 = "https://github.com/David610/singbox-vpn/actions/runs/40015308680"
+SECURITY_RUN_URL_2 = "https://github.com/David610/singbox-vpn/actions/runs/40015308732"
+CI_PROMOTE_2 = {
+    "I-87": "PR #192 is merged; the events/pacing unit tests named above run in the CI `test` job. Unit-level only: no paired integration, no live server, no Worker CPU measurement. The gate is process-local and loses a server Retry-After minimum on a restart (bounded by MAX_RETRY_AFTER; a still-limiting server answers 429 and re-arms it); this is not persisted and is not a standalone-release blocker while agents stay disabled",
+    "I-99": "PR #186 is merged; the external_authorization same_revision_* tests run in the CI `test` job. Unit-level; the end-to-end agent run was on an isolated paired integration workflow, not on main",
+    "I-102": "PR #190 is merged; the compat-config validator tests and agent quarantine tests run in the CI `test` job. Unit-level; value-level quarantine only, a set-level violation can still refuse a whole snapshot",
+}
+
+
 def apply_ci_promotions(new, carried):
     index = {row["id"]: row for row in list(new) + list(carried)}
-    for issue_id, caveat in CI_PROMOTE.items():
-        row = index.get(issue_id)
-        if row is None:
-            sys.exit(f"CI_PROMOTE names unknown issue {issue_id}")
-        if row["state"] not in ("FIXED_IN_BRANCH", "UNVERIFIED"):
-            sys.exit(f"CI_PROMOTE: {issue_id} is {row['state']}, only FIXED_IN_BRANCH/UNVERIFIED may be promoted")
-        row["state"] = "CI_VERIFIED"
-        proof = (f"CI success on main {CI_MAIN_SHA[:7]} (CI {CI_RUN_URL}; Security {SECURITY_RUN_URL}). "
-                 f"Scope: {caveat}")
-        key = "evidence" if "evidence" in row else "evidence_2026_10_20"
-        row[key] = (row.get(key) + " | " if row.get(key) else "") + proof
+    batches = ((CI_PROMOTE, CI_MAIN_SHA, CI_RUN_URL, SECURITY_RUN_URL),
+               (CI_PROMOTE_2, CI_MAIN_SHA_2, CI_RUN_URL_2, SECURITY_RUN_URL_2))
+    for promote, sha, ci_url, sec_url in batches:
+        for issue_id, caveat in promote.items():
+            row = index.get(issue_id)
+            if row is None:
+                sys.exit(f"CI_PROMOTE names unknown issue {issue_id}")
+            if row["state"] not in ("FIXED_IN_BRANCH", "UNVERIFIED"):
+                sys.exit(f"CI_PROMOTE: {issue_id} is {row['state']}, only FIXED_IN_BRANCH/UNVERIFIED may be promoted")
+            row["state"] = "CI_VERIFIED"
+            proof = (f"CI success on main {sha[:7]} (CI {ci_url}; Security {sec_url}). "
+                     f"Scope: {caveat}")
+            key = "evidence" if "evidence" in row else "evidence_2026_10_20"
+            row[key] = (row.get(key) + " | " if row.get(key) else "") + proof
 
 
 def main():
