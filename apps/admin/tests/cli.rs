@@ -2814,7 +2814,11 @@ fn user_operation_restart_matrix_is_one_restart_per_real_change() {
     let id = created["id"].as_str().unwrap();
 
     // Operations that must not touch the data plane.
-    assert_eq!(restarts(&["user", "enable", id]), 0, "enable of an enabled user");
+    assert_eq!(
+        restarts(&["user", "enable", id]),
+        0,
+        "enable of an enabled user"
+    );
     assert_eq!(restarts(&["user", "rotate-token", id]), 0, "token rotation");
     assert_eq!(restarts(&["user", "list"]), 0, "list");
     assert_eq!(restarts(&["user", "links", id]), 0, "links");
@@ -2826,10 +2830,18 @@ fn user_operation_restart_matrix_is_one_restart_per_real_change() {
 
     // Each real authorization change is exactly one restart.
     assert_eq!(restarts(&["user", "disable", id]), 1, "disable");
-    assert_eq!(restarts(&["user", "disable", id]), 0, "disable of a disabled user");
+    assert_eq!(
+        restarts(&["user", "disable", id]),
+        0,
+        "disable of a disabled user"
+    );
     assert_eq!(restarts(&["user", "enable", id]), 1, "enable");
     assert_eq!(restarts(&["user", "rotate-vless", id]), 1, "rotate-vless");
-    assert_eq!(restarts(&["user", "rotate-hysteria", id]), 1, "rotate-hysteria");
+    assert_eq!(
+        restarts(&["user", "rotate-hysteria", id]),
+        1,
+        "rotate-hysteria"
+    );
     assert_eq!(
         restarts(&["user", "rotate-credentials", id]),
         1,
