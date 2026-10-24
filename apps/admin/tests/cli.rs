@@ -3668,6 +3668,51 @@ fn hairpin_invariants_survive_user_churn_reconcile_repair_and_policy_changes() {
     run(&["render-config"], "").success();
     assert_hairpin_invariants(&load(), "after repair-style init + render");
 
+    // Credential and user lifecycle operations re-render the same config; none may
+    // lose, reorder or widen the hairpin rules (rotation and removal are the
+    // operations a fix was lost through before).
+    let id_of = |name: &str| -> String {
+        let listing = String::from_utf8(
+            run(&["user", "list"], "")
+                .success()
+                .get_output()
+                .stdout
+                .clone(),
+        )
+        .unwrap();
+        listing
+            .lines()
+            .find(|l| l.contains(name))
+            .and_then(|l| l.split_whitespace().next())
+            .unwrap_or_else(|| panic!("{name} in user list"))
+            .to_string()
+    };
+    let bob_id = id_of("bob");
+    run(&["user", "enable", &alice_id], "").success();
+    assert_hairpin_invariants(&load(), "after user enable");
+    run(&["user", "rotate-vless", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after rotate-vless");
+    run(&["user", "rotate-hysteria", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after rotate-hysteria");
+    run(&["user", "rotate-credentials", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after rotate-credentials");
+    run(&["user", "rotate-token", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after rotate-token");
+    run(&["init", "--rotate"], "").success();
+    run(&["render-config"], "").success();
+    assert_hairpin_invariants(&load(), "after REALITY key rotation");
+    run(&["hysteria-obfs-rotate"], "").success();
+    assert_hairpin_invariants(&load(), "after Hysteria2 obfuscation rotation");
+    run(&["user", "remove", &bob_id], "").success();
+    assert_hairpin_invariants(&load(), "after user remove");
+
+    // A backup/restore round trip must reproduce a config that still satisfies them.
+    let archive = dir.path().join("hairpin-roundtrip.tar");
+    run(&["backup", "--output", archive.to_str().unwrap()], "").success();
+    run(&["user", "create", "--name", "carol"], "").success();
+    run(&["restore", archive.to_str().unwrap()], "").success();
+    assert_hairpin_invariants(&load(), "after backup + restore");
+
     // Explicitly disabling literal-IPv6 protection on a hairpin exit is refused
     // and leaves the config exactly as it was (INV-5).
     let before_policy = std::fs::read(&config_path).unwrap();
@@ -3938,6 +3983,36 @@ fn doctor_coverage_line_distinguishes_not_run_from_failed_from_passed() {
         !stdout.contains("server proven healthy"),
         "doctor --client must never claim the server is fully proven healthy when L5-6 did not \
          run:\n{stdout}"
+    );
+}
+
+/// A healthy doctor run must still say that YouTube/Shorts delivery depends
+/// on the egress IP and is not verified, so green L1-L4 never reads as
+/// "Shorts will play" (docs/YOUTUBE_FIX_INVARIANTS.md, issue #169).
+#[test]
+fn doctor_always_reports_youtube_egress_readiness_as_unverified() {
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+
+    let output = admin(dir.path(), &cfg_path).arg("doctor").assert();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let yt_line = stdout
+        .lines()
+        .find(|l| l.contains("[YT"))
+        .unwrap_or_else(|| panic!("doctor must emit a YouTube readiness line:\n{stdout}"));
+    assert!(
+        yt_line.contains("UNVERIFIED") && yt_line.contains("own public IP"),
+        "plain exit must say Google traffic uses its own IP and readiness is unverified: {yt_line}"
+    );
+    assert!(
+        !yt_line.contains("[OK") && !yt_line.to_lowercase().contains("will play"),
+        "the YouTube line must never be a pass: {yt_line}"
     );
 }
 
