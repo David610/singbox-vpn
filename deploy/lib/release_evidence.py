@@ -34,6 +34,7 @@ REQUIRED_NETWORKS = ("wifi", "cellular")
 REQUIRED_YOUTUBE_MODES = ("signed_in", "incognito")
 REQUIRED_SHORTS_CONSECUTIVE = 10
 REQUIRED_PLAYBACK_SECONDS = 900
+REQUIRED_SHORT_PLAYBACK_SECONDS = 30
 PLAYBACK_GATES = ("long_form_playback", "seeking", "reconnect", "app_restart",
                   "post_reconcile_playback", "google_egress_verified")
 CELL_FIELDS = ("iphone_model", "ios_version", "hiddify_version", "transport", "network",
@@ -94,6 +95,11 @@ def compute(doc: dict, tag: str | None, commit: str | None) -> tuple[str, list[s
                 and cell.get("release_tag") == doc["release_tag"]
                 and all(cell.get(f) not in (None, "") for f in CELL_FIELDS)
                 and measured_at_least(cell.get("shorts_consecutive_played"), REQUIRED_SHORTS_CONSECUTIVE)
+                and measured_at_least(cell.get("shorts_distinct_played"), REQUIRED_SHORTS_CONSECUTIVE)
+                and cell["shorts_distinct_played"] <= cell["shorts_consecutive_played"]
+                and measured_at_least(cell.get("shorts_min_playback_seconds"), REQUIRED_SHORT_PLAYBACK_SECONDS)
+                and type(cell.get("observed_failures")) is int and cell["observed_failures"] == 0
+                and cell.get("repeated_switching") is True
                 and measured_at_least(cell.get("continuous_playback_seconds"), REQUIRED_PLAYBACK_SECONDS)
                 and all(cell.get(f) is True for f in PLAYBACK_GATES)
                 and DIGEST.fullmatch(str(doc.get("runtime_binary_sha256", "")))
@@ -162,3 +168,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

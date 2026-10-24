@@ -164,7 +164,7 @@ Native evidence must distinguish `signed_in` and `incognito` for both transports
 and both networks. The validator also requires the YouTube version, matching
 runtime binary digest, at least 900 seconds continuous playback, long-form
 playback/seek, reconnect, app restart, post-reconciliation playback and intended
-Google egress verification. See the dated
+Google egress verification. Each cell must also record `shorts_distinct_played >= 10`\n(no greater than `shorts_consecutive_played`), `shorts_min_playback_seconds >= 30`\nfor every counted Short (choose videos long enough to cross the historical\n20-second stall), `repeated_switching: true`, and integer `observed_failures: 0`.\nCount startup, switching, freezing and recovery failures across the entire agreed\ncell, including retries; a later successful attempt must not erase a failure.\nKeep only aggregate counts in the acceptance record; human-reviewed evidence\nreferences must substantiate distinct videos and timing without publishing\naccount data or browsing history. Legacy cells missing these measurements do\nnot qualify. These are observations, never a guarantee of future success. See the dated
 [executable procedure](qualification/2026-10-22/RUNBOOK.md). A synthetic test
 fixture passing the validator is never device evidence.
 
@@ -213,3 +213,4 @@ If a release is bad:
 ## Stop condition
 
 Once the stable release passes the policy above, do not invent additional hardening phases without evidence. Future work should be driven by a real bug, security advisory, upstream compatibility change, OS/client regression, or explicitly approved product requirement.
+

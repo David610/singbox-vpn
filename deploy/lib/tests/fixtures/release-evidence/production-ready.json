@@ -40,7 +40,11 @@
    "reconnect": true,
    "app_restart": true,
    "post_reconcile_playback": true,
-   "google_egress_verified": true
+   "google_egress_verified": true,
+   "shorts_distinct_played": 10,
+   "shorts_min_playback_seconds": 30,
+   "observed_failures": 0,
+   "repeated_switching": true
   },
   {
    "iphone_model": "iPhone 15",
@@ -64,7 +68,11 @@
    "reconnect": true,
    "app_restart": true,
    "post_reconcile_playback": true,
-   "google_egress_verified": true
+   "google_egress_verified": true,
+   "shorts_distinct_played": 10,
+   "shorts_min_playback_seconds": 30,
+   "observed_failures": 0,
+   "repeated_switching": true
   },
   {
    "iphone_model": "iPhone 15",
@@ -88,7 +96,11 @@
    "reconnect": true,
    "app_restart": true,
    "post_reconcile_playback": true,
-   "google_egress_verified": true
+   "google_egress_verified": true,
+   "shorts_distinct_played": 10,
+   "shorts_min_playback_seconds": 30,
+   "observed_failures": 0,
+   "repeated_switching": true
   },
   {
    "iphone_model": "iPhone 15",
@@ -112,7 +124,11 @@
    "reconnect": true,
    "app_restart": true,
    "post_reconcile_playback": true,
-   "google_egress_verified": true
+   "google_egress_verified": true,
+   "shorts_distinct_played": 10,
+   "shorts_min_playback_seconds": 30,
+   "observed_failures": 0,
+   "repeated_switching": true
   },
   {
    "iphone_model": "iPhone 15",
@@ -136,7 +152,11 @@
    "reconnect": true,
    "app_restart": true,
    "post_reconcile_playback": true,
-   "google_egress_verified": true
+   "google_egress_verified": true,
+   "shorts_distinct_played": 10,
+   "shorts_min_playback_seconds": 30,
+   "observed_failures": 0,
+   "repeated_switching": true
   },
   {
    "iphone_model": "iPhone 15",
@@ -160,7 +180,11 @@
    "reconnect": true,
    "app_restart": true,
    "post_reconcile_playback": true,
-   "google_egress_verified": true
+   "google_egress_verified": true,
+   "shorts_distinct_played": 10,
+   "shorts_min_playback_seconds": 30,
+   "observed_failures": 0,
+   "repeated_switching": true
   },
   {
    "iphone_model": "iPhone 15",
@@ -184,7 +208,11 @@
    "reconnect": true,
    "app_restart": true,
    "post_reconcile_playback": true,
-   "google_egress_verified": true
+   "google_egress_verified": true,
+   "shorts_distinct_played": 10,
+   "shorts_min_playback_seconds": 30,
+   "observed_failures": 0,
+   "repeated_switching": true
   },
   {
    "iphone_model": "iPhone 15",
@@ -208,7 +236,11 @@
    "reconnect": true,
    "app_restart": true,
    "post_reconcile_playback": true,
-   "google_egress_verified": true
+   "google_egress_verified": true,
+   "shorts_distinct_played": 10,
+   "shorts_min_playback_seconds": 30,
+   "observed_failures": 0,
+   "repeated_switching": true
   }
  ],
  "deployment": {

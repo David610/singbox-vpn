@@ -79,6 +79,25 @@ class ReleaseEvidence(unittest.TestCase):
             rc, lvl, _ = run(d, "--require", "DEVICE_VERIFIED")
             self.assertEqual((rc, lvl), (1, "SERVER_QUALIFIED"), field)
 
+    def test_distinct_short_duration_switching_and_zero_failures_are_required(self):
+        for field, values in (
+            ("shorts_distinct_played", (None, 9, True, "10")),
+            ("shorts_min_playback_seconds", (None, 20, 29, True, "30")),
+            ("observed_failures", (None, 1, -1, False, "0")),
+            ("repeated_switching", (None, False, "PASS")),
+        ):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    d = self.base()
+                    d["device_matrix"][0][field] = value
+                    self.assertEqual(run(d, "--require", "DEVICE_VERIFIED")[:2],
+                                     (1, "SERVER_QUALIFIED"))
+
+        d = self.base()
+        d["device_matrix"][0]["shorts_distinct_played"] = 11
+        self.assertEqual(run(d, "--require", "DEVICE_VERIFIED")[:2],
+                         (1, "SERVER_QUALIFIED"))  # cannot exceed total consecutive plays
+
     def test_ci_on_a_different_commit_is_not_code_qualified(self):
         d = self.base()
         d["ci"]["git_commit"] = "c" * 40
@@ -153,3 +172,4 @@ class ReleaseEvidence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
