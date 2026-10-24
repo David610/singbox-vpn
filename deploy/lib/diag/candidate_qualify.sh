@@ -507,7 +507,8 @@ PY
 
   # ---- tunnel: start, then PROVE it exits at the candidate before any media test uses it
   LOCAL_PORT="$("$LOCAL_PY" -I "$LIB" free-port)"
-  ssh "${SSH_OPTS[@]}" -N -D "127.0.0.1:$LOCAL_PORT" -o ExitOnForwardFailure=yes "$TARGET" >/dev/null 2>>"$EVDIR/remote.log" &
+  # own connection, not a client of the shared mux: ssh keeps the FIRST value of an option, so these must come first
+  ssh -o ControlMaster=no -o ControlPath=none "${SSH_OPTS[@]}" -N -D "127.0.0.1:$LOCAL_PORT" -o ExitOnForwardFailure=yes "$TARGET" >/dev/null 2>>"$EVDIR/remote.log" &
   TUNNEL_PID=$!
   rc=0
   "$LOCAL_PY" -I "$LIB" socks-check --port "$LOCAL_PORT" --expect-ip "$egress" --deadline 25 --pid "$TUNNEL_PID" 2>>"$EVDIR/remote.log" || rc=$?
