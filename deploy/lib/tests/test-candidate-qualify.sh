@@ -290,14 +290,14 @@ PROBE_MODE=all_played
 for sig in INT TERM; do
   new_env "interrupted_$sig"
   PROBE_MODE=hang
-  (
-    # shellcheck disable=SC2046
-    env PATH="$BIN:$PATH" QT_STATE="$S" QT_HOSTKEY_PUB="$T/hostkey.pub" QT_SCENARIO=good QT_PROBE_MODE=hang \
-      QUALIFY_PROBE_PYTHON=python3 QUALIFY_PROBE_SCRIPT="$FIX/fake_probe.py" \
-      python3 -c 'import os,signal,sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.setsid(); os.execvp("bash", ["bash"] + sys.argv[1:])' "$TOOL" $(run_args) >"$T/$CASE/out.txt" 2>&1 &
-    echo $! >"$S/tool.pid"
-  )
-  tool_pid="$(cat "$S/tool.pid")"
+  # Keep the child parented to this shell. A subshell here orphaned it to PID 1;
+  # containers without a reaping init then kept an exited tool as a zombie and
+  # kill -0 falsely reported an interruption-cleanup failure.
+  # shellcheck disable=SC2046
+  env PATH="$BIN:$PATH" QT_STATE="$S" QT_HOSTKEY_PUB="$T/hostkey.pub" QT_SCENARIO=good QT_PROBE_MODE=hang \
+    QUALIFY_PROBE_PYTHON=python3 QUALIFY_PROBE_SCRIPT="$FIX/fake_probe.py" \
+    python3 -c 'import os,signal,sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.setsid(); os.execvp("bash", ["bash"] + sys.argv[1:])' "$TOOL" $(run_args) >"$T/$CASE/out.txt" 2>&1 &
+  tool_pid=$!
   PIDS_TO_KILL+=("$tool_pid")
   waited=0
   while [ ! -s "$S/probe.pid" ] && [ "$waited" -lt 100 ]; do sleep 0.2; waited=$((waited + 1)); done
@@ -306,6 +306,14 @@ for sig in INT TERM; do
   waited=0
   while alive "$tool_pid" && [ "$waited" -lt 100 ]; do sleep 0.2; waited=$((waited + 1)); done
   check "tool exited after SIG$sig" bash -c '! kill -0 "$1" 2>/dev/null' _ "$tool_pid"
+  # Reap only after the bounded exit check; a broken handler must not hang CI.
+  if ! alive "$tool_pid"; then
+    tool_rc=0
+    wait "$tool_pid" || tool_rc=$?
+    expected_rc=130
+    [ "$sig" != TERM ] || expected_rc=143
+    check "tool preserves SIG$sig exit status" test "$tool_rc" -eq "$expected_rc"
+  fi
   RC=0
   check "verdict.json written on interruption" test -s "$(vdir)/verdict.json"
   check "verdict INCONCLUSIVE" test "$(vfield verdict)" = "INCONCLUSIVE"

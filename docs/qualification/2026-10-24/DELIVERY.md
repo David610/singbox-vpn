@@ -22,6 +22,18 @@ Full Python discovery on the complete checkout passed 234 tests before the
 duplicate-cell addition; final checks and immutable CI results belong to the
 PR and release workflow, not to historical qualification records.
 
+Final local Python discovery: **235 tests passed**. Six focused shell suites
+passed (release stability/version, own-address backfill, conservative interrupted
+update cleanup, SIGPIPE lint and Shorts monitor installation). The egress
+qualification harness initially failed both interruption exit checks: it orphaned
+its child to a container PID 1 that did not reap zombies. I-106 fixes ownership
+and explicit reaping and asserts signal exit status; **125 checks passed** after
+the fix. These fixtures use fake SSH/browser processes, not a real VPS.
+Version contract, documentation links, whitespace and secret-logging checks pass.
+The known-secret scanner had no supplied secret values and checked nothing;
+it is not a successful secret-value scan. Changed source/fixtures were reviewed
+for accidental credentials; synthetic fixture digests are not runtime evidence.
+
 ## Findings and boundaries
 
 - Historical accepted-IP hairpin browser success and the owner's older native

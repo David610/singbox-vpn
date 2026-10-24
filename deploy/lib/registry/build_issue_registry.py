@@ -19,6 +19,12 @@ def n(id_, sev, comp, state, title, fix="", test="", device="no", risk="", evide
 
 
 NEW = [
+    n("I-106", "medium", "egress diagnostic interruption test harness", "FIXED_IN_BRANCH",
+      "interruption tests orphaned the tool to PID 1; a container without a reaping init retained zombies and kill -0 falsely reported failed cleanup",
+      "launch the helper as a direct child, wait/reap after bounded exit check and assert exact SIGINT/SIGTERM status",
+      "test-candidate-qualify.sh: before 2 failures/121 passes; after 125 checks pass with signal exit-status assertions",
+      "no", "hermetic fake SSH/browser only; no actual remote interruption or native playback proof",
+      "PR #201; local process status confirmed orphaned zombie bash children; 2026-10-24"),
     n("I-105", "high", "release native Shorts acceptance", "FIXED_IN_BRANCH",
       "device evidence could qualify without 10 distinct Shorts, per-Short playback beyond the 20-second stall, repeated switching or zero failures; duplicate PASS cells could mask failed retries",
       "require >=10 distinct plays, >=30 seconds minimum playback per counted Short, explicit switching, integer zero failures and exactly one aggregate record per required cell",

@@ -3,6 +3,19 @@
  "generated_for": "2026-10-20 staging remediation",
  "new": [
   {
+   "id": "I-106",
+   "severity": "medium",
+   "component": "egress diagnostic interruption test harness",
+   "state": "FIXED_IN_BRANCH",
+   "title": "interruption tests orphaned the tool to PID 1; a container without a reaping init retained zombies and kill -0 falsely reported failed cleanup",
+   "fix": "launch the helper as a direct child, wait/reap after bounded exit check and assert exact SIGINT/SIGTERM status",
+   "regression_test": "test-candidate-qualify.sh: before 2 failures/121 passes; after 125 checks pass with signal exit-status assertions",
+   "device_required": "no",
+   "remaining_risk": "hermetic fake SSH/browser only; no actual remote interruption or native playback proof",
+   "evidence": "PR #201; local process status confirmed orphaned zombie bash children; 2026-10-24",
+   "supersedes_audit_entry": false
+  },
+  {
    "id": "I-105",
    "severity": "high",
    "component": "release native Shorts acceptance",
