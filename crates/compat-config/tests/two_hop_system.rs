@@ -1886,3 +1886,162 @@ fn harness_readiness_is_owned_by_the_started_process() {
         common::read_log(&dir.path().join("serving.log"))
     );
 }
+
+// ----------------------------------------------------------------------
+// S18-S20: relayed exit route with a DEDICATED, optionally Vision-less exit
+// credential (`vless_flow = "none"`, docs/RELAY_EXIT_VISION.md). Production
+// renderers on both sides; real sing-box processes; positive traffic and the
+// two flow mismatches. The first (relay) hop keeps Vision throughout.
+// ----------------------------------------------------------------------
+
+const DEDICATED_EXIT_UUID_SEED: u8 = 0xb2;
+
+impl Lab {
+    /// Re-declare the via route with its OWN exit credential (no `credential_ref`), optionally
+    /// `vless_flow = "none"` on the client side, and render the exit's matching dedicated user
+    /// with Vision off or on. Applies and restarts both nodes through the production apply path.
+    fn use_dedicated_via_credential(&mut self, client_flow_none: bool, exit_vision_off: bool) {
+        let mut text = self.relay.header("ru1", "relay", RELAY_IP, &self.decoy);
+        text.push_str(
+            r#"
+[[access_paths]]
+id = "via-ru1"
+kind = "relay"
+via_endpoint_id = "reality-1"
+capabilities = ["tcp"]
+"#,
+        );
+        for (id, tag, path, extra) in [
+            ("de1-direct", DIRECT_TAG, "direct", String::new()),
+            (
+                "de1-via-ru1",
+                VIA_TAG,
+                "via-ru1",
+                if client_flow_none {
+                    "vless_flow = \"none\"\n".to_string()
+                } else {
+                    String::new()
+                },
+            ),
+        ] {
+            text.push_str(&format!(
+                r#"
+[[peer_endpoints]]
+id = "{id}"
+tag = "{tag}"
+host = "{EXIT_IP}"
+port = {port}
+transport = "vless_reality"
+server_name = "{sni}"
+reality_public_key = "{pbk}"
+reality_short_id = "{sid}"
+failure_domain = "exit:de1"
+path = "{path}"
+{extra}"#,
+                port = self.exit_tap.port,
+                sni = self.decoy.hostname,
+                pbk = self.exit.reality.public_key_hex,
+                sid = self.exit.reality.short_ids[0],
+            ));
+        }
+        std::fs::write(&self.relay.deployment_path, text).unwrap();
+
+        let dedicated_uuid = uuid(DEDICATED_EXIT_UUID_SEED);
+        self.relay_user.peer_credentials.insert(
+            "de1-via-ru1".to_string(),
+            PeerCredential::VlessReality {
+                uuid: dedicated_uuid.clone(),
+            },
+        );
+        let mut dedicated = user("alice-via-at-exit", &dedicated_uuid, None);
+        dedicated.vision_off_experiment = exit_vision_off;
+        self.exit
+            .apply(&self.sb, &[self.exit_user.clone(), dedicated])
+            .unwrap();
+        self.relay
+            .apply(
+                &self.sb,
+                &[self.relay_user.clone(), self.probe_user.clone()],
+            )
+            .unwrap();
+        self.exit.start(&self.sb);
+        self.relay.start(&self.sb);
+    }
+}
+
+fn via_outbound(core: &serde_json::Value) -> &serde_json::Value {
+    core["outbounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["tag"] == VIA_TAG)
+        .expect("via route outbound")
+}
+
+#[test]
+fn s18_visionless_dedicated_exit_credential_works_end_to_end() {
+    let (mut lab, _serial) = lab!();
+    lab.use_dedicated_via_credential(true, true);
+    let core = lab.provisioned_config(&lab.relay_user.clone()).unwrap();
+    // The served profile: first hop keeps Vision, only the nested exit hop is flow-less,
+    // with the dedicated credential; the direct route is unchanged.
+    let outbounds = core["outbounds"].as_array().unwrap();
+    let first_hop = outbounds
+        .iter()
+        .find(|o| o["tag"] == via_outbound(&core)["detour"])
+        .expect("hidden first hop");
+    assert_eq!(first_hop["flow"], "xtls-rprx-vision");
+    assert!(via_outbound(&core).get("flow").is_none());
+    assert_eq!(via_outbound(&core)["uuid"], uuid(DEDICATED_EXIT_UUID_SEED));
+    let direct = outbounds.iter().find(|o| o["tag"] == DIRECT_TAG).unwrap();
+    assert_eq!(direct["flow"], "xtls-rprx-vision");
+
+    let via = lab.client(&core, VIA_TAG);
+    assert!(
+        reaches(via, TARGET_IP, lab.target.port),
+        "S18: Vision-less nested exit route must carry traffic"
+    );
+    let direct_socks = lab.client(&core, DIRECT_TAG);
+    assert!(
+        reaches(direct_socks, TARGET_IP, lab.target.port),
+        "S18: the ordinary (Vision) exit user is unaffected"
+    );
+    // Fail-closed is intact: the route still depends on the relay.
+    lab.relay.stop();
+    assert!(
+        refused(via, TARGET_IP, lab.target.port),
+        "S18: via route must still need the relay"
+    );
+}
+
+#[test]
+fn s19_client_vision_against_visionless_exit_credential_is_rejected() {
+    let (mut lab, _serial) = lab!();
+    // Server renders the dedicated credential flow-less; the client profile still asks for Vision.
+    lab.use_dedicated_via_credential(false, true);
+    let core = lab.provisioned_config(&lab.relay_user.clone()).unwrap();
+    assert_eq!(via_outbound(&core)["flow"], "xtls-rprx-vision");
+    let before = lab.target.hits();
+    let via = lab.client(&core, VIA_TAG);
+    assert!(
+        refused(via, TARGET_IP, lab.target.port),
+        "S19: mismatched flow must be rejected, not silently accepted"
+    );
+    assert_eq!(lab.target.hits(), before, "S19: no byte reached the target");
+}
+
+#[test]
+fn s20_client_without_vision_against_vision_exit_credential_is_rejected() {
+    let (mut lab, _serial) = lab!();
+    // Client profile is flow-less; the exit still renders the dedicated credential with Vision.
+    lab.use_dedicated_via_credential(true, false);
+    let core = lab.provisioned_config(&lab.relay_user.clone()).unwrap();
+    assert!(via_outbound(&core).get("flow").is_none());
+    let before = lab.target.hits();
+    let via = lab.client(&core, VIA_TAG);
+    assert!(
+        refused(via, TARGET_IP, lab.target.port),
+        "S20: mismatched flow must be rejected, not silently accepted"
+    );
+    assert_eq!(lab.target.hits(), before, "S20: no byte reached the target");
+}
