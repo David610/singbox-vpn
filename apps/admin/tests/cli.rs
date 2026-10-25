@@ -6555,6 +6555,583 @@ fn tls_spoof_set_fails_and_restores_when_the_capability_dropin_cannot_be_written
     run(&["render-config"]).assert().success();
 }
 
+// ----------------------------------------------------------------------
+// Two-host pairing (`vpn-admin pair ...`): an exit and a relay, each its own temp deployment with a fake
+// sing-box and systemctl. Positive flow, idempotence, conflict refusal, secret hygiene, and rollback.
+// ----------------------------------------------------------------------
+
+#[cfg(unix)]
+struct PairNode {
+    dir: tempfile::TempDir,
+    cfg: std::path::PathBuf,
+    systemctl: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+fn pair_node(role: &str, node_id: &str, host: &str) -> PairNode {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = fake_singbox(dir.path(), false);
+    let state = dir.path().join("state");
+    let access = if role == "relay" {
+        "\n[[access_paths]]\nid = \"relay-ingress\"\nkind = \"relay\"\nvia_endpoint_id = \"reality-1\"\ncapabilities = [\"tcp\"]\n"
+    } else {
+        ""
+    };
+    let cfg = dir.path().join("deployment.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "schema_version = 2\nnode_id = \"{node_id}\"\nrole = \"{role}\"\npublic_host = \"{host}\"\nsubscription_host = \"{host}\"\nstate_dir = \"{state}\"\nsingbox_binary = \"{singbox}\"\n\n[reality]\nlisten_port = 443\nhandshake_server = \"www.example.com\"\n\n[hysteria2]\nlisten_port = 443\n\n[subscription]\nlisten_port = 9100\n{access}",
+            state = toml_path(&state),
+            singbox = toml_path(&binary),
+        ),
+    )
+    .unwrap();
+    let systemctl = fake_systemctl(dir.path());
+    let n = PairNode {
+        dir,
+        cfg,
+        systemctl,
+    };
+    pair_cmd(&n, &["init"]).assert().success();
+    n
+}
+
+#[cfg(unix)]
+fn pair_cmd(n: &PairNode, args: &[&str]) -> Command {
+    let mut c = admin(n.dir.path(), &n.cfg);
+    c.env("SINGBOX_VPN_LOCK_PATH", n.dir.path().join("lock"))
+        .env("SINGBOX_VPN_SYSTEMCTL", &n.systemctl)
+        .env("SINGBOX_VPN_SYSTEMD_DIR", n.dir.path().join("units"))
+        .env("SYSTEMCTL_LOG", n.dir.path().join("calls"))
+        .args(args);
+    c
+}
+
+#[cfg(unix)]
+fn user_id(n: &PairNode, name: &str) -> String {
+    let out = pair_cmd(n, &["user", "list"]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.split_whitespace().nth(1) == Some(name))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or_else(|| panic!("user {name} not listed"))
+        .to_string()
+}
+
+#[cfg(unix)]
+fn users_json(n: &PairNode) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(n.dir.path().join("state/users/users.json")).unwrap())
+        .unwrap()
+}
+
+#[test]
+#[cfg(unix)]
+fn pairing_relay_and_exit_end_to_end_with_dedicated_visionless_credential() {
+    use std::os::unix::fs::PermissionsExt;
+    let exit = pair_node("exit", "de1", "de1.example.test");
+    let relay = pair_node("relay", "ru1", "ru1.example.test");
+
+    // EXIT issues a dedicated, Vision-less credential into a 0600 file.
+    let bundle = exit.dir.path().join("bundle.json");
+    let out = pair_cmd(
+        &exit,
+        &[
+            "pair",
+            "issue-exit",
+            "--label",
+            "alice",
+            "--flow",
+            "none",
+            "--out",
+        ],
+    )
+    .arg(&bundle)
+    .output()
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::metadata(&bundle).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&bundle).unwrap()).unwrap();
+    let uuid = doc["credential"]["uuid"].as_str().unwrap().to_string();
+    assert_eq!(doc["vless_flow"], "none");
+    assert_eq!(doc["exit"]["host"], "de1.example.test");
+    // The credential is on no command output.
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(&uuid));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains(&uuid));
+    // The exit renders exactly that user without Vision and nobody else.
+    let flows: Vec<(String, bool)> = users_json(&exit)["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| {
+            (
+                u["name"].as_str().unwrap().to_string(),
+                u["vision_off_experiment"].as_bool().unwrap_or(false),
+            )
+        })
+        .collect();
+    assert!(
+        flows.contains(&("peer-alice".to_string(), true)),
+        "{flows:?}"
+    );
+    assert!(flows
+        .iter()
+        .filter(|(n, _)| n != "peer-alice")
+        .all(|(_, off)| !off));
+    // A second credential for the same label is refused, never reused.
+    pair_cmd(
+        &exit,
+        &[
+            "pair",
+            "issue-exit",
+            "--label",
+            "alice",
+            "--flow",
+            "none",
+            "--out",
+        ],
+    )
+    .arg(exit.dir.path().join("again.json"))
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("already exists"));
+    // Piping (stdout is not a terminal here) works.
+    pair_cmd(&exit, &["pair", "issue-exit", "--label", "bob"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("singbox-vpn-exit-pairing/1"));
+
+    // RELAY: a friend, then accept the exit bundle for that friend.
+    pair_cmd(&relay, &["user", "create", "--name", "friend1"])
+        .assert()
+        .success();
+    let friend = user_id(&relay, "friend1");
+    std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o644)).unwrap();
+    pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend,
+            "--endpoint-id",
+            "de1-via-ru1",
+            "--bundle-file",
+        ],
+    )
+    .arg(&bundle)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("readable by group/others"));
+    assert!(
+        !std::fs::read_to_string(&relay.cfg)
+            .unwrap()
+            .contains("peer_endpoints"),
+        "nothing changed on refusal"
+    );
+    std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let accepted = pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend,
+            "--endpoint-id",
+            "de1-via-ru1",
+            "--bundle-file",
+        ],
+    )
+    .arg(&bundle)
+    .output()
+    .unwrap();
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&accepted.stdout).contains(&uuid));
+    assert!(!String::from_utf8_lossy(&accepted.stderr).contains(&uuid));
+    let toml_text = std::fs::read_to_string(&relay.cfg).unwrap();
+    assert!(
+        toml_text.contains("id = \"de1-via-ru1\"") && toml_text.contains("vless_flow = \"none\""),
+        "{toml_text}"
+    );
+    assert!(toml_text.contains("path = \"relay-ingress\""));
+    assert!(
+        !toml_text.contains(&uuid),
+        "no credential in deployment.toml"
+    );
+    let relay_users = users_json(&relay);
+    let holder = relay_users["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == friend.as_str())
+        .unwrap();
+    assert_eq!(
+        holder["peer_credentials"]["de1-via-ru1"]["uuid"],
+        uuid.as_str()
+    );
+
+    // Re-running needs an explicit decision for the credential; the declaration is recognised as identical.
+    pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend,
+            "--endpoint-id",
+            "de1-via-ru1",
+            "--bundle-file",
+        ],
+    )
+    .arg(&bundle)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("already has a credential"));
+    pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend,
+            "--endpoint-id",
+            "de1-via-ru1",
+            "--replace-credential",
+            "--bundle-file",
+        ],
+    )
+    .arg(&bundle)
+    .assert()
+    .success()
+    .stderr(predicates::str::contains(
+        "already declared with identical parameters",
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&relay.cfg)
+            .unwrap()
+            .matches("[[peer_endpoints]]")
+            .count(),
+        1
+    );
+
+    // A bundle that describes a different server under the same id is refused, not merged.
+    let mut other = doc.clone();
+    other["exit"]["host"] = serde_json::json!("evil.example.test");
+    let other_path = relay.dir.path().join("other.json");
+    std::fs::write(&other_path, serde_json::to_vec(&other).unwrap()).unwrap();
+    std::fs::set_permissions(&other_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let before = std::fs::read(&relay.cfg).unwrap();
+    pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend,
+            "--endpoint-id",
+            "de1-via-ru1",
+            "--replace-credential",
+            "--bundle-file",
+        ],
+    )
+    .arg(&other_path)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("different parameters"));
+    assert_eq!(std::fs::read(&relay.cfg).unwrap(), before);
+
+    // Status names things and counts credentials; it never prints one.
+    let status = pair_cmd(&relay, &["pair", "status"]).output().unwrap();
+    let text = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        text.contains("de1-via-ru1")
+            && text.contains("flow=none")
+            && text.contains("users_with_credential=1"),
+        "{text}"
+    );
+    assert!(!text.contains(&uuid));
+    let exit_status = pair_cmd(&exit, &["pair", "status"]).output().unwrap();
+    let text = String::from_utf8_lossy(&exit_status.stdout);
+    assert!(text.contains("(1 Vision-less)"), "{text}");
+    assert!(text.contains("leaves this exit directly"), "{text}");
+}
+
+#[test]
+#[cfg(unix)]
+fn pairing_hairpin_bundle_connects_exit_to_relay_without_exposing_the_credential() {
+    use std::os::unix::fs::PermissionsExt;
+    let exit = pair_node("exit", "de1", "de1.example.test");
+    let relay = pair_node("relay", "ru1", "ru1.example.test");
+    // Wrong role is refused.
+    pair_cmd(&exit, &["pair", "issue-hairpin", "--label", "x"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("relay node"));
+    let bundle = relay.dir.path().join("hairpin.json");
+    let out = pair_cmd(
+        &relay,
+        &["pair", "issue-hairpin", "--label", "de1", "--out"],
+    )
+    .arg(&bundle)
+    .output()
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&bundle).unwrap()).unwrap();
+    let uuid = doc["credential"]["uuid"].as_str().unwrap().to_string();
+    assert!(!String::from_utf8_lossy(&out.stderr).contains(&uuid));
+    let principal = users_json(&relay)["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["name"] == "hairpin-de1")
+        .unwrap()
+        .clone();
+    assert_eq!(principal["google_egress_hairpin"], true);
+
+    // The exit takes the bundle; deployment.toml gains the section, no credential in it.
+    std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let accepted = pair_cmd(&exit, &["pair", "accept-hairpin", "--bundle-file"])
+        .arg(&bundle)
+        .output()
+        .unwrap();
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&accepted.stdout).contains(&uuid));
+    let toml_text = std::fs::read_to_string(&exit.cfg).unwrap();
+    assert!(
+        toml_text.contains("[google_egress_hairpin]")
+            && toml_text.contains("relay_host = \"ru1.example.test\"")
+    );
+    assert!(!toml_text.contains(&uuid));
+    let status = pair_cmd(&exit, &["pair", "status"]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains("hairpinned through ru1.example.test:443")
+    );
+    // A relay-issued bundle is not an exit bundle.
+    pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            "u",
+            "--endpoint-id",
+            "x",
+            "--bundle-file",
+        ],
+    )
+    .arg(&bundle)
+    .assert()
+    .failure();
+}
+
+#[test]
+#[cfg(unix)]
+fn pairing_apply_failure_restores_the_relay_and_leaves_no_credential() {
+    use std::os::unix::fs::PermissionsExt;
+    let exit = pair_node("exit", "de1", "de1.example.test");
+    let relay = pair_node("relay", "ru1", "ru1.example.test");
+    let bundle = exit.dir.path().join("bundle.json");
+    pair_cmd(&exit, &["pair", "issue-exit", "--label", "alice", "--out"])
+        .arg(&bundle)
+        .assert()
+        .success();
+    pair_cmd(&relay, &["user", "create", "--name", "friend1"])
+        .assert()
+        .success();
+    let friend = user_id(&relay, "friend1");
+    let before_toml = std::fs::read(&relay.cfg).unwrap();
+    // sing-box now rejects every candidate config: the declaration must be rolled back.
+    fake_singbox(relay.dir.path(), true);
+    std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o600)).unwrap();
+    pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend,
+            "--endpoint-id",
+            "de1-via-ru1",
+            "--bundle-file",
+        ],
+    )
+    .arg(&bundle)
+    .assert()
+    .failure()
+    .stderr(predicates::str::contains("deployment.toml restored"));
+    assert_eq!(
+        std::fs::read(&relay.cfg).unwrap(),
+        before_toml,
+        "deployment.toml restored"
+    );
+    let relay_users = users_json(&relay);
+    let holder = relay_users["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == friend.as_str())
+        .unwrap();
+    assert!(
+        holder["peer_credentials"]
+            .as_object()
+            .map(|m| m.is_empty())
+            .unwrap_or(true),
+        "no credential was stored"
+    );
+}
+
+/// A paired relay stays paired through the normal operator actions: repeated rendering, credential rotation,
+/// disable/enable, and backup + restore of the user store. The rendered relay document must keep forwarding
+/// ONLY to the declared exit and end in a reject throughout.
+#[test]
+#[cfg(unix)]
+fn pairing_survives_render_rotation_disable_and_backup_restore() {
+    use std::os::unix::fs::PermissionsExt;
+    ensure_vpn_subscription_group_exists_for_root_tests();
+    let exit = pair_node("exit", "de1", "de1.example.test");
+    let relay = pair_node("relay", "ru1", "ru1.example.test");
+    let bundle = exit.dir.path().join("bundle.json");
+    pair_cmd(&exit, &["pair", "issue-exit", "--label", "alice", "--out"])
+        .arg(&bundle)
+        .assert()
+        .success();
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&bundle).unwrap()).unwrap();
+    let exit_uuid = doc["credential"]["uuid"].as_str().unwrap().to_string();
+    pair_cmd(&relay, &["user", "create", "--name", "friend1"])
+        .assert()
+        .success();
+    let friend = user_id(&relay, "friend1");
+    std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o600)).unwrap();
+    pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend,
+            "--endpoint-id",
+            "de1-via-ru1",
+            "--bundle-file",
+        ],
+    )
+    .arg(&bundle)
+    .assert()
+    .success();
+
+    let rendered = relay.dir.path().join("state/sing-box/config.json");
+    let forwarding_is_restricted = || {
+        let cfg: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&rendered).unwrap()).unwrap();
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        assert_eq!(
+            rules.last().unwrap()["action"],
+            "reject",
+            "the relay still ends in reject"
+        );
+        let forwards: Vec<_> = rules
+            .iter()
+            .filter(|r| r["outbound"] == "direct" && r.get("auth_user").is_none())
+            .collect();
+        assert_eq!(
+            forwards.len(),
+            1,
+            "exactly one forwarding rule (the declared exit): {forwards:?}"
+        );
+        assert_eq!(
+            forwards[0]["domain"],
+            serde_json::json!(["de1.example.test"])
+        );
+        assert_eq!(forwards[0]["port"], 443);
+    };
+    forwarding_is_restricted();
+    let first = std::fs::read(&rendered).unwrap();
+
+    // Repeated rendering is a byte-identical no-op.
+    for _ in 0..2 {
+        pair_cmd(&relay, &["render-config"]).assert().success();
+        assert_eq!(
+            std::fs::read(&rendered).unwrap(),
+            first,
+            "render-config must be idempotent"
+        );
+    }
+
+    // Rotating the friend's relay credentials never touches the dedicated exit credential.
+    pair_cmd(&relay, &["user", "rotate-credentials", &friend])
+        .assert()
+        .success();
+    let rotated = users_json(&relay);
+    let holder = rotated["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == friend.as_str())
+        .unwrap();
+    assert_eq!(
+        holder["peer_credentials"]["de1-via-ru1"]["uuid"],
+        exit_uuid.as_str(),
+        "the exit credential survives a first-hop rotation"
+    );
+    forwarding_is_restricted();
+
+    // Disable removes the friend from the rendered relay config; enable restores the route with the same credential.
+    pair_cmd(&relay, &["user", "disable", &friend])
+        .assert()
+        .success();
+    forwarding_is_restricted();
+    pair_cmd(&relay, &["user", "enable", &friend])
+        .assert()
+        .success();
+    let enabled = users_json(&relay);
+    assert_eq!(
+        enabled["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == friend.as_str())
+            .unwrap()["peer_credentials"]["de1-via-ru1"]["uuid"],
+        exit_uuid.as_str()
+    );
+
+    // Backup, lose the user store, restore: pairing (route + credential) is intact.
+    let archive = relay.dir.path().join("backup.tar");
+    pair_cmd(&relay, &["backup", "--output"])
+        .arg(&archive)
+        .assert()
+        .success();
+    std::fs::remove_file(relay.dir.path().join("state/users/users.json")).unwrap();
+    pair_cmd(&relay, &["restore"])
+        .arg(&archive)
+        .assert()
+        .success();
+    let status = pair_cmd(&relay, &["pair", "status"]).output().unwrap();
+    let text = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        text.contains("de1-via-ru1") && text.contains("users_with_credential=1"),
+        "{text}"
+    );
+    forwarding_is_restricted();
+}
+
 /// On a relay the share-link form is refused by the subscription service, so the link `user create` hands out
 /// must be the pinned sing-box profile; an exit keeps `?format=hiddify`.
 #[test]
