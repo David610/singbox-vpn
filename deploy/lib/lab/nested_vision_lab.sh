@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Real-sing-box lab for the nested-VLESS (relay detour) path: client -> relay -> exit -> HTTP/2 target,
-# all on loopback. Reproduces the 2026-10-25 field failure (HTTP/2 over a detour-nested exit connection
-# that keeps XTLS Vision) and checks the fix (the nested exit credential carries NO Vision flow while
-# the first hop keeps it). Usage: nested_vision_lab.sh <sing-box> <go> ; exit 0 = every case behaved as expected.
+# all on loopback, hand-written sing-box configs (NOT production-generated; the production-generated
+# two-hop scenarios are crates/compat-config/tests/two_hop_system.rs S18-S20).
+#
+# IMPORTANT: this lab does NOT reproduce the 2026-10-25 field failure (Chromium HTTP/2 hanging on a
+# Vision/Vision relay chain). On loopback every case below passes, including outer=vision inner=vision.
+# It only shows that the Vision-less nested shape (first hop keeps Vision, the nested exit credential
+# carries no flow) is accepted by the pinned sing-box and carries parallel HTTP/2 streams. The root cause
+# of the field failure is unclassified (docs/RELAY_EXIT_VISION.md).
+# Usage: nested_vision_lab.sh <sing-box> <go> ; exit 0 = the Vision-less shapes carried the traffic.
 set -u
 SB="${1:-sing-box}"; GO="${2:-go}"
 W="$(mktemp -d)"; trap 'kill $(cat "$W"/*.pid 2>/dev/null) 2>/dev/null; rm -rf "$W"' EXIT
@@ -57,8 +63,8 @@ J
   echo "$label: curl ok=$ok/48; chromium ${cr:-not run}; client_log_corruption=$(grep -ci 'received record' "$W/client.log")"
   [ "$bad" -eq 0 ]
 }
-run_case "outer=vision inner=vision (field-failing shape)" xtls-rprx-vision xtls-rprx-vision; r_vv=$?
-run_case "outer=vision inner=none   (proposed fix shape)" xtls-rprx-vision "" ; r_vn=$?
+run_case "outer=vision inner=vision (shape that failed in the field; passes here)" xtls-rprx-vision xtls-rprx-vision; r_vv=$?
+run_case "outer=vision inner=none   (Vision-less nested exit: the supported option)" xtls-rprx-vision "" ; r_vn=$?
 run_case "outer=none   inner=none" "" ""; r_nn=$?
 echo "RESULT vision/vision=$([ $r_vv = 0 ] && echo pass || echo FAIL) vision/none=$([ $r_vn = 0 ] && echo pass || echo FAIL) none/none=$([ $r_nn = 0 ] && echo pass || echo FAIL)"
 [ $r_vn = 0 ] && [ $r_nn = 0 ]
