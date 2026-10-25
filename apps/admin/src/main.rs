@@ -3050,6 +3050,11 @@ fn cmd_config_migrate(cfg: &DeploymentConfig, config_path: &std::path::Path) -> 
 /// cli.rs) both assert this stays true — do not remove the query
 /// parameter without updating both.
 fn subscription_url(cfg: &DeploymentConfig, token: &str) -> String {
+    // On a relay the share-link form cannot express the relayed route (the subscription service refuses it with
+    // `relay_route_needs_pinned_profile`), so the link to hand out is the pinned sing-box profile.
+    if cfg.role == compat_config::deployment::NodeRole::Relay {
+        return subscription_url_hiddify_pinned(cfg, token);
+    }
     format!(
         "https://{}:{}/sub/{}?format=hiddify",
         cfg.subscription_host, cfg.subscription.public_port, token
