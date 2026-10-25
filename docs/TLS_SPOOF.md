@@ -22,6 +22,18 @@ One command, on an exit or on a relay (a relay spoofs only for its hairpin princ
 `set` patches only `[google_egress_tls_spoof]` in `deployment.toml` (validated; never a Google name for
 `--sni`), installs the managed capability drop-in, and restarts sing-box through the normal apply path. It is
 rolled back (file and runtime) if validation or the restart fails.
+`set`/`clear` also fail (and restore the previous setting) if the drop-in cannot be written/removed, systemd
+cannot reload it, or the restarted sing-box still lacks the capabilities (for example another drop-in narrows
+`CapabilityBoundingSet`); a success line is never printed in those cases. Other `render-config` callers (user
+changes, the expiry timer) only warn on a drop-in failure, so an unwritable systemd directory can never stop an
+expired user from being removed; `doctor` reports the gap.
+
+`update.sh` rollback: it restores the previous binaries, units and `deployment.toml` but does not touch the
+drop-in. An update never changes the spoof setting, so the drop-in stays consistent with the restored
+`deployment.toml` (present while configured, absent otherwise); a drop-in created by the failed update remains
+and only grants capabilities the restored configuration already requires. No outage or privilege mismatch
+results.
+
 
 The drop-in is `/etc/systemd/system/sing-box.service.d/tls-spoof.conf`. Policy:
 

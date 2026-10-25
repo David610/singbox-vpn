@@ -6514,3 +6514,43 @@ fn tls_spoof_set_rejects_bad_input_without_touching_anything() {
     );
     assert!(!units.exists(), "no drop-in directory created");
 }
+
+/// If the capability drop-in cannot be put in place, `tls-spoof set` must fail and leave the previous setting
+/// (not a half-applied one behind a success message); the expiry/user path keeps working on the same host.
+#[test]
+#[cfg(unix)]
+fn tls_spoof_set_fails_and_restores_when_the_capability_dropin_cannot_be_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = fake_singbox(dir.path(), false);
+    let cfg = write_deployment_toml_with_singbox(dir.path(), &binary);
+    let lock = dir.path().join("spoof-fail.lock");
+    let units = dir.path().join("units");
+    std::fs::create_dir_all(&units).unwrap();
+    std::fs::write(units.join("sing-box.service.d"), b"a file, not a directory").unwrap();
+    let systemctl = fake_systemctl(dir.path());
+    let run = |args: &[&str]| {
+        let mut c = admin(dir.path(), &cfg);
+        c.env("SINGBOX_VPN_LOCK_PATH", &lock)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SINGBOX_VPN_SYSTEMD_DIR", &units)
+            .env("SYSTEMCTL_LOG", dir.path().join("calls"))
+            .args(args);
+        c
+    };
+    run(&["init"]).assert().success();
+    let before = std::fs::read(&cfg).unwrap();
+    let out = run(&["tls-spoof", "set", "--sni", "ya.ru"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "must not report success");
+    assert_eq!(
+        std::fs::read(&cfg).unwrap(),
+        before,
+        "deployment.toml restored to the previous setting"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("TLS spoof set"),
+        "no success line"
+    );
+    run(&["render-config"]).assert().success();
+}

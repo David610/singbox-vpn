@@ -1858,7 +1858,7 @@ fn cmd_tls_spoof_set(
     let outcome = (|| -> Result<bool> {
         let candidate = DeploymentConfig::load(path)?;
         let users = store::load_users(&candidate.users_file())?;
-        render_and_apply_singbox_config(&candidate, &users, true)
+        render_and_apply_singbox_config_with(&candidate, &users, true, true)
     })();
     let applied = match outcome {
         Ok(applied) => applied,
@@ -2331,8 +2331,10 @@ enum DropinSync {
     Unchanged,
     /// The managed drop-in was written or removed and systemd was told to re-read units.
     Changed,
-    /// Could not be evaluated or applied; the reason was already printed.
+    /// Not applicable on this host (no systemd unit directory); nothing was attempted.
     Skipped,
+    /// The drop-in could not be written, removed or loaded by systemd; the reason was already printed.
+    Failed,
 }
 
 fn tls_spoof_dropin_path() -> Option<PathBuf> {
@@ -2378,7 +2380,7 @@ fn sync_tls_spoof_capability_dropin(
             "warning: could not update the sing-box capability drop-in {}: {e}",
             path.display()
         );
-        return DropinSync::Skipped;
+        return DropinSync::Failed;
     }
     eprintln!(
         "sing-box capability drop-in {} updated for the TLS spoof setting.",
@@ -2387,7 +2389,7 @@ fn sync_tls_spoof_capability_dropin(
     if mgr.is_available() {
         if let Err(e) = mgr.daemon_reload() {
             eprintln!("warning: {e}");
-            return DropinSync::Skipped;
+            return DropinSync::Failed;
         }
     }
     DropinSync::Changed
@@ -2419,6 +2421,20 @@ fn render_and_apply_singbox_config(
     cfg: &DeploymentConfig,
     users: &[CompatUser],
     require_live_apply: bool,
+) -> Result<bool> {
+    render_and_apply_singbox_config_with(cfg, users, require_live_apply, false)
+}
+
+/// `strict_spoof_capabilities` is for the command that CHANGES the TLS spoof setting: there, failing to put the
+/// capability drop-in in place (or the restarted process still lacking the capabilities) is an error the caller
+/// rolls back, instead of a warning behind a "TLS spoof set" success line. Every other caller (user mutations,
+/// the expiry timer) keeps applying the authorization change and leaves the capability gap to `doctor`, so an
+/// unwritable systemd directory can never stop an expired user from being removed.
+fn render_and_apply_singbox_config_with(
+    cfg: &DeploymentConfig,
+    users: &[CompatUser],
+    require_live_apply: bool,
+    strict_spoof_capabilities: bool,
 ) -> Result<bool> {
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
@@ -2480,6 +2496,12 @@ fn render_and_apply_singbox_config(
     // most once per drop-in content, so a host where the capabilities cannot be granted is not restarted
     // by every reconcile run; `doctor` reports that state.
     let dropin = sync_tls_spoof_capability_dropin(cfg, &mgr);
+    if strict_spoof_capabilities && dropin == DropinSync::Failed {
+        bail!(
+            "the sing-box capability drop-in for the TLS spoof setting could not be applied (see above); \
+             refusing to report the setting as changed"
+        );
+    }
     let spoof_stamp = cfg.state_dir.join("tls-spoof-restarted-for.sha256");
     let spoof_content_hash = compat_config::systemd_dropin::desired_tls_spoof_dropin(cfg)
         .map(|content| credentials::hash_token(&content));
@@ -2583,6 +2605,13 @@ fn render_and_apply_singbox_config(
                  the service may be in a broken state. Manual intervention required: check \
                  `systemctl status sing-box` and `journalctl -u sing-box`."
             }
+        );
+    }
+    if strict_spoof_capabilities && running_singbox_lacks_spoof_capabilities(cfg) == Some(true) {
+        bail!(
+            "sing-box was restarted but the running process still lacks CAP_NET_RAW/CAP_NET_ADMIN, so the TLS \
+             spoof would silently do nothing (is the unit overridden by another drop-in, e.g. a \
+             CapabilityBoundingSet?); see docs/TLS_SPOOF.md"
         );
     }
     // `reload_and_verify` only proves the sing-box PROCESS stayed up — it
