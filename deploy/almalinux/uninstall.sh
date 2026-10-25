@@ -291,6 +291,13 @@ restore_or_remove_fixed_path /etc/systemd/system/vpn-expiry-reconcile.timer EXPI
 restore_or_remove_fixed_path /etc/systemd/system/vpn-egress-isolation.service EGRESS_ISOLATION_UNIT
 restore_or_remove_fixed_path /etc/systemd/system/vpn-service-watchdog.service WATCHDOG_SVC_UNIT
 restore_or_remove_fixed_path /etc/systemd/system/vpn-service-watchdog.timer WATCHDOG_TIMER_UNIT
+# TLS-spoof capability drop-in written by vpn-admin (identified by its marker first line). An operator-made
+# file at the same path is not ours and is left alone.
+spoof_dropin=/etc/systemd/system/sing-box.service.d/tls-spoof.conf
+if [ -f "$spoof_dropin" ] && [ "$(head -n 1 "$spoof_dropin")" = "# managed by vpn-admin (singbox-vpn): sing-box TLS spoof capabilities. Do not edit; remove [google_egress_tls_spoof] to remove this file." ]; then
+  rm -f "$spoof_dropin"
+  rmdir /etc/systemd/system/sing-box.service.d 2>/dev/null || true
+fi
 systemctl daemon-reload
 if [ "$egress_unit_pre_existed" = "1" ]; then
   if [ "$(ownership_get SYSTEMD_EGRESS_ISOLATION_UNIT_PRE_ENABLED "0")" = "1" ]; then
