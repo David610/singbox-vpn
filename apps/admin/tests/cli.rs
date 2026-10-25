@@ -6389,3 +6389,55 @@ fn static_revision_recovers_an_interrupted_apply_first() {
     assert_eq!(cfg.udp_probe.unwrap().retries, 4);
     assert!(!static_revision_backup_exists(&node.cfg_path));
 }
+
+/// On a relay the share-link form is refused by the subscription service, so the link `user create` hands out
+/// must be the pinned sing-box profile; an exit keeps `?format=hiddify`.
+#[test]
+#[cfg(unix)]
+fn user_create_on_a_relay_hands_out_the_pinned_profile_not_a_share_link() {
+    let url_for = |role: &str| -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_singbox(dir.path(), false);
+        let state = dir.path().join("state");
+        let access = if role == "relay" {
+            "\n[[access_paths]]\nid = \"relay-ingress\"\nkind = \"relay\"\nvia_endpoint_id = \"reality-1\"\ncapabilities = [\"tcp\"]\n"
+        } else {
+            ""
+        };
+        let cfg = dir.path().join("deployment.toml");
+        std::fs::write(
+            &cfg,
+            format!(
+                "schema_version = 2\nnode_id = \"n1\"\nrole = \"{role}\"\npublic_host = \"vpn.example.test\"\nsubscription_host = \"vpn.example.test\"\nstate_dir = \"{state}\"\nsingbox_binary = \"{singbox}\"\n\n[reality]\nlisten_port = 443\nhandshake_server = \"www.example.com\"\n\n[hysteria2]\nlisten_port = 443\n\n[subscription]\nlisten_port = 9100\n{access}",
+                state = toml_path(&state),
+                singbox = toml_path(&binary),
+            ),
+        )
+        .unwrap();
+        let lock = dir.path().join("lock");
+        admin(dir.path(), &cfg)
+            .env("SINGBOX_VPN_LOCK_PATH", &lock)
+            .arg("init")
+            .assert()
+            .success();
+        let out = admin(dir.path(), &cfg)
+            .env("SINGBOX_VPN_LOCK_PATH", &lock)
+            .args(["user", "create", "--name", "friend", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        doc["subscription_url"].as_str().unwrap().to_string()
+    };
+    let exit = url_for("exit");
+    assert!(exit.ends_with("?format=hiddify"), "{exit}");
+    let relay = url_for("relay");
+    assert!(
+        relay.ends_with("?format=singbox&compat=hiddify-pinned"),
+        "a relay must not hand out a share link: {relay}"
+    );
+}

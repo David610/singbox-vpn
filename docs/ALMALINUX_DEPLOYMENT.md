@@ -553,9 +553,14 @@ To pair an exit `de1.example.com` (installed separately as an ordinary exit):
 
 The relay now forwards only to `de1.example.com:443` (the exact host string
 declared — a DNS name and its IP are different destinations) and serves the
-user both routes. Host names must be lowercase. Share-link subscriptions
-(`format=hiddify`) contain only the direct route; the via route needs the
-provisioning contract or `format=singbox`.
+user both routes. Host names must be lowercase. Share links cannot express a
+relay hop, so for a user who holds a relayed route `format=hiddify` / `format=uri`
+are **refused** (HTTP 400, `relay_route_needs_pinned_profile`) instead of silently
+serving the direct route and skipping the entry node. For Hiddify use
+`?format=singbox&compat=hiddify-pinned` (one server, relay hop preserved; verified
+in the Hiddify engine, not yet on a phone); `vpn-admin user create` on a relay
+already prints that link as the subscription URL. The two-host setup itself is
+`vpn-admin pair ...`: see [PAIRING.md](PAIRING.md).
 
 Operational rules:
 
