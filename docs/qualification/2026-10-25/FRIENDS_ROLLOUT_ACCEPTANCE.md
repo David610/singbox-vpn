@@ -78,3 +78,11 @@ Goal: one friend, one link, no help. Run once on Russian mobile data and once on
 7. Report to the administrator: pass/fail per line with exact messages, no link, no screenshots of the link.
 
 Pass for the pilot means every line passes on at least one transport on both network types, with no technical intervention. A failure on one transport only is recorded as that transport's FAILED result, not hidden by the other.
+
+## Addendum 2026-10-25 (late): Russian-entry relay link form
+
+| # | Item | Status | Evidence |
+|---|------|--------|----------|
+| 24 | Relay profile forms in the Hiddify engine (hiddify-core v5.0.3, workstation, not an app) | VERIFIED (engine) / UNVERIFIED (apps) | `?format=hiddify` on a relay = direct route only, silently bypasses the Russian entry (Evolus saw the client's address); unpinned `?format=singbox` gets a Hiddify `balance` default; `?format=singbox&compat=hiddify-pinned` keeps the two-hop (Evolus saw only the relay). See `RU_ENTRY_TWO_HOP_BASELINE.md` section C |
+| 25 | Relay chain in a browser | FAILED intermittently, FIELD-ONLY cause | Chromium HTTP/2 hung on `m.youtube.com` through the Vision/Vision relay chain; Vision off on the nested exit hop only fixed it (live A/B). Not reproducible in the loopback lab. Fix is opt-in `vless_flow = none` in PR #208, not in rc.6, not yet validated on hardware. **Do not give friends the relay link until validated** |
+| 26 | Google/YouTube egress on the relay chain | VERIFIED | exits from ru1 (Russia), not Europe; ordinary traffic exits from Evolus (DE, IPv4 and IPv6) |
