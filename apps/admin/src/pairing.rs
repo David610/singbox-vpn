@@ -41,7 +41,7 @@ pub enum PairCommands {
         /// Endpoint id to declare, e.g. `evolus-via-ru1`.
         #[arg(long)]
         endpoint_id: String,
-        /// Client-visible name (default: "<exit node id> · via <this node id>").
+        /// Client-visible name (default: `<exit node id> · via <this node id>`).
         #[arg(long)]
         tag: Option<String>,
         /// Relay access-path id (default: the only relay path).
