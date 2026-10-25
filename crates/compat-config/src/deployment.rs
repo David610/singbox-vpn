@@ -369,6 +369,17 @@ pub struct DeploymentConfig {
     #[serde(default)]
     pub egress: Option<EgressSection>,
 
+    /// Exit-only, opt-in. For TLS connections to the Google/YouTube domain
+    /// set, sing-box injects a forged ClientHello carrying `sni` ahead of the
+    /// genuine one (sing-box >= 1.14 `tls_spoof`), to get past middleboxes
+    /// that only pass allow-listed server names. The genuine SNI, the
+    /// certificate check and the end-to-end TLS session are untouched. The
+    /// service needs CAP_NET_RAW and CAP_NET_ADMIN (without them sing-box
+    /// starts but the spoof silently does nothing, which `vpn-admin doctor`
+    /// reports). Absence renders exactly as before.
+    #[serde(default)]
+    pub google_egress_tls_spoof: Option<TlsSpoofSection>,
+
     /// This node's own public IPv4 address, captured once (at install/
     /// bootstrap time, or via a later `APPLY_NODE_REVISION`) rather than
     /// resolved live during config rendering. Closes the Area 6 gap left
@@ -419,6 +430,72 @@ impl std::str::FromStr for Ipv6LiteralPolicy {
             "reject_all" => Ok(Self::RejectAll),
             _ => Err("ipv6_literal must be allow, reject_google or reject_all".into()),
         }
+    }
+}
+
+/// How the forged segment is made unacceptable to the real server (sing-box
+/// `tls_spoof_method`). `wrong-timestamp` is Linux/Windows only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TlsSpoofMethod {
+    #[default]
+    #[serde(rename = "wrong-sequence")]
+    WrongSequence,
+    #[serde(rename = "wrong-checksum")]
+    WrongChecksum,
+    #[serde(rename = "wrong-ack")]
+    WrongAck,
+    #[serde(rename = "wrong-md5")]
+    WrongMd5,
+    #[serde(rename = "wrong-timestamp")]
+    WrongTimestamp,
+}
+
+impl TlsSpoofMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WrongSequence => "wrong-sequence",
+            Self::WrongChecksum => "wrong-checksum",
+            Self::WrongAck => "wrong-ack",
+            Self::WrongMd5 => "wrong-md5",
+            Self::WrongTimestamp => "wrong-timestamp",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsSpoofSection {
+    /// Host name placed in the forged ClientHello: one the filter allows.
+    pub sni: String,
+    #[serde(default)]
+    pub method: TlsSpoofMethod,
+}
+
+impl TlsSpoofSection {
+    fn validate(&self) -> Result<(), CompatError> {
+        let ok_label = |l: &str| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        };
+        let s = self.sni.as_str();
+        if s.len() > 253 || !s.contains('.') || !s.split('.').all(ok_label) {
+            return Err(CompatError::Parse(
+                "[google_egress_tls_spoof]: sni must be a plain host name (letters, digits, '-', '.')".into(),
+            ));
+        }
+        let lower = s.to_ascii_lowercase();
+        if crate::model::GOOGLE_EGRESS_DOMAINS
+            .iter()
+            .any(|d| lower == *d || lower.ends_with(&format!(".{d}")))
+        {
+            return Err(CompatError::Parse(
+                "[google_egress_tls_spoof]: sni must not be a Google/YouTube name".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1042,6 +1119,20 @@ impl DeploymentConfig {
             }
         }
         self.validate_role()?;
+
+        if let Some(spoof) = &self.google_egress_tls_spoof {
+            if self.role != NodeRole::Exit {
+                return Err(CompatError::Parse(
+                    "[google_egress_tls_spoof] is exit-only".into(),
+                ));
+            }
+            if self.google_egress_hairpin.is_some() {
+                return Err(CompatError::Parse(
+                    "[google_egress_tls_spoof] cannot be combined with [google_egress_hairpin]: the spoof belongs on the node that dials Google".into(),
+                ));
+            }
+            spoof.validate()?;
+        }
 
         if let Some(hairpin) = &self.google_egress_hairpin {
             hairpin.validate()?;
