@@ -8,15 +8,15 @@ Server tests are never proof of real-device success.
 
 1. FAILED: the default REALITY profile (SNI `www.cloudflare.com` to fin1:443) does not connect from the Russian datacenter vantage (ru1): 0/5 tunnels, and 0/4 for each alternative SNI tested. Hysteria2 to fin1 worked 5/5 from the same host. No friend profile prefers Hysteria2 today.
 2. BLOCKED: no test on a real device in a Russian cellular or Wi-Fi network has been run. Datacenter results do not predict consumer ISPs or mobile operators.
-3. The production exit that serves Google/YouTube (ru1) runs a development build, not a published release. It must be replaced by a tagged release candidate (PRs #203 and #204 merged, rc.4 built) before friends use it.
-4. Friend accounts do not exist yet: creating each user reloads sing-box (a brief disconnect for everyone), which needs explicit approval.
+3. RESOLVED 2026-10-25: ru1 now runs the published v1.3.1-rc.4 (items 18-19). The rc.4 Release run failed once at the gate (`singbox-validate`, test `harness_readiness_is_owned_by_the_started_process`, two_hop_system.rs:1873: "a sing-box that could not bind its inbound was reported ready"; run 40175153386 attempt 1) and passed on re-run of the failed jobs (attempt 2). Both attempts stand; the failure is an unreproduced timing race in an existing harness test and is not fixed.
+4. One pilot account exists on fin1 (`friend-pilot-1`); no other friend accounts (items 20-21).
 
 ## Evidence register
 
 | # | Item | Status | Environment / evidence |
 |---|------|--------|------------------------|
 | 1 | fin1 runs published rc.3 binaries | VERIFIED | executable hashes match rc.3 (vpn-admin 5b7943d5, sing-box 9334a1c1, vpn-subscription-svc b6f37e36); doctor 0 FAIL |
-| 2 | ru1 runs a release | FAILED | ru1 runs a development build of vpn/vpn-admin (958a05f2, PR #204 code) with the opt-in TLS spoof; doctor reports "release identity INCONSISTENT" as designed |
+| 2 | ru1 runs a release | VERIFIED (was FAILED earlier the same day) | before 08:30Z ru1 ran a development build (958a05f2). Now rc.4, see item 18 |
 | 3 | Subscription served over valid HTTPS | VERIFIED | Let's Encrypt certificate for the host, valid to 2027-01-22, TLS 1.2/1.3, port 8443 (home line, WSL, ru1) |
 | 4 | Token hygiene | VERIFIED | nginx /sub/ has access_log off; token string absent from access and error logs; Cache-Control no-store; unknown token returns a generic 404 |
 | 5 | Refresh does not regenerate credentials | VERIFIED | 3 fetches plus one made hours earlier return byte-identical bodies (same hash) for both profile formats |
@@ -31,13 +31,19 @@ Server tests are never proof of real-device success.
 | 14 | Hiddify import, Connect, app restart restore, refresh, disabled-user behaviour on a device | BLOCKED | needs a phone |
 | 15 | Russian cellular / Wi-Fi acceptance | BLOCKED | needs a friend or phone in Russia |
 | 16 | DNS leak, public IP, Telegram | BLOCKED | needs a device |
-| 17 | Fresh friend user end to end on production | BLOCKED | needs approval for user creation (sing-box reload) |
+| 17 | Fresh friend user end to end on production | VERIFIED (server) for the pilot | see items 20-21; device part BLOCKED |
+| 18 | ru1 upgraded to published v1.3.1-rc.4 | VERIFIED | documented updater with source sha256 pinned (ba031890...); backup taken and copied off-host; executables match the rc.4 archive (vpn-admin e6d519ea, subscription fc34a6a7, sing-box 9334a1c1); doctor 0 FAIL, release identity consistent with v1.3.1-rc.4; release asset checksums and attestation verified; rollback not needed |
+| 19 | Preserved on ru1 after upgrade | VERIFIED | credential fingerprints (users, REALITY keys, short id, Hysteria2 cert) identical before and after; users default and fin1-hairpin unchanged; TLS spoof in deployment.toml, systemd drop-in, active config (2 tls_spoof keys) and CapEff 0x3400 (NET_RAW+NET_ADMIN) present; doctor spoof capability check OK |
+| 20 | Pilot account `friend-pilot-1` on fin1 | VERIFIED (server) | created once; existing four users' credential fingerprints identical before and after; fin1 doctor 0 FAIL; sing-box active. Subscription: 200 for all three formats, identical body on repeat fetches |
+| 21 | Pilot credentials per transport | VERIFIED (server) | from fin1 loopback: REALITY 3/3, Hysteria2 3/3, YouTube TLS through the hairpin 3/3 each. From ru1 (Russian datacenter): REALITY 0/3 (and YouTube 0/3), Hysteria2 3/3 (YouTube 3/3) |
+| 22 | Anonymous YouTube through the real chain on rc.4 | VERIFIED (browser) | headless browser, signed out, fin1 REALITY to hairpin to ru1 with spoof: 2 runs x 10 items: 18 played, 2 flagged FROZE (the same ~17 s clip in both runs, ended at 17.0 s with no stall: probable end of clip, not proven), 0 bot challenges, 0 refused. Earlier dev-build runs: 16/20 and 17/20. Not a device test |
+| 23 | Release gate | FAILED once, then passed | Release run 40175153386 attempt 1 failed (singbox-validate, offline-full-verdict); attempt 2 passed. Documented in decision item 3 |
 
 ## Open decisions
 
-A. Transport for friends. Evidence favours Hysteria2 from Russia (items 10 and 11). Options: (i) test the plain 2-route import on a Russian device and see what Hiddify selects; (ii) add a Hysteria2-first or Hysteria2-only profile (small renderer change, new RC); (iii) change the REALITY decoy name to one that works from Russia (server change, restart, every profile re-imported). None is applied.
-B. Replace the ru1 development build with a tagged rc.4 (merge #203 and #204, tag, install).
-C. Approve creation of one user per friend on fin1 (one reload each; do them in one batch).
+A. Transport for friends. Evidence favours Hysteria2 from Russia in the datacenter test only (items 10, 11, 21). Not assumed for other providers. First device test (below) tests REALITY and Hysteria2 independently with the unmodified 2-route profile. No REALITY server name change, no default change.
+B. Done (rc.4 on ru1).
+C. Approved: ONE pilot account only (done). No other accounts until the pilot passes.
 
 ## Minimal device acceptance (per friend device, one pass per network)
 
@@ -57,3 +63,18 @@ Record: device model, OS version, Hiddify version, network (Wi-Fi or cellular, o
 12. Admin disables the user: refresh fails (404) and the tunnel stops after reconnect; admin re-enables: refresh works.
 
 Any failure is recorded with the exact message and keeps the rollout NO-GO until fixed and re-run.
+
+## First real-device test (pilot, Russian network)
+
+Pilot account: `friend-pilot-1` (link delivered privately by the administrator; never in a ticket, chat log or screenshot).
+Goal: one friend, one link, no help. Run once on Russian mobile data and once on Russian Wi-Fi, ideally with different operators. Record per run: phone model, OS, Hiddify version, network, operator.
+
+1. Phone with no other VPN. Install Hiddify, copy the link, Add from Clipboard (docs/FRIENDS_ONBOARDING_RU.md). Record: profile loads, which entries appear, and which entry or group (single route, Auto, balancer) Hiddify selects by default.
+2. Tap Connect with the default selection. Wait 30 s. Record: connected or not, exact message, which transport.
+3. Test each transport independently. Select Reality, Connect, run steps 4-5; disconnect; select Hysteria2, Connect, run steps 4-5. Do not rely on Auto for this comparison.
+4. Per transport: an IP-check site (expect the fin1 address), 3 ordinary sites, a DNS-leak site.
+5. Per transport: YouTube signed out (Incognito): 5 distinct Shorts, 30 s each, then one 5-minute normal video with a seek. YouTube signed in: the same. Telegram: message, photo, call.
+6. Reconnect: airplane mode 10 s; switch Wi-Fi/cellular; force-close and reopen Hiddify (profile still present, Connect works); tap profile refresh (still works, nothing to re-import).
+7. Report to the administrator: pass/fail per line with exact messages, no link, no screenshots of the link.
+
+Pass for the pilot means every line passes on at least one transport on both network types, with no technical intervention. A failure on one transport only is recorded as that transport's FAILED result, not hidden by the other.
