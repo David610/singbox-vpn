@@ -2548,14 +2548,18 @@ capabilities = ["tcp"]
                 body.contains("compat=hiddify-pinned"),
                 "{uri}: names the supported link"
             );
-            // Neither the exit's address nor any credential appears in the refusal.
-            for secret in [
-                EXIT_UUID,
-                RELAY_UUID,
-                "de1.example.test",
-                "ru1.example.test",
+            // Neither the exit's address nor any credential appears in the refusal. The failure message names the
+            // item, never the value.
+            for (label, needle) in [
+                ("exit credential", EXIT_UUID),
+                ("relay credential", RELAY_UUID),
+                ("exit host", "de1.example.test"),
+                ("relay host", "ru1.example.test"),
             ] {
-                assert!(!body.contains(secret), "{uri} leaked {secret}: {body}");
+                assert!(
+                    !body.contains(needle),
+                    "{uri}: the refusal leaks the {label}"
+                );
             }
         }
     }
