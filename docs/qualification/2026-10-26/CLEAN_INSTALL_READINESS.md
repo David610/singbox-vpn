@@ -9,17 +9,17 @@ No FRESH_VPS or DEVICE result exists for anything below; a simulated fresh insta
 
 ## A. Baseline and engineering changes
 
-Baseline: `main` = `e7defcd` (PR #208 merged). Latest published candidate is still `v1.3.1-rc.6` (`35d4a3f`); **it contains none of the changes
-below**. A new candidate (rc.7) must be cut from the merged result after review.
+Baseline before this work: `main` = `e7defcd` (PR #208). **Integrated baseline: all of the PRs below are merged; the last code merge is `75021f0` (#213), then docs #205 (`c45fd76`).** Latest published candidate is still `v1.3.1-rc.6` (`35d4a3f`); **it contains none of the changes
+below**. A new candidate (rc.7) must be cut from the integrated main (not done in this mission).
 
 | PR | Change | Evidence |
 |---|---|---|
-| #209 | Real two-hop scenarios S18-S20: production renderers, dedicated Vision-less exit credential carries traffic; client-Vision vs server-none and client-none vs server-Vision are rejected with no byte reaching the target; lab script no longer claims to reproduce the historical failure | REAL-SINGBOX (CI `singbox-validate` ran them; 47/47 checks green) |
-| #210 | `vpn-admin tls-spoof set\|clear\|show`; managed capability drop-in for the TLS spoof (create only while enabled, marker-owned, adopt/leave/remove policy, daemon-reload + restart only when needed, doctor FAIL on exits **and relays** when the running sing-box lacks the capabilities, `uninstall.sh` removal) | SOURCE + CLI lifecycle tests (47/47 green) |
-| #211 | `vpn-admin pair issue-exit / accept-exit / issue-hairpin / accept-hairpin / status`: protected bundles instead of hand-edited TOML and UUIDs; declare-once route with conflict refusal; rollback on apply failure; secret hygiene; lifecycle test (render idempotence, rotation, disable/enable, backup/restore) | SOURCE + CLI tests driving the real binary; CI pending/green per the PR |
-| #212 | Subscription service refuses `format=hiddify\|uri` for a user holding a relayed route (400 `relay_route_needs_pinned_profile`) instead of serving the direct route; `user create` on a relay hands out the pinned link | SOURCE (workspace 1205/0 locally) |
-| #213 | `vpn-admin doctor` WARNs on `RUST_LOG=debug\|trace` for vpn-subscription | SOURCE |
-| #205 | Russian onboarding made scheme-neutral; relay link = pinned profile; mobile behaviour labelled unverified | docs |
+| #209 | Merged `514cf3d`. Real two-hop scenarios S18-S20: production renderers, dedicated Vision-less exit credential carries traffic; client-Vision vs server-none and client-none vs server-Vision are rejected with no byte reaching the target; lab script no longer claims to reproduce the historical failure | REAL-SINGBOX (CI `singbox-validate`) |
+| #210 | Merged `5b13d0f`. `vpn-admin tls-spoof set\|clear\|show`; managed capability drop-in (only while enabled, marker-owned, adopt/leave/remove policy, daemon-reload + restart only when needed); **integration fix:** `set`/`clear` now fail and roll back if the drop-in cannot be written/removed/reloaded or the restarted sing-box still lacks the capabilities (previously a warning behind a success line); doctor FAIL on exits and relays; `uninstall.sh` removal | SOURCE + CLI lifecycle tests, incl. the new failure-path test |
+| #211 | Merged `4a25f0e`. `vpn-admin pair ...`: protected bundles, declare-once route with conflict refusal, rollback on apply failure, secret hygiene, lifecycle test; **integration fix:** the runbook now has the cross-host pipe failure table (`pipefail`, `pair status` on both hosts, orphaned-credential handling) | SOURCE + CLI tests driving the real binary |
+| #212 | Merged `85db6fc`. Subscription service refuses `format=hiddify\|uri` for a user holding a relayed route (400 `relay_route_needs_pinned_profile`); `user create` on a relay hands out the pinned link | SOURCE (subscription unit tests + CLI test) |
+| #213 | Merged `75021f0`. `vpn-admin doctor` WARNs on `RUST_LOG=debug\|trace` for vpn-subscription (reads the unit's environment; reports the level only) | SOURCE + CLI test |
+| #205 | Merged `c45fd76`. Russian onboarding scheme-neutral; relay link = pinned profile; `?format=hiddify` refused; mobile behaviour labelled unverified | docs |
 
 Not a defect fix, still open: the nested-Vision hang is **field-only and unreproducible in isolation** (`docs/RELAY_EXIT_VISION.md`).
 `vless_flow = "none"` (#208) is an opt-in control whose live effect after the change is untested.
@@ -40,6 +40,8 @@ Not a defect fix, still open: the nested-Vision hang is **field-only and unrepro
 
 ## C. Verification (honest)
 
+- **Combined main (code `75021f0`, all of #209-#213 integrated; local WSL run, first pass):** `cargo fmt --check` clean; `cargo clippy --workspace --all-targets -D warnings` clean; `cargo doc -D warnings` clean; `cargo test --workspace`: **1227 passed, 0 failed**. The real-sing-box two-hop suite (`two_hop_system`, incl. S18-S20) and the installer/lifecycle shell harnesses are CI-only (they need privileges unavailable locally); they ran in each PR's CI, and on main the CI runs again.
+- **Per-PR CI before merge:** every PR had 47/47 checks green on its final head against the then-current main. Retries kept on record: #212 and #213 each needed one re-run of the failed jobs only, because the AlmaLinux container could not reach its package mirror (`os-matrix (almalinux:9)`: "dnf could not install git after 3 refreshed attempts"; `release-container-smoke`: dependency install timed out). Both are infrastructure, not code, and are **not** clean first-pass results.
 - Unit/config: full workspace test runs were green locally on each branch before push (1203-1205 tests); workspace clippy `-D warnings` and `cargo fmt --check` clean; `cargo doc` clean (#211 had a doc error caught by CI and fixed).
 - REAL-SINGBOX: S18-S20 passed in CI. The existing 17 two-hop scenarios and interop suites are unchanged and green.
 - Installer/lifecycle: CLI tests exercise create/accept/render/rotate/disable/backup/restore against fake sing-box and systemctl; the real `install.sh`/`update.sh` were **not** run by any new automated test.
@@ -66,7 +68,7 @@ Not a defect fix, still open: the nested-Vision hang is **field-only and unrepro
 
 ## E. Clean-VPS readiness
 
-The code and tooling are **ready to be tested on two freshly provisioned VPSs once #209-#213 are reviewed and merged and a new candidate is cut** (not before). They are
+The code and tooling are **ready for an rc.7 cut and fresh-VPS qualification now that #205 and #209-#213 are merged** (rc.7 is not cut; the test needs two freshly provisioned VPSs). They are
 **not** claimed FRIENDS_READY, and nothing has been installed on a fresh host. Known limits that stay in force:
 
 - Ubuntu 22.04/24.04 are "recognized / best-effort": CI covers package resolution in containers only (`os-matrix`), and `lifecycle-acceptance.sh` refuses non-AlmaLinux hosts.
@@ -81,7 +83,7 @@ entry in Russia, exit in Europe; AlmaLinux 9 preferred (supported gate), Ubuntu 
 two DNS A records on a real domain (the Cloudflare token the owner pasted proved active but its permissions are unknown; any DNS change needs explicit approval with the exact records);
 provider firewall 22, 80 (certbot HTTP-01, temporarily), 443/tcp, 443/udp, 8443/tcp; SSH key login verified plus provider console recovery; a phone on Russian mobile data and Wi-Fi for the device phase.
 
-Candidate: the merged `main` tagged `v1.3.1-rc.7` (do not reuse rc.6); record the commit, source and binary archive sha256, attestation verification on the workstation, and the installer's on-host verification; pin the source hash in the update script.
+Candidate: the integrated `main` (code `75021f0` plus docs) tagged `v1.3.1-rc.7` (do not reuse rc.6); record the commit, source and binary archive sha256, attestation verification on the workstation, and the installer's on-host verification; pin the source hash in the update script.
 
 Run, in order, recording PASS/FAIL/BLOCKED per line, keeping failures:
 
@@ -95,4 +97,4 @@ Run, in order, recording PASS/FAIL/BLOCKED per line, keeping failures:
 8. Security: no secrets in journal, CI artefacts or reports; `RUST_LOG` default; ports 22/443/8443 only; SSH key-only after the owner hardening procedure.
 9. Device (separate gate): Hiddify import of the single link on Android and iPhone, connect, browse, Shorts signed in/out, long video, Telegram, reconnect, airplane-mode cycle, refresh, app restart; Russian mobile and Wi-Fi.
 
-Blockers requiring the owner: merge/approve #205 and #209-#213; two fresh VPSs and a real domain with DNS access; SSH key + recovery procedure; decision on the Evolus debug drop-in and hardening drop-in (live changes); a device and tester in Russia.
+Blockers requiring the owner: cut rc.7 (owner-approved, not done here); two fresh VPSs and a real domain with DNS access; SSH key + recovery procedure; decision on the Evolus debug drop-in and hardening drop-in (live changes); a device and tester in Russia.
