@@ -6389,3 +6389,42 @@ fn static_revision_recovers_an_interrupted_apply_first() {
     assert_eq!(cfg.udp_probe.unwrap().retries, 4);
     assert!(!static_revision_backup_exists(&node.cfg_path));
 }
+
+/// A leftover `RUST_LOG=debug` override on vpn-subscription is reported by doctor (WARN), and the shipped default
+/// (`warn`) is not.
+#[test]
+#[cfg(unix)]
+fn doctor_warns_about_verbose_subscription_logging_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let singbox = fake_singbox(dir.path(), false);
+    let cfg_path = write_deployment_toml_with_singbox(dir.path(), &singbox);
+    admin(dir.path(), &cfg_path).arg("init").assert().success();
+    admin(dir.path(), &cfg_path)
+        .arg("render-config")
+        .assert()
+        .success();
+    let doctor_with_env = |env_value: &str| -> String {
+        let script = format!(
+            "#!/usr/bin/env bash\ncase \"$1\" in\n  --version) exit 0 ;;\n  show) case \"$*\" in *Environment*) echo \"{env_value}\"; exit 0 ;; *) echo loaded; exit 0 ;; esac ;;\n  is-active) exit 0 ;;\nesac\nexit 1\n"
+        );
+        let path = dir.path().join("systemctl-env");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = admin(dir.path(), &cfg_path)
+            .env("SINGBOX_VPN_SYSTEMCTL", &path)
+            .arg("doctor")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let verbose = doctor_with_env("RUST_LOG=debug PATH=/usr/bin");
+    assert!(
+        verbose
+            .lines()
+            .any(|l| l.contains("[WARN]") && l.contains("RUST_LOG=debug")),
+        "{verbose}"
+    );
+    let shipped = doctor_with_env("RUST_LOG=warn");
+    assert!(!shipped.contains("verbose request logging"), "{shipped}");
+}
