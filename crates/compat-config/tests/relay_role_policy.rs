@@ -2125,11 +2125,11 @@ fn tls_spoof_method_is_selectable_and_validated() {
 }
 
 #[test]
-fn tls_spoof_rejects_relay_hairpin_google_names_and_malformed_hosts() {
+fn tls_spoof_rejects_hairpin_google_names_and_malformed_hosts() {
     assert!(load(&(base("exit") + SPOOF_TOML)).is_ok());
     assert!(
-        load(&(paired_relay_toml() + SPOOF_TOML)).is_err(),
-        "exit-only"
+        load(&(paired_relay_toml() + SPOOF_TOML)).is_ok(),
+        "a relay may be the Google egress for another exit's hairpin"
     );
     assert!(
         load(&(exit_hairpin_deployment_toml() + SPOOF_TOML)).is_err(),
@@ -2211,4 +2211,43 @@ fn every_tls_spoof_method_renders_a_route_accepted_by_real_sing_box() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+#[test]
+fn relay_tls_spoof_is_scoped_to_the_hairpin_principal_only() {
+    let plain = load(&paired_relay_toml()).unwrap();
+    let spoofed = load(&(paired_relay_toml() + SPOOF_TOML)).unwrap();
+    // No hairpin user: a relay with the setting renders exactly as without it.
+    assert_eq!(
+        render(&plain, &[user()])["route"],
+        render(&spoofed, &[user()])["route"]
+    );
+    // With a hairpin user: exactly one extra rule, between its sniff and its route.
+    let base_rules = render(&plain, &[user(), hairpin_user()])["route"]["rules"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let rules = render(&spoofed, &[user(), hairpin_user()])["route"]["rules"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(rules.len(), base_rules.len() + 1);
+    assert_eq!(rules[0]["action"], "sniff");
+    assert_eq!(rules[1]["action"], "route-options");
+    assert_eq!(rules[1]["auth_user"], serde_json::json!(["u-hairpin"]));
+    assert_eq!(rules[1]["tls_spoof"], "ya.ru");
+    assert_eq!(rules[1]["protocol"], "tls");
+    assert!(rules[1].get("outbound").is_none(), "non-terminal");
+    assert_eq!(rules[2]["outbound"], "direct");
+    assert_eq!(rules[2]["auth_user"], serde_json::json!(["u-hairpin"]));
+    for i in 0..base_rules.len() - 2 {
+        assert_eq!(
+            rules[i + 3],
+            base_rules[i + 2],
+            "the remaining policy is unchanged"
+        );
+    }
+    let last = rules.last().unwrap();
+    assert_eq!(last["action"], "reject", "the relay still ends in reject");
+    assert!(last.get("auth_user").is_none());
 }

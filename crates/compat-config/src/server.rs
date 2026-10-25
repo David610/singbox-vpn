@@ -187,6 +187,21 @@ pub fn render_server_config_for_deployment(
             "auth_user": [hairpin_principal.clone()],
             "action": "sniff",
         }));
+        if let Some(spoof) = &deployment.google_egress_tls_spoof {
+            // Non-terminal: set the spoof for this principal's Google TLS and
+            // keep matching, so the route rule below still applies.
+            rules.push(json!({
+                "inbound": [reality_inbound],
+                "auth_user": [hairpin_principal.clone()],
+                "domain_suffix": crate::model::GOOGLE_EGRESS_DOMAINS,
+                "network": "tcp",
+                "port": 443,
+                "protocol": "tls",
+                "action": "route-options",
+                "tls_spoof": spoof.sni,
+                "tls_spoof_method": spoof.method.as_str(),
+            }));
+        }
         rules.push(json!({
             "inbound": [reality_inbound],
             // NOT "user" — that field matches the local OS process
