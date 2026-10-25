@@ -6833,3 +6833,136 @@ fn pairing_apply_failure_restores_the_relay_and_leaves_no_credential() {
         "no credential was stored"
     );
 }
+
+/// A paired relay stays paired through the normal operator actions: repeated rendering, credential rotation,
+/// disable/enable, and backup + restore of the user store. The rendered relay document must keep forwarding
+/// ONLY to the declared exit and end in a reject throughout.
+#[test]
+#[cfg(unix)]
+fn pairing_survives_render_rotation_disable_and_backup_restore() {
+    use std::os::unix::fs::PermissionsExt;
+    ensure_vpn_subscription_group_exists_for_root_tests();
+    let exit = pair_node("exit", "de1", "de1.example.test");
+    let relay = pair_node("relay", "ru1", "ru1.example.test");
+    let bundle = exit.dir.path().join("bundle.json");
+    pair_cmd(&exit, &["pair", "issue-exit", "--label", "alice", "--out"])
+        .arg(&bundle)
+        .assert()
+        .success();
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&bundle).unwrap()).unwrap();
+    let exit_uuid = doc["credential"]["uuid"].as_str().unwrap().to_string();
+    pair_cmd(&relay, &["user", "create", "--name", "friend1"])
+        .assert()
+        .success();
+    let friend = user_id(&relay, "friend1");
+    std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o600)).unwrap();
+    pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend,
+            "--endpoint-id",
+            "de1-via-ru1",
+            "--bundle-file",
+        ],
+    )
+    .arg(&bundle)
+    .assert()
+    .success();
+
+    let rendered = relay.dir.path().join("state/sing-box/config.json");
+    let forwarding_is_restricted = || {
+        let cfg: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&rendered).unwrap()).unwrap();
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        assert_eq!(
+            rules.last().unwrap()["action"],
+            "reject",
+            "the relay still ends in reject"
+        );
+        let forwards: Vec<_> = rules
+            .iter()
+            .filter(|r| r["outbound"] == "direct" && r.get("auth_user").is_none())
+            .collect();
+        assert_eq!(
+            forwards.len(),
+            1,
+            "exactly one forwarding rule (the declared exit): {forwards:?}"
+        );
+        assert_eq!(
+            forwards[0]["domain"],
+            serde_json::json!(["de1.example.test"])
+        );
+        assert_eq!(forwards[0]["port"], 443);
+    };
+    forwarding_is_restricted();
+    let first = std::fs::read(&rendered).unwrap();
+
+    // Repeated rendering is a byte-identical no-op.
+    for _ in 0..2 {
+        pair_cmd(&relay, &["render-config"]).assert().success();
+        assert_eq!(
+            std::fs::read(&rendered).unwrap(),
+            first,
+            "render-config must be idempotent"
+        );
+    }
+
+    // Rotating the friend's relay credentials never touches the dedicated exit credential.
+    pair_cmd(&relay, &["user", "rotate-credentials", &friend])
+        .assert()
+        .success();
+    let rotated = users_json(&relay);
+    let holder = rotated["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == friend.as_str())
+        .unwrap();
+    assert_eq!(
+        holder["peer_credentials"]["de1-via-ru1"]["uuid"],
+        exit_uuid.as_str(),
+        "the exit credential survives a first-hop rotation"
+    );
+    forwarding_is_restricted();
+
+    // Disable removes the friend from the rendered relay config; enable restores the route with the same credential.
+    pair_cmd(&relay, &["user", "disable", &friend])
+        .assert()
+        .success();
+    forwarding_is_restricted();
+    pair_cmd(&relay, &["user", "enable", &friend])
+        .assert()
+        .success();
+    let enabled = users_json(&relay);
+    assert_eq!(
+        enabled["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == friend.as_str())
+            .unwrap()["peer_credentials"]["de1-via-ru1"]["uuid"],
+        exit_uuid.as_str()
+    );
+
+    // Backup, lose the user store, restore: pairing (route + credential) is intact.
+    let archive = relay.dir.path().join("backup.tar");
+    pair_cmd(&relay, &["backup", "--output"])
+        .arg(&archive)
+        .assert()
+        .success();
+    std::fs::remove_file(relay.dir.path().join("state/users/users.json")).unwrap();
+    pair_cmd(&relay, &["restore"])
+        .arg(&archive)
+        .assert()
+        .success();
+    let status = pair_cmd(&relay, &["pair", "status"]).output().unwrap();
+    let text = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        text.contains("de1-via-ru1") && text.contains("users_with_credential=1"),
+        "{text}"
+    );
+    forwarding_is_restricted();
+}
