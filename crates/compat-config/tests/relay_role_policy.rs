@@ -2251,3 +2251,254 @@ fn relay_tls_spoof_is_scoped_to_the_hairpin_principal_only() {
     assert_eq!(last["action"], "reject", "the relay still ends in reject");
     assert!(last.get("auth_user").is_none());
 }
+
+// ----------------------------------------------------------------------
+// Relayed exit route without Vision (`vless_flow = "none"`): the nested exit
+// hop of a Russian-entry chain. The first hop keeps Vision; only that one
+// route changes; the exit renders the matching credential with an empty flow.
+// ----------------------------------------------------------------------
+
+const EXIT_UUID_VIA: &str = "99999999-9999-4999-8999-999999999999";
+
+fn relay_toml_via_without_vision() -> String {
+    // The via route owns a dedicated credential (no credential_ref): it must not share
+    // the direct route's credential, because the exit renders one flow per credential.
+    format!(
+        "{}{RELAY_INGRESS}{}{}",
+        base("relay"),
+        exit_peer(
+            "de1-direct",
+            "Germany · Direct",
+            "de1.example.test",
+            "direct",
+            None
+        ),
+        exit_peer(
+            "de1-via-ru1",
+            "Germany · via Russia",
+            "de1.example.test",
+            "via-ru1",
+            None
+        ) + "vless_flow = \"none\"\n",
+    )
+}
+
+fn user_with_via_credential() -> CompatUser {
+    let mut u = user();
+    u.peer_credentials.insert(
+        "de1-via-ru1".to_string(),
+        PeerCredential::VlessReality {
+            uuid: EXIT_UUID_VIA.to_string(),
+        },
+    );
+    u
+}
+
+#[test]
+fn nested_exit_route_drops_vision_while_the_first_hop_and_direct_route_keep_it() {
+    let cfg = load(&relay_toml_via_without_vision()).unwrap();
+    let paths = cfg.contract_access_paths().unwrap();
+    let doc = provisioning_document_with_mode_and_access_paths(
+        &user_with_via_credential(),
+        &served(&cfg),
+        DiagnosticMode::None,
+        &paths,
+    )
+    .unwrap();
+    let outbounds = doc.singbox_config.as_ref().unwrap()["outbounds"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let first_hop = outbounds
+        .iter()
+        .find(|o| o["server"] == "ru1.example.test")
+        .unwrap();
+    let via = outbounds
+        .iter()
+        .find(|o| o["tag"] == "Germany · via Russia")
+        .unwrap();
+    let direct = outbounds
+        .iter()
+        .find(|o| o["tag"] == "Germany · Direct")
+        .unwrap();
+    assert_eq!(
+        first_hop["flow"], "xtls-rprx-vision",
+        "Russian first hop keeps Vision"
+    );
+    assert!(
+        via.get("flow").is_none(),
+        "only the nested exit hop is Vision-less: {via}"
+    );
+    assert_eq!(via["detour"], first_hop["tag"]);
+    assert_eq!(direct["flow"], "xtls-rprx-vision", "direct route unchanged");
+    assert_eq!(
+        via["uuid"], EXIT_UUID_VIA,
+        "the dedicated exit credential, not the direct one"
+    );
+    assert_ne!(via["uuid"], direct["uuid"]);
+}
+
+#[test]
+fn route_flow_does_not_change_the_relay_server_document_or_its_fail_closed_ending() {
+    let with = load(&relay_toml_via_without_vision()).unwrap();
+    let without = load(&paired_relay_toml()).unwrap();
+    let a = render(&with, &[user_with_via_credential()]);
+    // The relay forwards opaque bytes to the exit; the exit flow is not its business.
+    let rules = a["route"]["rules"].as_array().unwrap();
+    assert_eq!(rules.last().unwrap()["action"], "reject");
+    let flows: Vec<_> = a["inbounds"][0]["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["flow"].clone())
+        .collect();
+    assert!(
+        flows.iter().all(|f| f == "xtls-rprx-vision"),
+        "every relay inbound user keeps Vision"
+    );
+    assert_eq!(
+        a,
+        render(&with, &[user_with_via_credential()]),
+        "rendering is deterministic"
+    );
+    let b = render(&without, &[user()]);
+    assert_eq!(
+        a["inbounds"][0]["users"].as_array().unwrap().len(),
+        b["inbounds"][0]["users"].as_array().unwrap().len()
+    );
+    assert_eq!(
+        a["route"], b["route"],
+        "same forwarding rules with or without the flow setting"
+    );
+}
+
+#[test]
+fn default_peer_routes_serialize_and_render_exactly_as_before() {
+    let cfg = load(&paired_relay_toml()).unwrap();
+    assert!(served(&cfg)
+        .iter()
+        .all(|e| e.vless_flow == compat_config::model::EndpointVlessFlow::Vision));
+    let json = serde_json::to_string(&served(&cfg)).unwrap();
+    assert!(
+        !json.contains("vless_flow"),
+        "default flow must not alter the endpoints fingerprint"
+    );
+}
+
+#[test]
+fn vless_flow_none_is_refused_where_it_could_widen_exposure_or_break_pairing() {
+    // direct (non-relayed) route
+    let direct_none = format!(
+        "{}{RELAY_INGRESS}{}",
+        base("relay"),
+        exit_peer(
+            "de1-direct",
+            "Germany · Direct",
+            "de1.example.test",
+            "direct",
+            None
+        ) + "vless_flow = \"none\"\n"
+    );
+    assert!(
+        load(&direct_none).is_err(),
+        "a direct exit connection keeps Vision"
+    );
+    // sharing a credential across routes with different flows
+    let mismatch = format!(
+        "{}{RELAY_INGRESS}{}{}",
+        base("relay"),
+        exit_peer(
+            "de1-direct",
+            "Germany · Direct",
+            "de1.example.test",
+            "direct",
+            None
+        ),
+        exit_peer(
+            "de1-via-ru1",
+            "Germany · via Russia",
+            "de1.example.test",
+            "via-ru1",
+            Some("de1-direct")
+        ) + "vless_flow = \"none\"\n",
+    );
+    let err = load(&mismatch).unwrap_err().to_string();
+    assert!(err.contains("same vless_flow"), "{err}");
+    // unknown value
+    let bad =
+        relay_toml_via_without_vision().replace("vless_flow = \"none\"", "vless_flow = \"off\"");
+    assert!(load(&bad).is_err());
+}
+
+#[test]
+fn exit_renders_a_visionless_credential_only_for_the_user_opted_in() {
+    let exit = load(&base("exit")).unwrap();
+    let ordinary = user();
+    let mut dedicated = user();
+    dedicated.id = "u-relay-peer".into();
+    dedicated.name = "relay-peer".into();
+    dedicated.vless_uuid = EXIT_UUID_VIA.into();
+    dedicated.vision_off_experiment = true;
+    let doc = render(&exit, &[ordinary, dedicated]);
+    let users = doc["inbounds"][0]["users"].as_array().unwrap();
+    let flow_of = |uuid: &str| users.iter().find(|u| u["uuid"] == uuid).unwrap()["flow"].clone();
+    assert_eq!(
+        flow_of(RELAY_UUID),
+        "xtls-rprx-vision",
+        "ordinary users are unchanged"
+    );
+    assert_eq!(
+        flow_of(EXIT_UUID_VIA),
+        "",
+        "the dedicated credential matches the client's empty flow"
+    );
+    // Revocation: disabling the dedicated credential removes it entirely.
+    let mut off = user();
+    off.id = "u-relay-peer".into();
+    off.vless_uuid = EXIT_UUID_VIA.into();
+    off.vision_off_experiment = true;
+    off.enabled = false;
+    let doc = render(&exit, &[user(), off]);
+    assert!(
+        !doc.to_string().contains(EXIT_UUID_VIA),
+        "a revoked credential never reaches the config"
+    );
+}
+
+#[test]
+fn client_flow_matches_exit_server_flow_for_the_dedicated_credential() {
+    // One property across both documents: whatever flow the relay user's via outbound carries,
+    // the exit's inbound entry for that same uuid carries the same value ("" == absent).
+    let cfg = load(&relay_toml_via_without_vision()).unwrap();
+    let paths = cfg.contract_access_paths().unwrap();
+    let client = provisioning_document_with_mode_and_access_paths(
+        &user_with_via_credential(),
+        &served(&cfg),
+        DiagnosticMode::None,
+        &paths,
+    )
+    .unwrap();
+    let outbounds = client.singbox_config.as_ref().unwrap()["outbounds"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let via = outbounds
+        .iter()
+        .find(|o| o["tag"] == "Germany · via Russia")
+        .unwrap();
+    let client_flow = via
+        .get("flow")
+        .and_then(|f| f.as_str())
+        .unwrap_or("")
+        .to_string();
+    let exit = load(&base("exit")).unwrap();
+    let mut peer = user();
+    peer.vless_uuid = via["uuid"].as_str().unwrap().into();
+    peer.vision_off_experiment = client_flow.is_empty();
+    let doc = render(&exit, &[peer]);
+    let server_flow = doc["inbounds"][0]["users"][0]["flow"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(client_flow, server_flow);
+}

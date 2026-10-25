@@ -3769,6 +3769,13 @@ fn cmd_user_peer_set(
          does not revoke the previous credential there — do that on the peer server.",
         peer.host
     );
+    if peer.vless_flow == compat_config::model::EndpointVlessFlow::None {
+        println!(
+            "This route is declared vless_flow = \"none\": on the PEER server this credential's user \
+             must be Vision-less too (`vpn-admin user vision-off-experiment <that user's id>`), \
+             or the exit rejects the client. Use a credential dedicated to this route."
+        );
+    }
     Ok(())
 }
 
@@ -4606,6 +4613,20 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
         }
 
         NodeRole::Relay => {
+            for peer in cfg
+                .peer_endpoints
+                .iter()
+                .filter(|p| p.vless_flow == compat_config::model::EndpointVlessFlow::None)
+            {
+                report_check(
+                    CheckStatus::Info,
+                    "L2",
+                    format!(
+                        "peer route {} is Vision-less (vless_flow = none): the exit's credential for it must be Vision-less too (not verifiable from here)",
+                        peer.id
+                    ),
+                );
+            }
             let targets = cfg.relay_targets();
             // Google-egress-hairpin rules (`CompatUser::google_egress_hairpin`)
             // add two rules each (a scoped `sniff` plus the `domain_suffix`
@@ -11795,6 +11816,7 @@ mod peer_credential_cli_tests {
             asn: None,
             path: "direct".into(),
             credential_ref: None,
+            vless_flow: Default::default(),
             extra: Default::default(),
         }
     }
