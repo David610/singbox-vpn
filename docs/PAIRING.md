@@ -63,6 +63,23 @@ Automated = a command below. **Owner** = cannot be automated.
    enabled); client check below.
 7. **Owner**: send the friend the `?format=singbox&compat=hiddify-pinned` link, privately.
 
+## Cross-host pipe: what a zero exit status does and does not prove
+
+A shell pipeline reports only the status of its LAST command. Run the pipe from a workstation with
+`set -o pipefail` (bash) so a failing `issue-exit` or a dropped SSH session to the exit is not hidden behind the
+entry's status, and treat the pipe's status as necessary, not sufficient: after every pairing run
+`vpn-admin pair status` on BOTH hosts and confirm the entry shows the route with `users_with_credential`
+increased by one and the exit shows the matching `peer-<label>` user. Do not tell the friend anything is ready
+until both agree.
+
+| Observed | State | Action |
+|---|---|---|
+| `issue-exit` fails (nothing reaches the entry) | no credential exists; entry untouched | fix the cause, re-run the pipe |
+| `issue-exit` succeeded, `accept-exit` failed or never ran (SSH to the entry dropped, wrong user id, conflicting route, apply failure) | the credential `peer-<label>` exists on the exit but nothing on the entry uses it (the label cannot be reused: `already exists`) | on the exit: `vpn-admin user disable <peer-user-id>` (find it with `vpn-admin user list`), then re-run the pipe with a NEW `--label` (for example `friend1-b`) |
+| `accept-exit` printed `deployment.toml restored` | entry unchanged, no credential stored | as above: disable the orphaned exit user, new label |
+| `accept-exit` succeeded but you lost the terminal | unknown | `pair status` on the entry: if the credential is listed, the pairing is complete; if not, treat as the row above |
+| Entry shows the route but `users_with_credential` did not increase | route declared, no credential: fail-closed | re-run `accept-exit` with a fresh bundle (new label), `--replace-credential` only if a credential was stored for that friend |
+
 ## Interrupted or wrong pairing
 
 - Between "route declared" and "credential stored" the entry forwards only to the declared exit and nobody holds
