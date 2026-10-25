@@ -563,6 +563,7 @@ fn peer_compat_endpoint() -> CompatEndpoint {
         asn: Some("operator-label-b".into()),
         path: Some("direct".into()),
         credential_ref: None,
+        vless_flow: compat_config::model::EndpointVlessFlow::Vision,
     }
 }
 

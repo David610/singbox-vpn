@@ -1972,6 +1972,7 @@ mod tests {
             asn: None,
             path: Some("direct".into()),
             credential_ref: None,
+            vless_flow: compat_config::model::EndpointVlessFlow::Vision,
         });
         std::sync::Arc::new(AppState {
             users_file: path,

@@ -81,6 +81,14 @@ pub fn contract_endpoint_opt(
     flow: VlessFlow,
     tag_override: Option<&str>,
 ) -> Result<Option<contract::Endpoint>, CompatError> {
+    // A relayed exit route can be declared Vision-less (`vless_flow = "none"`); that is a
+    // property of the ROUTE, so it applies in every profile and representation. It can only
+    // ever remove Vision for that one endpoint, never add it.
+    let flow = if endpoint.vless_flow == crate::model::EndpointVlessFlow::None {
+        VlessFlow::VisionOff
+    } else {
+        flow
+    };
     let server_name = endpoint
         .server_name
         .clone()
