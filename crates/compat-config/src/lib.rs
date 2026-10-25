@@ -20,6 +20,7 @@ pub mod secret;
 pub mod server;
 pub mod static_revision;
 pub mod store;
+pub mod systemd_dropin;
 
 pub use model::{
     CompatEndpoint, CompatTransport, CompatUser, CredentialClass, CredentialGrant,

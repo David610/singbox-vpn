@@ -1899,6 +1899,64 @@ pub fn apply_exit_egress_toml(
     Ok(backup)
 }
 
+/// Atomically set (`Some`) or clear (`None`) only `[google_egress_tls_spoof]`, preserving every other
+/// operator value and comment. Valid on an exit and on a relay. The caller owns live apply and rollback.
+pub fn apply_tls_spoof_toml(
+    path: &Path,
+    section: Option<&TlsSpoofSection>,
+) -> Result<PathBuf, CompatError> {
+    let original = std::fs::read_to_string(path).map_err(|e| CompatError::Io(e.to_string()))?;
+    let old: DeploymentConfig =
+        toml::from_str(&original).map_err(|e| CompatError::Parse(e.to_string()))?;
+    old.validate()?;
+    let header = "[google_egress_tls_spoof]";
+    let lines: Vec<&str> = original.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    if let Some((start, end)) = section_line_range(&lines, header) {
+        out.extend(lines[..start].iter().map(|s| s.to_string()));
+        out.extend(lines[end..].iter().map(|s| s.to_string()));
+    } else {
+        out.extend(lines.iter().map(|s| s.to_string()));
+    }
+    while out.last().is_some_and(|line| line.trim().is_empty()) {
+        out.pop();
+    }
+    if let Some(section) = section {
+        section.validate()?;
+        out.push(format!(
+            "\n{header}\nsni = {:?}\nmethod = {:?}",
+            section.sni,
+            section.method.as_str()
+        ));
+    }
+    let patched = format!("{}\n", out.join("\n"));
+    let new: DeploymentConfig =
+        toml::from_str(&patched).map_err(|e| CompatError::Parse(e.to_string()))?;
+    new.validate()?;
+    let mut a = serde_json::to_value(old).map_err(|e| CompatError::Parse(e.to_string()))?;
+    let mut b = serde_json::to_value(new).map_err(|e| CompatError::Parse(e.to_string()))?;
+    a.as_object_mut().unwrap().remove("google_egress_tls_spoof");
+    b.as_object_mut().unwrap().remove("google_egress_tls_spoof");
+    if a != b {
+        return Err(CompatError::Parse(
+            "tls spoof patch would change another operator setting; refusing".into(),
+        ));
+    }
+    let backup = crate::migrate::backup_before_mutate(path)?;
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map_err(|e| CompatError::Io(e.to_string()))?
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    #[cfg(not(unix))]
+    let mode = 0o644;
+    crate::migrate::atomic_write(path, patched.as_bytes(), mode)?;
+    Ok(backup)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
