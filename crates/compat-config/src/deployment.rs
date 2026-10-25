@@ -369,7 +369,10 @@ pub struct DeploymentConfig {
     #[serde(default)]
     pub egress: Option<EgressSection>,
 
-    /// Exit-only, opt-in. For TLS connections to the Google/YouTube domain
+    /// Opt-in, on the node that dials Google. On an exit it covers every user's
+    /// Google/YouTube TLS; on a relay it covers only the dedicated hairpin
+    /// principal's traffic (the relay is the Google egress for another exit's
+    /// hairpin). For TLS connections to the Google/YouTube domain
     /// set, sing-box injects a forged ClientHello carrying `sni` ahead of the
     /// genuine one (sing-box >= 1.14 `tls_spoof`), to get past middleboxes
     /// that only pass allow-listed server names. The genuine SNI, the
@@ -1121,11 +1124,6 @@ impl DeploymentConfig {
         self.validate_role()?;
 
         if let Some(spoof) = &self.google_egress_tls_spoof {
-            if self.role != NodeRole::Exit {
-                return Err(CompatError::Parse(
-                    "[google_egress_tls_spoof] is exit-only".into(),
-                ));
-            }
             if self.google_egress_hairpin.is_some() {
                 return Err(CompatError::Parse(
                     "[google_egress_tls_spoof] cannot be combined with [google_egress_hairpin]: the spoof belongs on the node that dials Google".into(),
