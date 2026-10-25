@@ -14,11 +14,13 @@ pub mod deployment;
 pub mod migrate;
 pub mod model;
 pub mod ownership;
+pub mod pairing;
 pub mod render;
 pub mod secret;
 pub mod server;
 pub mod static_revision;
 pub mod store;
+pub mod systemd_dropin;
 
 pub use model::{
     CompatEndpoint, CompatTransport, CompatUser, CredentialClass, CredentialGrant,

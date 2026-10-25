@@ -457,6 +457,12 @@ async fn get_subscription(
                 )
                     .into_response();
             }
+            // A user who holds a credential for a RELAYED route must not be served a share-link list: share links
+            // cannot express the relay hop, so an importer would connect straight to the exit (or get nothing)
+            // and silently skip the entry node. Refuse with an actionable error instead of downgrading.
+            if user_has_relayed_route(&user, &state.endpoints) {
+                return relay_needs_pinned_profile_response();
+            }
             // Direct routes only, never relay first-hop infrastructure: see
             // `render::share_link_endpoints`. A relay route is omitted, not
             // downgraded to a link that dials the exit directly.
@@ -522,6 +528,30 @@ fn no_selectable_route_response() -> Response {
         serde_json::json!({
             "error": "no_selectable_route",
             "message": "no exit route is available for this subscription yet",
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+/// True when `user` holds a credential for at least one endpoint reached through a relay path.
+fn user_has_relayed_route(user: &CompatUser, endpoints: &[CompatEndpoint]) -> bool {
+    endpoints.iter().any(|ep| {
+        ep.path.as_deref().is_some_and(|p| p != "direct")
+            && user
+                .peer_credentials
+                .contains_key(ep.credential_ref.as_deref().unwrap_or(&ep.id))
+    })
+}
+
+/// 400 with an actionable body: share links (`format=uri`/`hiddify`) would bypass the relay's entry node.
+fn relay_needs_pinned_profile_response() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "error": "relay_route_needs_pinned_profile",
+            "message": "this subscription is a relay chain; share links cannot express it and would skip the entry node. Use ?format=singbox&compat=hiddify-pinned",
         })
         .to_string(),
     )
@@ -2498,19 +2528,62 @@ capabilities = ["tcp"]
     }
 
     #[tokio::test]
-    async fn share_links_on_a_relay_contain_only_the_direct_exit_route() {
+    async fn share_links_are_refused_for_a_user_with_a_relayed_route_instead_of_bypassing_the_entry_node(
+    ) {
+        let cfg = relay_deployment(true);
+        let st = state(&cfg, vec![relay_user("tok", true, true)]);
+        for uri in [
+            "/sub/tok?format=hiddify",
+            "/sub/tok?format=uri",
+            "/sub/tok?format=hiddify&encoding=base64",
+            "/sub/tok?format=hiddify&compat=vision-off",
+        ] {
+            let (status, body) = get(st.clone(), uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+            assert!(
+                body.contains("relay_route_needs_pinned_profile"),
+                "{uri}: {body}"
+            );
+            assert!(
+                body.contains("compat=hiddify-pinned"),
+                "{uri}: names the supported link"
+            );
+            // Neither the exit's address nor any credential appears in the refusal. The failure message names the
+            // item, never the value.
+            for (label, needle) in [
+                ("exit credential", EXIT_UUID),
+                ("relay credential", RELAY_UUID),
+                ("exit host", "de1.example.test"),
+                ("relay host", "ru1.example.test"),
+            ] {
+                assert!(
+                    !body.contains(needle),
+                    "{uri}: the refusal leaks the {label}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_pinned_profile_remains_the_supported_link_for_a_relayed_user() {
         let cfg = relay_deployment(true);
         let (status, body) = get(
             state(&cfg, vec![relay_user("tok", true, true)]),
-            "/sub/tok?format=hiddify",
+            "/sub/tok?format=singbox&compat=hiddify-pinned",
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let links: Vec<&str> = body.lines().collect();
-        assert_eq!(links.len(), 1, "{body}");
-        assert!(links[0].starts_with(&format!("vless://{EXIT_UUID}@de1.example.test:443")));
-        assert!(!body.contains("ru1.example.test"));
-        assert!(!body.contains(RELAY_UUID));
+        let config: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let via = outbounds
+            .iter()
+            .find(|o| o["tag"] == "Germany · via Russia")
+            .unwrap();
+        assert!(via["detour"].is_string(), "the relay hop is preserved");
+        assert!(
+            outbounds.iter().all(|o| o["tag"] != "Germany · Direct"),
+            "the pinned profile offers no direct route to select"
+        );
     }
 
     #[tokio::test]
