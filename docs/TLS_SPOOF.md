@@ -8,8 +8,8 @@ genuine handshake, the genuine SNI and certificate verification are untouched. I
 middlebox workaround, not encryption or authentication, and the filter owner can defeat it.
 
 Scope: TLS to the Google/YouTube domain set (`GOOGLE_EGRESS_DOMAINS`), TCP/443, on the node
-that dials Google. QUIC/UDP is not covered. Not allowed together with `[google_egress_hairpin]`
-and not valid on a relay. Absent = rendering unchanged.
+that dials Google. QUIC/UDP is not covered. On a relay it applies only to the dedicated hairpin principal (the relay is the Google egress for another exit's hairpin). Not allowed together with `[google_egress_hairpin]`
+(an exit that hairpins elsewhere does not dial Google itself). Absent = rendering unchanged.
 
 ## Enable
 
