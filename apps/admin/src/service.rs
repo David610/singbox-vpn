@@ -159,6 +159,11 @@ impl CompatibilityServiceManager {
             .filter(|s| !s.is_empty())
     }
 
+    /// The unit's `Environment=` as systemd resolved it (drop-ins included). `None` if unavailable.
+    pub fn environment(&self) -> Option<String> {
+        self.show_value("Environment")
+    }
+
     /// How many times systemd has automatically restarted this unit
     /// (`systemctl show -p NRestarts`) since it was last (re)started —
     /// resets to 0 on every explicit `systemctl start`/`restart`, so a

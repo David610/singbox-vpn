@@ -4904,6 +4904,59 @@ fn undeclared_ipv6_policy_notice(cfg: &DeploymentConfig) -> Option<String> {
     })
 }
 
+/// The verbose `RUST_LOG` value in a unit environment string, if any. The shipped default is `warn`; a
+/// `debug`/`trace` override (typically left behind by an investigation) writes request lines to the journal.
+fn verbose_rust_log(environment: &str) -> Option<String> {
+    environment
+        .split_whitespace()
+        .find_map(|kv| kv.strip_prefix("RUST_LOG="))
+        .filter(|v| {
+            let v = v.to_ascii_lowercase();
+            v.split(',').any(|part| {
+                let level = part.rsplit('=').next().unwrap_or(part);
+                level == "debug" || level == "trace"
+            })
+        })
+        .map(str::to_string)
+}
+
+/// Debug logging left on the subscription service is a drift the installer would never reproduce, so it is
+/// reported rather than silently accepted. WARN, not FAIL: it does not break service.
+fn report_verbose_logging() {
+    let mgr = CompatibilityServiceManager::new("vpn-subscription");
+    if let Some(level) = mgr.environment().as_deref().and_then(verbose_rust_log) {
+        report_check(
+            CheckStatus::Warn,
+            "L2",
+            format!(
+                "vpn-subscription runs with RUST_LOG={level} (shipped default: warn); verbose request logging is active. Remove the override (a systemd drop-in) unless an investigation needs it"
+            ),
+        );
+    }
+}
+
+#[cfg(test)]
+mod verbose_logging_tests {
+    use super::verbose_rust_log;
+
+    #[test]
+    fn only_debug_and_trace_are_verbose() {
+        assert_eq!(
+            verbose_rust_log("A=1 RUST_LOG=debug B=2").as_deref(),
+            Some("debug")
+        );
+        assert_eq!(verbose_rust_log("RUST_LOG=trace").as_deref(), Some("trace"));
+        assert_eq!(
+            verbose_rust_log("RUST_LOG=info,subscription=debug").as_deref(),
+            Some("info,subscription=debug")
+        );
+        assert_eq!(verbose_rust_log("RUST_LOG=warn"), None);
+        assert_eq!(verbose_rust_log("RUST_LOG=info"), None);
+        assert_eq!(verbose_rust_log("PATH=/usr/bin"), None);
+        assert_eq!(verbose_rust_log(""), None);
+    }
+}
+
 /// TLS spoof capability check, shared by every role (a relay spoofs for its hairpin principal, an exit for
 /// everyone). The failure mode it exists for is silent: without CAP_NET_RAW/CAP_NET_ADMIN sing-box starts and
 /// the spoof does nothing.
@@ -4962,6 +5015,7 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
     // `compat_config::server::probe_confinement_rule_count`) are
     // role-independent; the exit shape check below ignores them.
     let probe_rules = compat_config::server::probe_confinement_rule_count(doc);
+    report_verbose_logging();
     report_tls_spoof_capability(cfg, failures);
     match cfg.role {
         NodeRole::Exit => {
