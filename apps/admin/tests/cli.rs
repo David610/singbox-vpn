@@ -870,6 +870,7 @@ case "$1" in
   --version) exit 0 ;;
   show) echo "loaded"; exit 0 ;;
   reload-or-restart) exit 0 ;;
+  daemon-reload) exit 0 ;;
   is-active) exit 0 ;;
 esac
 exit 1
@@ -6388,4 +6389,128 @@ fn static_revision_recovers_an_interrupted_apply_first() {
     );
     assert_eq!(cfg.udp_probe.unwrap().retries, 4);
     assert!(!static_revision_backup_exists(&node.cfg_path));
+}
+
+/// Lifecycle of the managed sing-box capability drop-in for the TLS spoof (docs/TLS_SPOOF.md): created only while
+/// the feature is on, idempotent, removed when it is turned off, an operator-made file with other capabilities is
+/// never overwritten, and sing-box is restarted when (and only when) the drop-in changes.
+#[test]
+#[cfg(unix)]
+fn tls_spoof_capability_dropin_follows_the_setting_across_the_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = fake_singbox(dir.path(), false);
+    let cfg = write_deployment_toml_with_singbox(dir.path(), &binary);
+    let lock = dir.path().join("spoof.lock");
+    let units = dir.path().join("units");
+    let dropin = units.join("sing-box.service.d/tls-spoof.conf");
+    let log = dir.path().join("calls");
+    let systemctl = fake_systemctl(dir.path());
+    let run = |args: &[&str]| {
+        let mut c = admin(dir.path(), &cfg);
+        c.env("SINGBOX_VPN_LOCK_PATH", &lock)
+            .env("SINGBOX_VPN_SYSTEMCTL", &systemctl)
+            .env("SINGBOX_VPN_SYSTEMD_DIR", &units)
+            .env("SYSTEMCTL_LOG", &log)
+            .args(args);
+        c
+    };
+    let calls = |verb: &str| {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with(verb))
+            .count()
+    };
+
+    run(&["init"]).assert().success();
+    run(&["render-config"]).assert().success();
+    assert!(!dropin.exists(), "feature off: no drop-in is created");
+
+    run(&["tls-spoof", "set", "--sni", "ya.ru"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(&dropin).expect("drop-in created");
+    assert!(text.starts_with("# managed by vpn-admin"));
+    assert!(text.contains("AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_NET_ADMIN"));
+    assert!(text.contains("CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_NET_ADMIN"));
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&dropin).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    assert!(std::fs::read_to_string(&cfg)
+        .unwrap()
+        .contains("[google_egress_tls_spoof]"));
+    assert!(
+        calls("daemon-reload") >= 1,
+        "systemd must re-read units after the drop-in appears"
+    );
+    let restarts = calls("reload-or-restart");
+    assert!(
+        restarts >= 1,
+        "sing-box must restart to pick up the capabilities"
+    );
+
+    // Idempotent: reconcile, repeated set, no change, no extra restart, same bytes.
+    run(&["render-config"]).assert().success();
+    run(&["tls-spoof", "set", "--sni", "ya.ru"])
+        .assert()
+        .success();
+    assert_eq!(std::fs::read_to_string(&dropin).unwrap(), text);
+    assert_eq!(
+        calls("reload-or-restart"),
+        restarts,
+        "an unchanged setting must not restart sing-box"
+    );
+
+    // Turning it off removes the managed file and restarts once.
+    run(&["tls-spoof", "clear"]).assert().success();
+    assert!(
+        !dropin.exists(),
+        "managed drop-in removed when the feature is off"
+    );
+    assert!(!std::fs::read_to_string(&cfg)
+        .unwrap()
+        .contains("google_egress_tls_spoof"));
+    assert!(calls("reload-or-restart") > restarts);
+
+    // An operator-made drop-in with OTHER capabilities is never overwritten or deleted.
+    std::fs::create_dir_all(dropin.parent().unwrap()).unwrap();
+    let theirs = "[Service]\nAmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SYS_PTRACE\n";
+    std::fs::write(&dropin, theirs).unwrap();
+    run(&["tls-spoof", "set", "--sni", "ya.ru"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("operator-made"));
+    assert_eq!(std::fs::read_to_string(&dropin).unwrap(), theirs);
+    run(&["tls-spoof", "clear"]).assert().success();
+    assert_eq!(std::fs::read_to_string(&dropin).unwrap(), theirs);
+}
+
+#[test]
+#[cfg(unix)]
+fn tls_spoof_set_rejects_bad_input_without_touching_anything() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = fake_singbox(dir.path(), false);
+    let cfg = write_deployment_toml_with_singbox(dir.path(), &binary);
+    let before = std::fs::read(&cfg).unwrap();
+    let units = dir.path().join("units");
+    for args in [
+        vec!["tls-spoof", "set", "--sni", "www.youtube.com"],
+        vec!["tls-spoof", "set", "--sni", "ya.ru", "--method", "nonsense"],
+        vec!["tls-spoof", "set", "--sni", "no_dot"],
+    ] {
+        admin(dir.path(), &cfg)
+            .env("SINGBOX_VPN_LOCK_PATH", dir.path().join("l"))
+            .env("SINGBOX_VPN_SYSTEMD_DIR", &units)
+            .args(args)
+            .assert()
+            .failure();
+    }
+    assert_eq!(
+        std::fs::read(&cfg).unwrap(),
+        before,
+        "deployment.toml untouched"
+    );
+    assert!(!units.exists(), "no drop-in directory created");
 }
