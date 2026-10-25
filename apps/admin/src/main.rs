@@ -11,6 +11,7 @@ mod safe_io;
 mod external_authorization;
 mod lease_pool;
 mod lock;
+mod pairing;
 mod release_identity;
 mod service;
 mod static_apply;
@@ -283,6 +284,9 @@ enum Commands {
     /// Exit-only literal IPv6 policy; rejection does not guarantee client IPv4 retry.
     #[command(subcommand)]
     Egress(EgressCommands),
+    /// Two-host pairing workflow (docs/PAIRING.md): protected bundles instead of retyped keys and UUIDs.
+    #[command(subcommand)]
+    Pair(pairing::PairCommands),
     /// ADR-0003 ephemeral managed authorization: the provisioning agent's
     /// bounded lease pool of pseudonymous credential slots.
     #[command(subcommand)]
@@ -671,6 +675,7 @@ fn command_mutates_state(cmd: &Commands) -> bool {
         Commands::Version
             | Commands::Status
             | Commands::Egress(EgressCommands::Show)
+            | Commands::Pair(pairing::PairCommands::Status)
             | Commands::Doctor { .. }
             | Commands::User(UserCommands::List)
             | Commands::User(UserCommands::Subscription { .. })
@@ -792,6 +797,38 @@ fn run() -> Result<()> {
             cmd_egress_set(&cfg, &cli.config, Some(policy))
         }
         Commands::Egress(EgressCommands::Clear) => cmd_egress_set(&cfg, &cli.config, None),
+        Commands::Pair(pairing::PairCommands::IssueExit { label, flow, out }) => {
+            pairing::issue_exit(&cfg, &label, &flow, out.as_deref())
+        }
+        Commands::Pair(pairing::PairCommands::AcceptExit {
+            user,
+            endpoint_id,
+            tag,
+            path,
+            bundle_stdin,
+            bundle_file,
+            replace_credential,
+        }) => pairing::accept_exit(
+            &cfg,
+            &cli.config,
+            pairing::AcceptExitArgs {
+                user_id: &user,
+                endpoint_id: &endpoint_id,
+                tag: tag.as_deref(),
+                path_id: path.as_deref(),
+                stdin: bundle_stdin,
+                file: bundle_file.as_deref(),
+                replace_credential,
+            },
+        ),
+        Commands::Pair(pairing::PairCommands::IssueHairpin { label, out }) => {
+            pairing::issue_hairpin(&cfg, &label, out.as_deref())
+        }
+        Commands::Pair(pairing::PairCommands::AcceptHairpin {
+            bundle_stdin,
+            bundle_file,
+        }) => pairing::accept_hairpin(&cfg, &cli.config, bundle_stdin, bundle_file.as_deref()),
+        Commands::Pair(pairing::PairCommands::Status) => pairing::status(&cfg),
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::Repair => cmd_repair(),
