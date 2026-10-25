@@ -263,7 +263,9 @@ case "${1:-}" in
   snapshot) snapshot ;;
   restore) restore ;;
   precheck) precheck; echo "precheck rc=$?" ;;
-  stage) mkdir -p "$OUTDIR"; shift; stage "$@" ;;
-  all) mkdir -p "$OUTDIR"; shift; for n in $(seq 1 "${#MARKERS[@]}"); do stage "$n" "$@"; done ;;   # 1-10 are the defined stages; 11-12 bracket the commit boundary
+  stage) mkdir -p "$OUTDIR"; touch "$OUTDIR/matrix.jsonl"; shift; first=$(wc -l <"$OUTDIR/matrix.jsonl"); stage "$@"
+         python3 -I "$(dirname "$0")/interrupt_matrix_summary.py" "$OUTDIR/matrix.jsonl" "$first" 1; exit $? ;;
+  all) mkdir -p "$OUTDIR"; touch "$OUTDIR/matrix.jsonl"; shift; first=$(wc -l <"$OUTDIR/matrix.jsonl"); for n in $(seq 1 "${#MARKERS[@]}"); do stage "$n" "$@"; done
+       python3 -I "$(dirname "$0")/interrupt_matrix_summary.py" "$OUTDIR/matrix.jsonl" "$first" "${#MARKERS[@]}"; exit $? ;;   # exit 0 only if every stage is PASS   # 1-10 are the defined stages; 11-12 bracket the commit boundary
   *) sed -n '2,16p' "$0"; exit 2 ;;
 esac
