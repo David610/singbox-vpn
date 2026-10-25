@@ -189,6 +189,32 @@ impl EndpointOrigin {
     }
 }
 
+/// XTLS flow a client presents to ONE VLESS+REALITY endpoint.
+///
+/// `Vision` is the production default for every endpoint. `None` exists only
+/// for a relayed (detour-nested) exit route: on 2026-10-25 a live Russian-entry
+/// chain (client -> relay VLESS+REALITY+Vision -> exit VLESS+REALITY+Vision)
+/// hung Chromium HTTP/2 traffic, and turning Vision off on the nested exit hop
+/// alone (first hop unchanged) fixed it. The exit server must render the
+/// matching credential with an empty flow (`vpn-admin user vision-off-experiment`
+/// on a credential dedicated to this route) or its VLESS server rejects the
+/// client. See `docs/RELAY_EXIT_VISION.md`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointVlessFlow {
+    #[default]
+    Vision,
+    None,
+}
+
+impl EndpointVlessFlow {
+    /// `skip_serializing_if`: an endpoint that keeps Vision serializes exactly as it did
+    /// before this field existed (the endpoints fingerprint hashes this serialization).
+    pub fn is_default(&self) -> bool {
+        matches!(self, EndpointVlessFlow::Vision)
+    }
+}
+
 /// A single client-facing compatibility listener.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompatEndpoint {
@@ -231,6 +257,11 @@ pub struct CompatEndpoint {
     /// Local endpoints never use this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<String>,
+
+    /// XTLS flow this endpoint is dialled with. Default `Vision`; `None` only for a
+    /// relayed exit route (see [`EndpointVlessFlow`]).
+    #[serde(default, skip_serializing_if = "EndpointVlessFlow::is_default")]
+    pub vless_flow: EndpointVlessFlow,
 }
 
 /// A user's credential for ONE peer endpoint.
@@ -827,6 +858,7 @@ impl Default for CompatEndpoint {
             asn: None,
             path: None,
             credential_ref: None,
+            vless_flow: EndpointVlessFlow::Vision,
         }
     }
 }

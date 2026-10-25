@@ -728,6 +728,12 @@ pub struct PeerEndpointSection {
     #[serde(default)]
     pub credential_ref: Option<String>,
 
+    /// XTLS flow for this route: `"vision"` (default) or `"none"`. `"none"` is only valid on
+    /// a relayed route (`path` other than `direct`), because it exists for the detour-nested
+    /// exit hop; the exit credential must be rendered with the same empty flow.
+    #[serde(default)]
+    pub vless_flow: crate::model::EndpointVlessFlow,
+
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, toml::Value>,
 }
@@ -810,6 +816,21 @@ impl PeerEndpointSection {
                 self.id
             )));
         }
+        if self.vless_flow == crate::model::EndpointVlessFlow::None {
+            if self.transport != crate::model::CompatTransport::VlessReality {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: vless_flow applies to vless_reality only",
+                    self.id
+                )));
+            }
+            if self.path == "direct" {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: vless_flow = \"none\" is only for a relayed route \
+                     (path other than \"direct\"); a direct exit connection keeps Vision",
+                    self.id
+                )));
+            }
+        }
 
         match self.transport {
             crate::model::CompatTransport::VlessReality => {
@@ -884,6 +905,7 @@ impl PeerEndpointSection {
             asn: self.asn.clone(),
             path: Some(self.path.clone()),
             credential_ref: self.credential_ref.clone(),
+            vless_flow: self.vless_flow,
         })
     }
 }
@@ -1282,6 +1304,14 @@ impl DeploymentConfig {
                 return Err(CompatError::Parse(format!(
                     "[[peer_endpoints]] {}: credential_ref {:?} must name a direct endpoint that \
                      owns its credential, not another alias",
+                    peer.id, credential_ref
+                )));
+            }
+            if target.vless_flow != peer.vless_flow {
+                return Err(CompatError::Parse(format!(
+                    "[[peer_endpoints]] {}: credential_ref {:?} shares one exit credential, so both \
+                     routes need the same vless_flow (the exit renders that credential with a single \
+                     flow). Give this route its own credential (no credential_ref) instead.",
                     peer.id, credential_ref
                 )));
             }
