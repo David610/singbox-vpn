@@ -299,6 +299,7 @@ printf '%s\n' "$HAIRPIN_UUID" | sudo vpn-admin google-egress-hairpin set \
 sudo vpn doctor --protocol --require-protocol
 ```
 
+For two hosts you operate, prefer the paired workflow (`vpn-admin pair issue-hairpin` on the other node piped into `vpn-admin pair accept-hairpin` here; [PAIRING.md](PAIRING.md)): the credential travels in a protected bundle and is never typed or shown. The manual form below is for a node you cannot reach over SSH.
 Use a dedicated user on the other node for `HAIRPIN_UUID`, never a real
 client's credential. `set` validates the candidate config with `sing-box
 check`, applies it, and rolls back on failure. To remove it and return to a

@@ -1,6 +1,6 @@
 # Relayed exit route without XTLS Vision (`vless_flow = "none"`)
 
-Status: opt-in, **not default**. Added after `v1.3.1-rc.6` (needs a new candidate; rc.6 does not contain it).
+Status: opt-in, **not default**. Not in `v1.3.1-rc.6`; included from `v1.3.1-rc.7` onward.
 Real-hardware validation of the fix itself is still open (see "What is and is not verified").
 
 ## Problem observed (2026-10-25, live hosts)
