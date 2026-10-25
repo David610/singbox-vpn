@@ -126,6 +126,18 @@ impl CompatibilityServiceManager {
     /// skipped, not attempted-and-failed, when the unit isn't installed:
     /// this is what lets `vpn-admin render-config`/`user create` work in
     /// CI and local dev without a real systemd deployment.
+    /// `systemctl daemon-reload`: required after a drop-in is added or removed, before the next restart.
+    pub fn daemon_reload(&self) -> Result<(), String> {
+        match self.run(&["daemon-reload"]) {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(format!(
+                "systemctl daemon-reload failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            )),
+            Err(e) => Err(format!("systemctl daemon-reload could not run: {e}")),
+        }
+    }
+
     pub fn is_unit_installed(&self) -> bool {
         let unit = self.unit_name();
         self.run(&["show", "-p", "LoadState", "--value", &unit])

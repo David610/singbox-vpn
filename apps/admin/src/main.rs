@@ -11,6 +11,7 @@ mod safe_io;
 mod external_authorization;
 mod lease_pool;
 mod lock;
+mod pairing;
 mod release_identity;
 mod service;
 mod static_apply;
@@ -283,6 +284,14 @@ enum Commands {
     /// Exit-only literal IPv6 policy; rejection does not guarantee client IPv4 retry.
     #[command(subcommand)]
     Egress(EgressCommands),
+    /// Two-host pairing workflow (docs/PAIRING.md): protected bundles instead of retyped keys and UUIDs.
+    #[command(subcommand)]
+    Pair(pairing::PairCommands),
+    /// Google/YouTube TLS spoof (exit or relay; docs/TLS_SPOOF.md). `set`/`clear` patch only
+    /// `[google_egress_tls_spoof]`, install or remove the managed sing-box capability drop-in
+    /// (CAP_NET_RAW, CAP_NET_ADMIN, only while enabled) and restart sing-box through the normal apply path.
+    #[command(subcommand)]
+    TlsSpoof(TlsSpoofCommands),
     /// ADR-0003 ephemeral managed authorization: the provisioning agent's
     /// bounded lease pool of pseudonymous credential slots.
     #[command(subcommand)]
@@ -361,6 +370,21 @@ enum GoogleEgressHairpinCommands {
     Clear,
 }
 
+#[derive(Subcommand)]
+enum TlsSpoofCommands {
+    /// Read-only: show the setting, the drop-in path and whether the running sing-box holds the capabilities.
+    Show,
+    /// Enable (or change) the spoof. `--sni` is a host name the local filter allows; never a Google name.
+    Set {
+        #[arg(long)]
+        sni: String,
+        /// wrong-sequence (default), wrong-checksum, wrong-ack, wrong-md5 or wrong-timestamp.
+        #[arg(long, default_value = "wrong-sequence")]
+        method: String,
+    },
+    /// Disable the spoof and remove the managed capability drop-in.
+    Clear,
+}
 #[derive(Subcommand)]
 enum EgressCommands {
     /// Read-only: show explicit and effective literal IPv6 policy.
@@ -671,6 +695,8 @@ fn command_mutates_state(cmd: &Commands) -> bool {
         Commands::Version
             | Commands::Status
             | Commands::Egress(EgressCommands::Show)
+            | Commands::Pair(pairing::PairCommands::Status)
+            | Commands::TlsSpoof(TlsSpoofCommands::Show)
             | Commands::Doctor { .. }
             | Commands::User(UserCommands::List)
             | Commands::User(UserCommands::Subscription { .. })
@@ -792,6 +818,47 @@ fn run() -> Result<()> {
             cmd_egress_set(&cfg, &cli.config, Some(policy))
         }
         Commands::Egress(EgressCommands::Clear) => cmd_egress_set(&cfg, &cli.config, None),
+        Commands::Pair(pairing::PairCommands::IssueExit { label, flow, out }) => {
+            pairing::issue_exit(&cfg, &label, &flow, out.as_deref())
+        }
+        Commands::Pair(pairing::PairCommands::AcceptExit {
+            user,
+            endpoint_id,
+            tag,
+            path,
+            bundle_stdin,
+            bundle_file,
+            replace_credential,
+        }) => pairing::accept_exit(
+            &cfg,
+            &cli.config,
+            pairing::AcceptExitArgs {
+                user_id: &user,
+                endpoint_id: &endpoint_id,
+                tag: tag.as_deref(),
+                path_id: path.as_deref(),
+                stdin: bundle_stdin,
+                file: bundle_file.as_deref(),
+                replace_credential,
+            },
+        ),
+        Commands::Pair(pairing::PairCommands::IssueHairpin { label, out }) => {
+            pairing::issue_hairpin(&cfg, &label, out.as_deref())
+        }
+        Commands::Pair(pairing::PairCommands::AcceptHairpin {
+            bundle_stdin,
+            bundle_file,
+        }) => pairing::accept_hairpin(&cfg, &cli.config, bundle_stdin, bundle_file.as_deref()),
+        Commands::Pair(pairing::PairCommands::Status) => pairing::status(&cfg),
+        Commands::TlsSpoof(TlsSpoofCommands::Show) => cmd_tls_spoof_show(&cfg),
+        Commands::TlsSpoof(TlsSpoofCommands::Set { sni, method }) => {
+            let section = compat_config::deployment::TlsSpoofSection {
+                sni,
+                method: parse_tls_spoof_method(&method)?,
+            };
+            cmd_tls_spoof_set(&cfg, &cli.config, Some(section))
+        }
+        Commands::TlsSpoof(TlsSpoofCommands::Clear) => cmd_tls_spoof_set(&cfg, &cli.config, None),
         Commands::Backup { output } => cmd_backup(&cfg, &cli.config, output),
         Commands::Restore { archive } => cmd_restore(&cfg, &cli.config, &archive),
         Commands::Repair => cmd_repair(),
@@ -1770,6 +1837,107 @@ fn rollback_outcome_message(restore_ok: bool) -> &'static str {
     }
 }
 
+fn parse_tls_spoof_method(value: &str) -> Result<compat_config::deployment::TlsSpoofMethod> {
+    serde_json::from_value(serde_json::Value::String(value.to_string())).map_err(|_| {
+        anyhow::anyhow!(
+            "unknown --method {value:?}; use wrong-sequence, wrong-checksum, wrong-ack, wrong-md5 or wrong-timestamp"
+        )
+    })
+}
+
+fn cmd_tls_spoof_show(cfg: &DeploymentConfig) -> Result<()> {
+    match &cfg.google_egress_tls_spoof {
+        None => {
+            println!("google_egress_tls_spoof: not configured (no extra sing-box capabilities)")
+        }
+        Some(s) => println!(
+            "google_egress_tls_spoof: sni={} method={}",
+            s.sni,
+            s.method.as_str()
+        ),
+    }
+    match tls_spoof_dropin_path() {
+        Some(p) => println!(
+            "capability drop-in: {} ({})",
+            p.display(),
+            if p.exists() { "present" } else { "absent" }
+        ),
+        None => println!("capability drop-in: not evaluated (isolated test mode)"),
+    }
+    match running_singbox_lacks_spoof_capabilities(cfg) {
+        Some(true) => println!(
+            "running sing-box: LACKS CAP_NET_RAW/CAP_NET_ADMIN (run `vpn-admin render-config`)"
+        ),
+        Some(false) => println!("running sing-box: holds CAP_NET_RAW and CAP_NET_ADMIN"),
+        None => println!(
+            "running sing-box: capabilities not observable (not configured, or service down)"
+        ),
+    }
+    Ok(())
+}
+
+/// `tls-spoof set|clear`: patch only `[google_egress_tls_spoof]`, then apply through the normal path (which
+/// installs/removes the managed drop-in and restarts sing-box). Any failure restores `deployment.toml` and
+/// re-applies the original state.
+fn cmd_tls_spoof_set(
+    cfg: &DeploymentConfig,
+    path: &std::path::Path,
+    section: Option<compat_config::deployment::TlsSpoofSection>,
+) -> Result<()> {
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)?.permissions().mode() & 0o777
+    };
+    #[cfg(not(unix))]
+    let mode = 0o644;
+    let backup = compat_config::deployment::apply_tls_spoof_toml(path, section.as_ref())?;
+    let outcome = (|| -> Result<bool> {
+        let candidate = DeploymentConfig::load(path)?;
+        let users = store::load_users(&candidate.users_file())?;
+        render_and_apply_singbox_config_with(&candidate, &users, true, true)
+    })();
+    let applied = match outcome {
+        Ok(applied) => applied,
+        Err(error) => {
+            let bytes = std::fs::read(&backup)?;
+            compat_config::migrate::atomic_write(path, &bytes, mode).context(
+                "tls-spoof apply failed and deployment rollback failed; inspect retained backup",
+            )?;
+            let recovered = store::load_users(&cfg.users_file())
+                .and_then(|users| {
+                    render_and_apply_singbox_config(cfg, &users, true)
+                        .map_err(|e| compat_config::CompatError::Parse(e.to_string()))
+                })
+                .is_ok_and(|applied| applied);
+            return Err(error).context(format!(
+                "tls-spoof apply FAILED; deployment restored; runtime recovery {}",
+                if recovered {
+                    "verified"
+                } else {
+                    "unverified; inspect service and retained backup"
+                }
+            ));
+        }
+    };
+    println!(
+        "TLS spoof {}.",
+        match &section {
+            Some(s) => format!("set (sni={}, method={})", s.sni, s.method.as_str()),
+            None => "cleared".to_string(),
+        }
+    );
+    println!(
+        "Runtime application: {}",
+        if applied {
+            "verified"
+        } else {
+            "NOT verified (explicit offline development mode)"
+        }
+    );
+    println!("Verify with `vpn-admin doctor` (capability check) and a Google/YouTube request; QUIC is not covered.");
+    Ok(())
+}
 /// Transactional exit policy update; explicit offline mode never claims a live reload.
 fn cmd_egress_set(
     cfg: &DeploymentConfig,
@@ -2184,6 +2352,98 @@ fn commit_applied_config_stamp(target: &std::path::Path, fingerprint: &str) -> R
     Ok(())
 }
 
+/// Directory holding systemd units. `SINGBOX_VPN_SYSTEMD_DIR` overrides it (tests, unusual layouts). While the
+/// service-manager guard (`SINGBOX_VPN_SYSTEMCTL`) is set and no directory is given, the host's real unit
+/// directory is never touched.
+fn systemd_system_dir() -> Option<PathBuf> {
+    match std::env::var_os("SINGBOX_VPN_SYSTEMD_DIR") {
+        Some(p) if !p.is_empty() => Some(PathBuf::from(p)),
+        _ if std::env::var_os(service::SYSTEMCTL_OVERRIDE_ENV).is_some() => None,
+        _ => Some(PathBuf::from("/etc/systemd/system")),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DropinSync {
+    Unchanged,
+    /// The managed drop-in was written or removed and systemd was told to re-read units.
+    Changed,
+    /// Not applicable on this host (no systemd unit directory); nothing was attempted.
+    Skipped,
+    /// The drop-in could not be written, removed or loaded by systemd; the reason was already printed.
+    Failed,
+}
+
+fn tls_spoof_dropin_path() -> Option<PathBuf> {
+    systemd_system_dir().map(|d| {
+        d.join(compat_config::systemd_dropin::SING_BOX_DROPIN_DIR)
+            .join(compat_config::systemd_dropin::TLS_SPOOF_DROPIN_FILE)
+    })
+}
+
+/// Keep `sing-box.service`'s capabilities in step with `[google_egress_tls_spoof]` (policy in
+/// `compat_config::systemd_dropin`). Idempotent; never fails the caller.
+fn sync_tls_spoof_capability_dropin(
+    cfg: &DeploymentConfig,
+    mgr: &CompatibilityServiceManager,
+) -> DropinSync {
+    use compat_config::systemd_dropin::{
+        desired_tls_spoof_dropin, plan_tls_spoof_dropin, DropinAction,
+    };
+    let Some(path) = tls_spoof_dropin_path() else {
+        return DropinSync::Skipped;
+    };
+    let existing = std::fs::read_to_string(&path).ok();
+    let desired = desired_tls_spoof_dropin(cfg);
+    let changed = match plan_tls_spoof_dropin(existing.as_deref(), desired.as_deref()) {
+        DropinAction::None => return DropinSync::Unchanged,
+        DropinAction::LeaveUnmanaged(why) => {
+            eprintln!("warning: {} ({why})", path.display());
+            return DropinSync::Unchanged;
+        }
+        DropinAction::Write(content) => path
+            .parent()
+            .map(std::fs::create_dir_all)
+            .transpose()
+            .map_err(|e| e.to_string())
+            .and_then(|_| {
+                compat_config::migrate::atomic_write(&path, content.as_bytes(), 0o644)
+                    .map_err(|e| e.to_string())
+            }),
+        DropinAction::Remove => std::fs::remove_file(&path).map_err(|e| e.to_string()),
+    };
+    if let Err(e) = changed {
+        eprintln!(
+            "warning: could not update the sing-box capability drop-in {}: {e}",
+            path.display()
+        );
+        return DropinSync::Failed;
+    }
+    eprintln!(
+        "sing-box capability drop-in {} updated for the TLS spoof setting.",
+        path.display()
+    );
+    if mgr.is_available() {
+        if let Err(e) = mgr.daemon_reload() {
+            eprintln!("warning: {e}");
+            return DropinSync::Failed;
+        }
+    }
+    DropinSync::Changed
+}
+
+/// True when the TLS spoof is configured but the RUNNING sing-box does not hold the capabilities it needs (for
+/// example the drop-in was installed after the process started). `None` = could not be observed.
+fn running_singbox_lacks_spoof_capabilities(cfg: &DeploymentConfig) -> Option<bool> {
+    cfg.google_egress_tls_spoof.as_ref()?;
+    if std::env::var_os(service::SYSTEMCTL_OVERRIDE_ENV).is_some() {
+        // Isolated test phase: never inspect (or restart on behalf of) a real sing-box on the host.
+        return None;
+    }
+    let pid = perf_singbox_pid()?;
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    proc_status_cap_eff(&status).map(|caps| !cap_eff_allows_tls_spoof(caps))
+}
 /// Returns whether the change was actually pushed to a LIVE, reloaded
 /// sing-box process — `Ok(false)` covers every degraded path (missing
 /// binary, missing keys, systemctl/unit unavailable) where the config
@@ -2198,6 +2458,20 @@ fn render_and_apply_singbox_config(
     cfg: &DeploymentConfig,
     users: &[CompatUser],
     require_live_apply: bool,
+) -> Result<bool> {
+    render_and_apply_singbox_config_with(cfg, users, require_live_apply, false)
+}
+
+/// `strict_spoof_capabilities` is for the command that CHANGES the TLS spoof setting: there, failing to put the
+/// capability drop-in in place (or the restarted process still lacking the capabilities) is an error the caller
+/// rolls back, instead of a warning behind a "TLS spoof set" success line. Every other caller (user mutations,
+/// the expiry timer) keeps applying the authorization change and leaves the capability gap to `doctor`, so an
+/// unwritable systemd directory can never stop an expired user from being removed.
+fn render_and_apply_singbox_config_with(
+    cfg: &DeploymentConfig,
+    users: &[CompatUser],
+    require_live_apply: bool,
+    strict_spoof_capabilities: bool,
 ) -> Result<bool> {
     let reality = match load_reality_params(cfg) {
         Ok(r) => r,
@@ -2253,9 +2527,41 @@ fn render_and_apply_singbox_config(
         .is_some_and(|current| current == doc);
     let applied_stamp_matches = std::fs::read_to_string(applied_config_stamp_path(&target))
         .is_ok_and(|stamp| stamp.trim() == candidate_fingerprint);
-    if target_already_matches && applied_stamp_matches && service_available && mgr.is_active() {
+    // The TLS spoof needs two extra capabilities on the sing-box unit. Keep the managed drop-in in step with
+    // the configuration, and make sure the RUNNING process actually holds them: a restart is needed when the
+    // drop-in just changed, or when it is in place but the process predates it. The second case restarts at
+    // most once per drop-in content, so a host where the capabilities cannot be granted is not restarted
+    // by every reconcile run; `doctor` reports that state.
+    let dropin = sync_tls_spoof_capability_dropin(cfg, &mgr);
+    if strict_spoof_capabilities && dropin == DropinSync::Failed {
+        bail!(
+            "the sing-box capability drop-in for the TLS spoof setting could not be applied (see above); \
+             refusing to report the setting as changed"
+        );
+    }
+    let spoof_stamp = cfg.state_dir.join("tls-spoof-restarted-for.sha256");
+    let spoof_content_hash = compat_config::systemd_dropin::desired_tls_spoof_dropin(cfg)
+        .map(|content| credentials::hash_token(&content));
+    let caps_restart_due = running_singbox_lacks_spoof_capabilities(cfg) == Some(true)
+        && spoof_content_hash.as_deref()
+            != std::fs::read_to_string(&spoof_stamp)
+                .ok()
+                .as_deref()
+                .map(str::trim);
+    let capability_restart = dropin == DropinSync::Changed || caps_restart_due;
+    if !capability_restart
+        && target_already_matches
+        && applied_stamp_matches
+        && service_available
+        && mgr.is_active()
+    {
         eprintln!("sing-box authorization config is already current; no reload needed.");
         return Ok(true);
+    }
+    if capability_restart {
+        eprintln!(
+            "sing-box must be restarted to pick up the TLS spoof capability drop-in; this is a full restart."
+        );
     }
 
     apply_config_atomically(&doc, &target, |p| backend.validate(p))
@@ -2338,6 +2644,13 @@ fn render_and_apply_singbox_config(
             }
         );
     }
+    if strict_spoof_capabilities && running_singbox_lacks_spoof_capabilities(cfg) == Some(true) {
+        bail!(
+            "sing-box was restarted but the running process still lacks CAP_NET_RAW/CAP_NET_ADMIN, so the TLS \
+             spoof would silently do nothing (is the unit overridden by another drop-in, e.g. a \
+             CapabilityBoundingSet?); see docs/TLS_SPOOF.md"
+        );
+    }
     // `reload_and_verify` only proves the sing-box PROCESS stayed up — it
     // is `systemctl is-active`, which passes for a syntactically valid but
     // protocol-broken REALITY config exactly as readily as for a correct
@@ -2375,6 +2688,20 @@ fn render_and_apply_singbox_config(
     }
     commit_applied_config_stamp(&target, &candidate_fingerprint)
         .context("recording the config version verified live")?;
+    if capability_restart {
+        // Remember which drop-in content this restart was for, so a host that cannot grant the capabilities is
+        // not restarted again by every reconcile run.
+        match &spoof_content_hash {
+            Some(hash) => {
+                if let Err(e) = write_secret_file(&spoof_stamp, hash) {
+                    eprintln!("warning: could not record the TLS spoof restart: {e}");
+                }
+            }
+            None => {
+                let _ = std::fs::remove_file(&spoof_stamp);
+            }
+        }
+    }
     let handshake_line = match handshake_verification {
         HandshakeVerification::Ran(RealitySelfTestOutcome::Pass) => {
             "including a real REALITY handshake self-test that PASSED".to_string()
@@ -2723,6 +3050,11 @@ fn cmd_config_migrate(cfg: &DeploymentConfig, config_path: &std::path::Path) -> 
 /// cli.rs) both assert this stays true — do not remove the query
 /// parameter without updating both.
 fn subscription_url(cfg: &DeploymentConfig, token: &str) -> String {
+    // On a relay the share-link form cannot express the relayed route (the subscription service refuses it with
+    // `relay_route_needs_pinned_profile`), so the link to hand out is the pinned sing-box profile.
+    if cfg.role == compat_config::deployment::NodeRole::Relay {
+        return subscription_url_hiddify_pinned(cfg, token);
+    }
     format!(
         "https://{}:{}/sub/{}?format=hiddify",
         cfg.subscription_host, cfg.subscription.public_port, token
@@ -4625,6 +4957,54 @@ mod verbose_logging_tests {
     }
 }
 
+/// TLS spoof capability check, shared by every role (a relay spoofs for its hairpin principal, an exit for
+/// everyone). The failure mode it exists for is silent: without CAP_NET_RAW/CAP_NET_ADMIN sing-box starts and
+/// the spoof does nothing.
+fn report_tls_spoof_capability(cfg: &DeploymentConfig, failures: &mut u32) {
+    let Some(spoof) = &cfg.google_egress_tls_spoof else {
+        if let Some(path) = tls_spoof_dropin_path().filter(|p| p.exists()) {
+            report_check(
+                CheckStatus::Info,
+                "L2",
+                format!(
+                    "{} exists but [google_egress_tls_spoof] is not configured; `vpn-admin render-config` removes it if vpn-admin manages it",
+                    path.display()
+                ),
+            );
+        }
+        return;
+    };
+    let caps = perf_singbox_pid().and_then(|pid| {
+        std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .ok()
+            .and_then(|s| proc_status_cap_eff(&s))
+    });
+    match caps.map(cap_eff_allows_tls_spoof) {
+        Some(true) => report_check(
+            CheckStatus::Ok,
+            "L2",
+            format!(
+                "google_egress_tls_spoof ({}, {}): sing-box holds CAP_NET_RAW and CAP_NET_ADMIN",
+                spoof.sni,
+                spoof.method.as_str()
+            ),
+        ),
+        Some(false) => {
+            report_check(
+                CheckStatus::Fail,
+                "L2",
+                "google_egress_tls_spoof is configured but the running sing-box lacks CAP_NET_RAW/CAP_NET_ADMIN: it starts, but the spoof silently does nothing. Run `vpn-admin render-config` (installs the managed systemd drop-in and restarts sing-box); see docs/TLS_SPOOF.md",
+            );
+            *failures += 1;
+        }
+        None => report_check(
+            CheckStatus::Warn,
+            "L2",
+            "google_egress_tls_spoof is configured but the sing-box capabilities could not be read (service down?)",
+        ),
+    }
+}
+
 /// `doctor`'s relay policy check: proves the document this node renders
 /// (and therefore what `render-config` would apply) forwards only to the
 /// declared exits and ends in a reject. Reports aggregate counts only.
@@ -4636,6 +5016,7 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
     // role-independent; the exit shape check below ignores them.
     let probe_rules = compat_config::server::probe_confinement_rule_count(doc);
     report_verbose_logging();
+    report_tls_spoof_capability(cfg, failures);
     match cfg.role {
         NodeRole::Exit => {
             if !compat_config::server::exit_egress_policy_matches(cfg, doc) {
@@ -4644,21 +5025,6 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
             }
             if let Some(notice) = undeclared_ipv6_policy_notice(cfg) {
                 report_check(CheckStatus::Warn, "L2", notice);
-            }
-            if let Some(spoof) = &cfg.google_egress_tls_spoof {
-                let caps = perf_singbox_pid().and_then(|pid| {
-                    std::fs::read_to_string(format!("/proc/{pid}/status"))
-                        .ok()
-                        .and_then(|s| proc_status_cap_eff(&s))
-                });
-                match caps.map(cap_eff_allows_tls_spoof) {
-                    Some(true) => report_check(CheckStatus::Ok, "L2", format!("google_egress_tls_spoof ({}, {}): sing-box holds CAP_NET_RAW and CAP_NET_ADMIN", spoof.sni, spoof.method.as_str())),
-                    Some(false) => {
-                        report_check(CheckStatus::Fail, "L2", "google_egress_tls_spoof is configured but the running sing-box lacks CAP_NET_RAW/CAP_NET_ADMIN: it starts, but the spoof silently does nothing. Install the systemd drop-in described in docs/TLS_SPOOF.md and restart sing-box");
-                        *failures += 1;
-                    }
-                    None => report_check(CheckStatus::Warn, "L2", "google_egress_tls_spoof is configured but the sing-box capabilities could not be read (service down?)"),
-                }
             }
             if let Some(egress) = &cfg.egress {
                 report_check(CheckStatus::Info, "L2", format!("exit ipv6_literal={}: rejection is a proxy close, not proof of native IPv4 retry{}", egress.ipv6_literal.as_str(),
