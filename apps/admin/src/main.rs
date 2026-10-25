@@ -8931,8 +8931,37 @@ fn check_l5_l6_protocol_selftest(
     require_protocol: bool,
 ) -> ProtocolCheckResult {
     let reality = check_l5_l6_reality_selftest(cfg, failures, require_protocol);
+    if !hysteria2_selftest_applies(cfg.role) {
+        report_check(
+            CheckStatus::Info,
+            "L5-6",
+            "Hysteria2 self-test not applicable on a relay: a relay forwards only through its VLESS+REALITY first hop, and its loopback self-test exception (reserved probe principal) is scoped to that inbound",
+        );
+        return reality;
+    }
     let hysteria2 = check_l5_l6_hysteria2_selftest(cfg, failures, require_protocol);
     combine_protocol_results(reality, hysteria2)
+}
+
+/// The Hysteria2 loopback self-test reaches the node's own `/healthz` through
+/// the tunnel, which only an exit permits for the reserved probe principal. A
+/// relay rejects it by design (its exception covers the REALITY inbound only),
+/// so on a relay the test could only ever report INCONCLUSIVE and made a correct
+/// relay install fail acceptance.
+fn hysteria2_selftest_applies(role: compat_config::deployment::NodeRole) -> bool {
+    role == compat_config::deployment::NodeRole::Exit
+}
+
+#[cfg(test)]
+mod hysteria2_selftest_role_tests {
+    use super::*;
+    use compat_config::deployment::NodeRole;
+
+    #[test]
+    fn the_hysteria2_loopback_self_test_runs_on_exits_only() {
+        assert!(hysteria2_selftest_applies(NodeRole::Exit));
+        assert!(!hysteria2_selftest_applies(NodeRole::Relay));
+    }
 }
 
 /// `Passed` only when BOTH transports passed. A definitive failure of either
