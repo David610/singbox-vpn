@@ -615,6 +615,7 @@ fn user(id: &str, relay_uuid: &str, exit_uuid: Option<&str>) -> CompatUser {
         expires_at: None,
         vision_off_experiment: false,
         google_egress_hairpin: false,
+        exit_principal: false,
         peer_credentials,
         is_reserved_probe: false,
         credentials: Vec::new(),
@@ -2044,4 +2045,480 @@ fn s20_client_without_vision_against_vision_exit_credential_is_rejected() {
         "S20: mismatched flow must be rejected, not silently accepted"
     );
     assert_eq!(lab.target.hits(), before, "S20: no byte reached the target");
+}
+
+// ----------------------------------------------------------------------
+// Bidirectional deployment (docs/BIDIRECTIONAL.md): two physical hosts, each ONE relay deployment that also
+// opted into exit principals. Profile A = client -> "ru" -> "eu" -> target; profile B = client -> "eu" -> "ru"
+// -> target. The same real sing-box documents the production renderer produces, nothing hand-written.
+// ----------------------------------------------------------------------
+
+const EU_VIA_TAG: &str = "EU via RU";
+const RU_VIA_TAG: &str = "RU via EU";
+
+fn relay_account(id: &str, relay_uuid: &str, peer_id: &str, exit_uuid: &str) -> CompatUser {
+    let mut u = user(id, relay_uuid, None);
+    u.peer_credentials.insert(
+        peer_id.to_string(),
+        PeerCredential::VlessReality {
+            uuid: exit_uuid.to_string(),
+        },
+    );
+    u
+}
+
+fn exit_principal_account(id: &str, uuid: &str) -> CompatUser {
+    let mut u = user(id, uuid, None);
+    u.exit_principal = true;
+    u
+}
+
+struct BiLab {
+    sb: SingBox,
+    decoy: LocalDecoy,
+    target: HttpTarget,
+    ru: Node,
+    eu: Node,
+    ru_tap: Tap,
+    eu_tap: Tap,
+    /// Profile A client (account on `ru`), and the exit principal `eu` issued for it.
+    alice: CompatUser,
+    alice_exit: CompatUser,
+    /// Profile B client (account on `eu`), and the exit principal `ru` issued for it.
+    bob: CompatUser,
+    bob_exit: CompatUser,
+    clients: Vec<Proc>,
+    _net: NetLease,
+}
+
+macro_rules! bilab {
+    () => {{
+        let _serial = serial();
+        match BiLab::start() {
+            Some(lab) => (lab, _serial),
+            None => return,
+        }
+    }};
+}
+
+/// Where one node declares the OTHER host as its exit.
+struct PeerDecl<'a> {
+    node_id: &'a str,
+    host: &'a str,
+    path_id: &'a str,
+    peer_prefix: &'a str,
+    peer_host: &'a str,
+    peer_tap_port: u16,
+    via_tag: &'a str,
+}
+
+impl BiLab {
+    fn start() -> Option<BiLab> {
+        let (sb, net) = prerequisites()?;
+        let decoy = spawn_local_tls13_decoy(DecoyCertSize::Small).expect("local TLS 1.3 decoy");
+        let ru = Node::new(&sb, &decoy, "1a2b3c4d");
+        let eu = Node::new(&sb, &decoy, "0a1b2c3d");
+        let mut lab = BiLab {
+            target: spawn_http_target(&format!("{TARGET_IP}:0")),
+            ru_tap: spawn_tcp_tap(RELAY_IP, ru.reality_port),
+            eu_tap: spawn_tcp_tap(EXIT_IP, eu.reality_port),
+            alice: relay_account("alice", &uuid(0xa1), "eu-direct", &uuid(0xb1)),
+            alice_exit: exit_principal_account("alice-at-eu", &uuid(0xb1)),
+            bob: relay_account("bob", &uuid(0xa2), "ru-direct", &uuid(0xb2)),
+            bob_exit: exit_principal_account("bob-at-ru", &uuid(0xb2)),
+            ru,
+            eu,
+            decoy,
+            sb,
+            clients: Vec::new(),
+            _net: net,
+        };
+        lab.write_deployments();
+        lab.apply_all();
+        lab.ru.start(&lab.sb);
+        lab.eu.start(&lab.sb);
+        Some(lab)
+    }
+
+    fn deployment_text(&self, node: &Node, peer: &Node, decl: &PeerDecl) -> String {
+        let PeerDecl {
+            node_id,
+            host,
+            path_id,
+            peer_prefix,
+            peer_host,
+            peer_tap_port,
+            via_tag,
+        } = decl;
+        let mut text = node.header(node_id, "relay", host, &self.decoy);
+        text.push_str(&format!(
+            r#"
+[exit_principals]
+enabled = true
+
+[[access_paths]]
+id = "{path_id}"
+kind = "relay"
+via_endpoint_id = "reality-1"
+capabilities = ["tcp"]
+"#
+        ));
+        for (id, tag, path, credential_ref) in [
+            (
+                format!("{peer_prefix}-direct"),
+                format!("{peer_prefix} direct"),
+                "direct".to_string(),
+                String::new(),
+            ),
+            (
+                format!("{peer_prefix}-via"),
+                via_tag.to_string(),
+                path_id.to_string(),
+                format!("credential_ref = \"{peer_prefix}-direct\"\n"),
+            ),
+        ] {
+            text.push_str(&format!(
+                r#"
+[[peer_endpoints]]
+id = "{id}"
+tag = "{tag}"
+host = "{peer_host}"
+port = {peer_tap_port}
+transport = "vless_reality"
+server_name = "{sni}"
+reality_public_key = "{pbk}"
+reality_short_id = "{sid}"
+failure_domain = "exit:{peer_prefix}"
+path = "{path}"
+{credential_ref}"#,
+                sni = self.decoy.hostname,
+                pbk = peer.reality.public_key_hex,
+                sid = peer.reality.short_ids[0],
+            ));
+        }
+        text
+    }
+
+    fn write_deployments(&self) {
+        let ru = self.deployment_text(
+            &self.ru,
+            &self.eu,
+            &PeerDecl {
+                node_id: "ru1",
+                host: RELAY_IP,
+                path_id: "via-ru1",
+                peer_prefix: "eu",
+                peer_host: EXIT_IP,
+                peer_tap_port: self.eu_tap.port,
+                via_tag: EU_VIA_TAG,
+            },
+        );
+        std::fs::write(&self.ru.deployment_path, ru).unwrap();
+        let eu = self.deployment_text(
+            &self.eu,
+            &self.ru,
+            &PeerDecl {
+                node_id: "eu1",
+                host: EXIT_IP,
+                path_id: "via-eu1",
+                peer_prefix: "ru",
+                peer_host: RELAY_IP,
+                peer_tap_port: self.ru_tap.port,
+                via_tag: RU_VIA_TAG,
+            },
+        );
+        std::fs::write(&self.eu.deployment_path, eu).unwrap();
+    }
+
+    fn apply_all(&self) {
+        self.ru
+            .apply(&self.sb, &[self.alice.clone(), self.bob_exit.clone()])
+            .unwrap();
+        self.eu
+            .apply(&self.sb, &[self.bob.clone(), self.alice_exit.clone()])
+            .unwrap();
+    }
+
+    fn provisioned(&self, node: &Node, u: &CompatUser) -> serde_json::Value {
+        let deployment = node.deployment();
+        let endpoints = deployment
+            .served_endpoints(
+                &node.reality.public_key_hex,
+                &node.reality.short_ids[0],
+                None,
+            )
+            .unwrap();
+        provisioning_document_with_mode_and_access_paths(
+            u,
+            &endpoints,
+            DiagnosticMode::None,
+            &deployment.contract_access_paths().unwrap(),
+        )
+        .unwrap()
+        .singbox_config
+        .expect("embedded Core config")
+    }
+
+    fn client(&mut self, core: &serde_json::Value, selected_tag: &str) -> u16 {
+        let mut config = core.clone();
+        config["route"]["final"] = serde_json::json!(selected_tag);
+        let socks = free_port();
+        for outbound in config["outbounds"].as_array_mut().unwrap() {
+            if outbound.get("server").is_some() && outbound.get("detour").is_none() {
+                outbound["inet4_bind_address"] = serde_json::json!(CLIENT_IP);
+            }
+        }
+        config["log"] = serde_json::json!({"level": "warn"});
+        config["inbounds"] = serde_json::json!([
+            {"type": "mixed", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": socks}
+        ]);
+        let dir = self.ru.dir.path().join(format!("client-{socks}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("client.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        let check = self.sb.check(&path);
+        assert!(
+            check.status.success(),
+            "client config rejected: {}",
+            String::from_utf8_lossy(&check.stderr)
+        );
+        let log = dir.join("client.log");
+        self.clients
+            .push(Proc(Some(self.sb.run_logged(&path, &log))));
+        let child = self.clients.last_mut().unwrap().0.as_mut().unwrap();
+        if let Err(why) = wait_until_serving(child, &path, STARTUP_TIMEOUT) {
+            panic!("client did not start: {why}\n{}", common::read_log(&log));
+        }
+        socks
+    }
+
+    /// A client holding only the first-hop outbound of a host with one credential: what an account (or a stolen
+    /// credential) can do on that host by itself.
+    fn first_hop_client(&mut self, on_ru: bool, who: &CompatUser) -> u16 {
+        let node = if on_ru { &self.ru } else { &self.eu };
+        let deployment = node.deployment();
+        let endpoints = deployment
+            .served_endpoints(
+                &node.reality.public_key_hex,
+                &node.reality.short_ids[0],
+                None,
+            )
+            .unwrap();
+        let first_hop = endpoints.iter().find(|e| e.id == "reality-1").unwrap();
+        let built = contract_endpoint(
+            &user("probe", &who.vless_uuid, None),
+            first_hop,
+            VlessFlow::Vision,
+            Some("first-hop"),
+        )
+        .unwrap();
+        let core = compat_config::render::render_singbox_config_from_contract(
+            &[built],
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        self.client(&core, "first-hop")
+    }
+}
+
+impl Drop for BiLab {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        self.clients.clear();
+        eprintln!("--- ru sing-box log ---\n{}", self.ru.log_text());
+        eprintln!("--- eu sing-box log ---\n{}", self.eu.log_text());
+    }
+}
+
+fn chain_of(core: &serde_json::Value, via_tag: &str) -> (String, String) {
+    let outbounds = core["outbounds"].as_array().unwrap();
+    let via = outbounds.iter().find(|o| o["tag"] == via_tag).unwrap();
+    let hop = outbounds
+        .iter()
+        .find(|o| o["tag"] == via["detour"])
+        .expect("the via route is a detour chain");
+    (
+        hop["server"].as_str().unwrap().to_string(),
+        via["server"].as_str().unwrap().to_string(),
+    )
+}
+
+#[test]
+fn bi01_both_directions_are_genuine_two_hop_chains_and_exit_at_the_other_host() {
+    let (mut lab, _serial) = bilab!();
+    let core_a = lab.provisioned(&lab.ru, &lab.alice.clone());
+    let core_b = lab.provisioned(&lab.eu, &lab.bob.clone());
+    // profile A enters at ru and exits at eu; profile B enters at eu and exits at ru
+    assert_eq!(
+        chain_of(&core_a, EU_VIA_TAG),
+        (RELAY_IP.to_string(), EXIT_IP.to_string())
+    );
+    assert_eq!(
+        chain_of(&core_b, RU_VIA_TAG),
+        (EXIT_IP.to_string(), RELAY_IP.to_string())
+    );
+
+    let a = lab.client(&core_a, EU_VIA_TAG);
+    let b = lab.client(&core_b, RU_VIA_TAG);
+    assert!(
+        reaches(a, TARGET_IP, lab.target.port),
+        "profile A must work"
+    );
+    assert!(
+        reaches(b, TARGET_IP, lab.target.port),
+        "profile B must work"
+    );
+    // the second hop was really used in both directions (the peer's tap saw the forwarded connection), and no
+    // client ever dialed a peer's declared endpoint directly
+    assert!(
+        lab.eu_tap.all_connections() > 0,
+        "A's second hop reached eu"
+    );
+    assert!(
+        lab.ru_tap.all_connections() > 0,
+        "B's second hop reached ru"
+    );
+    assert_eq!(lab.eu_tap.client_connections(), 0);
+    assert_eq!(lab.ru_tap.client_connections(), 0);
+}
+
+#[test]
+fn bi02_relay_accounts_are_not_exits_but_exit_principals_are_and_only_under_the_exit_policy() {
+    let (mut lab, _serial) = bilab!();
+    // an ordinary relay account, by itself, can reach nothing on either host
+    let alice_alone = lab.first_hop_client(true, &lab.alice.clone());
+    let bob_alone = lab.first_hop_client(false, &lab.bob.clone());
+    assert!(refused(alice_alone, TARGET_IP, lab.target.port));
+    assert!(refused(bob_alone, TARGET_IP, lab.target.port));
+    assert_eq!(
+        lab.target.hits(),
+        0,
+        "no byte reached the target from a relay-only account"
+    );
+
+    // an exit principal is an exit: it reaches the Internet target ...
+    let bob_principal = lab.first_hop_client(true, &lab.bob_exit.clone());
+    let alice_principal = lab.first_hop_client(false, &lab.alice_exit.clone());
+    assert!(
+        reaches(bob_principal, TARGET_IP, lab.target.port),
+        "ru exit principal"
+    );
+    assert!(
+        reaches(alice_principal, TARGET_IP, lab.target.port),
+        "eu exit principal"
+    );
+    // ... but never the node itself or its loopback services (C-16) ...
+    let ru_loopback = spawn_http_target(&format!("127.0.0.1:{}", lab.ru.sub_port));
+    assert!(refused(bob_principal, "127.0.0.1", ru_loopback.port));
+    assert_eq!(ru_loopback.hits(), 0);
+    // ... and never the declared peer: no relay/exit loop through the other host
+    let before = lab.eu_tap.all_connections();
+    assert!(
+        refused(bob_principal, EXIT_IP, lab.eu_tap.port),
+        "principal on ru must not reach eu"
+    );
+    assert_eq!(lab.eu_tap.all_connections(), before);
+    let before = lab.ru_tap.all_connections();
+    assert!(
+        refused(alice_principal, RELAY_IP, lab.ru_tap.port),
+        "principal on eu must not reach ru"
+    );
+    assert_eq!(lab.ru_tap.all_connections(), before);
+}
+
+#[test]
+fn bi03_a_down_node_fails_closed_in_both_profiles_without_a_wrong_country_fallback() {
+    let (mut lab, _serial) = bilab!();
+    let core_a = lab.provisioned(&lab.ru, &lab.alice.clone());
+    let core_b = lab.provisioned(&lab.eu, &lab.bob.clone());
+    let a = lab.client(&core_a, EU_VIA_TAG);
+    let b = lab.client(&core_b, RU_VIA_TAG);
+    assert!(reaches(a, TARGET_IP, lab.target.port));
+    assert!(reaches(b, TARGET_IP, lab.target.port));
+
+    // eu down: A loses its exit, B loses its entry. Neither may leak out of the surviving host.
+    lab.eu.stop();
+    let hits = lab.target.hits();
+    assert!(refused(a, TARGET_IP, lab.target.port), "A needs eu");
+    assert!(refused(b, TARGET_IP, lab.target.port), "B enters at eu");
+    assert_eq!(
+        lab.target.hits(),
+        hits,
+        "nothing fell back to ru as an exit for A"
+    );
+    lab.eu.start(&lab.sb);
+    assert!(reaches(a, TARGET_IP, lab.target.port), "recovers with eu");
+    assert!(reaches(b, TARGET_IP, lab.target.port));
+
+    // ru down: the mirror image
+    lab.ru.stop();
+    let hits = lab.target.hits();
+    assert!(refused(a, TARGET_IP, lab.target.port), "A enters at ru");
+    assert!(refused(b, TARGET_IP, lab.target.port), "B needs ru");
+    assert_eq!(
+        lab.target.hits(),
+        hits,
+        "nothing fell back to eu as an exit for B"
+    );
+}
+
+#[test]
+fn bi04_each_direction_is_revoked_independently_at_the_entry_and_at_the_exit() {
+    let (mut lab, _serial) = bilab!();
+    let core_a = lab.provisioned(&lab.ru, &lab.alice.clone());
+    let core_b = lab.provisioned(&lab.eu, &lab.bob.clone());
+    let a = lab.client(&core_a, EU_VIA_TAG);
+    let b = lab.client(&core_b, RU_VIA_TAG);
+    assert!(reaches(a, TARGET_IP, lab.target.port) && reaches(b, TARGET_IP, lab.target.port));
+
+    // revoke A's account at its entry (ru): only A stops
+    let mut alice_off = lab.alice.clone();
+    alice_off.enabled = false;
+    lab.ru
+        .apply(&lab.sb, &[alice_off, lab.bob_exit.clone()])
+        .unwrap();
+    lab.ru.start(&lab.sb);
+    assert!(
+        refused(a, TARGET_IP, lab.target.port),
+        "A revoked at its entry"
+    );
+    assert!(reaches(b, TARGET_IP, lab.target.port), "B untouched");
+
+    // restore, then revoke A's exit principal at eu: A stops at the exit, B still works
+    lab.ru
+        .apply(&lab.sb, &[lab.alice.clone(), lab.bob_exit.clone()])
+        .unwrap();
+    lab.ru.start(&lab.sb);
+    assert!(reaches(a, TARGET_IP, lab.target.port));
+    let mut principal_off = lab.alice_exit.clone();
+    principal_off.enabled = false;
+    lab.eu
+        .apply(&lab.sb, &[lab.bob.clone(), principal_off])
+        .unwrap();
+    lab.eu.start(&lab.sb);
+    assert!(
+        refused(a, TARGET_IP, lab.target.port),
+        "A revoked at its exit"
+    );
+    assert!(reaches(b, TARGET_IP, lab.target.port), "B untouched");
+
+    // finally revoke B's exit principal at ru: B stops, A (restored at eu) works again
+    lab.eu
+        .apply(&lab.sb, &[lab.bob.clone(), lab.alice_exit.clone()])
+        .unwrap();
+    lab.eu.start(&lab.sb);
+    let mut bob_principal_off = lab.bob_exit.clone();
+    bob_principal_off.enabled = false;
+    lab.ru
+        .apply(&lab.sb, &[lab.alice.clone(), bob_principal_off])
+        .unwrap();
+    lab.ru.start(&lab.sb);
+    assert!(
+        refused(b, TARGET_IP, lab.target.port),
+        "B revoked at its exit"
+    );
+    assert!(reaches(a, TARGET_IP, lab.target.port), "A works again");
 }

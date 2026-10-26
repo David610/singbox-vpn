@@ -383,6 +383,13 @@ pub struct DeploymentConfig {
     #[serde(default)]
     pub google_egress_tls_spoof: Option<TlsSpoofSection>,
 
+    /// Opt-in, relay only: lets this relay also be the EXIT of another relay's route (bidirectional
+    /// deployments, `docs/BIDIRECTIONAL.md`). Users flagged `exit_principal` then leave this node directly under
+    /// the exit egress policy; every other user is still forwarded only to the declared exits and rejected
+    /// otherwise. Absence renders exactly as before.
+    #[serde(default)]
+    pub exit_principals: Option<ExitPrincipalsSection>,
+
     /// This node's own public IPv4 address, captured once (at install/
     /// bootstrap time, or via a later `APPLY_NODE_REVISION`) rather than
     /// resolved live during config rendering. Closes the Area 6 gap left
@@ -462,6 +469,19 @@ impl TlsSpoofMethod {
             Self::WrongMd5 => "wrong-md5",
             Self::WrongTimestamp => "wrong-timestamp",
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExitPrincipalsSection {
+    pub enabled: bool,
+}
+
+impl DeploymentConfig {
+    /// True when this node is a relay that opted into serving as another relay's exit.
+    pub fn exit_principals_enabled(&self) -> bool {
+        self.role == NodeRole::Relay && self.exit_principals.as_ref().is_some_and(|s| s.enabled)
     }
 }
 
@@ -1144,6 +1164,12 @@ impl DeploymentConfig {
             }
         }
         self.validate_role()?;
+
+        if self.exit_principals.is_some() && self.role != NodeRole::Relay {
+            return Err(CompatError::Parse(
+                "[exit_principals] is for relay nodes only: an exit already serves every user directly".into(),
+            ));
+        }
 
         if let Some(spoof) = &self.google_egress_tls_spoof {
             if self.google_egress_hairpin.is_some() {

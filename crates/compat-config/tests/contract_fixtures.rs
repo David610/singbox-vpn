@@ -64,6 +64,7 @@ fn user(vision_off: bool) -> CompatUser {
         expires_at: None,
         vision_off_experiment: vision_off,
         google_egress_hairpin: false,
+        exit_principal: false,
         peer_credentials: Default::default(),
         is_reserved_probe: false,
         credentials: Vec::new(),

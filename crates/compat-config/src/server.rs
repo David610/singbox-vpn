@@ -217,6 +217,13 @@ pub fn render_server_config_for_deployment(
             "outbound": "direct",
         }));
     }
+    // Exit principals (bidirectional deployments): only on a relay that opted in, only users flagged for it,
+    // never a hairpin or probe account. Disabled or absent means no rule, so a flagged user falls through to
+    // the terminating reject (fail closed).
+    if deployment.exit_principals_enabled() {
+        let exit_principals = exit_principal_ids(deployment, users, now_unix);
+        rules.extend(exit_principal_rules(deployment, &exit_principals));
+    }
     for target in deployment.relay_targets() {
         let mut rule = json!({
             "inbound": [reality_inbound],
@@ -760,6 +767,177 @@ pub fn exit_egress_rules(
     rules
 }
 
+/// The principal ids allowed to leave a relay directly: active accounts flagged `exit_principal`, never a hairpin
+/// or probe account, and empty unless the node opted in. The renderer and `doctor` both use this, so the policy is
+/// checked against the authorization state rather than against whatever the rendered document claims.
+pub fn exit_principal_ids(
+    deployment: &DeploymentConfig,
+    users: &[CompatUser],
+    now_unix: i64,
+) -> Vec<String> {
+    if !deployment.exit_principals_enabled() {
+        return Vec::new();
+    }
+    users
+        .iter()
+        .filter(|u| {
+            u.is_active(now_unix)
+                && u.exit_principal
+                && !u.google_egress_hairpin
+                && !u.is_reserved_probe
+        })
+        .flat_map(|u| u.active_principal_ids(now_unix))
+        .collect()
+}
+
+/// Rules for the EXIT PRINCIPALS of a relay (`CompatUser::exit_principal`, bidirectional deployments,
+/// `docs/BIDIRECTIONAL.md`): one contiguous block, scoped to the REALITY inbound and to exactly these
+/// principals, that ends in `direct`. Order matters and is verified by [`relay_policy_facts`]:
+/// resolve + C-16 private/special ranges + SMTP, the node's own address, the declared peers (so a principal
+/// can never bounce through the other relay: no relay/exit loop), the exit IPv6/spoof policy, then `direct`.
+/// Every other user keeps the relay's forward-or-reject behaviour: this block matches nobody else.
+pub fn exit_principal_rules(
+    deployment: &DeploymentConfig,
+    principals: &[String],
+) -> Vec<serde_json::Value> {
+    if principals.is_empty() {
+        return Vec::new();
+    }
+    let reality = "vless-reality-in";
+    let inbound_tags = vec![reality.to_string()];
+    let scope = |mut rule: serde_json::Value| {
+        rule["inbound"] = json!([reality]);
+        rule["auth_user"] = json!(principals);
+        rule
+    };
+    let mut rules: Vec<serde_json::Value> = c16_egress_deny_rules(&inbound_tags, None, None, None)
+        .into_iter()
+        .map(scope)
+        .collect();
+    rules.extend(
+        own_address_deny_rule(
+            &inbound_tags,
+            Some(deployment.public_host.as_str()),
+            deployment.public_ipv4.as_deref(),
+            deployment.public_ipv6.as_deref(),
+        )
+        .map(scope),
+    );
+    for target in deployment.relay_targets() {
+        let mut rule = json!({
+            "network": "tcp",
+            "port": target.port,
+            "action": "reject",
+            "method": "default",
+        });
+        match target.host.parse::<std::net::IpAddr>() {
+            Ok(ip) => {
+                let prefix = if ip.is_ipv4() { 32 } else { 128 };
+                rule["ip_cidr"] = json!([format!("{ip}/{prefix}")]);
+            }
+            Err(_) => rule["domain"] = json!([target.host]),
+        }
+        rules.push(scope(rule));
+    }
+    rules.extend(exit_egress_rules(deployment, false).into_iter().map(scope));
+    rules.push(scope(json!({"action": "route", "outbound": "direct"})));
+    rules
+}
+
+/// What `doctor` needs to know about a rendered relay document.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RelayPolicyFacts {
+    /// Forward-only-to-declared-exits-or-reject holds, including the exact exit-principal block when present.
+    pub fail_closed: bool,
+    pub targets: usize,
+    /// Length of the exit-principal block (0 when the node serves no exit principal).
+    pub exit_principal_rules: usize,
+    /// Principals the document's exit block names (sorted), for comparison with the authorization state.
+    pub principals: Vec<String>,
+}
+
+/// Exact check of a rendered RELAY document. The pre-existing shape (probe prefix, hairpin pairs, one forward rule
+/// per declared target, terminating reject) is unchanged; the exit-principal block, if any, must equal what
+/// [`exit_principal_rules`] renders for the principals the document itself names, and must only exist when the
+/// node opted in with `[exit_principals]`.
+pub fn relay_policy_facts(
+    deployment: &DeploymentConfig,
+    doc: &serde_json::Value,
+) -> RelayPolicyFacts {
+    let targets = deployment.relay_targets().len();
+    let none = |fail_closed| RelayPolicyFacts {
+        fail_closed,
+        targets,
+        exit_principal_rules: 0,
+        principals: Vec::new(),
+    };
+    let Some(rules) = doc["route"]["rules"].as_array() else {
+        return none(false);
+    };
+    let probe_rules = probe_confinement_rule_count(doc);
+    let is_exit_route = |r: &serde_json::Value| {
+        r.as_object().is_some_and(|o| {
+            o.len() == 4
+                && r["action"] == "route"
+                && r["outbound"] == "direct"
+                && r["inbound"] == json!(["vless-reality-in"])
+                && r["auth_user"].is_array()
+        })
+    };
+    let routes: Vec<usize> = rules
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| is_exit_route(r))
+        .map(|(i, _)| i)
+        .collect();
+    let mut block: Option<(usize, usize)> = None;
+    let mut block_principals: Vec<String> = Vec::new();
+    if routes.len() > 1 {
+        return none(false);
+    }
+    if let Some(&end) = routes.first() {
+        if !deployment.exit_principals_enabled() {
+            return none(false);
+        }
+        let principals: Vec<String> = rules[end]["auth_user"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let expected = exit_principal_rules(deployment, &principals);
+        if principals.is_empty() || end + 1 < expected.len() {
+            return none(false);
+        }
+        let start = end + 1 - expected.len();
+        if rules[start..=end] != expected[..] {
+            return none(false);
+        }
+        block = Some((start, expected.len()));
+        block_principals = principals;
+        block_principals.sort();
+    }
+    let hairpin_rules = rules
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| block.is_none_or(|(s, n)| *i < s || *i >= s + n))
+        .filter(|(_, r)| {
+            r.get("auth_user").is_some()
+                && (r.get("action") == Some(&json!("sniff")) || r.get("domain_suffix").is_some())
+        })
+        .count();
+    let block_len = block.map_or(0, |(_, n)| n);
+    let fail_closed = rules.last().is_some_and(|last| last["action"] == "reject")
+        && rules.len() == targets + 1 + hairpin_rules + probe_rules + block_len;
+    RelayPolicyFacts {
+        fail_closed,
+        targets,
+        exit_principal_rules: block_len,
+        principals: block_principals,
+    }
+}
 /// Exact non-secret exit policy check used by doctor. Missing, duplicate,
 /// shadowed or reordered rules fail rather than accepting a similar shape.
 pub fn exit_egress_policy_matches(deployment: &DeploymentConfig, doc: &serde_json::Value) -> bool {
@@ -1240,6 +1418,7 @@ mod tests {
                 expires_at: None,
                 vision_off_experiment: false,
                 google_egress_hairpin: false,
+                exit_principal: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
                 credentials: Vec::new(),
@@ -1255,6 +1434,7 @@ mod tests {
                 expires_at: None,
                 vision_off_experiment: false,
                 google_egress_hairpin: false,
+                exit_principal: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
                 credentials: Vec::new(),
@@ -1270,6 +1450,7 @@ mod tests {
                 expires_at: Some(100),
                 vision_off_experiment: false,
                 google_egress_hairpin: false,
+                exit_principal: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
                 credentials: Vec::new(),
@@ -1330,6 +1511,7 @@ mod tests {
                 expires_at: None,
                 vision_off_experiment: false,
                 google_egress_hairpin: false,
+                exit_principal: false,
                 peer_credentials: Default::default(),
                 is_reserved_probe: false,
                 credentials: Vec::new(),
@@ -1397,6 +1579,7 @@ mod tests {
             expires_at: None,
             vision_off_experiment: true,
             google_egress_hairpin: false,
+            exit_principal: false,
             peer_credentials: Default::default(),
             is_reserved_probe: false,
             credentials: Vec::new(),

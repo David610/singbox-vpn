@@ -294,7 +294,18 @@ pub fn issue_exit(
     flow: &str,
     out: Option<&Path>,
 ) -> Result<()> {
-    require_role(cfg, NodeRole::Exit, "pair issue-exit")?;
+    if cfg.role == NodeRole::Relay {
+        if !cfg.exit_principals_enabled() {
+            bail!(
+                "this relay is not an exit for other relays. For a bidirectional deployment add \
+                 `[exit_principals]` / `enabled = true` to deployment.toml and run `vpn-admin render-config` \
+                 (docs/BIDIRECTIONAL.md)"
+            );
+        }
+    } else {
+        require_role(cfg, NodeRole::Exit, "pair issue-exit")?;
+    }
+    let as_principal = cfg.role == NodeRole::Relay;
     if !valid_label(label) {
         bail!(
             "--label must be 1-31 characters of a-z, 0-9 and '-', starting with a letter or digit"
@@ -310,6 +321,7 @@ pub fn issue_exit(
     let name = format!("peer-{label}");
     let user = match create_dedicated_user(cfg, &name, |u| {
         u.vision_off_experiment = vless_flow == EndpointVlessFlow::None;
+        u.exit_principal = as_principal;
     }) {
         Ok(user) => user,
         Err(error) => {
@@ -541,6 +553,12 @@ pub fn status(cfg: &DeploymentConfig) -> Result<()> {
             }
             let hairpins = users.iter().filter(|u| u.google_egress_hairpin).count();
             println!("hairpin principals: {hairpins}");
+            if cfg.exit_principals_enabled() {
+                let principals = users.iter().filter(|u| u.exit_principal).count();
+                println!(
+                    "exit principals (this relay is also an EXIT for peer relays): {principals}"
+                );
+            }
             println!(
                 "Google/YouTube egress: leaves THIS relay for its {hairpins} hairpin principal(s) (TLS spoof {}); all other traffic follows each user's declared exit",
                 match &cfg.google_egress_tls_spoof { Some(s) => format!("on, sni {}", s.sni), None => "off".into() }
