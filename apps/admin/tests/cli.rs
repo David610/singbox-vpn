@@ -7286,3 +7286,100 @@ fn pair_issue_writes_only_the_bundle_to_stdout_and_never_orphans_a_credential() 
         "a refused output must not create a credential"
     );
 }
+
+/// Delivery failures after the credential exists must take the credential back out: an unwritable --out path is
+/// refused before anything is created, and a stdout that rejects the write (full device / closed pipe) revokes the
+/// just-issued credential again. In every case the user store ends exactly as it started.
+#[test]
+#[cfg(unix)]
+fn pair_issue_failures_never_leave_an_orphaned_credential_or_a_partial_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let exit = pair_node("exit", "de1", "de1.example.test");
+    let relay = pair_node("relay", "ru1", "ru1.example.test");
+    let count = |n: &PairNode| {
+        std::fs::read(n.dir.path().join("state/users/users.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .map_or(0, |v| v["users"].as_array().map_or(0, Vec::len))
+    };
+    let (exit_before, relay_before) = (count(&exit), count(&relay));
+
+    let missing_dir = exit.dir.path().join("no-such-dir/bundle.json");
+    pair_cmd(&exit, &["pair", "issue-exit", "--label", "carol", "--out"])
+        .arg(&missing_dir)
+        .assert()
+        .failure();
+    assert_eq!(count(&exit), exit_before, "unwritable path: no credential");
+
+    let existing = exit.dir.path().join("keep.json");
+    std::fs::write(&existing, b"precious").unwrap();
+    pair_cmd(&exit, &["pair", "issue-exit", "--label", "carol", "--out"])
+        .arg(&existing)
+        .assert()
+        .failure();
+    assert_eq!(
+        std::fs::read(&existing).unwrap(),
+        b"precious",
+        "an existing file is never overwritten"
+    );
+    assert_eq!(count(&exit), exit_before);
+
+    if std::path::Path::new("/dev/full").exists() {
+        let full = || {
+            std::process::Stdio::from(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/full")
+                    .unwrap(),
+            )
+        };
+        let process = |n: &PairNode, args: &[&str]| {
+            let mut c = support::vpn_admin_process();
+            c.arg("--config").arg(&n.cfg).current_dir(n.dir.path());
+            c.env("SINGBOX_VPN_ALLOW_OFFLINE_MUTATION", "1")
+                .env("SINGBOX_VPN_LOCK_PATH", n.dir.path().join("lock"))
+                .env("SINGBOX_VPN_SYSTEMCTL", &n.systemctl)
+                .env("SINGBOX_VPN_SYSTEMD_DIR", n.dir.path().join("units"))
+                .env("SYSTEMCTL_LOG", n.dir.path().join("calls"))
+                .args(args);
+            c
+        };
+        let mut cmd = process(&exit, &["pair", "issue-exit", "--label", "dave"]);
+        let out = cmd.stdout(full()).output().unwrap();
+        assert!(
+            !out.status.success(),
+            "a failed write must fail the command"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("removed again"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            count(&exit),
+            exit_before,
+            "failed stdout write: credential revoked"
+        );
+
+        let mut cmd = process(&relay, &["pair", "issue-hairpin", "--label", "de1"]);
+        let out = cmd.stdout(full()).output().unwrap();
+        assert!(!out.status.success());
+        assert_eq!(
+            count(&relay),
+            relay_before,
+            "failed hairpin write: principal revoked"
+        );
+    }
+
+    // The label is free again afterwards, and a successful file bundle is private (0600).
+    let ok = exit.dir.path().join("ok.json");
+    pair_cmd(&exit, &["pair", "issue-exit", "--label", "dave", "--out"])
+        .arg(&ok)
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::metadata(&ok).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(count(&exit), exit_before + 1);
+}

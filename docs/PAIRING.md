@@ -75,6 +75,7 @@ until both agree.
 | Observed | State | Action |
 |---|---|---|
 | `issue-exit` fails (nothing reaches the entry) | no credential exists; entry untouched | fix the cause, re-run the pipe |
+| `issue-exit`/`issue-hairpin` cannot deliver the bundle (unwritable or existing `--out` path, closed pipe, full disk) | since rc.8 nothing is left behind: the output path is reserved or refused BEFORE the credential is created, and a failed delivery removes the credential again (message: `removed again`) | fix the cause and re-run; the same label can be reused |
 | `issue-exit` succeeded, `accept-exit` failed or never ran (SSH to the entry dropped, wrong user id, conflicting route, apply failure) | the credential `peer-<label>` exists on the exit but nothing on the entry uses it (the label cannot be reused: `already exists`) | on the exit: `vpn-admin user disable <peer-user-id>` (find it with `vpn-admin user list`), then re-run the pipe with a NEW `--label` (for example `friend1-b`) |
 | `accept-exit` printed `deployment.toml restored` | entry unchanged, no credential stored | as above: disable the orphaned exit user, new label |
 | `accept-exit` succeeded but you lost the terminal | unknown | `pair status` on the entry: if the credential is listed, the pairing is complete; if not, treat as the row above |

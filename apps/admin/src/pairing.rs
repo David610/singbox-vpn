@@ -90,10 +90,14 @@ fn valid_label(label: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// Where a credential-bearing bundle goes, decided BEFORE the dedicated credential is created so that a refusal
-/// (a terminal, an existing file) never leaves an orphaned credential behind.
+/// Where a credential-bearing bundle goes, fixed BEFORE the dedicated credential is created so that a refusal
+/// (a terminal, an existing or unwritable file) never leaves an orphaned credential behind. A file is reserved
+/// (created new, mode 0600) up front; if delivery fails later the file is removed again.
 enum Sink {
-    File(PathBuf),
+    File {
+        file: std::fs::File,
+        path: PathBuf,
+    },
     /// Stdout is not a terminal. Human progress lines are diverted to stderr for the whole run (the apply path
     /// prints "sing-box reloaded ..." on stdout), so only the bundle itself reaches the pipe.
     Stdout(crate::MachineStdout),
@@ -102,13 +106,23 @@ enum Sink {
 fn prepare_sink(out: Option<&Path>) -> Result<Sink> {
     match out {
         Some(path) => {
-            if path.exists() {
-                bail!(
-                    "{} already exists; a bundle file is created new (mode 0600) and never overwritten",
-                    path.display()
-                );
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
             }
-            Ok(Sink::File(path.to_path_buf()))
+            let file = opts.open(path).with_context(|| {
+                format!(
+                    "cannot create {} (a bundle file is created new, mode 0600, and never overwritten)",
+                    path.display()
+                )
+            })?;
+            Ok(Sink::File {
+                file,
+                path: path.to_path_buf(),
+            })
         }
         None => {
             if std::io::stdout().is_terminal() {
@@ -124,26 +138,62 @@ fn prepare_sink(out: Option<&Path>) -> Result<Sink> {
     }
 }
 
-/// Write a credential-bearing bundle: to a new 0600 file, or to the (non-terminal) stdout.
-fn emit_bundle(text: &str, sink: Sink) -> Result<()> {
-    match sink {
-        Sink::File(path) => {
-            let mut opts = std::fs::OpenOptions::new();
-            opts.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
+impl Sink {
+    /// Deliver the bundle. A file that could not be written completely is removed.
+    fn deliver(self, text: &str) -> Result<()> {
+        match self {
+            Sink::File { mut file, path } => {
+                let written = file
+                    .write_all(text.as_bytes())
+                    .and_then(|_| file.write_all(b"\n"))
+                    .and_then(|_| file.sync_all());
+                drop(file);
+                if let Err(e) = written {
+                    let _ = std::fs::remove_file(&path);
+                    return Err(e).with_context(|| format!("writing {}", path.display()));
+                }
+                eprintln!("bundle written to {} (mode 0600). It contains a credential: move it over a protected channel and delete it afterwards.", path.display());
+                Ok(())
             }
-            let mut file = opts.open(&path).with_context(|| {
-                format!("creating {} (it must not already exist)", path.display())
-            })?;
-            file.write_all(text.as_bytes())?;
-            file.write_all(b"\n")?;
-            eprintln!("bundle written to {} (mode 0600). It contains a credential: move it over a protected channel and delete it afterwards.", path.display());
-            Ok(())
+            Sink::Stdout(machine) => machine.write_document(&serde_json::from_str(text)?),
         }
-        Sink::Stdout(machine) => machine.write_document(&serde_json::from_str(text)?),
+    }
+
+    /// The credential could not be issued after all: give a reserved file back.
+    fn abandon(self) {
+        if let Sink::File { file, path } = self {
+            drop(file);
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Remove a dedicated user that was created for a bundle which then could not be delivered, so a failed
+/// pipe or write never leaves a credential nobody holds.
+fn remove_dedicated_user(cfg: &DeploymentConfig, id: &str) -> Result<()> {
+    let current = store::load_users(&cfg.users_file())?;
+    let without: Vec<_> = current.iter().filter(|u| u.id != id).cloned().collect();
+    crate::apply_users_and_save(cfg, &current, &without)?;
+    Ok(())
+}
+
+/// Hand the finished bundle to its sink; on any failure take the just-created credential back out.
+fn deliver_or_revoke(
+    cfg: &DeploymentConfig,
+    sink: Sink,
+    user_id: &str,
+    text: Result<String>,
+) -> Result<()> {
+    let outcome = text.and_then(|t| sink.deliver(&t));
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let revoked = remove_dedicated_user(cfg, user_id);
+            Err(error).context(match revoked {
+                Ok(()) => "the bundle could not be delivered; the credential just issued was removed again (nothing is left behind)".to_string(),
+                Err(e) => format!("the bundle could not be delivered AND the credential just issued could not be removed ({e}); run `vpn-admin user list` and remove user {user_id}"),
+            })
+        }
     }
 }
 
@@ -258,9 +308,15 @@ pub fn issue_exit(
     let node = paired_node(cfg)?;
     let sink = prepare_sink(out)?;
     let name = format!("peer-{label}");
-    let user = create_dedicated_user(cfg, &name, |u| {
+    let user = match create_dedicated_user(cfg, &name, |u| {
         u.vision_off_experiment = vless_flow == EndpointVlessFlow::None;
-    })?;
+    }) {
+        Ok(user) => user,
+        Err(error) => {
+            sink.abandon();
+            return Err(error);
+        }
+    };
     let bundle = ExitPairingBundle {
         schema: EXIT_BUNDLE_SCHEMA.into(),
         exit: node,
@@ -278,7 +334,12 @@ pub fn issue_exit(
             "vision"
         }
     );
-    emit_bundle(&serde_json::to_string(&bundle)?, sink)
+    deliver_or_revoke(
+        cfg,
+        sink,
+        &user.id,
+        serde_json::to_string(&bundle).map_err(Into::into),
+    )
 }
 
 /// Options of `pair accept-exit`, grouped so the function stays readable.
@@ -401,7 +462,13 @@ pub fn issue_hairpin(cfg: &DeploymentConfig, label: &str, out: Option<&Path>) ->
     let node = paired_node(cfg)?;
     let sink = prepare_sink(out)?;
     let name = format!("hairpin-{label}");
-    let user = create_dedicated_user(cfg, &name, |u| u.google_egress_hairpin = true)?;
+    let user = match create_dedicated_user(cfg, &name, |u| u.google_egress_hairpin = true) {
+        Ok(user) => user,
+        Err(error) => {
+            sink.abandon();
+            return Err(error);
+        }
+    };
     let bundle = HairpinPairingBundle {
         schema: HAIRPIN_BUNDLE_SCHEMA.into(),
         relay: node,
@@ -410,7 +477,12 @@ pub fn issue_hairpin(cfg: &DeploymentConfig, label: &str, out: Option<&Path>) ->
         },
     };
     eprintln!("issued hairpin principal: user {name} (id {}); it can reach only the Google/YouTube domain set", user.id);
-    emit_bundle(&serde_json::to_string(&bundle)?, sink)
+    deliver_or_revoke(
+        cfg,
+        sink,
+        &user.id,
+        serde_json::to_string(&bundle).map_err(Into::into),
+    )
 }
 
 pub fn accept_hairpin(
