@@ -83,6 +83,17 @@ Each yields ONE selectable server (`<exit> · via <entry>`) and refuses every fo
 | TLS spoof / existing hairpin / exit-only deployments unaffected | real `sing-box check` of the hybrid document with and without spoof; the unchanged hairpin and exit suites |
 | Section is relay-only; unknown keys rejected | `validation_keeps_the_section_relay_only_and_unknown_keys_out` |
 
+What `doctor` does and does not establish (three distinct guarantees):
+
+1. **The rendered policy is sound.** `report_relay_policy` checks the document freshly rendered from the current
+   store: shape, rule order, the exact exit-principal block, the terminating reject, and that the block's principals
+   equal `exit_principal_ids` (the accounts the store currently authorizes: active, flagged, opted in).
+2. **The on-disk file matches current authorization.** The L4 drift check compares `config.json` with that fresh
+   document byte-for-semantics; a stale grant for a revoked principal, an extra principal or a missing block FAILS
+   (`doctor_fails_stale_or_unauthorized_exit_principal_rules_on_disk`).
+3. **The running sing-box process uses that file** is NOT established by either check. It is covered only by
+   `doctor --protocol` (a real handshake against the live process) and by the post-deployment acceptance matrix.
+
 Known limit (accepted, documented): `DeploymentConfig` and `CompatUser` do not deny unknown fields, so a binary older
 than this change silently ignores `[exit_principals]` and the user flag. That fails closed (the principal then has
 no route; the relay stays forward-or-reject) but `doctor` of the older binary will not mention it. Rollback therefore
@@ -118,9 +129,11 @@ Treat the European conversion as a disruptive production migration, not an updat
 ### Facts established read-only (2026-10-26)
 
 `ru1` is a relay (rc.6) with test/pilot users and 0 connected clients; `91.244.71.165` is an EXIT (rc.6) with a hairpin
-and test users, 0 connected clients; both `doctor` clean, certificates ~85 days. A backup is valid only for the role
-it came from: it carries `deployment.toml` (which includes the role) and `restore` re-renders under THAT role, so an
-exit backup is never restored into a relay or the reverse.
+and test users, 0 connected clients; both `doctor` clean, certificates ~85 days. A backup is valid only for the node it came
+from: it carries `deployment.toml`, and `restore` REFUSES (`refuse_cross_node_restore`) when the archived role or
+node id differs from the installed one. An exit backup therefore can never be restored into a relay (nor the reverse),
+and a restore needs the original node id. Recorded ids: `ru1` = relay, node id `ru1`; Evolus = exit, node id
+`91-244-71-165` (not `eu1`). Write both down in the pre-flight and keep them with the backups.
 
 ### 0. Preconditions
 
@@ -210,7 +223,8 @@ principal per user per direction, fresh tokens. Pilot `friend-pilot-ru1` is re-p
   `vpn-admin restore /root/pre-bidir/ru1-<UTC>.tar` (same role = relay), `vpn-admin render-config`, `doctor`; downgrade
   to the previous tag via the pinned installer only if the new binary is at fault.
 - **European host**: its new installation is a relay, so rollback is a reinstall, not a restore: `uninstall.sh`,
-  pinned-tag installer of the previous release with `--role exit` and the same host, THEN
+  pinned-tag installer of the previous release with `--role exit --node-id 91-244-71-165` and the same host (the
+  restore refuses any other node id), THEN
   `vpn-admin restore /root/pre-bidir/eu1-<UTC>.tar` (exit archive into an exit install). Re-pair the `ru1` pilot route if the
   exit's credentials were regenerated. Verify `doctor --protocol` on both.
 - If the new Evolus relay misbehaves but `ru1` is fine: profile B is withdrawn, profile A can be kept off; ru1 stays a

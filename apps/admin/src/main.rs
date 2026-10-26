@@ -5010,7 +5010,13 @@ fn report_tls_spoof_capability(cfg: &DeploymentConfig, failures: &mut u32) {
 /// `doctor`'s relay policy check: proves the document this node renders
 /// (and therefore what `render-config` would apply) forwards only to the
 /// declared exits and ends in a reject. Reports aggregate counts only.
-fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures: &mut u32) {
+fn report_relay_policy(
+    cfg: &DeploymentConfig,
+    doc: &serde_json::Value,
+    users: &[CompatUser],
+    now_unix: i64,
+    failures: &mut u32,
+) {
     use compat_config::deployment::NodeRole;
     report_verbose_logging();
     report_tls_spoof_capability(cfg, failures);
@@ -5049,7 +5055,11 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
             // declared exit, the exit-principal block when this node opted in (must equal what the renderer emits for
             // the principals the document names), and the terminating reject.
             let facts = compat_config::server::relay_policy_facts(cfg, doc);
-            let fail_closed = facts.fail_closed;
+            // The block's principals must be exactly the accounts the authorization state allows (active,
+            // flagged, opted in), not merely whatever a self-consistent document names.
+            let mut expected = compat_config::server::exit_principal_ids(cfg, users, now_unix);
+            expected.sort();
+            let fail_closed = facts.fail_closed && facts.principals == expected;
             if fail_closed {
                 report_check(
                     CheckStatus::Ok,
@@ -7733,7 +7743,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
                 return;
             }
         };
-    report_relay_policy(cfg, &fresh_server_doc, failures);
+    report_relay_policy(cfg, &fresh_server_doc, &users, now, failures);
 
     // The EXACT same function `services/subscription`'s live process
     // calls to build its own `AppState.endpoints` — not a hand-rolled

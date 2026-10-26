@@ -7606,3 +7606,104 @@ fn bidirectional_two_hosts_pair_both_directions_with_independent_identities_and_
         .any(|r| r["auth_user"] == serde_json::json!([ru_principal.clone()])));
     assert_eq!(rules.last().unwrap()["action"], "reject");
 }
+
+/// Doctor on an opted-in relay separates three things: the policy shape rendered from CURRENT authorization
+/// state, that block's principals against the accounts the store authorizes, and the on-disk config against both.
+/// Stale or unauthorized on-disk exit rules must FAIL. (This reads files only: it does not prove what a running
+/// sing-box process has loaded; `doctor --protocol` is the check for that.)
+#[test]
+#[cfg(unix)]
+fn doctor_fails_stale_or_unauthorized_exit_principal_rules_on_disk() {
+    let opt_in = "\n[exit_principals]\nenabled = true\n";
+    let ru = pair_node_with("relay", "ru1", "ru1.example.test", opt_in);
+    let eu = pair_node_with("relay", "eu1", "eu1.example.test", opt_in);
+    pair_cmd(&ru, &["user", "create", "--name", "friend-a"])
+        .assert()
+        .success();
+    let friend_a = user_id(&ru, "friend-a");
+    let issued = pair_cmd(&eu, &["pair", "issue-exit", "--label", "frienda"])
+        .output()
+        .unwrap();
+    assert!(issued.status.success());
+    pair_cmd(
+        &ru,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend_a,
+            "--endpoint-id",
+            "eu1-via-ru1",
+            "--bundle-stdin",
+        ],
+    )
+    .write_stdin(issued.stdout)
+    .assert()
+    .success();
+
+    let doctor = |n: &PairNode| {
+        let out = pair_cmd(n, &["doctor"]).output().unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    };
+    let config = eu.dir.path().join("state/sing-box/config.json");
+    let users = eu.dir.path().join("state/users/users.json");
+
+    // Healthy: the rendered block is verified against the authorized principal and the disk matches.
+    let (_, healthy) = doctor(&eu);
+    assert!(
+        healthy.contains("verified") && healthy.contains("exit-principal block"),
+        "{healthy}"
+    );
+    assert!(
+        healthy.contains("exactly matches"),
+        "no drift right after render:\n{healthy}"
+    );
+
+    // 1. An unauthorized account is added to the on-disk exit block.
+    let good = std::fs::read(&config).unwrap();
+    let mut doc: serde_json::Value = serde_json::from_slice(&good).unwrap();
+    for rule in doc["route"]["rules"].as_array_mut().unwrap() {
+        if let Some(list) = rule.get_mut("auth_user").and_then(|v| v.as_array_mut()) {
+            list.push(serde_json::json!("intruder"));
+        }
+    }
+    std::fs::write(&config, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let (ok, text) = doctor(&eu);
+    assert!(
+        !ok,
+        "unauthorized on-disk principal must fail doctor:\n{text}"
+    );
+    assert!(text.contains("does NOT exactly match"), "{text}");
+    std::fs::write(&config, &good).unwrap();
+
+    // 2. The principal is revoked in the store but the stale config.json (still granting direct) is left on disk.
+    let stored = std::fs::read(&users).unwrap();
+    let mut store: serde_json::Value = serde_json::from_slice(&stored).unwrap();
+    for u in store["users"].as_array_mut().unwrap() {
+        if u["name"] == "peer-frienda" {
+            u["enabled"] = serde_json::json!(false);
+        }
+    }
+    std::fs::write(&users, serde_json::to_vec(&store).unwrap()).unwrap();
+    let (ok, text) = doctor(&eu);
+    assert!(
+        !ok,
+        "stale grant for a revoked principal must fail doctor:\n{text}"
+    );
+    assert!(text.contains("does NOT exactly match"), "{text}");
+    std::fs::write(&users, &stored).unwrap();
+
+    // 3. The block is removed from the on-disk config while the account is still authorized.
+    let mut doc: serde_json::Value = serde_json::from_slice(&good).unwrap();
+    doc["route"]["rules"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|r| r.get("auth_user").is_none());
+    std::fs::write(&config, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let (ok, text) = doctor(&eu);
+    assert!(!ok, "missing block must fail doctor:\n{text}");
+    assert!(text.contains("does NOT exactly match"), "{text}");
+}

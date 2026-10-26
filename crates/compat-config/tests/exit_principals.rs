@@ -13,7 +13,8 @@ use compat_config::model::{
 };
 use compat_config::secret::SecretString;
 use compat_config::server::{
-    exit_principal_rules, relay_policy_facts, render_server_config_for_deployment,
+    exit_principal_ids, exit_principal_rules, relay_policy_facts,
+    render_server_config_for_deployment,
 };
 use compat_config::CompatError;
 use serde_json::{json, Value};
@@ -278,6 +279,48 @@ fn hairpin_probe_inactive_and_expired_accounts_never_become_exit_principals() {
     );
     assert!(relay_policy_facts(&cfg, &doc).fail_closed);
     assert_eq!(relay_policy_facts(&cfg, &doc).exit_principal_rules, 0);
+}
+
+#[test]
+fn the_documents_principals_must_equal_the_authorization_state() {
+    let cfg = load(&toml_text(Some(true))).unwrap();
+    let mut revoked = principal();
+    revoked.id = "u7".into();
+    revoked.enabled = false;
+    let users = [client(), principal(), revoked.clone()];
+    let doc = render(&cfg, &users);
+    let mut expected = exit_principal_ids(&cfg, &users, NOW);
+    expected.sort();
+    assert_eq!(
+        expected,
+        vec!["u2".to_string()],
+        "only the active flagged account"
+    );
+    assert_eq!(relay_policy_facts(&cfg, &doc).principals, expected);
+
+    // A stale document that still names the since-revoked account is self-consistent for the verifier, so
+    // doctor compares it to the authorization state: the sets differ and the check fails.
+    let stale = render(
+        &cfg,
+        &[client(), principal(), {
+            let mut u = revoked;
+            u.enabled = true;
+            u
+        }],
+    );
+    let stale_facts = relay_policy_facts(&cfg, &stale);
+    assert!(stale_facts.fail_closed, "internally consistent");
+    assert_ne!(
+        stale_facts.principals, expected,
+        "but not what the authorization state allows"
+    );
+
+    // An expired principal and a node that did not opt in contribute nobody.
+    let mut expired = principal();
+    expired.expires_at = Some(NOW - 1);
+    assert!(exit_principal_ids(&cfg, &[expired], NOW).is_empty());
+    let off = load(&toml_text(None)).unwrap();
+    assert!(exit_principal_ids(&off, &[principal()], NOW).is_empty());
 }
 
 #[test]

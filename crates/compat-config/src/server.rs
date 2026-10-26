@@ -221,16 +221,7 @@ pub fn render_server_config_for_deployment(
     // never a hairpin or probe account. Disabled or absent means no rule, so a flagged user falls through to
     // the terminating reject (fail closed).
     if deployment.exit_principals_enabled() {
-        let exit_principals: Vec<String> = users
-            .iter()
-            .filter(|u| {
-                u.is_active(now_unix)
-                    && u.exit_principal
-                    && !u.google_egress_hairpin
-                    && !u.is_reserved_probe
-            })
-            .flat_map(|u| u.active_principal_ids(now_unix))
-            .collect();
+        let exit_principals = exit_principal_ids(deployment, users, now_unix);
         rules.extend(exit_principal_rules(deployment, &exit_principals));
     }
     for target in deployment.relay_targets() {
@@ -776,6 +767,29 @@ pub fn exit_egress_rules(
     rules
 }
 
+/// The principal ids allowed to leave a relay directly: active accounts flagged `exit_principal`, never a hairpin
+/// or probe account, and empty unless the node opted in. The renderer and `doctor` both use this, so the policy is
+/// checked against the authorization state rather than against whatever the rendered document claims.
+pub fn exit_principal_ids(
+    deployment: &DeploymentConfig,
+    users: &[CompatUser],
+    now_unix: i64,
+) -> Vec<String> {
+    if !deployment.exit_principals_enabled() {
+        return Vec::new();
+    }
+    users
+        .iter()
+        .filter(|u| {
+            u.is_active(now_unix)
+                && u.exit_principal
+                && !u.google_egress_hairpin
+                && !u.is_reserved_probe
+        })
+        .flat_map(|u| u.active_principal_ids(now_unix))
+        .collect()
+}
+
 /// Rules for the EXIT PRINCIPALS of a relay (`CompatUser::exit_principal`, bidirectional deployments,
 /// `docs/BIDIRECTIONAL.md`): one contiguous block, scoped to the REALITY inbound and to exactly these
 /// principals, that ends in `direct`. Order matters and is verified by [`relay_policy_facts`]:
@@ -838,6 +852,8 @@ pub struct RelayPolicyFacts {
     pub targets: usize,
     /// Length of the exit-principal block (0 when the node serves no exit principal).
     pub exit_principal_rules: usize,
+    /// Principals the document's exit block names (sorted), for comparison with the authorization state.
+    pub principals: Vec<String>,
 }
 
 /// Exact check of a rendered RELAY document. The pre-existing shape (probe prefix, hairpin pairs, one forward rule
@@ -853,6 +869,7 @@ pub fn relay_policy_facts(
         fail_closed,
         targets,
         exit_principal_rules: 0,
+        principals: Vec::new(),
     };
     let Some(rules) = doc["route"]["rules"].as_array() else {
         return none(false);
@@ -874,6 +891,7 @@ pub fn relay_policy_facts(
         .map(|(i, _)| i)
         .collect();
     let mut block: Option<(usize, usize)> = None;
+    let mut block_principals: Vec<String> = Vec::new();
     if routes.len() > 1 {
         return none(false);
     }
@@ -898,6 +916,8 @@ pub fn relay_policy_facts(
             return none(false);
         }
         block = Some((start, expected.len()));
+        block_principals = principals;
+        block_principals.sort();
     }
     let hairpin_rules = rules
         .iter()
@@ -915,6 +935,7 @@ pub fn relay_policy_facts(
         fail_closed,
         targets,
         exit_principal_rules: block_len,
+        principals: block_principals,
     }
 }
 /// Exact non-secret exit policy check used by doctor. Missing, duplicate,
