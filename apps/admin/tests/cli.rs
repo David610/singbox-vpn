@@ -7222,3 +7222,67 @@ fn doctor_warns_about_verbose_subscription_logging_only() {
     let shipped = doctor_with_env("RUST_LOG=warn");
     assert!(!shipped.contains("verbose request logging"), "{shipped}");
 }
+
+/// The bundle is the ONLY thing on stdout, even though applying the new credential prints progress lines to
+/// stdout elsewhere ("sing-box reloaded and verified active ..."): found on the first real two-host pairing, where
+/// the relay received those lines in front of the JSON. A refusal (existing --out file) must not leave an
+/// orphaned dedicated credential behind either.
+#[test]
+#[cfg(unix)]
+fn pair_issue_writes_only_the_bundle_to_stdout_and_never_orphans_a_credential() {
+    let exit = pair_node("exit", "de1", "de1.example.test");
+    let relay = pair_node("relay", "ru1", "ru1.example.test");
+
+    let out = pair_cmd(&exit, &["pair", "issue-exit", "--label", "alice"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.trim_start().starts_with('{'),
+        "stdout must start with the JSON document"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout is exactly one JSON document");
+    assert_eq!(doc["schema"], "singbox-vpn-exit-pairing/1");
+    assert!(
+        !stdout.contains("reloaded and verified active"),
+        "progress lines belong on stderr"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("issued dedicated exit credential"),
+        "progress still goes to stderr"
+    );
+
+    pair_cmd(&relay, &["user", "create", "--name", "friend1"])
+        .assert()
+        .success();
+    let friend = user_id(&relay, "friend1");
+    let hairpin = pair_cmd(&relay, &["pair", "issue-hairpin", "--label", "de1"])
+        .output()
+        .unwrap();
+    assert!(hairpin.status.success());
+    let hstdout = String::from_utf8(hairpin.stdout).unwrap();
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&hstdout).is_ok(),
+        "hairpin stdout is pure JSON"
+    );
+    let _ = friend;
+
+    let existing = exit.dir.path().join("exists.json");
+    std::fs::write(&existing, b"x").unwrap();
+    let before = users_json(&exit)["users"].as_array().unwrap().len();
+    pair_cmd(&exit, &["pair", "issue-exit", "--label", "bob", "--out"])
+        .arg(&existing)
+        .assert()
+        .failure();
+    assert_eq!(
+        users_json(&exit)["users"].as_array().unwrap().len(),
+        before,
+        "a refused output must not create a credential"
+    );
+}
