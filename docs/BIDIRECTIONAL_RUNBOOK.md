@@ -52,7 +52,7 @@ never edited by hand; `render-config` rebuilds it and rolls back on a validation
 Choose a short label per person, e.g. `maria`. Use `set -o pipefail` and run from your workstation.
 
     # A->B: user on A, exit principal issued BY B and accepted ON A
-    ssh A 'sudo vpn-admin user create --name maria-ab --json'     # note the user id; the URL shown is NOT the pinned one
+    ssh A 'sudo vpn-admin user create --name maria-ab --json'     # note the user id and keep the printed URL
     ssh B 'sudo vpn-admin pair issue-exit --label maria-ab' \
       | ssh A 'sudo vpn-admin pair accept-exit --user <maria-ab-id-on-A> --endpoint-id b-via-a --bundle-stdin'
 
@@ -67,10 +67,15 @@ Only the bundle travels on stdout; credentials appear in no argument or log. One
 
 ### The two Hiddify links (send each privately, one at a time)
 
-`user create` prints the subscription URL once (the token is never stored). Append the pinned selector:
+`user create` prints the subscription URL once (the token is never stored). On a relay that URL **already ends in the
+pinned selector** (`?format=singbox&compat=hiddify-pinned`); give it as printed and do not add the suffix again (a doubled
+query is rejected with HTTP 400). The result has this shape:
 
     A->B (enters A, exits B):  https://a.example.org:8443/sub/<token-from-A>?format=singbox&compat=hiddify-pinned
     B->A (enters B, exits A):  https://b.example.org:8443/sub/<token-from-B>?format=singbox&compat=hiddify-pinned
+
+Relays refuse every other form (`?format=hiddify`, share links): a client still holding an old plain link must import the
+pinned one. An existing user's token is unchanged by pairing, so its old token plus the pinned query works.
 
 Each shows ONE server in Hiddify (named `<exit> - via <entry>`). Name them for the user ("Maria via A to B", "Maria via
 B to A"). A lost link: `ssh A 'sudo vpn-admin user rotate-token <id>'` mints a new one (the old one stops).
@@ -108,7 +113,11 @@ Update A, run `doctor --protocol` and a client test, only then B. A failed updat
 
 A node's role is never rewritten. Treat it as a migration: back up and copy off-host; record the old `node_id` (a
 restore of the old exit archive needs exactly that id and `--role exit`); `uninstall.sh`; reinstall as in step 1 with
-`--role relay`; pair again (old exit credentials die with the reinstall). Rollback = uninstall, reinstall as
+`--role relay`; pair again (old exit credentials die with the reinstall). On the node that already declared the old
+exit as a route (the entry in the old direction), `pair accept-exit` refuses to replace a declaration whose REALITY keys
+changed. Remove that user's stale credential first (`vpn-admin user peer remove <user-id> <endpoint-id>`) and delete the
+stale `[[peer_endpoints]]` blocks for the rebuilt host from `deployment.toml` (up to the next `[` header; keep every other
+section), then `vpn-admin config validate`, `render-config`, `doctor`. This is the one hand edit in a migration. Rollback = uninstall, reinstall as
 `--role exit --node-id <old id>`, `vpn-admin restore <old archive>`. Detailed plan: BIDIRECTIONAL.md "Migration".
 
 ## Limits
