@@ -180,6 +180,60 @@ class ReleaseEvidence(unittest.TestCase):
         d["device_matrix"][0]["post_reconcile_playback"] = "PASS"
         self.assertEqual(run(d, "--require", "DEVICE_VERIFIED")[:2], (1, "SERVER_QUALIFIED"))
 
+    # ---- limited stable release (docs/RELEASE.md "Limited qualification") ----
+    def server_only(self):
+        d = self.base()
+        d["device_matrix"] = []
+        d["claimed_level"] = "SERVER_QUALIFIED"
+        d["limited_release"] = {
+            "approver": "maintainer", "date": "2026-10-26", "unmet": ["device_matrix"],
+            "disclosures": {"native_device_unverified": "no native matrix was run",
+                            "eu_exit_youtube_shorts": "EU exit Shorts 0/6"},
+        }
+        return d
+
+    def test_limited_release_is_accepted_only_with_the_flag_and_never_raises_the_level(self):
+        d = self.server_only()
+        rc, lvl, out = run(d, "--require", "PRODUCTION_READY", "--tag", "v9.9.9", "--commit", C)
+        self.assertEqual((rc, lvl), (1, "SERVER_QUALIFIED"))
+        rc, lvl, out = run(d, "--require", "PRODUCTION_READY", "--allow-limited", "--tag", "v9.9.9", "--commit", C)
+        self.assertEqual((rc, lvl), (0, "SERVER_QUALIFIED"))
+        self.assertIn("NOT production ready", out)
+
+    def test_limited_release_requires_the_real_vps_lifecycle(self):
+        d = self.server_only()
+        d["vps_acceptance"] = {"not_run": True}
+        rc, lvl, out = run(d, "--require", "PRODUCTION_READY", "--allow-limited", "--tag", "v9.9.9", "--commit", C)
+        self.assertEqual(rc, 1)
+        self.assertEqual(lvl, "CODE_QUALIFIED")
+
+    def test_limited_release_must_name_exactly_the_unmet_gate_and_the_disclosures(self):
+        for mutate in (
+            lambda d: d["limited_release"].update(unmet=["production_fingerprint"]),
+            lambda d: d["limited_release"].update(unmet=[]),
+            lambda d: d["limited_release"].update(approver=""),
+            lambda d: d["limited_release"].update(date="today"),
+            lambda d: d["limited_release"]["disclosures"].pop("eu_exit_youtube_shorts"),
+            lambda d: d["limited_release"]["disclosures"].update(native_device_unverified=" "),
+            lambda d: d.pop("limited_release"),
+        ):
+            d = self.server_only()
+            mutate(d)
+            rc, _, out = run(d, "--require", "PRODUCTION_READY", "--allow-limited", "--tag", "v9.9.9", "--commit", C)
+            self.assertEqual(rc, 1, out)
+
+    def test_limited_flag_cannot_excuse_a_failing_non_production_requirement(self):
+        d = self.server_only()
+        rc, _, _ = run(d, "--require", "DEVICE_VERIFIED", "--allow-limited", "--tag", "v9.9.9", "--commit", C)
+        self.assertEqual(rc, 1)
+
+    def test_limited_notice_states_the_unmet_gate_and_disclosures(self):
+        rc, _, out = run(self.server_only(), "--print-limited-notice", "--tag", "v9.9.9", "--commit", C)
+        self.assertEqual(rc, 0)
+        self.assertIn("LIMITED QUALIFICATION: SERVER_QUALIFIED, not PRODUCTION_READY", out)
+        self.assertIn("device_matrix", out)
+        self.assertIn("EU exit Shorts 0/6", out)
+
 
 if __name__ == "__main__":
     unittest.main()

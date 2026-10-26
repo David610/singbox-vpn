@@ -143,7 +143,19 @@ jobs:
           require_exact_once "Release: $RELEASE_TAG"
           require_exact_once "Decision: ACCEPTED"
           require_exact_once "VPS acceptance: PASS"
-          require_exact_once "Device acceptance: PASS"
+          # A documented limited release (docs/RELEASE.md "Limited qualification") replaces the device PASS line with
+          # explicit non-qualification lines. It is detected only from the machine-readable evidence file, which the
+          # evidence validator below checks for the exact unmet gate and the mandatory disclosures.
+          limited=0
+          if python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("limited_release") else 1)' "docs/release-acceptance/${RELEASE_TAG}.evidence.json" 2>/dev/null; then
+            limited=1
+          fi
+          if [ "$limited" = "1" ]; then
+            require_exact_once "Device acceptance: NOT QUALIFIED (limited release)"
+            require_exact_once "Qualification: LIMITED"
+          else
+            require_exact_once "Device acceptance: PASS"
+          fi
           require_exact_once "Certificate renewal: PASS"
 
           rc_count="$(grep -c '^Accepted RC: ' "$evidence" || true)"
@@ -198,7 +210,9 @@ jobs:
                 echo "::error::missing machine-readable evidence: $evidence_json"
                 exit 1
               fi
-              python3 -I deploy/lib/release_evidence.py "$evidence_json" \
+              allow_limited=""
+              if [ "$limited" = "1" ]; then allow_limited="--allow-limited"; fi
+              python3 -I deploy/lib/release_evidence.py "$evidence_json" $allow_limited \
                 --require PRODUCTION_READY --tag "$RELEASE_TAG" --commit "$actual_rc_commit" || {
                 echo "::error::$evidence_json does not support PRODUCTION_READY for $RELEASE_TAG at $actual_rc_commit"
                 exit 1
@@ -566,6 +580,18 @@ jobs:
         with:
           path: src
 
+      - name: Limited-qualification notice (only for a documented limited stable release)
+        id: limited_banner
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          evidence="src/docs/release-acceptance/${RELEASE_TAG}.evidence.json"
+          if [ -f "$evidence" ] && python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("limited_release") else 1)' "$evidence"; then
+            python3 -I src/deploy/lib/release_evidence.py "$evidence" --print-limited-notice > dist/release-body.md
+            echo "path=dist/release-body.md" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish root install.sh as its own checksummed release asset (Phase 12 immutable bootstrap)
         run: |
           set -euo pipefail
@@ -606,6 +632,7 @@ jobs:
             dist/install.sh
             dist/SHA256SUMS
           generate_release_notes: true
+          body_path: ${{ steps.limited_banner.outputs.path }}
 
   # Exercise the public assets after GitHub has published them. The fake
   # final handoff keeps this read-only while still running the real bootstrap
