@@ -597,6 +597,16 @@ pub struct CompatUser {
     #[serde(default, skip_serializing_if = "is_false")]
     pub google_egress_hairpin: bool,
 
+    /// Dedicated credential a PEER relay uses for the second hop of a two-hop route that ENDS on this node
+    /// (bidirectional deployments, `docs/BIDIRECTIONAL.md`): every connection authenticated as this user leaves
+    /// this node through its own `direct` outbound under the full exit egress policy (private ranges, SMTP, the
+    /// node itself and its declared peers are rejected first). Honoured ONLY on a relay that opted in with
+    /// `[exit_principals] enabled = true`; anywhere else the user matches no route and falls through to the
+    /// relay's terminating reject. Never a real end user's relay credential, and never combined with the
+    /// hairpin or probe flags.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exit_principal: bool,
+
     /// This user's credentials for peer endpoints, keyed by peer endpoint
     /// id (ADR-0009 Option A: per-user, per-endpoint).
     ///

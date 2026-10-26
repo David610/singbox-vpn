@@ -3340,6 +3340,7 @@ fn build_new_operator_user(
         expires_at,
         vision_off_experiment: false,
         google_egress_hairpin: false,
+        exit_principal: false,
         peer_credentials: Default::default(),
         is_reserved_probe: false,
         credentials: Vec::new(),
@@ -3618,6 +3619,7 @@ fn cmd_user_create_probe(cfg: &DeploymentConfig, name: Option<&str>, json: bool)
         expires_at: None,
         vision_off_experiment: false,
         google_egress_hairpin: false,
+        exit_principal: false,
         peer_credentials: Default::default(),
         is_reserved_probe: true,
         credentials: Vec::new(),
@@ -5010,11 +5012,6 @@ fn report_tls_spoof_capability(cfg: &DeploymentConfig, failures: &mut u32) {
 /// declared exits and ends in a reject. Reports aggregate counts only.
 fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures: &mut u32) {
     use compat_config::deployment::NodeRole;
-    let rules = doc["route"]["rules"].as_array();
-    // Leading probe-user confinement rules (`arcana-probe`, see
-    // `compat_config::server::probe_confinement_rule_count`) are
-    // role-independent; the exit shape check below ignores them.
-    let probe_rules = compat_config::server::probe_confinement_rule_count(doc);
     report_verbose_logging();
     report_tls_spoof_capability(cfg, failures);
     match cfg.role {
@@ -5048,55 +5045,27 @@ fn report_relay_policy(cfg: &DeploymentConfig, doc: &serde_json::Value, failures
                 );
             }
             let targets = cfg.relay_targets();
-            // Google-egress-hairpin rules (`CompatUser::google_egress_hairpin`)
-            // add two rules each (a scoped `sniff` plus the `domain_suffix`
-            // route), both identifiable by carrying `auth_user` together
-            // with either `action == "sniff"` or `domain_suffix` - fields
-            // no other rule this renderer emits uses together. Counted from
-            // the document itself rather than recomputed from `users`/
-            // `now_unix` (not available here) so this check can never
-            // drift from what the renderer actually did.
-            let hairpin_rule_count = rules
-                .map(|rules| {
-                    rules
-                        .iter()
-                        .filter(|rule| {
-                            rule.get("auth_user").is_some()
-                                && (rule.get("action") == Some(&json!("sniff"))
-                                    || rule.get("domain_suffix").is_some())
-                        })
-                        .count()
-                })
-                .unwrap_or(0);
-            // The reserved-probe loopback self-test exception (server.rs's
-            // `render_server_config_for_deployment`) AND `apply_probe_
-            // user_confinement`'s 3 confinement rules are conditional on
-            // at least one active reserved-probe user existing, and
-            // always travel together immediately ahead of everything
-            // else this renderer emits for a relay (same leading shape
-            // as an exit's document — see `probe_confinement_rule_count`'s
-            // doc comment). `probe_rules` (computed once above, shared
-            // with the Exit branch) already accounts for the full 0/3/4
-            // count; an earlier version of this check only ever added
-            // 0 or 1 for the loopback rule alone and silently ignored
-            // the 3 confinement rules whenever a probe user was present,
-            // wrongly FAILing a correctly fail-closed, probe-provisioned
-            // relay in real CI (`##[error]doctor did not confirm the
-            // relay policy`) — the same stale-arithmetic class of bug as
-            // the L2 exit check fixed in
-            // `docs/reviews/ARCANA_BATCH6_STATUS_2026-09-29_ADDENDUM4.md`.
-            let fail_closed = rules.is_some_and(|rules| {
-                rules.last().is_some_and(|last| last["action"] == "reject")
-                    && rules.len() == targets.len() + 1 + hairpin_rule_count + probe_rules
-            });
+            // One shared, exact verifier (compat_config::server): probe prefix, hairpin pairs, one forward rule per
+            // declared exit, the exit-principal block when this node opted in (must equal what the renderer emits for
+            // the principals the document names), and the terminating reject.
+            let facts = compat_config::server::relay_policy_facts(cfg, doc);
+            let fail_closed = facts.fail_closed;
             if fail_closed {
                 report_check(
                     CheckStatus::Ok,
                     "L2",
                     format!(
                         "relay forwarding policy is fail-closed: {} declared exit target(s) allowed, \
-                         everything else rejected",
-                        targets.len()
+                         everything else rejected{}",
+                        targets.len(),
+                        if facts.exit_principal_rules > 0 {
+                            format!(
+                                " (plus a verified {}-rule exit-principal block: peer relays may exit here under the exit egress policy)",
+                                facts.exit_principal_rules
+                            )
+                        } else {
+                            String::new()
+                        }
                     ),
                 );
             } else {
@@ -7784,6 +7753,7 @@ fn check_l4_subscription_coherence(cfg: &DeploymentConfig, failures: &mut u32) {
         expires_at: None,
         vision_off_experiment: false,
         google_egress_hairpin: false,
+        exit_principal: false,
         peer_credentials: Default::default(),
         is_reserved_probe: false,
         credentials: Vec::new(),

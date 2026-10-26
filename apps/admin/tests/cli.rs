@@ -6569,6 +6569,11 @@ struct PairNode {
 
 #[cfg(unix)]
 fn pair_node(role: &str, node_id: &str, host: &str) -> PairNode {
+    pair_node_with(role, node_id, host, "")
+}
+
+#[cfg(unix)]
+fn pair_node_with(role: &str, node_id: &str, host: &str, extra_toml: &str) -> PairNode {
     let dir = tempfile::tempdir().unwrap();
     let binary = fake_singbox(dir.path(), false);
     let state = dir.path().join("state");
@@ -6581,7 +6586,7 @@ fn pair_node(role: &str, node_id: &str, host: &str) -> PairNode {
     std::fs::write(
         &cfg,
         format!(
-            "schema_version = 2\nnode_id = \"{node_id}\"\nrole = \"{role}\"\npublic_host = \"{host}\"\nsubscription_host = \"{host}\"\nstate_dir = \"{state}\"\nsingbox_binary = \"{singbox}\"\n\n[reality]\nlisten_port = 443\nhandshake_server = \"www.example.com\"\n\n[hysteria2]\nlisten_port = 443\n\n[subscription]\nlisten_port = 9100\n{access}",
+            "schema_version = 2\nnode_id = \"{node_id}\"\nrole = \"{role}\"\npublic_host = \"{host}\"\nsubscription_host = \"{host}\"\nstate_dir = \"{state}\"\nsingbox_binary = \"{singbox}\"\n\n[reality]\nlisten_port = 443\nhandshake_server = \"www.example.com\"\n\n[hysteria2]\nlisten_port = 443\n\n[subscription]\nlisten_port = 9100\n{access}{extra_toml}",
             state = toml_path(&state),
             singbox = toml_path(&binary),
         ),
@@ -7437,4 +7442,167 @@ fn pairing_runbook_pipe_issue_stdout_feeds_accept_stdin_directly() {
         "{}",
         String::from_utf8_lossy(&status.stdout)
     );
+}
+
+/// Bidirectional deployment (docs/BIDIRECTIONAL.md), simulated on two hosts that are BOTH relays and BOTH opted
+/// into exit principals: profile A = RU entry -> EU exit, profile B = EU entry -> RU exit. Every step goes through
+/// the documented commands (user create, pair issue-exit | accept-exit with the bundle on stdout).
+#[test]
+#[cfg(unix)]
+fn bidirectional_two_hosts_pair_both_directions_with_independent_identities_and_revocation() {
+    let opt_in = "\n[exit_principals]\nenabled = true\n";
+    let ru = pair_node_with("relay", "ru1", "ru1.example.test", opt_in);
+    let eu = pair_node_with("relay", "eu1", "eu1.example.test", opt_in);
+
+    pair_cmd(&ru, &["user", "create", "--name", "friend-a"])
+        .assert()
+        .success();
+    pair_cmd(&eu, &["user", "create", "--name", "friend-b"])
+        .assert()
+        .success();
+    let friend_a = user_id(&ru, "friend-a");
+    let friend_b = user_id(&eu, "friend-b");
+
+    // A: client -> ru1 -> eu1 (the exit principal is issued BY eu1, accepted ON ru1)
+    let issued = pair_cmd(&eu, &["pair", "issue-exit", "--label", "frienda"])
+        .output()
+        .unwrap();
+    assert!(
+        issued.status.success(),
+        "{}",
+        String::from_utf8_lossy(&issued.stderr)
+    );
+    pair_cmd(
+        &ru,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend_a,
+            "--endpoint-id",
+            "eu1-via-ru1",
+            "--bundle-stdin",
+        ],
+    )
+    .write_stdin(issued.stdout)
+    .assert()
+    .success();
+    // B: client -> eu1 -> ru1
+    let issued = pair_cmd(&ru, &["pair", "issue-exit", "--label", "friendb"])
+        .output()
+        .unwrap();
+    assert!(
+        issued.status.success(),
+        "{}",
+        String::from_utf8_lossy(&issued.stderr)
+    );
+    pair_cmd(
+        &eu,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend_b,
+            "--endpoint-id",
+            "ru1-via-eu1",
+            "--bundle-stdin",
+        ],
+    )
+    .write_stdin(issued.stdout)
+    .assert()
+    .success();
+
+    let status = |n: &PairNode| {
+        let out = pair_cmd(n, &["pair", "status"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    for (node, route) in [(&ru, "eu1-via-ru1"), (&eu, "ru1-via-eu1")] {
+        let text = status(node);
+        assert!(
+            text.contains(route) && text.contains("users_with_credential=1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("exit principals") && text.contains(": 1"),
+            "{text}"
+        );
+    }
+
+    let doc_of = |n: &PairNode| -> serde_json::Value {
+        serde_json::from_slice(
+            &std::fs::read(n.dir.path().join("state/sing-box/config.json")).unwrap(),
+        )
+        .unwrap()
+    };
+    let id_of = |n: &PairNode, name: &str| -> String {
+        let users = users_json(n);
+        users["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (ru_principal, eu_principal) = (id_of(&ru, "peer-friendb"), id_of(&eu, "peer-frienda"));
+    for (node, principal) in [(&ru, &ru_principal), (&eu, &eu_principal)] {
+        let doc = doc_of(node);
+        let rules = doc["route"]["rules"].as_array().unwrap();
+        let direct_for_principal = rules
+            .iter()
+            .filter(|r| {
+                r["outbound"] == "direct" && r["auth_user"] == serde_json::json!([principal])
+            })
+            .count();
+        assert_eq!(
+            direct_for_principal, 1,
+            "one unrestricted direct route, scoped to the principal"
+        );
+        assert_eq!(rules.last().unwrap()["action"], "reject");
+        for rule in rules {
+            if let Some(u) = rule.get("auth_user") {
+                assert!(
+                    u.as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|v| v == principal.as_str()),
+                    "{rule}"
+                );
+            }
+        }
+    }
+
+    for node in [&ru, &eu] {
+        let out = pair_cmd(node, &["doctor"]).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains("relay forwarding policy is fail-closed"),
+            "{text}"
+        );
+        assert!(text.contains("exit-principal block"), "{text}");
+        assert!(!text.contains("NOT fail-closed"), "{text}");
+    }
+
+    // independent revocation: removing direction A's client leaves the other host byte-identical
+    let before_eu = doc_of(&eu);
+    pair_cmd(&ru, &["user", "disable", &friend_a])
+        .assert()
+        .success();
+    assert_eq!(
+        doc_of(&eu),
+        before_eu,
+        "the other host's document is byte-identical"
+    );
+    assert!(status(&eu).contains("users_with_credential=1"));
+    // and revoking the RU host's exit principal stops only that principal
+    pair_cmd(&ru, &["user", "disable", &ru_principal])
+        .assert()
+        .success();
+    let rules = doc_of(&ru)["route"]["rules"].as_array().unwrap().clone();
+    assert!(!rules
+        .iter()
+        .any(|r| r["auth_user"] == serde_json::json!([ru_principal.clone()])));
+    assert_eq!(rules.last().unwrap()["action"], "reject");
 }

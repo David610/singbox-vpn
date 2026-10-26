@@ -45,6 +45,7 @@ fn test_user() -> CompatUser {
         subscription_token_hash_hex: "unused".into(),
         vision_off_experiment: false,
         google_egress_hairpin: false,
+        exit_principal: false,
         created_at: 0,
         expires_at: None,
         peer_credentials: Default::default(),

@@ -41,6 +41,7 @@ fn test_user() -> CompatUser {
         expires_at: None,
         vision_off_experiment: false,
         google_egress_hairpin: false,
+        exit_principal: false,
         peer_credentials: Default::default(),
         is_reserved_probe: false,
         credentials: Vec::new(),

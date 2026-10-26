@@ -496,9 +496,9 @@ jobs:
           SINGBOX_VPN_REQUIRE_REAL_INTEROP: "1"
         run: |
           set -euo pipefail
-          cargo test --locked -p compat-config --test two_hop_system --test relay_role_policy \
+          cargo test --locked -p compat-config --test two_hop_system --test relay_role_policy --test exit_principals \
             -- --nocapture 2>&1 | tee two-hop.log
-          # 22 two_hop_system (S1-S17, log privacy, rejected-credential log
+          # 26 two_hop_system (S1-S17, bi01-bi04 bidirectional, log privacy, rejected-credential log
           # privacy, start-failure visibility, harness port/readiness) + relay_role_policy's
           # real `sing-box check` of the relay route; update deliberately.
           for name in s01_direct_route s02_relay_route s03_relay_is_not s04_wrong_relay s05_wrong_exit \
@@ -507,7 +507,9 @@ jobs:
               s14_reload_and_repair s15_crash_restart s16_privacy_plus_client_never_connects \
               s17_relay_down_privacy_plus_fails_closed relay_and_exit_logs_carry_no_credentials \
               rejected_and_revoked_credentials_never_reach core_start_failure_stays_visible               harness_ports_are_unique harness_readiness_is_owned \
-              every_rendered_relay_route_rule_is_accepted_by_real_sing_box; do
+              every_rendered_relay_route_rule_is_accepted_by_real_sing_box \
+              bi01_both_directions bi02_relay_accounts_are_not_exits bi03_a_down_node_fails_closed \
+              bi04_each_direction_is_revoked the_real_singbox_validator_accepts_the_hybrid_document; do
             if ! grep -Eq "^test ${name}[a-z_]* \.\.\. ok$" two-hop.log; then
               echo "::error::system test ${name}* did not run and pass"
               exit 1
