@@ -7383,3 +7383,58 @@ fn pair_issue_failures_never_leave_an_orphaned_credential_or_a_partial_file() {
     );
     assert_eq!(count(&exit), exit_before + 1);
 }
+
+/// The documented cross-host pipeline, byte for byte: whatever `pair issue-exit` / `issue-hairpin` write to a
+/// non-terminal stdout is fed to the other side's `--bundle-stdin`. This is the path that failed on the first real
+/// two-host run, when a progress line preceded the JSON.
+#[test]
+#[cfg(unix)]
+fn pairing_runbook_pipe_issue_stdout_feeds_accept_stdin_directly() {
+    let exit = pair_node("exit", "de1", "de1.example.test");
+    let relay = pair_node("relay", "ru1", "ru1.example.test");
+    pair_cmd(&relay, &["user", "create", "--name", "friend1"])
+        .assert()
+        .success();
+    let friend = user_id(&relay, "friend1");
+
+    let issued = pair_cmd(&exit, &["pair", "issue-exit", "--label", "alice"])
+        .output()
+        .unwrap();
+    assert!(issued.status.success());
+    pair_cmd(
+        &relay,
+        &[
+            "pair",
+            "accept-exit",
+            "--user",
+            &friend,
+            "--endpoint-id",
+            "de1-via-ru1",
+            "--bundle-stdin",
+        ],
+    )
+    .write_stdin(issued.stdout)
+    .assert()
+    .success();
+    let status = pair_cmd(&relay, &["pair", "status"]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains("users_with_credential=1"),
+        "{}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+
+    let hairpin = pair_cmd(&relay, &["pair", "issue-hairpin", "--label", "de1"])
+        .output()
+        .unwrap();
+    assert!(hairpin.status.success());
+    pair_cmd(&exit, &["pair", "accept-hairpin", "--bundle-stdin"])
+        .write_stdin(hairpin.stdout)
+        .assert()
+        .success();
+    let status = pair_cmd(&exit, &["pair", "status"]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains("hairpinned"),
+        "{}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+}
