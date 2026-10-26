@@ -131,6 +131,54 @@ def compute(doc: dict, tag: str | None, commit: str | None) -> tuple[str, list[s
     return level, errs
 
 
+LIMITED_UNMET = {"SERVER_QUALIFIED": "device_matrix", "DEVICE_VERIFIED": "production_fingerprint"}
+LIMITED_REQUIRED_DISCLOSURES = ("native_device_unverified", "eu_exit_youtube_shorts")
+DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def validate_limited(doc: dict, level: str) -> list[str]:
+    """A limited stable release never raises the supported level. CI and the real fresh-VPS lifecycle stay mandatory
+    (level must be at least SERVER_QUALIFIED). The record must name the maintainer, and `unmet` must be exactly what
+    the evidence fails to support, so a limited record cannot hide a different gap."""
+    out: list[str] = []
+    lim = doc.get("limited_release")
+    if not isinstance(lim, dict):
+        return ["limited_release object missing"]
+    if level not in LIMITED_UNMET:
+        out.append(f"limited release needs at least SERVER_QUALIFIED evidence; evidence supports {level}")
+        return out
+    if not lim.get("approver"):
+        out.append("limited_release.approver missing")
+    if not DATE.match(str(lim.get("date", ""))):
+        out.append("limited_release.date must be YYYY-MM-DD")
+    if sorted(lim.get("unmet") or []) != [LIMITED_UNMET[level]]:
+        out.append(f"limited_release.unmet must be exactly [{LIMITED_UNMET[level]!r}] for level {level}")
+    disc = lim.get("disclosures") or {}
+    for key in LIMITED_REQUIRED_DISCLOSURES:
+        if not str(disc.get(key, "")).strip():
+            out.append(f"limited_release.disclosures.{key} missing")
+    return out
+
+
+def limited_notice(doc: dict, level: str) -> str:
+    lim = doc.get("limited_release") or {}
+    disc = lim.get("disclosures") or {}
+    lines = [
+        f"## LIMITED QUALIFICATION: {level}, not PRODUCTION_READY",
+        "",
+        "This stable release passed CI and a real fresh-VPS lifecycle acceptance. It did **not** complete the required",
+        f"qualification: unmet = {', '.join(lim.get('unmet') or [])}. Accepted as a limited release by {lim.get('approver')} on {lim.get('date')}.",
+        "",
+    ]
+    for key in LIMITED_REQUIRED_DISCLOSURES:
+        lines.append(f"- **{key}**: {str(disc.get(key, '')).strip()}")
+    for key, val in disc.items():
+        if key not in LIMITED_REQUIRED_DISCLOSURES:
+            lines.append(f"- **{key}**: {str(val).strip()}")
+    lines += ["", "Availability, security and compatibility are not guaranteed beyond what is recorded in docs/release-acceptance/.", ""]
+    return "\n".join(lines)
+
+
 def validate_waivers(doc: dict) -> list[str]:
     out = []
     for i, w in enumerate(doc.get("waivers") or []):
@@ -146,6 +194,9 @@ def main() -> int:
     ap.add_argument("--require", choices=LEVELS[1:])
     ap.add_argument("--tag")
     ap.add_argument("--commit")
+    ap.add_argument("--allow-limited", action="store_true",
+                    help="accept a documented limited release (see validate_limited) instead of PRODUCTION_READY")
+    ap.add_argument("--print-limited-notice", action="store_true", help="print the release-notes banner and exit")
     a = ap.parse_args()
     try:
         doc = json.load(open(a.file))
@@ -153,6 +204,9 @@ def main() -> int:
         print(f"ERROR: cannot read evidence: {e}")
         return 1
     level, errs = compute(doc, a.tag, a.commit)
+    if a.print_limited_notice:
+        print(limited_notice(doc, level))
+        return 0
     wav = validate_waivers(doc)
     claimed = doc.get("claimed_level")
     print(f"supported_level: {level}")
@@ -162,7 +216,15 @@ def main() -> int:
     if claimed and LEVELS.index(claimed) > LEVELS.index(level):
         bad.append(f"claimed_level {claimed} exceeds what the evidence supports ({level})")
     if a.require and LEVELS.index(level) < LEVELS.index(a.require):
-        bad.append(f"required {a.require} but evidence supports only {level}")
+        if a.allow_limited and a.require == "PRODUCTION_READY":
+            lim_errs = validate_limited(doc, level)
+            if lim_errs:
+                bad += lim_errs
+                bad.append(f"required {a.require} but evidence supports only {level} (limited release rejected)")
+            else:
+                print(f"limited_release: ACCEPTED level={level} unmet={LIMITED_UNMET[level]} (NOT production ready)")
+        else:
+            bad.append(f"required {a.require} but evidence supports only {level}")
     if level == "NONE":
         bad += errs
     for m in errs if level != "NONE" else []:

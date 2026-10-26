@@ -128,6 +128,29 @@ Never put subscription tokens, passwords, private keys, REALITY private material
 
 The release workflow still runs the complete canonical CI graph before any release artifacts are built.
 
+### Limited qualification (explicit maintainer decision; never the default)
+
+`PRODUCTION_READY` remains the only level that a normal stable release needs, and waivers still never raise a level.
+For a small private deployment the maintainer may instead publish a **limited stable release** that is transparently
+labelled as less than production-ready. It is enforced, not a convention:
+
+- Mandatory and unchanged: canonical CI on the exact RC commit, the real fresh-VPS lifecycle acceptance (evidence must
+  support at least `SERVER_QUALIFIED`), certificate-renewal acceptance, checksums, attestations, SBOM, runtime
+  compatibility, and the frozen-implementation rule between the accepted RC and the stable tag.
+- `docs/release-acceptance/<tag>.evidence.json` carries a `limited_release` object: `approver`, `date`, `unmet`
+  (exactly the gate the evidence fails to support: `device_matrix` at `SERVER_QUALIFIED`) and non-empty `disclosures`
+  for `native_device_unverified` and `eu_exit_youtube_shorts`. `release_evidence.py --allow-limited` rejects an
+  `unmet` list that differs from what the evidence actually lacks, so a limited record cannot hide another gap.
+- The acceptance record then contains, exactly once each, `Device acceptance: NOT QUALIFIED (limited release)` and
+  `Qualification: LIMITED` instead of `Device acceptance: PASS`.
+- The published GitHub Release body begins with a generated `LIMITED QUALIFICATION` notice listing the unmet gate and
+  the disclosures. It is a stable (non-prerelease) release; its tag, assets and provenance are identical in kind.
+- Not claimed for a limited release: native-device compatibility, availability guarantees, YouTube Shorts on any exit,
+  or a Russian-network guarantee. A later release can reach `PRODUCTION_READY` by completing the device matrix.
+
+This amendment changes release workflow and validator code, so it itself ships in a release candidate and every
+mandatory gate above is executed on that candidate.
+
 ### Runtime compatibility gate (mandatory for every RC, not just stable)
 
 No release tag — release candidate or stable — can produce a published
