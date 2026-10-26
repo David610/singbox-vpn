@@ -61,6 +61,18 @@ Automated = a command below. **Owner** = cannot be automated.
    leaves from the exit.
 6. Verify: `vpn-admin pair status` on both hosts; `vpn-admin doctor` on both (0 FAIL; spoof capability OK when
    enabled); client check below.
+
+   Engine-level client check for the entry (run on a STAGING host as root; it uses Hiddify's own core, never the
+   native app, so it is **not** Android/iPhone evidence). Put the user's pinned link in a root-only file, then:
+
+       python3 deploy/lib/hiddify_core_acceptance.py --mode relay --core-dir <hiddify-core dir> \
+         --url-file <file> --expect-egress-ip <EXIT public IPv4> --out result.json
+
+   `--mode relay` fetches only `?format=singbox&compat=hiddify-pinned`, first checks that the profile holds exactly
+   one exit route reached through the relay hop with nothing selectable that bypasses it (no direct outbound, no
+   selectable relay hop, no Hysteria2), then runs the core and requires the egress address to be the exit's. It
+   never requests share links (the relay refuses them) and never writes the URL or token anywhere. The default
+   `--mode direct` is the original single-exit check.
 7. **Owner**: send the friend the `?format=singbox&compat=hiddify-pinned` link, privately.
 
 ## Cross-host pipe: what a zero exit status does and does not prove
