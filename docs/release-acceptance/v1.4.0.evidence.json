@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "release_tag": "v1.4.0",
+  "git_commit": "ca1d534ba336c37b87aedfbaac1b1ddf5395bab7",
+  "claimed_level": "SERVER_QUALIFIED",
+  "artifact_digests": {
+    "singbox-vpn-x86_64-unknown-linux-gnu.tar.gz": "sha256:09938b893fe95349f44491aa45262645ac7c71e4899750e5c85b1cd9799a5564",
+    "singbox-vpn-src.tar.gz": "sha256:80786b601e93fd0bcdb2e938bab51b48b298891ee43972e05304bf420f255317",
+    "install.sh": "sha256:a113165425cc8297090e5c3f97263d96174b0ee3d4feed5bd94a04addab576e3",
+    "singbox-vpn-sbom.cdx.json": "sha256:c43d42176a13351b4a6d7f39da0a346aa7b97f8caeab32572534020680e88783"
+  },
+  "ci": {
+    "conclusion": "success",
+    "git_commit": "ca1d534ba336c37b87aedfbaac1b1ddf5395bab7",
+    "run_url": "https://github.com/David610/singbox-vpn/actions/runs/40391330355"
+  },
+  "vps_acceptance": {
+    "result": "PASS",
+    "git_commit": "ca1d534ba336c37b87aedfbaac1b1ddf5395bab7",
+    "environment": "AlmaLinux 9.8 (Olive Jaguar) x86_64, 2 vCPU, 3.5 GB RAM, 35 GB disk, disposable fresh VPS 2.29.114.9",
+    "evidence_ref": "docs/release-acceptance/v1.4.0.md"
+  },
+  "device_matrix": [],
+  "security_gates": {
+    "result": "NOT_EVALUATED_FOR_LIMITED_RELEASE"
+  },
+  "waivers": [],
+  "runtime_binary_sha256": "sha256:12cb2816b52febb356f6a885b740cc8758c3f30b8ae0ca8edba80f0d2d35343f",
+  "limited_release": {
+    "approver": "David610",
+    "date": "2026-10-26",
+    "unmet": [
+      "device_matrix"
+    ],
+    "disclosures": {
+      "native_device_unverified": "No native-device acceptance was performed for this release: the eight required cells (REALITY and Hysteria2, Wi-Fi and cellular, signed-in and Incognito) are UNVERIFIED, as are Russian-network reachability and 900 s native YouTube playback.",
+      "eu_exit_youtube_shorts": "YouTube Shorts do not play through the EU exit tested (91.244.71.165): 0/6 headless, answered 'unavailable'. The Russian exit played 15/16 headless Shorts, which is not device evidence. Shorts depend on each exit IP and are not guaranteed on any exit.",
+      "os_tier": "Production use so far is on Ubuntu 24.04 (best-effort tier); AlmaLinux 9 is the supported tier and was exercised by the lifecycle run recorded here.",
+      "uninstall_lock_residue_after_update": "In a supplementary run (v1.4.0-rc.1 updated to v1.4.0-rc.2) the harness's residue audit FAILED twice for the same reason: uninstall left one empty file, /run/lock/singbox-vpn-update.lock (tmpfs, removed at reboot). The update, failed-repair rollback, egress, backup and restore stages of that run passed. Not fixed in this release.",
+      "bidirectional_pairing_on_real_hosts": "Both directions were verified on two live Ubuntu hosts at v1.4.0-rc.1 (docs/qualification/2026-10-26/BIDIRECTIONAL_DEPLOYMENT.md); no real second-host pairing was part of the AlmaLinux lifecycle run."
+    }
+  }
+}

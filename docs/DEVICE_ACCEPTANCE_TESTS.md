@@ -694,6 +694,15 @@ matrix.
 - **Observation, not a defect:** a Hysteria2 client on the maintainer's workstation timed out at the QUIC handshake against the exit while a client on another network passed; a server-side capture saw no UDP/443 from the workstation but did see test datagrams from the other network. That path was not investigated further; the phone result above is the relevant one.
 - **Known limitations accepted with this release:** hosts updated from v1.2.0 keep the distribution's default nginx site listening on TCP/80 (doctor WARN; blocked by the default host firewalls, renewal verified; fresh installs disable it); the lifecycle harness supports AlmaLinux only; an egress IP that YouTube refuses (proven per IP) cannot play Shorts without a hairpin to an accepted IP.
 
+### 2026-10-26 — v1.4.0 (limited qualification): VPS lifecycle on AlmaLinux 9.8; NO native-device acceptance
+
+- **Release tag / commit:** accepted RC `v1.4.0-rc.2` / `ca1d534ba336c37b87aedfbaac1b1ddf5395bab7`. No implementation change after the RC.
+- **VPS (SERVER-VERIFIED, local harness run from the RC's checksum-verified source, not a GitHub Actions run):** fresh AlmaLinux 9.8 x86_64 disposable host; `lifecycle-acceptance.sh --version v1.4.0-rc.2 --verify-egress-policy`: 56 PASS, 0 FAIL, 0 BLOCKED, 0 SKIP, 4 UNVERIFIED. Certificate renewal (`certbot renew --dry-run` with TCP/80 handling) PASS.
+- **Supplementary run (published v1.4.0-rc.1 updated to rc.2 with injected-failure rollback):** 57 PASS, 2 FAIL (one finding: empty `/run/lock/singbox-vpn-update.lock` left after uninstall; tmpfs). Not fixed in this release.
+- **Device: UNVERIFIED.** No native iPhone/Android matrix cell was run for this release (REALITY and Hysteria2, Wi-Fi and cellular, signed-in and Incognito), nor any Russian-network test. Headless Shorts probes (EU exit 0/6, Russian exit 15/16) are not device evidence.
+- **Live bidirectional deployment (Ubuntu 24.04, best-effort tier):** `docs/qualification/2026-10-26/BIDIRECTIONAL_DEPLOYMENT.md`.
+- **Decision:** published as a limited stable release by explicit maintainer decision (`docs/RELEASE.md` "Limited qualification"); see `docs/release-acceptance/v1.4.0.md`.
+
 ## Recording a native-device result so it counts for a release (2026-10-20)
 
 A device result feeds the release gate only as a cell of `device_matrix` in
