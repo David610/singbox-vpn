@@ -136,6 +136,24 @@ that exact version, and verifies them against the release's `SHA256SUMS`.
 If no stable release exists yet, it exits before touching the server rather
 than silently installing mutable branch source.
 
+### Release candidate (pinned tag)
+
+The stable command above never selects a pre-release. To install a specific candidate, fetch `install.sh` from
+THAT tag (not from `main`) and pin the version; the installer then verifies the release's `SHA256SUMS` and Sigstore
+attestation on the host and prints the source commit it was built from:
+
+```bash
+TAG=v1.3.1-rc.8
+curl -fsSL https://raw.githubusercontent.com/David610/singbox-vpn/$TAG/install.sh \
+  | sudo bash -s -- --version $TAG \
+    --domain exit.example.com --reality-handshake-server www.cloudflare.com
+# an entry (relay) node adds:  --role relay --node-id ru1
+```
+
+Add `--dry-run` first on a new host. Use canonical ASCII (punycode) host names; the preflight rejects the Unicode
+form. To check the file before running it, download `install.sh` from the release page, compare it with the
+`install.sh` line of `SHA256SUMS`, and pipe that local file to `sudo bash -s -- ...` instead.
+
 ### Development install
 
 For disposable VPS testing only — unverified branch source, no checksum:
