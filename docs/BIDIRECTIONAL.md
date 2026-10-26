@@ -1,6 +1,6 @@
 # Bidirectional two-hop deployment on two physical hosts
 
-Goal: two independently selectable Hiddify profiles on the SAME two servers.
+Operator steps: [BIDIRECTIONAL_RUNBOOK.md](BIDIRECTIONAL_RUNBOOK.md). Goal: two independently selectable Hiddify profiles on the SAME two servers.
 
 | Profile | Chain | Egress of ordinary traffic |
 |---|---|---|
