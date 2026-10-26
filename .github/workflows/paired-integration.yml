@@ -66,7 +66,7 @@ jobs:
           repository: David610/vpn-web
           ref: ${{ inputs.vpnweb_old_ref || 'fix/hub-stale-cache' }}
           path: vpnweb-old
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@75be91dd2711b583df57c31d0873b4145c89f1d9 # 1.94.1
